@@ -204,5 +204,5 @@ but should be resolved before the phase that depends on them:
 - [ ] Exact sync event schema (needed by Phase 8)
 - [ ] Event ordering guarantees (needed by Phase 8)
 - [ ] Tombstone retention window — final number (needed by Phase 9, informs §29a)
-- [ ] LAN-only endpoint security details (needed by Phase 11)
+- [ ] Local (Wi-Fi/LAN) endpoint security details (needed by Phase 11)
 - [ ] Pairing/QR format spec (needed by Phase 11)

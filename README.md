@@ -16,8 +16,9 @@ never a hard dependency.
 Most cloud storage treats the Internet — and a central server — as the
 source of truth. Nodus flips that:
 
-- **LAN-first.** Your devices talk directly to your Storage Node over the
-  local network. No Internet required for day-to-day sync.
+- **Local-network-first.** Your devices talk directly to your Storage Node
+  over Wi-Fi or wired LAN, as long as they're on the same network. No
+  Internet required for day-to-day sync.
 - **Internet as enhancement, not dependency.** A Relay server provides
   signaling, cross-network sync, and temporary buffering when devices aren't
   on the same network — but it never holds plaintext file contents or keys.
@@ -49,7 +50,7 @@ Four components, one protocol:
                             |
                        Sync Protocol
                             |
-                           LAN
+                        Wi-Fi / LAN
                             |
                  +----------v-----------+
                  |   Rust Storage Node  |
@@ -148,4 +149,4 @@ Relay corrupted:        Storage Node -> Snapshot/Rebuild -> New Relay DB
 
 ## License
 
-most probably MIT or GNU 
+TBD.

@@ -27,7 +27,7 @@ Build **Nodus**, a hybrid, offline-first P2P storage system where:
 - A Next.js web app and React Native/Expo mobile app act as clients.
 - A Rust Storage Node provides durable local storage.
 - A Go Relay provides Internet-facing signaling, synchronization, authentication/control-plane services, and temporary encrypted buffering.
-- Clients can continue operating with the Rust Storage Node over the LAN when the Internet is unavailable.
+- Clients can continue operating with the Rust Storage Node over the local network (Wi-Fi or wired LAN) when the Internet is unavailable.
 - Relay metadata can be rebuilt from Storage Nodes if the Relay database is corrupted or lost.
 
 The original system design defines four deployable components: web client, mobile client, Go Relay Server, and Rust Storage Node.
@@ -108,7 +108,7 @@ The shared `sdk` package should contain only genuinely portable logic such as do
                             |
                     --------+--------
                             |
-                           LAN
+                        Wi-Fi / LAN
                             |
                  +----------v-----------+
                  |    Rust Storage      |
@@ -285,7 +285,10 @@ Encrypted shards
 
 The Relay is not required.
 
-Local signaling is LAN-only.
+Local signaling requires both devices to be on the same local network —
+same Wi-Fi network or wired LAN, sharing a subnet. This is the common case
+(home Wi-Fi, office Wi-Fi) and the primary target for Path A; see §7 for the
+full network-scope clarification.
 
 ### Path B — Relay-Mediated Signaling + Direct WebRTC
 
@@ -385,9 +388,14 @@ but usable networks, adding latency and Relay load that direct P2P was meant to 
 Every use of "LAN" in this document means: **both devices connected to the same
 network — Wi-Fi or wired Ethernet — such that they share a subnet and can reach
 each other directly**, typically because they're joined to the same router/access
-point (a home Wi-Fi network, an office Wi-Fi network, or a wired LAN). This is the
-target scenario. mDNS discovery and local WebRTC signaling both work over this
-kind of network without any changes.
+point (a home Wi-Fi network, an office Wi-Fi network, or a wired LAN).
+
+**Wi-Fi is the primary target scenario**, not an edge case — most phones,
+laptops, and Storage Nodes in practice will be connected over Wi-Fi rather
+than wired Ethernet. "LAN" is used throughout this document as shorthand for
+"same local network," and should not be read as implying wired-only. mDNS
+discovery and local WebRTC signaling both work over Wi-Fi or wired Ethernet
+without any changes, as long as the two devices share a subnet.
 
 Explicitly **out of scope for v1** unless called out separately later: Wi-Fi
 Direct / device-to-device Wi-Fi with no shared access point, and a phone's mobile
@@ -1389,7 +1397,7 @@ Before implementation, finalize these:
 - WebRTC authentication binding
 - mDNS service format
 - Pairing/QR format
-- LAN-only endpoint security
+- Local (Wi-Fi/LAN) endpoint security
 
 ### Mobile
 - Background sync approach
@@ -1463,7 +1471,7 @@ never blocks a foreground transfer.
                  +----------+-----------+
                             ^
                             |
-                    LAN / WebRTC / mDNS
+                 Wi-Fi/LAN / WebRTC / mDNS
                             |
                  +----------+-----------+
                  |                      |
