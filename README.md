@@ -1,159 +1,151 @@
-# Turborepo starter
+# Nodus
 
-This Turborepo starter is maintained by the Turborepo core team.
+**Nodus** is a hybrid, offline-first peer-to-peer storage system. Files live
+primarily on a storage node you control, sync directly between your own
+devices over the local network, and use the Internet only as an enhancement —
+never a hard dependency.
 
-## Using this example
+> 🚧 **Status: pre-implementation.** This repo currently contains the design
+> and planning docs. See [Status & Roadmap](#status--roadmap) below before
+> looking for code.
 
-Run the following command:
+---
 
-```sh
-npx create-turbo@latest
+## Why Nodus
+
+Most cloud storage treats the Internet — and a central server — as the
+source of truth. Nodus flips that:
+
+- **LAN-first.** Your devices talk directly to your Storage Node over the
+  local network. No Internet required for day-to-day sync.
+- **Internet as enhancement, not dependency.** A Relay server provides
+  signaling, cross-network sync, and temporary buffering when devices aren't
+  on the same network — but it never holds plaintext file contents or keys.
+- **Recoverable by design.** If the Relay's database is lost, it can be
+  fully rebuilt from snapshots held by your Storage Node(s).
+- **Convergent, not "last write wins."** Independently made offline changes
+  reconcile without an arbitrary winner overwriting the other.
+
+## How it works
+
+Four components, one protocol:
+
+| Component | Role | Stack |
+|---|---|---|
+| **Web client** | Browser UI | Next.js |
+| **Mobile client** | iOS / Android UI | React Native / Expo |
+| **Storage Node** | Durable local storage, authoritative for its own data | Rust, SQLite |
+| **Relay** | Internet-facing signaling, sync, auth, temporary buffering | Go, PostgreSQL, Redis |
+
+```text
+                         INTERNET
+                            |
+                            v
+                 +----------------------+
+                 |    Go Relay / API    |
+                 | PostgreSQL · Redis   |
+                 | Temporary Buffer     |
+                 +----------+-----------+
+                            |
+                       Sync Protocol
+                            |
+                           LAN
+                            |
+                 +----------v-----------+
+                 |   Rust Storage Node  |
+                 | SQLite · Object Store|
+                 +----------+-----------+
+                            |
+                     Local WebRTC
+                            |
+                 +----------v-----------+
+                 |   Web / Mobile Client|
+                 +----------------------+
 ```
 
-## What's inside?
+Files are split into 8 MB shards, encrypted client-side with AES-256-GCM
+(unique nonce per shard), and integrity-checked with BLAKE3. The Relay only
+ever sees encrypted bytes and encrypted key envelopes — never plaintext file
+keys or shard contents.
 
-This Turborepo includes the following packages/apps:
+### Transfer paths
 
-### Apps and Packages
+Nodus picks the best available path automatically, falling back as needed:
 
-- `docs`: a [Next.js](https://nextjs.org/) app
-- `web`: another [Next.js](https://nextjs.org/) app
-- `@repo/ui`: a stub React component library shared by both `web` and `docs` applications
-- `@repo/eslint-config`: `eslint` configurations (includes `@next/eslint-plugin-next` and `eslint-config-prettier`)
-- `@repo/typescript-config`: `tsconfig.json`s used throughout the monorepo
+1. **Path A — Direct Local P2P.** Local signaling + WebRTC, no Relay involved.
+2. **Path B — Relay-Mediated Signaling.** Relay carries SDP/ICE only; file
+   data still flows peer-to-peer.
+3. **Path C — Buffer-and-Relay.** Encrypted shard is buffered on the Relay
+   and delivered asynchronously when the Storage Node comes back online.
+4. **Path D — Local Queue.** If both the Storage Node and Relay are
+   unreachable, changes queue locally until one becomes available.
 
-Each package/app is 100% [TypeScript](https://www.typescriptlang.org/).
+## Repository layout
 
-### Utilities
+Nodus is a single monorepo — one repo, multiple languages:
 
-This Turborepo has some additional tools already setup for you:
-
-- [TypeScript](https://www.typescriptlang.org/) for static type checking
-- [ESLint](https://eslint.org/) for code linting
-- [Prettier](https://prettier.io) for code formatting
-
-### Build
-
-To build all apps and packages, run the following command:
-
-With [global `turbo`](https://turborepo.dev/docs/getting-started/installation#global-installation) installed (recommended):
-
-```sh
-cd my-turborepo
-turbo build
+```text
+nodus/
+├─ apps/
+│  ├─ web/                 # Next.js web client
+│  └─ mobile/               # React Native / Expo mobile client
+├─ packages/
+│  ├─ core/                 # Domain logic: sharding, crypto abstractions
+│  ├─ protocol/              # Canonical protocol schemas/types
+│  ├─ relay-client/          # WebSocket client (web + mobile)
+│  ├─ webrtc-transport/      # WebRTC abstraction
+│  └─ config/                 # Shared TypeScript tooling
+├─ services/
+│  ├─ relay/                 # Go Relay (control plane + buffer)
+│  └─ storage-node/           # Rust Storage Node (data plane)
+├─ infra/                    # Docker, compose, scripts
+├─ docs/
+│  ├─ architecture/
+│  ├─ protocol/
+│  ├─ security/
+│  └─ decisions/             # ADRs
+├─ tests/
+│  ├─ integration/
+│  └─ e2e/
+├─ pnpm-workspace.yaml
+└─ turbo.json
 ```
 
-Without global `turbo`, use your package manager:
+The TypeScript apps and packages are managed by Turborepo + pnpm. The Rust
+Storage Node and Go Relay live in the same repository under `services/` but
+sit outside the pnpm/Turborepo workspace, with their own native tooling.
 
-```sh
-cd my-turborepo
-npx turbo build
-pnpm exec turbo build
-pnpm exec turbo build
+## Status & Roadmap
+
+Nothing is implemented yet. Before any code is written, five foundational
+design decisions have to be locked in on paper (see `docs/decisions/` once
+ADRs exist):
+
+1. Key hierarchy & recovery-key mechanism
+2. Conflict-resolution UX
+3. Mobile local-discovery approach
+4. Reconciliation repair action
+5. Garbage-collection policy
+
+Full build order and detailed task breakdown:
+
+- [`nodus_implementation_plan.md`](./nodus_implementation_plan.md) — the
+  complete architecture and design plan (protocol, schemas, key envelopes,
+  state machines, failure guarantees, etc.)
+- [`Todo.md`](./Todo.md) — the phase-by-phase implementation checklist
+  derived from the plan
+
+## Core design principle
+
+> Internet is an enhancement, not a dependency.
+
+```text
+Internet available:     Client <-> Relay <-> Storage Node
+Internet unavailable:   Client <-> Storage Node
+Storage Node offline:   Client -> Relay Buffer -> Storage Node
+Relay corrupted:        Storage Node -> Snapshot/Rebuild -> New Relay DB
 ```
 
-You can build a specific package by using a [filter](https://turborepo.dev/docs/crafting-your-repository/running-tasks#using-filters):
+## License
 
-With [global `turbo`](https://turborepo.dev/docs/getting-started/installation#global-installation) installed:
-
-```sh
-turbo build --filter=docs
-```
-
-Without global `turbo`:
-
-```sh
-npx turbo build --filter=docs
-pnpm exec turbo build --filter=docs
-pnpm exec turbo build --filter=docs
-```
-
-### Develop
-
-To develop all apps and packages, run the following command:
-
-With [global `turbo`](https://turborepo.dev/docs/getting-started/installation#global-installation) installed (recommended):
-
-```sh
-cd my-turborepo
-turbo dev
-```
-
-Without global `turbo`, use your package manager:
-
-```sh
-cd my-turborepo
-npx turbo dev
-pnpm exec turbo dev
-pnpm exec turbo dev
-```
-
-You can develop a specific package by using a [filter](https://turborepo.dev/docs/crafting-your-repository/running-tasks#using-filters):
-
-With [global `turbo`](https://turborepo.dev/docs/getting-started/installation#global-installation) installed:
-
-```sh
-turbo dev --filter=web
-```
-
-Without global `turbo`:
-
-```sh
-npx turbo dev --filter=web
-pnpm exec turbo dev --filter=web
-pnpm exec turbo dev --filter=web
-```
-
-### Remote Caching
-
-> [!TIP]
-> Vercel Remote Cache is free for all plans. Get started today at [vercel.com](https://vercel.com/signup?utm_source=remote-cache-sdk&utm_campaign=free_remote_cache).
-
-Turborepo can use a technique known as [Remote Caching](https://turborepo.dev/docs/core-concepts/remote-caching) to share cache artifacts across machines, enabling you to share build caches with your team and CI/CD pipelines.
-
-By default, Turborepo will cache locally. To enable Remote Caching you will need an account with Vercel. If you don't have an account you can [create one](https://vercel.com/signup?utm_source=turborepo-examples), then enter the following commands:
-
-With [global `turbo`](https://turborepo.dev/docs/getting-started/installation#global-installation) installed (recommended):
-
-```sh
-cd my-turborepo
-turbo login
-```
-
-Without global `turbo`, use your package manager:
-
-```sh
-cd my-turborepo
-npx turbo login
-pnpm exec turbo login
-pnpm exec turbo login
-```
-
-This will authenticate the Turborepo CLI with your [Vercel account](https://vercel.com/docs/concepts/personal-accounts/overview).
-
-Next, you can link your Turborepo to your Remote Cache by running the following command from the root of your Turborepo:
-
-With [global `turbo`](https://turborepo.dev/docs/getting-started/installation#global-installation) installed:
-
-```sh
-turbo link
-```
-
-Without global `turbo`:
-
-```sh
-npx turbo link
-pnpm exec turbo link
-pnpm exec turbo link
-```
-
-## Useful Links
-
-Learn more about the power of Turborepo:
-
-- [Tasks](https://turborepo.dev/docs/crafting-your-repository/running-tasks)
-- [Caching](https://turborepo.dev/docs/crafting-your-repository/caching)
-- [Remote Caching](https://turborepo.dev/docs/core-concepts/remote-caching)
-- [Filtering](https://turborepo.dev/docs/crafting-your-repository/running-tasks#using-filters)
-- [Configuration Options](https://turborepo.dev/docs/reference/configuration)
-- [CLI Usage](https://turborepo.dev/docs/reference/command-line-reference)
+most probably MIT or GNU 
