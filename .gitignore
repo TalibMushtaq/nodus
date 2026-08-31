@@ -36,3 +36,23 @@ yarn-error.log*
 # Misc
 .DS_Store
 *.pem
+
+# Go
+*.exe
+*.test
+coverage.out
+go.work
+go.work.sum
+
+# Rust
+target/
+
+# Native (global)
+.kotlin/
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+*.orig.*
+.metro-health-check*

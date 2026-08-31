@@ -1,0 +1,17 @@
+# Binaries
+relay
+relay.exe
+*.exe
+
+# Test & coverage
+*.test
+*.test.exe
+coverage.out
+
+# Go workspace
+go.work
+go.work.sum
+
+# Local env
+.env
+.env.*
