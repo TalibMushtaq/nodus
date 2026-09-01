@@ -1,0 +1,46 @@
+name: ci-go
+
+on:
+  pull_request:
+    paths:
+      - "services/relay/**"
+      - "services/api/**"
+  push:
+    branches: [main]
+    paths:
+      - "services/relay/**"
+      - "services/api/**"
+
+concurrency:
+  group: go-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint-build-test:
+    name: go / lint-build-test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27.0"
+
+      - run: go vet ./...
+        working-directory: services/relay
+
+      - name: Check gofmt
+        run: |
+          GOFMT_OUTPUT=$(gofmt -l .)
+          if [ -n "$GOFMT_OUTPUT" ]; then
+            echo "Files not gofmt'd:"
+            echo "$GOFMT_OUTPUT"
+            exit 1
+          fi
+        working-directory: services/relay
+
+      - run: go build ./...
+        working-directory: services/relay
+
+      - run: go test ./...
+        working-directory: services/relay

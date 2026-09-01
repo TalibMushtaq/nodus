@@ -37,9 +37,9 @@ Checkboxes are for tracking; nest sub-tasks as you break work down further.
 - [x] Set up `pnpm-workspace.yaml` + `turbo.json` for the TypeScript side
       (`apps/web`, `apps/mobile`, `packages/*` only — Rust/Go under `services/`
       stay outside Turborepo's scope, per §3a)
-- [ ] Set up base CI with path-scoped jobs (lint/build/test), so a Rust-only
+- [x] Set up base CI with path-scoped jobs (lint/build/test), so a Rust-only
       change doesn't trigger the full TS pipeline and vice versa
-- [ ] Set up `docs/architecture/`, `docs/protocol/`, `docs/security/`,
+- [x] Set up `docs/architecture/`, `docs/protocol/`, `docs/security/`,
       `docs/decisions/` skeletons and commit the Phase 0 ADRs
 
 ## Phase 2 — Core Types & Shard Format

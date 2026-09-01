@@ -1,0 +1,42 @@
+name: ci-rust
+
+on:
+  pull_request:
+    paths:
+      - "services/storage-node/**"
+  push:
+    branches: [main]
+    paths:
+      - "services/storage-node/**"
+
+concurrency:
+  group: rust-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint-build-test:
+    name: rust / lint-build-test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.96.1"
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: services/storage-node
+
+      - run: cargo fmt --check
+        working-directory: services/storage-node
+
+      - run: cargo clippy -- -D warnings
+        working-directory: services/storage-node
+
+      - run: cargo build
+        working-directory: services/storage-node
+
+      - run: cargo test
+        working-directory: services/storage-node
