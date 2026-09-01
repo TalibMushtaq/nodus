@@ -10,29 +10,23 @@ Checkboxes are for tracking; nest sub-tasks as you break work down further.
 
 ## Phase 0 — Foundational Design Decisions (blocking — do not skip)
 
-- [ ] **Key hierarchy**: define Account → Device → Storage Node key relationships
-  - [ ] Choose key agreement mechanism (e.g. X25519)
-  - [ ] Define File Encryption Key envelope format (§25) — one envelope per
-        authorized device/node
-  - [ ] Define device revocation flow (remove a device's envelope access
-        without rotating every file key, or accept rotation cost)
-- [ ] **Recovery-key mechanism** (§9, §24)
-  - [ ] Decide recovery credential type (recovery phrase, secondary device
-        approval, social recovery — pick one for v1)
-  - [ ] Define what happens when the *only* trusted device is lost with no
-        Internet available (local-only recovery via Storage Node, §24)
-- [ ] **Conflict-resolution UX** (§17a)
-  - [ ] Confirm "conflicted copy" file-naming approach
-  - [ ] Decide notification style (non-blocking banner vs. inbox/list view)
-- [ ] **Mobile local-discovery approach** (§7a)
-  - [ ] Decide managed Expo vs. bare/native workflow for mDNS + WebRTC
-  - [ ] Decide foreground-only vs. background-attempt policy for Path A
-  - [ ] Design the UX for local-network permission denial
-- [ ] **Garbage-collection policy** (§29a)
-  - [ ] Confirm default retention numbers (version count/age, tombstone window,
-        orphan grace period) — configurable per account
-- [ ] Write these decisions up as short ADRs (Architecture Decision Records) in
-      `docs/decisions/` before touching code
+- [x] **Key hierarchy**: define Account → Device → Storage Node key relationships — see docs/decisions/0001-key-hierarchy.md
+  - [x] Choose key agreement mechanism (e.g. X25519) — see docs/decisions/0001-key-hierarchy.md
+  - [x] Define File Encryption Key envelope format (§25) — one envelope per authorized device/node — see docs/decisions/0001-key-hierarchy.md
+  - [x] Define device revocation flow (remove a device's envelope access without rotating every file key, or accept rotation cost) — see docs/decisions/0001-key-hierarchy.md
+- [x] **Recovery-key mechanism** (§9, §24) — see docs/decisions/0002-recovery-mechanism.md
+  - [x] Decide recovery credential type (recovery phrase, secondary device approval, social recovery — pick one for v1) — see docs/decisions/0002-recovery-mechanism.md
+  - [x] Define what happens when the *only* trusted device is lost with no Internet available (local-only recovery via Storage Node, §24) — see docs/decisions/0002-recovery-mechanism.md
+- [x] **Conflict-resolution UX** (§17a) — see docs/decisions/0003-conflict-resolution-ux.md
+  - [x] Confirm "conflicted copy" file-naming approach — see docs/decisions/0003-conflict-resolution-ux.md
+  - [x] Decide notification style (non-blocking banner vs. inbox/list view) — see docs/decisions/0003-conflict-resolution-ux.md
+- [x] **Mobile local-discovery approach** (§7a) — see docs/decisions/0004-mobile-local-discovery.md
+  - [x] Decide managed Expo vs. bare/native workflow for mDNS + WebRTC — see docs/decisions/0004-mobile-local-discovery.md
+  - [x] Decide foreground-only vs. background-attempt policy for Path A — see docs/decisions/0004-mobile-local-discovery.md
+  - [x] Design the UX for local-network permission denial — see docs/decisions/0004-mobile-local-discovery.md
+- [x] **Garbage-collection policy** (§29a) — see docs/decisions/0005-garbage-collection-policy.md
+  - [x] Confirm default retention numbers (version count/age, tombstone window, orphan grace period) — configurable per account — see docs/decisions/0005-garbage-collection-policy.md
+- [x] Write these decisions up as short ADRs (Architecture Decision Records) in `docs/decisions/` before touching code
 
 ---
 

@@ -9,14 +9,19 @@ package. Revisiting them mid-build is far more expensive than revisiting them no
 
 1. **Key hierarchy and recovery-key mechanism** (detailed in §9, §25, §29). Device
    revocation, node trust, snapshot signing, and key envelopes all depend on this.
+   > Resolved — see docs/decisions/0001-key-hierarchy.md and docs/decisions/0002-recovery-mechanism.md
 2. **Conflict-resolution UX** (expanded in §17a below). "Let the user resolve it" needs
    a concrete mechanism before the file state machine (§23) can be finalized.
+   > Resolved — see docs/decisions/0003-conflict-resolution-ux.md
 3. **Mobile local-discovery approach** (expanded in §7a below). Whether Path A (Direct
    Local P2P) is reliable on mobile at all depends on this.
+   > Resolved — see docs/decisions/0004-mobile-local-discovery.md
 4. **Reconciliation repair action** (expanded in §21a below). Detecting divergence is
    only half the job.
+   > Resolved — see docs/decisions/
 5. **Garbage-collection policy** (expanded in §29a below). Immutable versions +
    tombstones + content-addressed objects accumulate storage indefinitely without one.
+   > Resolved — see docs/decisions/0005-garbage-collection-policy.md
 
 ---
 
