@@ -32,9 +32,9 @@ Checkboxes are for tracking; nest sub-tasks as you break work down further.
 
 ## Phase 1 — Monorepo & Tooling
 
-- [ ] Create the single `nodus` monorepo (protocol, sdk, web, mobile, node,
+- [x] Create the single `nodus` monorepo (protocol, sdk, web, mobile, node,
       relay all live in this one repo — see plan §2)
-- [ ] Set up `pnpm-workspace.yaml` + `turbo.json` for the TypeScript side
+- [x] Set up `pnpm-workspace.yaml` + `turbo.json` for the TypeScript side
       (`apps/web`, `apps/mobile`, `packages/*` only — Rust/Go under `services/`
       stay outside Turborepo's scope, per §3a)
 - [ ] Set up base CI with path-scoped jobs (lint/build/test), so a Rust-only
