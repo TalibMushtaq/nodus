@@ -44,10 +44,10 @@ Checkboxes are for tracking; nest sub-tasks as you break work down further.
 
 ## Phase 2 — Core Types & Shard Format
 
-- [ ] `packages/core`: file/shard domain types (no React/Next/Expo/RN deps)
-- [ ] Implement 8 MB shard splitting
-- [ ] Implement shard reconstruction
-- [ ] Define shard metadata format (shard index, file_id, hash, size)
+- [x] `packages/core`: file/shard domain types (no React/Next/Expo/RN deps)
+- [x] Implement 8 MB shard splitting
+- [x] Implement shard reconstruction
+- [x] Define shard metadata format (shard index, file_id, hash, size)
 
 ## Phase 3 — Encryption & Integrity
 
