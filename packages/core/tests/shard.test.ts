@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
-import type { FileId, Shard, ShardMetadata } from "./types.js";
+import type { FileId, Shard, ShardMetadata } from "../src/types.js";
 import {
   SHARD_SIZE_BYTES,
   reconstructFromShards,
   splitIntoShards,
-} from "./shard.js";
+} from "../src/shard.js";
 
 const fileId = "file-1" as FileId;
 
