@@ -40,8 +40,8 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      - run: turbo lint
+      - run: pnpm exec turbo lint
 
-      - run: turbo build
+      - run: pnpm exec turbo build
 
-      - run: turbo test
+      - run: pnpm exec turbo test
