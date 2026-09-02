@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "from_peer": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "string"
+        }
+      ]
+    },
+    "to_peer": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "string"
+        }
+      ]
+    },
+    "sdp": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "from_peer",
+    "to_peer",
+    "sdp"
+  ],
+  "additionalProperties": false
+}

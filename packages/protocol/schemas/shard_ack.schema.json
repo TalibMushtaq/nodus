@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "file_id": {
+      "type": "string"
+    },
+    "shard_index": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "received",
+        "verified",
+        "failed"
+      ]
+    },
+    "transfer_id": {
+      "type": "string"
+    },
+    "error_message": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "file_id",
+    "shard_index",
+    "status",
+    "transfer_id"
+  ],
+  "additionalProperties": false
+}

@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "correlation_id": {
+      "type": "string"
+    },
+    "error_code": {
+      "type": "string",
+      "enum": [
+        "validation_error",
+        "unknown_message_type",
+        "incompatible_version",
+        "auth_failure",
+        "not_found",
+        "rate_limited",
+        "internal_error"
+      ]
+    },
+    "error_message": {
+      "type": "string"
+    },
+    "retryable": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "correlation_id",
+    "error_code",
+    "error_message"
+  ],
+  "additionalProperties": false
+}

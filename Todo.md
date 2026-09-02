@@ -59,12 +59,12 @@ Checkboxes are for tracking; nest sub-tasks as you break work down further.
 
 ## Phase 4 — Protocol Package
 
-- [ ] `packages/protocol`: define all message types (register, heartbeat,
+- [x] `packages/protocol`: define all message types (register, heartbeat,
       webrtc_offer/answer/ice_candidate, shard_upload/ack, pending_notify,
       shard_fetch/delete, sync_hello/status, event_batch, snapshot_begin/
       chunk/end, reconcile)
-- [ ] Add runtime validation (not just TS types) — e.g. zod or similar
-- [ ] Document schema versioning strategy in `docs/protocol/`
+- [x] Add runtime validation (not just TS types) — e.g. zod or similar
+- [x] Document schema versioning strategy in `docs/protocol/`
 
 ## Phase 5 — Rust: SQLite Schema
 
@@ -195,8 +195,13 @@ Checkboxes are for tracking; nest sub-tasks as you break work down further.
 These are called out in the plan as unresolved and don't block starting Phase 1,
 but should be resolved before the phase that depends on them:
 
-- [ ] Exact sync event schema (needed by Phase 8)
-- [ ] Event ordering guarantees (needed by Phase 8)
+- [x] Exact sync event schema (needed by Phase 8) — **resolved in Phase 4**; see
+      `packages/protocol/src/events/event-types.ts` and
+      `docs/protocol/event-types.md`
+- [x] Event ordering guarantees (needed by Phase 8) — **resolved in Phase 4**;
+      `origin_id` + `origin_sequence` provide per-origin total ordering and
+      cursor-based sync; see `docs/protocol/event-types.md` and
+      `docs/protocol/message-catalog.md` (sync_hello/sync_status)
 - [ ] Tombstone retention window — final number (needed by Phase 9, informs §29a)
 - [ ] Local (Wi-Fi/LAN) endpoint security details (needed by Phase 11)
 - [ ] Pairing/QR format spec (needed by Phase 11)
