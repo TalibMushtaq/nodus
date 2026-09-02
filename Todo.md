@@ -51,11 +51,11 @@ Checkboxes are for tracking; nest sub-tasks as you break work down further.
 
 ## Phase 3 — Encryption & Integrity
 
-- [ ] Implement AES-256-GCM encrypt/decrypt for shards, unique nonce per shard
-- [ ] Implement BLAKE3 hashing for shard integrity
-- [ ] Implement File Encryption Key generation + envelope encryption
+- [x] Implement AES-256-GCM encrypt/decrypt for shards, unique nonce per shard
+- [x] Implement BLAKE3 hashing for shard integrity
+- [x] Implement File Encryption Key generation + envelope encryption
       (per Phase 0 key hierarchy decision)
-- [ ] Unit tests: round-trip encrypt→decrypt, tamper detection via BLAKE3
+- [x] Unit tests: round-trip encrypt→decrypt, tamper detection via BLAKE3
 
 ## Phase 4 — Protocol Package
 

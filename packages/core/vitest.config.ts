@@ -4,8 +4,7 @@ export default defineConfig({
   test: {
     testTimeout: 30000,
     pool: "forks",
-    forks: {
-      singleFork: true,
-    },
+    maxWorkers: 1,
+    isolate: false,
   },
 });
