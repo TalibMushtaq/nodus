@@ -68,25 +68,25 @@ Checkboxes are for tracking; nest sub-tasks as you break work down further.
 
 ## Phase 5 — Rust: SQLite Schema
 
-- [ ] Design tables: `files`, `file_versions`, `shards`, `storage_objects`,
+- [x] Design tables: `files`, `file_versions`, `shards`, `storage_objects`,
       `devices`, `trusted_nodes`, `sync_events`, `sync_outbox`,
       `sync_cursors`, `tombstones`
-- [ ] Write migrations
-- [ ] Node identity: generate persistent keypair, derive Node ID, store under
+- [x] Write migrations
+- [x] Node identity: generate persistent keypair, derive Node ID, store under
       `~/.nodus/identity/`
 
 ## Phase 5a — Rust: Storage Node Setup & Config
 
-- [ ] `src/config/` module:
-  - [ ] First-run detection (`~/.nodus/config.toml` exists?)
-  - [ ] Unattended install: `--data-dir` CLI flag and `NODUS_DATA_DIR` env var
-  - [ ] Interactive prompt via `dialoguer` with default `~/NodusBackup`
-  - [ ] Path validation (writable, create-if-missing)
-  - [ ] Non-blocking warnings: cloud-sync folders, removable/network mounts
-  - [ ] Blocking warning: existing `nodus.db` or `objects/` in target dir
-  - [ ] Write/read `~/.nodus/config.toml` (TOML key: `data_dir`)
-- [ ] Add dependencies: `dialoguer`, `directories`, `toml`
-- [ ] Document v1 scope boundary: no post-setup `data_dir` change
+- [x] `src/config/` module:
+  - [x] First-run detection (`~/.nodus/config.toml` exists?)
+  - [x] Unattended install: `--data-dir` CLI flag and `NODUS_DATA_DIR` env var
+  - [x] Interactive prompt via `dialoguer` with default `~/NodusBackup`
+  - [x] Path validation (writable, create-if-missing)
+  - [x] Non-blocking warnings: cloud-sync folders, removable/network mounts
+  - [x] Blocking warning: existing `nodus.db` or `objects/` in target dir
+  - [x] Write/read `~/.nodus/config.toml` (TOML key: `data_dir`)
+- [x] Add dependencies: `dialoguer`, `directories`, `toml`
+- [x] Document v1 scope boundary: no post-setup `data_dir` change
 
 ## Phase 6 — Rust: Object Store
 

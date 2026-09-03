@@ -9,6 +9,12 @@ dialoguer = "0.11"
 directories = "5"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
+anyhow = "1"
+tokio = { version = "1", features = ["full"] }
+sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio", "chrono"] }
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+rand = "0.8"
+hex = "0.4"
 
 [dev-dependencies]
 tempfile = "3"
