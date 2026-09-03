@@ -609,15 +609,29 @@ The existing design uses:
 
 ## 11. Storage Node Layout
 
+The node uses a split directory model: fixed OS-standard config for identity
+and a tiny bootstrap config file, and a user-chosen location for the database
+and object store (see §11a for the first-run setup flow that decides
+`data_dir`).
+
 ```text
-~/.nodus/
+~/.nodus/                         (OS config dir — fixed)
 |
-+-- node.db
 +-- identity/
+|   +-- node_private_key
+|   +-- node_id
+|
++-- config.toml                   (one key: data_dir)
+
+<data_dir>/                       (user-chosen, e.g. ~/NodusBackup)
+|
++-- nodus.db
+|
 +-- objects/
 |   +-- ab/
 |   +-- cd/
 |   +-- ...
+|
 +-- temp/
 +-- logs/
 ```
@@ -631,6 +645,11 @@ Use SQLite for the Rust node because it is:
 - transactional
 - suitable for a single-node daemon
 - usable without Internet or a database server
+
+The SQLite database (`nodus.db`) lives inside `<data_dir>` rather than the
+fixed config directory. Colocating it with the object store under a single
+root simplifies a future migration flow (e.g. relocating the entire dataset
+to an external drive) — see the v1 scope boundary in §11a.
 
 ### Object Store
 
@@ -650,6 +669,43 @@ file version
    v
 BLAKE3 / object references
 ```
+
+---
+
+## 11a. Storage Node First-Run Setup
+
+On first run the node must determine `<data_dir>`. The flow is:
+
+1. **First-run detection** — if `~/.nodus/config.toml` exists, read `data_dir`
+   from it and boot normally. This guarantees unattended daemon restarts never
+   block on a prompt.
+2. **Unattended install** — before falling back to an interactive prompt,
+   check:
+   - `--data-dir <path>` CLI flag
+   - `NODUS_DATA_DIR` environment variable
+
+   If either is present, validate the path, create it if necessary, write
+   `config.toml`, and skip the prompt.
+3. **Interactive prompt** — if no config exists and no unattended source is
+   provided, prompt the user via `dialoguer` with a default suggestion (e.g.
+   `~/NodusBackup`). Validate that the path is writable; offer to create the
+   directory if missing.
+4. **Warnings**:
+   - *Non-blocking*: if the chosen path appears to be inside a cloud-sync
+     folder (Dropbox, OneDrive, Google Drive, iCloud Drive) or is the root of
+     a removable/network mount, warn the user and continue on confirmation.
+   - *Blocking*: if the directory already contains `nodus.db` or `objects/`
+     from a prior install, require explicit confirmation before adopting it.
+     Do not silently overwrite or adopt existing data.
+5. **Write `config.toml`** — once a path is accepted, persist `data_dir` to
+   `~/.nodus/config.toml`.
+
+### v1 scope boundary
+
+Changing `data_dir` after initial setup is **explicitly out of scope for v1**.
+A future migration would need to move `nodus.db`, the object store, and update
+all on-disk path references atomically — this requires a proper
+migrate-and-verify flow, not a config file edit.
 
 ---
 

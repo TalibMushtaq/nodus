@@ -75,9 +75,22 @@ Checkboxes are for tracking; nest sub-tasks as you break work down further.
 - [ ] Node identity: generate persistent keypair, derive Node ID, store under
       `~/.nodus/identity/`
 
+## Phase 5a — Rust: Storage Node Setup & Config
+
+- [ ] `src/config/` module:
+  - [ ] First-run detection (`~/.nodus/config.toml` exists?)
+  - [ ] Unattended install: `--data-dir` CLI flag and `NODUS_DATA_DIR` env var
+  - [ ] Interactive prompt via `dialoguer` with default `~/NodusBackup`
+  - [ ] Path validation (writable, create-if-missing)
+  - [ ] Non-blocking warnings: cloud-sync folders, removable/network mounts
+  - [ ] Blocking warning: existing `nodus.db` or `objects/` in target dir
+  - [ ] Write/read `~/.nodus/config.toml` (TOML key: `data_dir`)
+- [ ] Add dependencies: `dialoguer`, `directories`, `toml`
+- [ ] Document v1 scope boundary: no post-setup `data_dir` change
+
 ## Phase 6 — Rust: Object Store
 
-- [ ] Content-addressed object layout under `~/.nodus/objects/<prefix>/`
+- [ ] Content-addressed object layout under `<data_dir>/objects/<prefix>/`
 - [ ] Atomic writes (write-temp-then-rename) + crash recovery path
 - [ ] Implement reconciliation scan (§21) with repair actions (§21a):
       DEGRADED / re-fetch-from-peer / orphan grace period / corruption handling
