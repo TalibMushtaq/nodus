@@ -13,8 +13,8 @@ use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePo
 /// SQLite PRAGMAs applied to every connection:
 /// - `PRAGMA foreign_keys = ON`  — enforces the FK constraints in the schema.
 /// - `PRAGMA journal_mode = WAL` — enables Write-Ahead Logging for concurrent
-///    reads during a write, which avoids busy-lock errors in later phases when
-///    the reconciliation scanner and sync drain run concurrently.
+///   reads during a write, which avoids busy-lock errors in later phases when
+///   the reconciliation scanner and sync drain run concurrently.
 pub async fn open(data_dir: &Path) -> anyhow::Result<SqlitePool> {
     let db_path = data_dir.join("nodus.db");
 
