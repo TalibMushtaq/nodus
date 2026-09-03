@@ -43,12 +43,12 @@ pub fn ensure_dir(path: &Path) -> std::io::Result<PathBuf> {
 /// cloud-sync folder, so we can warn the user that the data may be
 /// mirrored to the cloud.
 pub fn is_inside_cloud_sync(path: &Path) -> bool {
-    path.ancestors()
-        .filter_map(|a| a.file_name())
-        .any(|name| {
-            let lower = name.to_string_lossy().to_lowercase();
-            CLOUD_SYNC_SUBSTRINGS.iter().any(|sub| lower.starts_with(sub))
-        })
+    path.ancestors().filter_map(|a| a.file_name()).any(|name| {
+        let lower = name.to_string_lossy().to_lowercase();
+        CLOUD_SYNC_SUBSTRINGS
+            .iter()
+            .any(|sub| lower.starts_with(sub))
+    })
 }
 
 /// Detect whether the path sits on a removable/network mount rather than the
@@ -56,9 +56,7 @@ pub fn is_inside_cloud_sync(path: &Path) -> bool {
 pub fn is_removable_or_network_root(path: &Path) -> bool {
     mounts()
         .iter()
-        .any(|(mount, fstype)| {
-            longpath_starts_with(path, mount) && is_removable_or_network(fstype)
-        })
+        .any(|(mount, fstype)| longpath_starts_with(path, mount) && is_removable_or_network(fstype))
 }
 
 fn is_removable_or_network(fstype: &str) -> bool {
@@ -123,7 +121,9 @@ mod tests {
 
     #[test]
     fn cloud_detects_dropbox_child() {
-        assert!(is_inside_cloud_sync(&PathBuf::from("/home/user/Dropbox/project")));
+        assert!(is_inside_cloud_sync(&PathBuf::from(
+            "/home/user/Dropbox/project"
+        )));
     }
     #[test]
     fn cloud_detects_dropbox_itself() {
@@ -131,7 +131,9 @@ mod tests {
     }
     #[test]
     fn cloud_detects_onedrive() {
-        assert!(is_inside_cloud_sync(&PathBuf::from("/home/user/OneDrive/docs")));
+        assert!(is_inside_cloud_sync(&PathBuf::from(
+            "/home/user/OneDrive/docs"
+        )));
     }
     #[test]
     fn cloud_detects_googledrive_macos() {
@@ -147,8 +149,12 @@ mod tests {
     }
     #[test]
     fn cloud_ignores_normal_paths() {
-        assert!(!is_inside_cloud_sync(&PathBuf::from("/home/user/NodusBackup")));
-        assert!(!is_inside_cloud_sync(&PathBuf::from("/home/user/Documents/work")));
+        assert!(!is_inside_cloud_sync(&PathBuf::from(
+            "/home/user/NodusBackup"
+        )));
+        assert!(!is_inside_cloud_sync(&PathBuf::from(
+            "/home/user/Documents/work"
+        )));
     }
 
     // --- has_prior_install ---
@@ -172,7 +178,9 @@ mod tests {
     }
     #[test]
     fn prior_nonexistent_path() {
-        assert!(!has_prior_install(Path::new("/no/such/path/xyz_nodus_test")));
+        assert!(!has_prior_install(Path::new(
+            "/no/such/path/xyz_nodus_test"
+        )));
     }
 
     // --- is_writable ---
@@ -240,4 +248,3 @@ mod tests {
         ));
     }
 }
-

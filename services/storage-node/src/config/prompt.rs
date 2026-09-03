@@ -32,10 +32,7 @@ pub fn interactive_data_dir(default: PathBuf) -> std::io::Result<PathBuf> {
         // cloud/removable concerns only once the directory is known to exist,
         // since mount checks on a not-yet-created path are meaningless.
         if Confirm::new()
-            .with_prompt(format!(
-                "{} does not exist. Create it?",
-                path.display()
-            ))
+            .with_prompt(format!("{} does not exist. Create it?", path.display()))
             .default(true)
             .interact()
             .map_err(io_err)?

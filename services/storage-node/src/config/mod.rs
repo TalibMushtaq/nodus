@@ -33,7 +33,10 @@ pub struct Config {
 
 impl Config {
     fn from_path(nodus_dir: PathBuf, data_dir: PathBuf) -> Self {
-        Config { data_dir, nodus_dir }
+        Config {
+            data_dir,
+            nodus_dir,
+        }
     }
 }
 
@@ -99,7 +102,6 @@ fn expand_tilde(path: PathBuf) -> PathBuf {
     }
     path
 }
-
 
 /// Path of the fixed config directory `~/.nodus`, resolved via the
 /// `directories` crate so it lands in the OS-standard config location on each
@@ -260,7 +262,9 @@ mod tests {
         let config_path = dir.path().join("config.toml");
         let data_dir = dir.path().join("data");
 
-        let cfg = NodusConfigFile { data_dir: data_dir.clone() };
+        let cfg = NodusConfigFile {
+            data_dir: data_dir.clone(),
+        };
         std::fs::write(&config_path, toml::to_string(&cfg).unwrap()).unwrap();
 
         let read = read_config_file(&config_path).unwrap().unwrap();
@@ -292,7 +296,12 @@ mod tests {
         let dir = tempdir().unwrap();
         let nodus_dir = dir.path().join(".nodus");
         let data_dir = dir.path().join("data");
-        let result = adopt_and_save(&nodus_dir, &nodus_dir.join("config.toml"), data_dir.clone(), false);
+        let result = adopt_and_save(
+            &nodus_dir,
+            &nodus_dir.join("config.toml"),
+            data_dir.clone(),
+            false,
+        );
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), data_dir);
     }
@@ -327,8 +336,13 @@ mod tests {
         let nodus_dir = dir.path().join(".nodus");
         let data_dir = dir.path().join("new/nested/dir");
         assert!(!data_dir.exists());
-        adopt_and_save(&nodus_dir, &nodus_dir.join("config.toml"), data_dir.clone(), false).unwrap();
+        adopt_and_save(
+            &nodus_dir,
+            &nodus_dir.join("config.toml"),
+            data_dir.clone(),
+            false,
+        )
+        .unwrap();
         assert!(data_dir.is_dir());
     }
 }
-

@@ -14,7 +14,7 @@
 use std::fs;
 use std::path::Path;
 
-use anyhow::{bail, Context};
+use anyhow::{Context, bail};
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use rand::rngs::OsRng;
 
@@ -74,12 +74,16 @@ pub fn load_or_generate(nodus_dir: &Path) -> anyhow::Result<NodeIdentity> {
     fs::write(&id_path, &node_id)
         .with_context(|| format!("writing node_id file {}", id_path.display()))?;
 
-    Ok(NodeIdentity { node_id, public_key, signing_key })
+    Ok(NodeIdentity {
+        node_id,
+        public_key,
+        signing_key,
+    })
 }
 
 fn load_key(path: &Path) -> anyhow::Result<SigningKey> {
-    let bytes = fs::read(path)
-        .with_context(|| format!("reading private key {}", path.display()))?;
+    let bytes =
+        fs::read(path).with_context(|| format!("reading private key {}", path.display()))?;
     if bytes.len() != 32 {
         bail!(
             "private key file {} has {} bytes, expected 32",
@@ -135,7 +139,12 @@ mod tests {
         let dir = tempdir().unwrap();
         let id = load_or_generate(dir.path()).unwrap();
         assert_eq!(id.node_id.len(), 64, "hex node_id should be 64 chars");
-        assert!(dir.path().join(IDENTITY_DIR).join(PRIVATE_KEY_FILE).exists());
+        assert!(
+            dir.path()
+                .join(IDENTITY_DIR)
+                .join(PRIVATE_KEY_FILE)
+                .exists()
+        );
         assert!(dir.path().join(IDENTITY_DIR).join(NODE_ID_FILE).exists());
     }
 
@@ -144,7 +153,10 @@ mod tests {
         let dir = tempdir().unwrap();
         let id1 = load_or_generate(dir.path()).unwrap();
         let id2 = load_or_generate(dir.path()).unwrap();
-        assert_eq!(id1.node_id, id2.node_id, "node_id must be stable across restarts");
+        assert_eq!(
+            id1.node_id, id2.node_id,
+            "node_id must be stable across restarts"
+        );
     }
 
     #[test]
