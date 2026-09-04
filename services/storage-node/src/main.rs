@@ -1,8 +1,11 @@
 mod config;
 mod db;
 mod identity;
+mod store;
 
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Context;
 use clap::Parser;
@@ -43,10 +46,42 @@ async fn main() -> anyhow::Result<()> {
     println!("node id:       {}", node_id_info.node_id);
 
     // Phase 5: Database init + migrations
-    let _db = db::open(&cfg.data_dir)
+    let db = db::open(&cfg.data_dir)
         .await
         .context("initialising database")?;
     println!("database:      ready");
+
+    // Phase 6: Object store init
+    let object_store = store::ObjectStore::new(cfg.data_dir.clone(), db.clone())
+        .await
+        .context("initialising object store")?;
+    println!("object store:  ready");
+
+    // Phase 6: Crash recovery on startup
+    object_store
+        .recover_temp_writes()
+        .await
+        .context("recovering temp writes")?;
+    println!("object store:  temp recovery done");
+
+    let store_arc = Arc::new(object_store);
+
+    // Phase 6: Reconciliation background task (runs at boot then every 24h)
+    let _reconcile_handle =
+        store::spawn_reconcile_task(store_arc.clone(), Duration::from_secs(24 * 3600));
+
+    // Phase 6: Garbage collection background task (runs every 6h)
+    let _gc_handle = store::spawn_gc_task(
+        store_arc.clone(),
+        store::GcConfig::default(),
+        Duration::from_secs(6 * 3600),
+    );
+
+    println!("storage node running. Press Ctrl+C to stop.");
+    tokio::signal::ctrl_c()
+        .await
+        .context("waiting for termination signal")?;
+    println!("storage node shutting down.");
 
     Ok(())
 }

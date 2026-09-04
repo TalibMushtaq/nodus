@@ -16,6 +16,7 @@ use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePo
 ///   reads during a write, which avoids busy-lock errors in later phases when
 ///   the reconciliation scanner and sync drain run concurrently.
 pub async fn open(data_dir: &Path) -> anyhow::Result<SqlitePool> {
+    std::fs::create_dir_all(data_dir)?;
     let db_path = data_dir.join("nodus.db");
 
     let connect_opts = SqliteConnectOptions::new()

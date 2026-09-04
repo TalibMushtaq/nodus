@@ -90,11 +90,11 @@ Checkboxes are for tracking; nest sub-tasks as you break work down further.
 
 ## Phase 6 — Rust: Object Store
 
-- [ ] Content-addressed object layout under `<data_dir>/objects/<prefix>/`
-- [ ] Atomic writes (write-temp-then-rename) + crash recovery path
-- [ ] Implement reconciliation scan (§21) with repair actions (§21a):
+- [x] Content-addressed object layout under `<data_dir>/objects/<prefix>/`
+- [x] Atomic writes (write-temp-then-rename) + crash recovery path
+- [x] Implement reconciliation scan (§21) with repair actions (§21a):
       DEGRADED / re-fetch-from-peer / orphan grace period / corruption handling
-- [ ] Implement GC background job per §29a policy
+- [x] Implement GC background job per §29a policy
 
 ## Phase 7 — Go Relay: Control Plane
 
