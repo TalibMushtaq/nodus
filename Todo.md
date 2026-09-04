@@ -98,14 +98,14 @@ Checkboxes are for tracking; nest sub-tasks as you break work down further.
 
 ## Phase 7 — Go Relay: Control Plane
 
-- [ ] PostgreSQL schema: `accounts`, `devices`, `storage_nodes`, `files`,
+- [x] PostgreSQL schema: `accounts`, `devices`, `storage_nodes`, `files`,
       `file_versions`, `file_locations`, `key_envelopes`, `sync_events`,
       `sync_cursors`, `tombstones`
-- [ ] Redis: presence, heartbeats, pending notifications, temp buffer
+- [x] Redis: presence, heartbeats, pending notifications, temp buffer
       metadata + TTL, WebSocket ephemeral state
-- [ ] Relay temporary buffer lifecycle (accept → hold → deliver → delete on
+- [x] Relay temporary buffer lifecycle (accept → hold → deliver → delete on
       node ack, §13)
-- [ ] Auth/account service (registration, login, device registration)
+- [x] Auth/account service (registration, login, device registration)
 
 ## Phase 8 — Rust ↔ Relay Incremental Sync
 

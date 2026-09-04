@@ -1,0 +1,11 @@
+DROP TABLE IF EXISTS tombstones;
+DROP TABLE IF EXISTS sync_cursors;
+DROP TABLE IF EXISTS sync_events;
+DROP TABLE IF EXISTS key_envelopes;
+DROP TABLE IF EXISTS file_locations;
+DROP TABLE IF EXISTS file_versions;
+DROP TABLE IF EXISTS files;
+DROP TABLE IF EXISTS storage_nodes;
+DROP TABLE IF EXISTS devices;
+DROP TABLE IF EXISTS refresh_tokens;
+DROP TABLE IF EXISTS accounts;
