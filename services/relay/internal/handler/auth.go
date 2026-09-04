@@ -7,11 +7,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/auth"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/config"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/db"
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 type RegisterRequest struct {

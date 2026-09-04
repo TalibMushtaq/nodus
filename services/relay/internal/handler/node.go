@@ -66,8 +66,8 @@ func RegisterNode(pool *db.Pool) http.HandlerFunc {
 		`
 
 		var (
-			node       NodeResponse
-			capsRaw    []byte
+			node    NodeResponse
+			capsRaw []byte
 		)
 
 		err = pool.QueryRow(r.Context(), query, req.NodeID, accountID, req.PublicKey, capsJSON).Scan(

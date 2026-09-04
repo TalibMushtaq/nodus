@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/redis/go-redis/v9"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/config"
+	"github.com/redis/go-redis/v9"
 )
 
 // Client wraps redis.Client with helper methods.

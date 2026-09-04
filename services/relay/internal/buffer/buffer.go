@@ -8,9 +8,9 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/db"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/rdb"
+	"github.com/google/uuid"
 )
 
 // Buffer manages temporary encrypted shard storage on the local filesystem.

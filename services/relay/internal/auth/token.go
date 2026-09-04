@@ -10,11 +10,11 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/TalibMushtaq/nodus/services/relay/internal/config"
+	"github.com/TalibMushtaq/nodus/services/relay/internal/db"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/TalibMushtaq/nodus/services/relay/internal/config"
-	"github.com/TalibMushtaq/nodus/services/relay/internal/db"
 )
 
 var (
@@ -110,11 +110,11 @@ func RotateRefreshToken(ctx context.Context, pool *db.Pool, cfg *config.Config, 
 	defer tx.Rollback(ctx) // nolint:errcheck
 
 	var (
-		tokenID    string
-		accountID  string
-		deviceID   *string
-		dbExpires  time.Time
-		revokedAt  *time.Time
+		tokenID   string
+		accountID string
+		deviceID  *string
+		dbExpires time.Time
+		revokedAt *time.Time
 	)
 
 	query := `

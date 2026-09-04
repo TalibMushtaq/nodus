@@ -6,8 +6,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gorilla/websocket"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/rdb"
+	"github.com/gorilla/websocket"
 )
 
 const (
@@ -32,10 +32,10 @@ type Client struct {
 // Hub maintains the set of active clients and broadcasts messages.
 type Hub struct {
 	mu         sync.RWMutex
-	clients    map[string]*Client           // ConnID -> Client
+	clients    map[string]*Client            // ConnID -> Client
 	byAccount  map[string]map[string]*Client // AccountID -> map[ConnID]*Client
-	byNode     map[string]*Client           // NodeID -> Client
-	byDevice   map[string]*Client           // DeviceID -> Client
+	byNode     map[string]*Client            // NodeID -> Client
+	byDevice   map[string]*Client            // DeviceID -> Client
 	register   chan *Client
 	unregister chan *Client
 	rdb        *rdb.Client

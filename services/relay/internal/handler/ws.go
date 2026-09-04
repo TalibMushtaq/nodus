@@ -7,14 +7,14 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/google/uuid"
-	"github.com/gorilla/websocket"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/auth"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/buffer"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/config"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/db"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/hub"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/rdb"
+	"github.com/google/uuid"
+	"github.com/gorilla/websocket"
 )
 
 var upgrader = websocket.Upgrader{
