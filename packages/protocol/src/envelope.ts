@@ -5,6 +5,9 @@ import { MessageId } from "./types.js";
 import {
   RegisterPayloadSchema,
   HeartbeatPayloadSchema,
+  NodeAuthChallengePayloadSchema,
+  NodeAuthResponsePayloadSchema,
+  NodeAuthResultPayloadSchema,
 } from "./messages/control.js";
 import {
   WebRTCOfferPayloadSchema,
@@ -22,6 +25,7 @@ import {
   SyncHelloPayloadSchema,
   SyncStatusPayloadSchema,
   EventBatchPayloadSchema,
+  BatchAckPayloadSchema,
   ReconcilePayloadSchema,
 } from "./messages/sync.js";
 import {
@@ -41,6 +45,9 @@ import { ErrorPayloadSchema } from "./errors.js";
 export const MessageTypes = {
   REGISTER: "register",
   HEARTBEAT: "heartbeat",
+  NODE_AUTH_CHALLENGE: "node_auth_challenge",
+  NODE_AUTH_RESPONSE: "node_auth_response",
+  NODE_AUTH_RESULT: "node_auth_result",
   WEBRTC_OFFER: "webrtc_offer",
   WEBRTC_ANSWER: "webrtc_answer",
   WEBRTC_ICE_CANDIDATE: "webrtc_ice_candidate",
@@ -52,6 +59,7 @@ export const MessageTypes = {
   SYNC_HELLO: "sync_hello",
   SYNC_STATUS: "sync_status",
   EVENT_BATCH: "event_batch",
+  BATCH_ACK: "batch_ack",
   RECONCILE: "reconcile",
   SNAPSHOT_BEGIN: "snapshot_begin",
   SNAPSHOT_CHUNK: "snapshot_chunk",
@@ -98,6 +106,9 @@ export type ParseResult =
 export const MessagePayloadSchemas: Record<string, z.ZodType> = {
   [MessageTypes.REGISTER]: RegisterPayloadSchema,
   [MessageTypes.HEARTBEAT]: HeartbeatPayloadSchema,
+  [MessageTypes.NODE_AUTH_CHALLENGE]: NodeAuthChallengePayloadSchema,
+  [MessageTypes.NODE_AUTH_RESPONSE]: NodeAuthResponsePayloadSchema,
+  [MessageTypes.NODE_AUTH_RESULT]: NodeAuthResultPayloadSchema,
   [MessageTypes.WEBRTC_OFFER]: WebRTCOfferPayloadSchema,
   [MessageTypes.WEBRTC_ANSWER]: WebRTCAnswerPayloadSchema,
   [MessageTypes.WEBRTC_ICE_CANDIDATE]: WebRTCIceCandidatePayloadSchema,
@@ -109,6 +120,7 @@ export const MessagePayloadSchemas: Record<string, z.ZodType> = {
   [MessageTypes.SYNC_HELLO]: SyncHelloPayloadSchema,
   [MessageTypes.SYNC_STATUS]: SyncStatusPayloadSchema,
   [MessageTypes.EVENT_BATCH]: EventBatchPayloadSchema,
+  [MessageTypes.BATCH_ACK]: BatchAckPayloadSchema,
   [MessageTypes.RECONCILE]: ReconcilePayloadSchema,
   [MessageTypes.SNAPSHOT_BEGIN]: SnapshotBeginPayloadSchema,
   [MessageTypes.SNAPSHOT_CHUNK]: SnapshotChunkPayloadSchema,

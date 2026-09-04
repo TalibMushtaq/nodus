@@ -21,15 +21,18 @@ CREATE TABLE files (
 );
 
 CREATE TABLE file_versions (
-    file_id         TEXT    NOT NULL,
-    version_number  INTEGER NOT NULL,
+    file_id           TEXT    NOT NULL,
+    version_number    INTEGER NOT NULL,
+    parent_version_id INTEGER,
     -- BLAKE3 hash of the assembled plaintext version (for reconciliation).
-    version_hash    TEXT    NOT NULL,
-    shard_count     INTEGER NOT NULL,
-    created_at      TEXT    NOT NULL,
+    version_hash      TEXT    NOT NULL,
+    shard_count       INTEGER NOT NULL,
+    created_at        TEXT    NOT NULL,
     PRIMARY KEY (file_id, version_number),
     FOREIGN KEY (file_id) REFERENCES files(file_id) ON DELETE CASCADE
 );
+
+CREATE INDEX idx_file_versions_parent ON file_versions (file_id, parent_version_id);
 
 -- ── Object store index ──────────────────────────────────────
 --

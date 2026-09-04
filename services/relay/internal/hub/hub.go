@@ -19,11 +19,14 @@ const (
 
 // Client represents a connected WebSocket client.
 type Client struct {
-	Hub       *Hub
-	ConnID    string
-	AccountID string
-	NodeID    string // set if client is a storage node
-	DeviceID  string // set if client is a user device
+	Hub             *Hub
+	ConnID          string
+	AccountID       string
+	NodeID          string // set if client is a storage node
+	DeviceID        string // set if client is a user device
+	IsAuthenticated bool
+	AuthNonce       string
+	AuthNonceExpiry time.Time
 
 	Conn *websocket.Conn
 	Send chan []byte

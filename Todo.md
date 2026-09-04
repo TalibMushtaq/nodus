@@ -109,10 +109,10 @@ Checkboxes are for tracking; nest sub-tasks as you break work down further.
 
 ## Phase 8 — Rust ↔ Relay Incremental Sync
 
-- [ ] Implement `sync_outbox` draining from Rust to Relay
-- [ ] Implement event application with idempotency (dedupe by `event_id`)
-- [ ] Implement `SYNC_HELLO` / `SYNC_STATUS` cursor-exchange handshake (§18)
-- [ ] Test the offline-divergence scenario from §16 end-to-end
+- [x] Implement `sync_outbox` draining from Rust to Relay
+- [x] Implement event application with idempotency (dedupe by `event_id`)
+- [x] Implement `SYNC_HELLO` / `SYNC_STATUS` cursor-exchange handshake (§18)
+- [x] Test the offline-divergence scenario from §16 end-to-end
       (two independent additions converge without a "winner")
 
 ## Phase 9 — Full Snapshot / Relay Rebuild

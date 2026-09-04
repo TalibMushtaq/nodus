@@ -57,10 +57,14 @@ export const FileEventPayloadSchema = z.object({
 export const FileVersionPayloadSchema = FileEventPayloadSchema.extend({
   /** Monotonic version number for this file */
   version_number: z.number().int().min(1),
+  /** Parent version number for branch tracking / conflict detection */
+  parent_version_id: z.number().int().min(1).nullable().optional(),
   /** Total shard count for this version */
   shard_count: z.number().int().min(1),
   /** Content hash of this specific version */
   version_hash: z.string(),
+  /** Conflict status if flagged or resolved */
+  conflict_status: z.enum(["none", "flagged", "resolved"]).optional(),
 });
 
 /**

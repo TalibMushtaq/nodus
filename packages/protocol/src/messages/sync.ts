@@ -67,6 +67,19 @@ export const EventBatchPayloadSchema = z.object({
 
 export type EventBatchPayload = z.infer<typeof EventBatchPayloadSchema>;
 
+// ── Batch Ack ──────────────────────────────────────────────────────
+
+/**
+ * Acknowledges receipt and durable application of an EventBatch.
+ * Carries explicit applied event IDs so sender knows exactly which rows to mark synced.
+ */
+export const BatchAckPayloadSchema = z.object({
+  batch_id: z.string().optional(),
+  applied_event_ids: z.array(z.string()),
+});
+
+export type BatchAckPayload = z.infer<typeof BatchAckPayloadSchema>;
+
 // ── Reconcile ──────────────────────────────────────────────────────
 
 /**

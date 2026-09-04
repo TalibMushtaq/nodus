@@ -4,6 +4,9 @@
   "messages": {
     "register": "register.schema.json",
     "heartbeat": "heartbeat.schema.json",
+    "node_auth_challenge": "node_auth_challenge.schema.json",
+    "node_auth_response": "node_auth_response.schema.json",
+    "node_auth_result": "node_auth_result.schema.json",
     "webrtc_offer": "webrtc_offer.schema.json",
     "webrtc_answer": "webrtc_answer.schema.json",
     "webrtc_ice_candidate": "webrtc_ice_candidate.schema.json",
@@ -15,6 +18,7 @@
     "sync_hello": "sync_hello.schema.json",
     "sync_status": "sync_status.schema.json",
     "event_batch": "event_batch.schema.json",
+    "batch_ack": "batch_ack.schema.json",
     "reconcile": "reconcile.schema.json",
     "snapshot_begin": "snapshot_begin.schema.json",
     "snapshot_chunk": "snapshot_chunk.schema.json",

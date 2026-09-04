@@ -67,3 +67,21 @@ func (c *Client) RemovePendingBuffer(ctx context.Context, nodeID, bufferID strin
 func (c *Client) GetPendingBuffers(ctx context.Context, nodeID string) ([]string, error) {
 	return c.SMembers(ctx, fmt.Sprintf("pending:%s", nodeID)).Result()
 }
+
+// SetAuthNonce stores a single-use challenge nonce bound to a session/conn ID with a given TTL.
+func (c *Client) SetAuthNonce(ctx context.Context, sessionID, nonce string, ttl time.Duration) error {
+	return c.Set(ctx, fmt.Sprintf("auth:nonce:%s", sessionID), nonce, ttl).Err()
+}
+
+// ConsumeAuthNonce retrieves and immediately deletes the nonce for sessionID, checking if it matches.
+func (c *Client) ConsumeAuthNonce(ctx context.Context, sessionID, expectedNonce string) (bool, error) {
+	key := fmt.Sprintf("auth:nonce:%s", sessionID)
+	stored, err := c.GetDel(ctx, key).Result()
+	if err == redis.Nil {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return stored == expectedNonce && expectedNonce != "", nil
+}

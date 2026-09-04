@@ -2,6 +2,7 @@ mod config;
 mod db;
 mod identity;
 mod store;
+pub mod sync;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -76,6 +77,32 @@ async fn main() -> anyhow::Result<()> {
         store::GcConfig::default(),
         Duration::from_secs(6 * 3600),
     );
+
+    // Phase 8: Start WebSocket sync loop
+    let sync_identity_arc = Arc::new(node_id_info);
+    let sync_db = db.clone();
+    let relay_url = std::env::var("NODUS_RELAY_URL")
+        .unwrap_or_else(|_| "ws://127.0.0.1:8080/ws".to_string());
+    
+    let _sync_handle = tokio::spawn(async move {
+        loop {
+            let client = sync::client::SyncClient::new(
+                relay_url.clone(),
+                sync_identity_arc.clone(),
+                sync_db.clone(),
+                500, // batch size
+            );
+            match client.run_sync_session().await {
+                Ok(_) => {
+                    println!("sync: session ended gracefully");
+                }
+                Err(e) => {
+                    eprintln!("sync: session error: {}", e);
+                }
+            }
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        }
+    });
 
     println!("storage node running. Press Ctrl+C to stop.");
     tokio::signal::ctrl_c()

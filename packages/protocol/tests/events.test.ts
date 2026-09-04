@@ -59,6 +59,25 @@ describe("event envelope ordering fields", () => {
     };
     expect(EventPayloadSchema.safeParse(evt).success).toBe(true);
   });
+
+  it("validates a FILE_VERSION_ADDED payload with parent_version_id and conflict_status", () => {
+    const evt = {
+      event_id: "evt-2",
+      origin_id: "node-1",
+      origin_sequence: 6,
+      type: "FILE_VERSION_ADDED",
+      payload: {
+        file_id: "f1",
+        version_number: 3,
+        parent_version_id: 2,
+        conflict_status: "flagged",
+        shard_count: 3,
+        version_hash: "b".repeat(64),
+      },
+      timestamp: new Date().toISOString(),
+    };
+    expect(EventPayloadSchema.safeParse(evt).success).toBe(true);
+  });
 });
 
 describe("validateEventPayload", () => {

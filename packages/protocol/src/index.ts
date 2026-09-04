@@ -61,6 +61,12 @@ export {
   type RegisterPayload,
   HeartbeatPayloadSchema,
   type HeartbeatPayload,
+  NodeAuthChallengePayloadSchema,
+  type NodeAuthChallengePayload,
+  NodeAuthResponsePayloadSchema,
+  type NodeAuthResponsePayload,
+  NodeAuthResultPayloadSchema,
+  type NodeAuthResultPayload,
 } from "./messages/control.js";
 
 // ── WebRTC signaling messages ──────────────────────────────────────
@@ -105,6 +111,8 @@ export {
   type SyncStatusPayload,
   EventBatchPayloadSchema,
   type EventBatchPayload,
+  BatchAckPayloadSchema,
+  type BatchAckPayload,
   ReconcilePayloadSchema,
   type ReconcilePayload,
 } from "./messages/sync.js";

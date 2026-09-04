@@ -91,6 +91,9 @@ func WebSocket(h *hub.Hub, pool *db.Pool, rClient *rdb.Client, buf *buffer.Buffe
 		// Register client with hub
 		h.Register(client)
 
+		// Phase 8: Issue challenge-response nonce for node authentication
+		IssueAuthChallenge(r.Context(), client, rClient)
+
 		go client.WritePump()
 		go client.ReadPump(func(c *hub.Client, msgType int, payload []byte) {
 			if msgType != websocket.TextMessage {
@@ -119,6 +122,15 @@ func handleIncomingEnvelope(
 	ctx := context.Background()
 
 	switch env.Type {
+	case "node_auth_response":
+		HandleNodeAuthResponse(ctx, c, env, pool, rClient, h)
+
+	case "sync_hello":
+		HandleSyncHello(ctx, c, env, pool)
+
+	case "event_batch":
+		HandleEventBatch(ctx, c, env, pool)
+
 	case "register":
 		var reg RegisterPayload
 		if err := json.Unmarshal(env.Payload, &reg); err != nil {

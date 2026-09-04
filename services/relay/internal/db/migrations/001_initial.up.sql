@@ -57,13 +57,16 @@ CREATE TABLE IF NOT EXISTS files (
 CREATE INDEX IF NOT EXISTS idx_files_account ON files(account_id);
 
 CREATE TABLE IF NOT EXISTS file_versions (
-    file_id          TEXT        NOT NULL REFERENCES files(file_id) ON DELETE CASCADE,
-    version_number   INTEGER     NOT NULL,
-    version_hash     TEXT        NOT NULL,
-    shard_count      INTEGER     NOT NULL,
-    created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    file_id           TEXT        NOT NULL REFERENCES files(file_id) ON DELETE CASCADE,
+    version_number    INTEGER     NOT NULL,
+    parent_version_id INTEGER,
+    conflict_status   TEXT        NOT NULL DEFAULT 'none' CHECK (conflict_status IN ('none', 'flagged', 'resolved')),
+    version_hash      TEXT        NOT NULL,
+    shard_count       INTEGER     NOT NULL,
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     PRIMARY KEY (file_id, version_number)
 );
+CREATE INDEX IF NOT EXISTS idx_file_versions_parent ON file_versions(file_id, parent_version_id);
 
 -- ── File Shard Locations ──────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS file_locations (

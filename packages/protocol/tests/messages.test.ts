@@ -239,6 +239,44 @@ describe("message catalog round-trips", () => {
     expect(r.ok).toBe(true);
   });
 
+  it("node_auth_challenge", () => {
+    const r = parseMessage(
+      msg(MessageTypes.NODE_AUTH_CHALLENGE, {
+        nonce: "a".repeat(64),
+      }),
+    );
+    expect(r.ok).toBe(true);
+  });
+
+  it("node_auth_response", () => {
+    const r = parseMessage(
+      msg(MessageTypes.NODE_AUTH_RESPONSE, {
+        node_id: "node-1",
+        signature: "sig123",
+      }),
+    );
+    expect(r.ok).toBe(true);
+  });
+
+  it("node_auth_result", () => {
+    const r = parseMessage(
+      msg(MessageTypes.NODE_AUTH_RESULT, {
+        status: "ok",
+      }),
+    );
+    expect(r.ok).toBe(true);
+  });
+
+  it("batch_ack", () => {
+    const r = parseMessage(
+      msg(MessageTypes.BATCH_ACK, {
+        batch_id: "batch-1",
+        applied_event_ids: ["evt-1", "evt-2"],
+      }),
+    );
+    expect(r.ok).toBe(true);
+  });
+
   it("error message", () => {
     const r = parseMessage(
       msg(MessageTypes.ERROR, {
@@ -251,3 +289,4 @@ describe("message catalog round-trips", () => {
     expect(r.ok).toBe(true);
   });
 });
+

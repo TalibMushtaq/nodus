@@ -41,3 +41,36 @@ export const HeartbeatPayloadSchema = z.object({
 });
 
 export type HeartbeatPayload = z.infer<typeof HeartbeatPayloadSchema>;
+
+// ── Node Auth (Phase 8) ────────────────────────────────────────────
+
+/**
+ * Challenge sent from Relay to Node upon connection.
+ * Nonce is an opaque cryptographically random value with a 30s TTL.
+ */
+export const NodeAuthChallengePayloadSchema = z.object({
+  nonce: z.string(),
+});
+
+export type NodeAuthChallengePayload = z.infer<typeof NodeAuthChallengePayloadSchema>;
+
+/**
+ * Signature response from Node back to Relay.
+ * Signed over the exact challenge nonce bytes using node's identity keypair.
+ */
+export const NodeAuthResponsePayloadSchema = z.object({
+  node_id: NodeId,
+  signature: z.string(),
+});
+
+export type NodeAuthResponsePayload = z.infer<typeof NodeAuthResponsePayloadSchema>;
+
+/**
+ * Result of the authentication handshake.
+ */
+export const NodeAuthResultPayloadSchema = z.object({
+  status: z.enum(["ok", "fail"]),
+  message: z.string().optional(),
+});
+
+export type NodeAuthResultPayload = z.infer<typeof NodeAuthResultPayloadSchema>;
