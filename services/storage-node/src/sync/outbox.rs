@@ -25,10 +25,7 @@ pub async fn insert_outbox_event(db: &SqlitePool, event: &SyncEvent) -> anyhow::
 }
 
 /// Drain up to `limit` unsynced events from `sync_outbox`, ordered by `origin_sequence`.
-pub async fn drain_unsynced_events(
-    db: &SqlitePool,
-    limit: i64,
-) -> anyhow::Result<Vec<SyncEvent>> {
+pub async fn drain_unsynced_events(db: &SqlitePool, limit: i64) -> anyhow::Result<Vec<SyncEvent>> {
     let rows = sqlx::query(
         r#"
         SELECT event_id, origin_id, origin_sequence, event_type, payload, created_at
@@ -66,10 +63,7 @@ pub async fn drain_unsynced_events(
 }
 
 /// Mark a batch of events as acknowledged/synced by the Relay.
-pub async fn mark_events_synced(
-    db: &SqlitePool,
-    event_ids: &[String],
-) -> anyhow::Result<()> {
+pub async fn mark_events_synced(db: &SqlitePool, event_ids: &[String]) -> anyhow::Result<()> {
     if event_ids.is_empty() {
         return Ok(());
     }
@@ -128,7 +122,9 @@ mod tests {
         assert_eq!(pending[1].event_id, "evt-2");
 
         // Mark event1 synced
-        mark_events_synced(&pool, &["evt-1".to_string()]).await.unwrap();
+        mark_events_synced(&pool, &["evt-1".to_string()])
+            .await
+            .unwrap();
 
         let pending_after = drain_unsynced_events(&pool, 500).await.unwrap();
         assert_eq!(pending_after.len(), 1);

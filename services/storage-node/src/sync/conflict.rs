@@ -1,5 +1,5 @@
-use std::path::Path;
 use sqlx::{Row, SqlitePool};
+use std::path::Path;
 
 /// Checks whether a newly received or created version branches off a parent that already has a sibling version.
 /// Returns `Some(existing_version_number)` if a conflict is detected.
@@ -70,10 +70,15 @@ mod tests {
 
     #[test]
     fn test_generate_conflicted_filename() {
-        let name = generate_conflicted_filename("document.pdf", "node-12345678abcdef", "2026-09-04T12:00:00Z");
+        let name = generate_conflicted_filename(
+            "document.pdf",
+            "node-12345678abcdef",
+            "2026-09-04T12:00:00Z",
+        );
         assert_eq!(name, "document (conflicted copy node-123 2026-09-04).pdf");
 
-        let name_no_ext = generate_conflicted_filename("notes", "node-12345678abcdef", "2026-09-04T12:00:00Z");
+        let name_no_ext =
+            generate_conflicted_filename("notes", "node-12345678abcdef", "2026-09-04T12:00:00Z");
         assert_eq!(name_no_ext, "notes (conflicted copy node-123 2026-09-04)");
     }
 
@@ -84,7 +89,7 @@ mod tests {
 
         // Create file
         sqlx::query(
-            "INSERT INTO files (file_id, created_at, updated_at) VALUES ('f1', 'now', 'now')"
+            "INSERT INTO files (file_id, created_at, updated_at) VALUES ('f1', 'now', 'now')",
         )
         .execute(&pool)
         .await
@@ -107,11 +112,15 @@ mod tests {
         .unwrap();
 
         // Check if version 3 with parent 1 conflicts -> yes, version 2 is a sibling!
-        let conflict = detect_branch_conflict(&pool, "f1", Some(1), 3).await.unwrap();
+        let conflict = detect_branch_conflict(&pool, "f1", Some(1), 3)
+            .await
+            .unwrap();
         assert_eq!(conflict, Some(2));
 
         // Check if version 3 with parent 2 conflicts -> no sibling exists with parent 2
-        let conflict_linear = detect_branch_conflict(&pool, "f1", Some(2), 3).await.unwrap();
+        let conflict_linear = detect_branch_conflict(&pool, "f1", Some(2), 3)
+            .await
+            .unwrap();
         assert_eq!(conflict_linear, None);
 
         // Check root version -> None

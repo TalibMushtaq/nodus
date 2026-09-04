@@ -62,8 +62,15 @@ pub async fn apply_remote_event(
     // 3. Domain projections
     match event.event_type.as_str() {
         "FILE_CREATED" => {
-            let file_id = event.payload.get("file_id").and_then(|v| v.as_str()).unwrap_or("");
-            let parent_folder_id = event.payload.get("parent_folder_id").and_then(|v| v.as_str());
+            let file_id = event
+                .payload
+                .get("file_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let parent_folder_id = event
+                .payload
+                .get("parent_folder_id")
+                .and_then(|v| v.as_str());
             let encrypted_name = event.payload.get("encrypted_name").and_then(|v| v.as_str());
 
             if !file_id.is_empty() {
@@ -112,7 +119,8 @@ pub async fn apply_remote_event(
                 )
                 .await?;
 
-                let is_flagged = ver.conflict_status.as_deref() == Some("flagged") || conflict_sibling.is_some();
+                let is_flagged =
+                    ver.conflict_status.as_deref() == Some("flagged") || conflict_sibling.is_some();
 
                 sqlx::query(
                     r#"
@@ -134,8 +142,14 @@ pub async fn apply_remote_event(
                 .await?;
 
                 if is_flagged {
-                    let base_name = ver.encrypted_name.unwrap_or_else(|| format!("{}.nodus", ver.file_id));
-                    let conflicted_name = generate_conflicted_filename(&base_name, &event.origin_id, &event.timestamp);
+                    let base_name = ver
+                        .encrypted_name
+                        .unwrap_or_else(|| format!("{}.nodus", ver.file_id));
+                    let conflicted_name = generate_conflicted_filename(
+                        &base_name,
+                        &event.origin_id,
+                        &event.timestamp,
+                    );
 
                     outcome = ApplyOutcome::Conflicted {
                         conflicted_filename: conflicted_name,
@@ -146,8 +160,16 @@ pub async fn apply_remote_event(
         }
 
         "FILE_DELETED" | "TOMBSTONE_CREATED" => {
-            let entity_id = event.payload.get("entity_id").and_then(|v| v.as_str()).unwrap_or("");
-            let entity_type = event.payload.get("entity_type").and_then(|v| v.as_str()).unwrap_or("file");
+            let entity_id = event
+                .payload
+                .get("entity_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let entity_type = event
+                .payload
+                .get("entity_type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("file");
 
             if !entity_id.is_empty() {
                 sqlx::query(
@@ -238,18 +260,24 @@ mod tests {
         };
 
         // First application -> Applied
-        let res1 = apply_remote_event(&pool, &event, "node-test").await.unwrap();
+        let res1 = apply_remote_event(&pool, &event, "node-test")
+            .await
+            .unwrap();
         assert_eq!(res1, ApplyOutcome::Applied);
 
         // Second application with same event -> AlreadyApplied
-        let res2 = apply_remote_event(&pool, &event, "node-test").await.unwrap();
+        let res2 = apply_remote_event(&pool, &event, "node-test")
+            .await
+            .unwrap();
         assert_eq!(res2, ApplyOutcome::AlreadyApplied);
 
         // Batch application
         let batch = EventBatchPayload {
             events: vec![event.clone()],
         };
-        let ack = apply_incoming_batch(&pool, &batch, "node-test").await.unwrap();
+        let ack = apply_incoming_batch(&pool, &batch, "node-test")
+            .await
+            .unwrap();
         assert_eq!(ack.applied_event_ids, vec!["evt-apply-1"]);
     }
 
@@ -314,7 +342,10 @@ mod tests {
 
         let res_d = apply_remote_event(&pool, &evt_d, "node-1").await.unwrap();
         match res_d {
-            ApplyOutcome::Conflicted { conflicted_filename, sibling_version } => {
+            ApplyOutcome::Conflicted {
+                conflicted_filename,
+                sibling_version,
+            } => {
                 assert!(conflicted_filename.contains("conflicted copy"));
                 assert_eq!(sibling_version, 2);
             }
@@ -322,10 +353,11 @@ mod tests {
         }
 
         // Check both versions remain durable in SQLite
-        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM file_versions WHERE file_id = 'f-diverge'")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM file_versions WHERE file_id = 'f-diverge'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
         assert_eq!(count, 3); // Versions 1, 2, 3 all exist!
     }
 }

@@ -81,9 +81,9 @@ async fn main() -> anyhow::Result<()> {
     // Phase 8: Start WebSocket sync loop
     let sync_identity_arc = Arc::new(node_id_info);
     let sync_db = db.clone();
-    let relay_url = std::env::var("NODUS_RELAY_URL")
-        .unwrap_or_else(|_| "ws://127.0.0.1:8080/ws".to_string());
-    
+    let relay_url =
+        std::env::var("NODUS_RELAY_URL").unwrap_or_else(|_| "ws://127.0.0.1:8080/ws".to_string());
+
     let _sync_handle = tokio::spawn(async move {
         loop {
             let client = sync::client::SyncClient::new(

@@ -1,11 +1,11 @@
-use std::sync::Arc;
 use sqlx::Row;
+use std::sync::Arc;
 use storage_node::db;
 use storage_node::identity;
 use storage_node::sync::{
+    ApplyOutcome, EventBatchPayload, NodeAuthChallengePayload, SyncClient, SyncEvent,
     apply_incoming_batch, apply_remote_event, drain_unsynced_events, insert_outbox_event,
-    mark_events_synced, ApplyOutcome, EventBatchPayload, NodeAuthChallengePayload, SyncClient,
-    SyncEvent,
+    mark_events_synced,
 };
 use tempfile::tempdir;
 
@@ -34,7 +34,9 @@ async fn test_offline_divergence_e2e_scenario() {
         }),
         timestamp: "2026-09-04T08:00:00Z".to_string(),
     };
-    let apply_a = apply_remote_event(&node_pool, &evt_a, "node-1").await.unwrap();
+    let apply_a = apply_remote_event(&node_pool, &evt_a, "node-1")
+        .await
+        .unwrap();
     assert_eq!(apply_a, ApplyOutcome::Applied);
 
     // ── STEP 2: Node goes offline and makes edits A -> B -> C ──
@@ -54,7 +56,9 @@ async fn test_offline_divergence_e2e_scenario() {
         }),
         timestamp: "2026-09-04T09:00:00Z".to_string(),
     };
-    apply_remote_event(&node_pool, &evt_b, "node-1").await.unwrap();
+    apply_remote_event(&node_pool, &evt_b, "node-1")
+        .await
+        .unwrap();
     insert_outbox_event(&node_pool, &evt_b).await.unwrap();
 
     // Local edit C (version 3, parent 2)
@@ -73,7 +77,9 @@ async fn test_offline_divergence_e2e_scenario() {
         }),
         timestamp: "2026-09-04T10:00:00Z".to_string(),
     };
-    apply_remote_event(&node_pool, &evt_c, "node-1").await.unwrap();
+    apply_remote_event(&node_pool, &evt_c, "node-1")
+        .await
+        .unwrap();
     insert_outbox_event(&node_pool, &evt_c).await.unwrap();
 
     // Verify outbox has 2 pending unsynced events (B and C)
@@ -109,12 +115,16 @@ async fn test_offline_divergence_e2e_scenario() {
     assert!(!auth_resp.signature.is_empty());
 
     // 4b: SYNC_HELLO cursor exchange
-    let hello = SyncClient::build_sync_hello(&node_pool, &_identity_arc.node_id).await.unwrap();
+    let hello = SyncClient::build_sync_hello(&node_pool, &_identity_arc.node_id)
+        .await
+        .unwrap();
     assert_eq!(hello.node_id, _identity_arc.node_id);
 
     // 4c: Relay ACKs node's outbox batch
     let batch_ack_ids = vec!["evt-b".to_string(), "evt-c".to_string()];
-    mark_events_synced(&node_pool, &batch_ack_ids).await.unwrap();
+    mark_events_synced(&node_pool, &batch_ack_ids)
+        .await
+        .unwrap();
 
     // Verify outbox is now empty (synced = 1)
     let unsynced_after = drain_unsynced_events(&node_pool, 500).await.unwrap();
@@ -124,7 +134,9 @@ async fn test_offline_divergence_e2e_scenario() {
     let incoming_batch = EventBatchPayload {
         events: vec![evt_d.clone()],
     };
-    let ack = apply_incoming_batch(&node_pool, &incoming_batch, &_identity_arc.node_id).await.unwrap();
+    let ack = apply_incoming_batch(&node_pool, &incoming_batch, &_identity_arc.node_id)
+        .await
+        .unwrap();
     assert_eq!(ack.applied_event_ids, vec!["evt-d"]);
 
     // ── STEP 5: Verification of divergence and durable convergence ──
@@ -137,19 +149,32 @@ async fn test_offline_divergence_e2e_scenario() {
     assert_eq!(version_rows.len(), 4);
     assert_eq!(version_rows[0].get::<i64, _>("version_number"), 1);
     assert_eq!(version_rows[1].get::<i64, _>("version_number"), 2);
-    assert_eq!(version_rows[1].get::<Option<i64>, _>("parent_version_id"), Some(1));
+    assert_eq!(
+        version_rows[1].get::<Option<i64>, _>("parent_version_id"),
+        Some(1)
+    );
     assert_eq!(version_rows[2].get::<i64, _>("version_number"), 3);
-    assert_eq!(version_rows[2].get::<Option<i64>, _>("parent_version_id"), Some(2));
+    assert_eq!(
+        version_rows[2].get::<Option<i64>, _>("parent_version_id"),
+        Some(2)
+    );
     assert_eq!(version_rows[3].get::<i64, _>("version_number"), 4);
-    assert_eq!(version_rows[3].get::<Option<i64>, _>("parent_version_id"), Some(1));
+    assert_eq!(
+        version_rows[3].get::<Option<i64>, _>("parent_version_id"),
+        Some(1)
+    );
 
     // 2. Conflicted copy naming check
-    let conflict_outcome = apply_remote_event(&node_pool, &evt_d, "node-1").await.unwrap();
+    let conflict_outcome = apply_remote_event(&node_pool, &evt_d, "node-1")
+        .await
+        .unwrap();
     // Re-applying gives AlreadyApplied idempotency
     assert_eq!(conflict_outcome, ApplyOutcome::AlreadyApplied);
 
     // 3. Repeated synchronization is idempotent
-    let repeat_ack = apply_incoming_batch(&node_pool, &incoming_batch, &_identity_arc.node_id).await.unwrap();
+    let repeat_ack = apply_incoming_batch(&node_pool, &incoming_batch, &_identity_arc.node_id)
+        .await
+        .unwrap();
     assert_eq!(repeat_ack.applied_event_ids, vec!["evt-d"]);
 
     // Ensure total count of rows remains 4

@@ -1,16 +1,16 @@
-use std::sync::Arc;
 use futures_util::{SinkExt, StreamExt};
 use sqlx::{Row, SqlitePool};
+use std::sync::Arc;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
 
-use crate::identity::NodeIdentity;
 use super::engine::apply_incoming_batch;
 use super::outbox::{drain_unsynced_events, mark_events_synced};
 use super::types::{
     BatchAckPayload, EventBatchPayload, NodeAuthChallengePayload, NodeAuthResponsePayload,
     NodeAuthResultPayload, ProtocolEnvelope, SyncCursor, SyncHelloPayload, SyncStatusPayload,
 };
+use crate::identity::NodeIdentity;
 
 pub struct SyncClient {
     pub relay_url: String,
@@ -90,8 +90,11 @@ impl SyncClient {
                 if env.msg_type == "node_auth_challenge" {
                     let challenge: NodeAuthChallengePayload = serde_json::from_value(env.payload)?;
                     let resp = Self::sign_auth_challenge(&self.identity, &challenge);
-                    let resp_env = ProtocolEnvelope::new("node_auth_response", serde_json::to_value(resp)?);
-                    write.send(Message::Text(serde_json::to_string(&resp_env)?.into())).await?;
+                    let resp_env =
+                        ProtocolEnvelope::new("node_auth_response", serde_json::to_value(resp)?);
+                    write
+                        .send(Message::Text(serde_json::to_string(&resp_env)?.into()))
+                        .await?;
                 } else if env.msg_type == "node_auth_result" {
                     let result: NodeAuthResultPayload = serde_json::from_value(env.payload)?;
                     if result.status == "ok" {
@@ -111,14 +114,18 @@ impl SyncClient {
         // 2. Send SYNC_HELLO
         let hello = Self::build_sync_hello(&self.db, &self.identity.node_id).await?;
         let hello_env = ProtocolEnvelope::new("sync_hello", serde_json::to_value(hello)?);
-        write.send(Message::Text(serde_json::to_string(&hello_env)?.into())).await?;
+        write
+            .send(Message::Text(serde_json::to_string(&hello_env)?.into()))
+            .await?;
 
         // 3. Drain local outbox
         let unsynced = drain_unsynced_events(&self.db, self.batch_size as i64).await?;
         if !unsynced.is_empty() {
             let batch = EventBatchPayload { events: unsynced };
             let batch_env = ProtocolEnvelope::new("event_batch", serde_json::to_value(batch)?);
-            write.send(Message::Text(serde_json::to_string(&batch_env)?.into())).await?;
+            write
+                .send(Message::Text(serde_json::to_string(&batch_env)?.into()))
+                .await?;
         }
 
         // 4. Read loop for incoming batches, SYNC_STATUS, and ACKs
@@ -136,9 +143,13 @@ impl SyncClient {
                     }
                     "event_batch" => {
                         let batch: EventBatchPayload = serde_json::from_value(env.payload)?;
-                        let ack = apply_incoming_batch(&self.db, &batch, &self.identity.node_id).await?;
-                        let ack_env = ProtocolEnvelope::new("batch_ack", serde_json::to_value(ack)?);
-                        write.send(Message::Text(serde_json::to_string(&ack_env)?.into())).await?;
+                        let ack =
+                            apply_incoming_batch(&self.db, &batch, &self.identity.node_id).await?;
+                        let ack_env =
+                            ProtocolEnvelope::new("batch_ack", serde_json::to_value(ack)?);
+                        write
+                            .send(Message::Text(serde_json::to_string(&ack_env)?.into()))
+                            .await?;
                     }
                     _ => {}
                 }
@@ -182,7 +193,9 @@ mod tests {
         .await
         .unwrap();
 
-        let hello = SyncClient::build_sync_hello(&pool, "my-node-id").await.unwrap();
+        let hello = SyncClient::build_sync_hello(&pool, "my-node-id")
+            .await
+            .unwrap();
         assert_eq!(hello.node_id, "my-node-id");
         assert_eq!(hello.cursors.len(), 1);
         assert_eq!(hello.cursors[0].origin_id, "origin-1");
