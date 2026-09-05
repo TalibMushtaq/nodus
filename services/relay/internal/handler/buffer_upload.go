@@ -141,7 +141,9 @@ func BufferUpload(pool *db.Pool, rClient *rdb.Client, buf *buffer.Buffer, h *hub
 			`SELECT buffer_id FROM file_locations WHERE file_id=$1 AND version_number=$2 AND shard_index=$3 AND node_id=$4`,
 			md.FileID, md.VersionNumber, md.ShardIndex, md.TargetNode).Scan(&staleBufferID)
 		if staleBufferID != nil && *staleBufferID != "" {
-			_ = buf.Delete(*staleBufferID)
+			if err := buf.Delete(*staleBufferID); err != nil {
+				log.Printf("[buffer-upload] warn: failed to delete stale buffer %s (will be swept later): %v", *staleBufferID, err)
+			}
 		}
 
 		// Reserve the shard as UPLOADING so a crashed request leaves a swept
@@ -163,6 +165,11 @@ func BufferUpload(pool *db.Pool, rClient *rdb.Client, buf *buffer.Buffer, h *hub
 
 		// Content-Length is unreliable for chunked encoding, so we cap with
 		// MaxBytesReader and validate length against the declared size.
+		// Note: we check len(body) before err deliberately. If the body is
+		// exactly at maxBufferUploadSize+1, MaxBytesReader causes ReadAll to
+		// return a partial body + an error; the len check fires first and
+		// gives a clearer "size mismatch" response. The err path below
+		// catches other I/O failures (client disconnect, etc.).
 		r.Body = http.MaxBytesReader(w, r.Body, maxBufferUploadSize+1)
 		body, err := io.ReadAll(r.Body)
 		if len(body) != int(md.Size) {
@@ -214,7 +221,11 @@ func BufferUpload(pool *db.Pool, rClient *rdb.Client, buf *buffer.Buffer, h *hub
 			return
 		}
 		if rClient != nil {
-			_ = rClient.AddPendingBuffer(r.Context(), md.TargetNode, bufferID)
+			if err := rClient.AddPendingBuffer(r.Context(), md.TargetNode, bufferID); err != nil {
+				log.Printf("[buffer-upload] warn: failed to add pending buffer %s for node=%s in Redis "+
+					"(shard is safe in Postgres; will be delivered on reconnect via DB query): %v",
+					bufferID, md.TargetNode, err)
+			}
 		}
 
 		// Proactive delivery: if the target node is connected right now, don't
