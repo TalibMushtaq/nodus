@@ -30,7 +30,11 @@ pub fn relay_http_fetch_url(relay_url: &str) -> String {
         // fetch instead of failing to boot over a malformed URL.
         Err(_) => return relay_url.to_string(),
     };
-    let _ = url.set_scheme(if url.scheme() == "wss" { "https" } else { "http" });
+    let _ = url.set_scheme(if url.scheme() == "wss" {
+        "https"
+    } else {
+        "http"
+    });
     url.set_query(None);
     url.set_fragment(None);
 
@@ -229,7 +233,11 @@ impl SyncClient {
     }
 
     /// Send a typed protocol envelope over the WebSocket writer.
-    async fn send_envelope<W>(write: &mut W, msg_type: &str, payload: &serde_json::Value) -> anyhow::Result<()>
+    async fn send_envelope<W>(
+        write: &mut W,
+        msg_type: &str,
+        payload: &serde_json::Value,
+    ) -> anyhow::Result<()>
     where
         W: futures_util::Sink<Message> + Unpin,
         W::Error: std::error::Error + Send + Sync + 'static,
@@ -243,7 +251,11 @@ impl SyncClient {
 
     /// Phase 10: consume a pending_notify — fetch the shard bytes from the
     /// Relay buffer, verify + store them, then ack "verified" or "failed".
-    async fn handle_pending_notify<W>(&self, write: &mut W, n: PendingNotifyPayload) -> anyhow::Result<()>
+    async fn handle_pending_notify<W>(
+        &self,
+        write: &mut W,
+        n: PendingNotifyPayload,
+    ) -> anyhow::Result<()>
     where
         W: futures_util::Sink<Message> + Unpin,
         W::Error: std::error::Error + Send + Sync + 'static,
@@ -260,8 +272,10 @@ impl SyncClient {
                 error_message: None,
             },
             Err(e) => {
-                eprintln!("[sync] pending_notify failed for {}:{}:{}: {e}",
-                    n.file_id, n.version_number, n.shard_index);
+                eprintln!(
+                    "[sync] pending_notify failed for {}:{}:{}: {e}",
+                    n.file_id, n.version_number, n.shard_index
+                );
                 ShardAckPayload {
                     file_id: n.file_id.clone(),
                     version_number: n.version_number,
@@ -295,20 +309,14 @@ impl SyncClient {
             anyhow::bail!("hash mismatch: expected {}, got {}", n.hash, got);
         }
         if bytes.len() as i64 != n.size {
-            anyhow::bail!(
-                "size mismatch: expected {}, got {}",
-                n.size,
-                bytes.len()
-            );
+            anyhow::bail!("size mismatch: expected {}, got {}", n.size, bytes.len());
         }
 
         // Content-addressed put returns the BLAKE3 hex of the bytes it stored;
         // it must equal the digest we verified.
         let object_id = self.object_store.put(&bytes).await?;
         if object_id != got {
-            anyhow::bail!(
-                "object store addressed bytes as {object_id}, expected {got}"
-            );
+            anyhow::bail!("object store addressed bytes as {object_id}, expected {got}");
         }
 
         self.record_shard_metadata(n, &object_id, bytes.len() as i64)
@@ -517,10 +525,7 @@ mod tests {
         };
 
         // No file_versions row yet -> staged in the pending landing zone.
-        client
-            .record_shard_metadata(&n, "obj-1", 10)
-            .await
-            .unwrap();
+        client.record_shard_metadata(&n, "obj-1", 10).await.unwrap();
         let pending: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM pending_shard_fetches WHERE file_id = 'file-wait'",
         )
@@ -548,10 +553,7 @@ mod tests {
         .execute(&pool)
         .await
         .unwrap();
-        client
-            .record_shard_metadata(&n, "obj-1", 10)
-            .await
-            .unwrap();
+        client.record_shard_metadata(&n, "obj-1", 10).await.unwrap();
 
         let shards: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM shards WHERE file_id = 'file-wait' AND version_number = 1",
