@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
-	"time"
 
 	"github.com/TalibMushtaq/nodus/services/relay/internal/auth"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/buffer"
@@ -48,20 +47,23 @@ type HeartbeatPayload struct {
 }
 
 type ShardAckPayload struct {
-	FileID       string `json:"file_id"`
-	ShardIndex   int    `json:"shard_index"`
-	Status       string `json:"status"` // "received" | "verified" | "failed"
-	TransferID   string `json:"transfer_id"`
-	ErrorMessage string `json:"error_message,omitempty"`
+	FileID        string `json:"file_id"`
+	VersionNumber int    `json:"version_number"`
+	ShardIndex    int    `json:"shard_index"`
+	Status        string `json:"status"` // "verified" | "failed"
+	TransferID    string `json:"transfer_id"`
+	ErrorMessage  string `json:"error_message,omitempty"`
 }
 
 type PendingNotifyPayload struct {
-	FileID     string `json:"file_id"`
-	ShardIndex int    `json:"shard_index"`
-	BufferID   string `json:"buffer_id"`
-	FromDevice string `json:"from_device"`
-	Hash       string `json:"hash"`
-	Size       int64  `json:"size"`
+	FileID        string `json:"file_id"`
+	VersionNumber int    `json:"version_number"`
+	ShardIndex    int    `json:"shard_index"`
+	BufferID      string `json:"buffer_id"`
+	FetchToken    string `json:"fetch_token"`
+	FromDevice    string `json:"from_device"`
+	Hash          string `json:"hash"`
+	Size          int64  `json:"size"`
 }
 
 // WebSocket handles incoming WebSocket connection upgrades and message lifecycle.
@@ -192,15 +194,25 @@ func handleIncomingEnvelope(
 			return
 		}
 
-		if ack.Status == "verified" && pool != nil && buf != nil {
+		if pool == nil || buf == nil {
+			return
+		}
+		switch ack.Status {
+		case "verified":
 			handleShardAckVerified(ctx, c, ack, pool, rClient, buf)
+		case "failed":
+			handleShardAckFailed(ctx, c, ack, pool, rClient)
 		}
 	}
 }
 
+// checkAndDeliverPendingShards runs when a node (re)connects and registers. It
+// walks every shard still in RELAY_BUFFERED for that node and sends a
+// pending_notify with a fresh fetch token. Re-issuing the token on reconnect is
+// deliberate: a token minted while the node was offline may have expired.
 func checkAndDeliverPendingShards(ctx context.Context, c *hub.Client, pool *db.Pool, rClient *rdb.Client) {
 	query := `
-		SELECT fl.file_id, fl.shard_index, fl.buffer_id
+		SELECT fl.file_id, fl.version_number, fl.shard_index, fl.buffer_id, fl.hash, fl.size_bytes, fl.source_device
 		FROM file_locations fl
 		WHERE fl.node_id = $1 AND fl.status = 'RELAY_BUFFERED' AND fl.buffer_id IS NOT NULL
 	`
@@ -214,35 +226,56 @@ func checkAndDeliverPendingShards(ctx context.Context, c *hub.Client, pool *db.P
 
 	for rows.Next() {
 		var (
-			fileID     string
-			shardIndex int
-			bufferID   string
+			fileID        string
+			versionNumber int
+			shardIndex    int
+			bufferID      string
+			hash          string
+			sizeBytes     int64
+			fromDevice    string
 		)
-		if err := rows.Scan(&fileID, &shardIndex, &bufferID); err != nil {
+		if err := rows.Scan(&fileID, &versionNumber, &shardIndex, &bufferID, &hash, &sizeBytes, &fromDevice); err != nil {
 			continue
 		}
 
-		notify := PendingNotifyPayload{
-			FileID:     fileID,
-			ShardIndex: shardIndex,
-			BufferID:   bufferID,
+		envBytes, ok := buildPendingNotifyEnvelope(ctx, rClient, PendingNotifyPayload{
+			FileID:        fileID,
+			VersionNumber: versionNumber,
+			ShardIndex:    shardIndex,
+			BufferID:      bufferID,
+			FromDevice:    fromDevice,
+			Hash:          hash,
+			Size:          sizeBytes,
+		})
+		if !ok {
+			continue
 		}
 
-		payloadBytes, _ := json.Marshal(notify)
-		env := ProtocolEnvelope{
-			Type:          "pending_notify",
-			SchemaVersion: "1.0.0",
-			MessageID:     uuid.NewString(),
-			Timestamp:     time.Now().UTC().Format(time.RFC3339),
-			Payload:       payloadBytes,
-		}
-
-		envBytes, _ := json.Marshal(env)
-		select {
-		case c.Send <- envBytes:
-		default:
+		// Backfill runs outside the hub lock, so the client can unregister (and
+		// its Send channel close) mid-iteration; safeSend absorbs that race.
+		if !safeSend(c.Send, envBytes) {
 			log.Printf("[ws] warning: could not send pending_notify to node=%s", c.NodeID)
 		}
+	}
+}
+
+// safeSend enqueues a message without letting a racing hub shutdown crash the
+// relay. The hub closes a client's Send channel under its lock on unregister;
+// a bare send on a closed channel panics even when written inside a select.
+// checkAndDeliverPendingShards runs outside the hub lock (it reads the DB for
+// backfill), so the client may be gone by the time a notify is ready — recover
+// and drop instead of taking the whole process down.
+func safeSend(dst chan []byte, msg []byte) (sent bool) {
+	defer func() {
+		if recover() != nil {
+			sent = false
+		}
+	}()
+	select {
+	case dst <- msg:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -254,35 +287,75 @@ func handleShardAckVerified(
 	rClient *rdb.Client,
 	buf *buffer.Buffer,
 ) {
-	// 1. Fetch current buffer_id and version_number
+	// The node acks "verified" only after it has fetched the bytes, matched the
+	// BLAKE3 digest, and committed the shard locally. By then custody has fully
+	// transferred, so route NODE_RECEIVING -> NODE_VERIFIED -> NODE_STORED.
 	var bufferID *string
-	var versionNumber int
-	query := `
-		SELECT buffer_id, version_number FROM file_locations
-		WHERE file_id = $1 AND shard_index = $2 AND node_id = $3 AND status = 'RELAY_BUFFERED'
-		ORDER BY version_number DESC
-		LIMIT 1
-	`
-	err := pool.QueryRow(ctx, query, ack.FileID, ack.ShardIndex, c.NodeID).Scan(&bufferID, &versionNumber)
+	err := pool.QueryRow(ctx, `
+		SELECT buffer_id FROM file_locations
+		WHERE file_id = $1 AND version_number = $2 AND shard_index = $3 AND node_id = $4
+		  AND status = 'NODE_RECEIVING'
+	`, ack.FileID, ack.VersionNumber, ack.ShardIndex, c.NodeID).Scan(&bufferID)
 	if err != nil {
+		// Stale or unknown ack (e.g. duplicate verified after cleanup).
 		return
 	}
 
-	// 2. Update status to NODE_STORED and clear buffer_id
-	updateQuery := `
-		UPDATE file_locations
-		SET status = 'NODE_STORED', buffer_id = NULL, updated_at = NOW()
+	_, _ = pool.Exec(ctx, `
+		UPDATE file_locations SET status = 'NODE_VERIFIED', updated_at = NOW()
 		WHERE file_id = $1 AND version_number = $2 AND shard_index = $3 AND node_id = $4
-	`
-	_, _ = pool.Exec(ctx, updateQuery, ack.FileID, versionNumber, ack.ShardIndex, c.NodeID)
+	`, ack.FileID, ack.VersionNumber, ack.ShardIndex, c.NodeID)
+	_, _ = pool.Exec(ctx, `
+		UPDATE file_locations SET status = 'NODE_STORED', buffer_id = NULL, updated_at = NOW()
+		WHERE file_id = $1 AND version_number = $2 AND shard_index = $3 AND node_id = $4
+	`, ack.FileID, ack.VersionNumber, ack.ShardIndex, c.NodeID)
 
-	// 3. Delete physical buffer file
+	// The node owns the shard now; release the Relay's temporary copy.
 	if bufferID != nil && *bufferID != "" {
-		_ = buf.Delete(*bufferID)
+		if err := buf.Delete(*bufferID); err != nil {
+			log.Printf("[relay-buffer] failed to delete buffer file %s: %v", *bufferID, err)
+		}
 		if rClient != nil {
 			_ = rClient.RemovePendingBuffer(ctx, c.NodeID, *bufferID)
 		}
-		log.Printf("[relay-buffer] shard verified and deleted from buffer: %s (file: %s shard: %d)",
-			*bufferID, ack.FileID, ack.ShardIndex)
+		log.Printf("[relay-buffer] shard verified and buffer released: %s (file: %s v%d shard: %d)",
+			*bufferID, ack.FileID, ack.VersionNumber, ack.ShardIndex)
+	}
+}
+
+func handleShardAckFailed(
+	ctx context.Context,
+	c *hub.Client,
+	ack ShardAckPayload,
+	pool *db.Pool,
+	rClient *rdb.Client,
+) {
+	// Verification or transfer failed on the node side. Revert the shard to
+	// RELAY_BUFFERED and keep the buffer file so it can be delivered on the
+	// next reconnect; no automatic redelivery is attempted right now.
+	ct, err := pool.Exec(ctx, `
+		UPDATE file_locations SET status = 'RELAY_BUFFERED', updated_at = NOW()
+		WHERE file_id = $1 AND version_number = $2 AND shard_index = $3 AND node_id = $4
+		  AND status = 'NODE_RECEIVING'
+	`, ack.FileID, ack.VersionNumber, ack.ShardIndex, c.NodeID)
+	if err != nil {
+		log.Printf("[relay-buffer] failed to revert shard after node error: %v", err)
+		return
+	}
+	if ct.RowsAffected() > 0 {
+		log.Printf("[relay-buffer] shard reverted to RELAY_BUFFERED after failed ack (file: %s v%d shard: %d): %s",
+			ack.FileID, ack.VersionNumber, ack.ShardIndex, ack.ErrorMessage)
+	}
+
+	// Re-register with the pending set so reconnect-time delivery re-notifies it.
+	if rClient != nil {
+		var bufferID *string
+		err := pool.QueryRow(ctx, `
+			SELECT buffer_id FROM file_locations
+			WHERE file_id = $1 AND version_number = $2 AND shard_index = $3 AND node_id = $4
+		`, ack.FileID, ack.VersionNumber, ack.ShardIndex, c.NodeID).Scan(&bufferID)
+		if err == nil && bufferID != nil && *bufferID != "" {
+			_ = rClient.AddPendingBuffer(ctx, c.NodeID, *bufferID)
+		}
 	}
 }

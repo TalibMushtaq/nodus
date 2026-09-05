@@ -141,6 +141,11 @@ pub async fn apply_remote_event(
                 .execute(db)
                 .await?;
 
+                // Phase 10: shards fetched from the Relay buffer can arrive
+                // before this version event. Now that the FK target exists,
+                // drain matching pending rows into shards.
+                drain_pending_fetches(db, &ver.file_id, ver.version_number).await?;
+
                 if is_flagged {
                     let base_name = ver
                         .encrypted_name
@@ -208,6 +213,40 @@ pub async fn apply_remote_event(
 
     let _ = local_node_id;
     Ok(outcome)
+}
+
+/// Phase 10: move shards that were fetched from the Relay buffer (Path C) into
+/// the real `shards` table now that `file_versions` has the FK target. Ran
+/// idempotently after every FILE_VERSION_ADDED / FILE_MODIFIED; already-drained
+/// rows are no-ops and duplicates collapse via ON CONFLICT DO NOTHING.
+pub(crate) async fn drain_pending_fetches(
+    db: &SqlitePool,
+    file_id: &str,
+    version_number: i64,
+) -> anyhow::Result<()> {
+    sqlx::query(
+        r#"
+        INSERT INTO shards (file_id, version_number, shard_index, object_id, size_bytes)
+        SELECT file_id, version_number, shard_index, object_id, size_bytes
+        FROM pending_shard_fetches
+        WHERE file_id = ? AND version_number = ?
+        ON CONFLICT(file_id, version_number, shard_index) DO NOTHING
+        "#,
+    )
+    .bind(file_id)
+    .bind(version_number)
+    .execute(db)
+    .await?;
+
+    // Whatever was not drained (e.g. duplicate shard_index already present)
+    // is no longer needed in the landing zone.
+    sqlx::query("DELETE FROM pending_shard_fetches WHERE file_id = ? AND version_number = ?")
+        .bind(file_id)
+        .bind(version_number)
+        .execute(db)
+        .await?;
+
+    Ok(())
 }
 
 /// Apply a batch of incoming events from Relay and build the BATCH_ACK.
@@ -359,5 +398,66 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(count, 3); // Versions 1, 2, 3 all exist!
+    }
+
+    #[tokio::test]
+    async fn test_pending_fetch_drains_on_version_added() {
+        let dir = tempdir().unwrap();
+        let pool = db::open(dir.path()).await.unwrap();
+
+        // Simulate a Relay-buffer-fetched shard that arrived before the version
+        // metadata: object stored, but only in the pending landing zone.
+        sqlx::query(
+            "INSERT INTO storage_objects (object_id, size_bytes, status, created_at) VALUES ('obj-1', 256, 'STORED', 'now')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            r#"
+            INSERT INTO pending_shard_fetches
+                (file_id, version_number, shard_index, object_id, size_bytes, fetched_at)
+            VALUES ('file-pending', 1, 0, 'obj-1', 256, 'now')
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // The FILE_VERSION_ADDED event arrives later and must drain it.
+        let event = SyncEvent {
+            event_id: "evt-version-1".to_string(),
+            origin_id: "relay-origin".to_string(),
+            origin_sequence: 1,
+            event_type: "FILE_VERSION_ADDED".to_string(),
+            payload: serde_json::json!({
+                "file_id": "file-pending",
+                "version_number": 1,
+                "parent_version_id": null,
+                "shard_count": 1,
+                "version_hash": "hash_v1"
+            }),
+            timestamp: "2026-09-05T10:00:00Z".to_string(),
+        };
+
+        let res = apply_remote_event(&pool, &event, "node-1").await.unwrap();
+        assert_eq!(res, ApplyOutcome::Applied);
+
+        // Shard now present; pending row gone.
+        let shard_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM shards WHERE file_id = 'file-pending' AND version_number = 1",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(shard_count, 1);
+
+        let pending_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pending_shard_fetches WHERE file_id = 'file-pending'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(pending_count, 0);
     }
 }

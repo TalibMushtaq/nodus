@@ -77,6 +77,7 @@ describe("message catalog round-trips", () => {
     const r = parseMessage(
       msg(MessageTypes.SHARD_ACK, {
         file_id: "file-1",
+        version_number: 1,
         shard_index: 0,
         status: "verified",
         transfer_id: "t-1",
@@ -89,6 +90,7 @@ describe("message catalog round-trips", () => {
     const r = parseMessage(
       msg(MessageTypes.SHARD_ACK, {
         file_id: "file-1",
+        version_number: 1,
         shard_index: 0,
         status: "bogus",
         transfer_id: "t-1",
@@ -101,8 +103,10 @@ describe("message catalog round-trips", () => {
     const r = parseMessage(
       msg(MessageTypes.PENDING_NOTIFY, {
         file_id: "file-1",
+        version_number: 1,
         shard_index: 2,
         buffer_id: "buf-1",
+        fetch_token: "tok-123",
         from_device: "dev-7",
         hash: "b".repeat(64),
         size: 4096,

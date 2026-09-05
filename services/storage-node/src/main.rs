@@ -90,7 +90,8 @@ async fn main() -> anyhow::Result<()> {
                 relay_url.clone(),
                 sync_identity_arc.clone(),
                 sync_db.clone(),
-                500, // batch size
+                store_arc.clone(), // Phase 10: buffer-fetch flow writes shards
+                500,               // batch size
             );
             match client.run_sync_session().await {
                 Ok(_) => {

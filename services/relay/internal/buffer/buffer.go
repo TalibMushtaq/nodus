@@ -111,6 +111,108 @@ func sweepExpiredBuffers(ctx context.Context, pool *db.Pool, rClient *rdb.Client
 		return nil
 	}
 
+	if err := sweepExpiredRelayBuffered(ctx, pool, rClient, buf, ttl); err != nil {
+		return err
+	}
+	if err := sweepOrphanedUploading(ctx, pool); err != nil {
+		return err
+	}
+	return sweepStuckInTransit(ctx, pool, rClient, inTransitGrace)
+}
+
+// orphanUploadGrace is how long an UPLOADING row may sit before the sweep
+// treats it as abandoned. UPLOADING is a transient pre-commit reservation, so
+// it needs a much shorter leash than RELAY_BUFFERED (which legitimately waits
+// for an offline node).
+const orphanUploadGrace = time.Hour
+
+// sweepOrphanedUploading clears UPLOADING rows whose client vanished mid-upload
+// (crashed before body + hash completed). These hold no buffer file, so they are
+// just marked RELAY_CLEANUP to keep the terminal-state invariant.
+func sweepOrphanedUploading(ctx context.Context, pool *db.Pool) error {
+	cutoff := time.Now().UTC().Add(-orphanUploadGrace)
+	_, err := pool.Exec(ctx, `
+		UPDATE file_locations
+		SET status = 'RELAY_CLEANUP', updated_at = NOW()
+		WHERE status = 'UPLOADING' AND updated_at < $1
+	`, cutoff)
+	if err != nil {
+		return fmt.Errorf("sweeping orphaned UPLOADING rows: %w", err)
+	}
+	return nil
+}
+
+// inTransitGrace is how long a shard may sit in NODE_RECEIVING /
+// NODE_VERIFIED before the sweep treats the carrying node as crashed
+// mid-transfer. Both states still reference their buffer file (NODE_STORED is
+// what clears buffer_id), so reverting to RELAY_BUFFERED loses nothing and lets
+// the node re-fetch on its next reconnect.
+const inTransitGrace = 30 * time.Minute
+
+// sweepStuckInTransit reverts in-flight shards whose node vanished before
+// acking. Without this, a node crash between fetch and verified/verified and
+// stored would strand the shard in a non-terminal state that neither reconnect
+// delivery (queries RELAY_BUFFERED) nor the TTL sweep would ever touch.
+func sweepStuckInTransit(ctx context.Context, pool *db.Pool, rClient *rdb.Client, grace time.Duration) error {
+	cutoff := time.Now().UTC().Add(-grace)
+
+	rows, err := pool.Query(ctx, `
+		SELECT file_id, version_number, shard_index, node_id, buffer_id
+		FROM file_locations
+		WHERE status IN ('NODE_RECEIVING', 'NODE_VERIFIED')
+		  AND buffer_id IS NOT NULL
+		  AND updated_at < $1
+	`, cutoff)
+	if err != nil {
+		return fmt.Errorf("querying stuck in-transit shards: %w", err)
+	}
+	defer rows.Close()
+
+	type inTransit struct {
+		fileID        string
+		versionNumber int
+		shardIndex    int
+		nodeID        string
+		bufferID      string
+	}
+
+	var stuck []inTransit
+	for rows.Next() {
+		var s inTransit
+		if err := rows.Scan(&s.fileID, &s.versionNumber, &s.shardIndex, &s.nodeID, &s.bufferID); err != nil {
+			log.Printf("[buffer-sweep] error scanning stuck row: %v", err)
+			continue
+		}
+		stuck = append(stuck, s)
+	}
+
+	for _, s := range stuck {
+		// Re-arm as deliverable so checkAndDeliverPendingShards re-notifies the
+		// node on its next register.
+		ct, err := pool.Exec(ctx, `
+			UPDATE file_locations
+			SET status = 'RELAY_BUFFERED', updated_at = NOW()
+			WHERE file_id = $1 AND version_number = $2 AND shard_index = $3 AND node_id = $4
+			  AND status IN ('NODE_RECEIVING', 'NODE_VERIFIED')
+		`, s.fileID, s.versionNumber, s.shardIndex, s.nodeID)
+		if err != nil {
+			log.Printf("[buffer-sweep] error reverting stuck shard for %s: %v", s.bufferID, err)
+			continue
+		}
+		if ct.RowsAffected() == 0 {
+			continue
+		}
+		if rClient != nil {
+			_ = rClient.AddPendingBuffer(ctx, s.nodeID, s.bufferID)
+		}
+		log.Printf("[buffer-sweep] reverted stuck shard %s (file: %s shard: %d node: %s) to RELAY_BUFFERED",
+			s.bufferID, s.fileID, s.shardIndex, s.nodeID)
+	}
+
+	return nil
+}
+
+func sweepExpiredRelayBuffered(ctx context.Context, pool *db.Pool, rClient *rdb.Client, buf *Buffer, ttl time.Duration) error {
 	cutoff := time.Now().UTC().Add(-ttl)
 
 	query := `

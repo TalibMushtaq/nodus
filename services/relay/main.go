@@ -109,6 +109,12 @@ func main() {
 
 		// Phase 9: trigger a full snapshot / Relay rebuild from the primary node
 		mux.Handle("POST /rebuild", auth.RequireAuth(cfg)(handler.RequestRebuild(pool, wsHub)))
+
+		// Phase 10: Path C relay buffer — client pushes shards here when the
+		// target Storage Node is offline; the node pulls them with a single-use
+		// token via /buffer/fetch (no JWT required there).
+		mux.Handle("POST /buffer/upload", auth.RequireAuth(cfg)(handler.BufferUpload(pool, redisClient, buf, wsHub)))
+		mux.HandleFunc("GET /buffer/fetch", handler.BufferFetch(pool, redisClient, buf))
 	}
 
 	// WebSocket Gateway

@@ -88,17 +88,18 @@ route Path B signaling without inspecting payload contents (§5).
 
 ### `shard_upload`
 
-Carries **metadata only** — the actual encrypted shard bytes travel on a separate
-binary transport (WebRTC DataChannel binary frame or WebSocket binary frame),
-referenced by `transfer_id`. This avoids base64-encoding up to 8 MB per shard in
-JSON (decision #2).
+Carries **metadata only** — the actual encrypted shard bytes travel over HTTP
+(`POST /buffer/upload`) or a separate binary transport, referenced by
+`transfer_id`. This avoids base64-encoding up to 8 MB per shard in JSON
+(decision #2).
 
 | Field | Type | Required | Notes |
 |---|---|---|---|
 | `file_id` | string | yes | Logical file identifier |
+| `version_number` | integer ≥ 1 | yes | File version this shard belongs to |
 | `shard_index` | integer ≥ 0 | yes | 0-based shard position in the file |
 | `hash` | string | yes | BLAKE3 hex digest of the encrypted ciphertext |
-| `size` | integer ≥ 0 | yes | Shard size in plaintext bytes |
+| `size` | integer ≥ 0 | yes | Encrypted payload size in bytes (wire size) |
 | `transfer_id` | string | yes | Ties this metadata to the binary transfer stream |
 | `target_node` | string | no | Node that should receive the shard |
 | `source_device` | string | no | Device that initiated the upload |
@@ -111,6 +112,7 @@ Acknowledges receipt/verification of a shard. Ties into the file state machine
 | Field | Type | Required | Notes |
 |---|---|---|---|
 | `file_id` | string | yes | Logical file identifier |
+| `version_number` | integer ≥ 1 | yes | File version this shard belongs to |
 | `shard_index` | integer ≥ 0 | yes | 0-based shard position |
 | `status` | enum | yes | `received`, `verified`, or `failed` |
 | `transfer_id` | string | yes | Correlates to the original `shard_upload` |
@@ -118,18 +120,21 @@ Acknowledges receipt/verification of a shard. Ties into the file state machine
 
 ### `pending_notify`
 
-Relay → Node notification that a buffered shard is waiting (Path C, §13 relay
-buffer lifecycle). Sent when a client uploaded a shard while the target node was
-offline.
+Relay → Node notification that a buffered shard is waiting for pickup
+(Path C, §13 relay buffer lifecycle). Sent when a client uploaded a shard
+via `POST /buffer/upload` while the target node was offline. Includes a
+`fetch_token` so the node can fetch the shard bytes over HTTP.
 
 | Field | Type | Required | Notes |
 |---|---|---|---|
 | `file_id` | string | yes | Logical file identifier |
+| `version_number` | integer ≥ 1 | yes | File version this shard belongs to |
 | `shard_index` | integer ≥ 0 | yes | 0-based shard position |
 | `buffer_id` | string | yes | Relay-assigned buffer identifier |
+| `fetch_token` | string | yes | Single-use token for `GET /buffer/fetch` (10-min TTL, Redis GETDEL) |
 | `from_device` | string | yes | Device that uploaded the shard |
-| `hash` | string | yes | Integrity digest the node verifies on fetch |
-| `size` | integer ≥ 0 | yes | Shard size in plaintext bytes |
+| `hash` | string | yes | BLAKE3 hex digest — node verifies after fetch |
+| `size` | integer ≥ 0 | yes | Encrypted payload size in bytes — node verifies after fetch |
 
 ### `shard_fetch`
 

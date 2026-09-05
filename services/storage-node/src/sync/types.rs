@@ -41,6 +41,19 @@ pub struct NodeAuthResultPayload {
     pub message: Option<String>,
 }
 
+/// Node → Relay: identity registration. The Relay keys pending-buffer delivery
+/// on node_id, so the node must register before it can receive pending_notify.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RegisterPayload {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device_id: Option<String>,
+    pub node_id: String,
+    pub public_key: String,
+    pub capabilities: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SyncCursor {
     pub origin_id: String,
@@ -103,6 +116,43 @@ pub struct FileVersionPayload {
     pub encrypted_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_folder_id: Option<String>,
+}
+
+// ── Phase 10: Buffer-and-Relay (Path C) wire types ───────────────
+
+/// Relay → Node: a buffered shard is waiting for pickup.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PendingNotifyPayload {
+    pub file_id: String,
+    pub version_number: i64,
+    pub shard_index: i64,
+    pub buffer_id: String,
+    pub fetch_token: String,
+    pub from_device: String,
+    pub hash: String,
+    pub size: i64,
+}
+
+/// Node → Relay: acknowledgement of shard receipt/verification.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ShardAckPayload {
+    pub file_id: String,
+    pub version_number: i64,
+    pub shard_index: i64,
+    pub status: String, // "received" | "verified" | "failed"
+    pub transfer_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_message: Option<String>,
+}
+
+/// Node → Relay: request to fetch a shard from the Relay buffer.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ShardFetchPayload {
+    pub file_id: String,
+    pub version_number: i64,
+    pub shard_index: i64,
+    pub transfer_id: String,
+    pub source: String, // "relay_buffer"
 }
 
 // ── Phase 9: Snapshot / Rebuild wire types ─────────────────────────

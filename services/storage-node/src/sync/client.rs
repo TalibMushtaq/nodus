@@ -3,21 +3,56 @@ use sqlx::{Row, SqlitePool};
 use std::sync::Arc;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
+use url::Url;
 
-use super::engine::apply_incoming_batch;
+use super::engine::{apply_incoming_batch, drain_pending_fetches};
 use super::outbox::{drain_unsynced_events, mark_events_synced};
 use super::snapshot::is_rebuild_required_for;
 use super::types::{
     BatchAckPayload, EventBatchPayload, NodeAuthChallengePayload, NodeAuthResponsePayload,
-    NodeAuthResultPayload, ProtocolEnvelope, SyncCursor, SyncHelloPayload, SyncStatusPayload,
+    NodeAuthResultPayload, PendingNotifyPayload, ProtocolEnvelope, RegisterPayload,
+    ShardAckPayload, SyncCursor, SyncHelloPayload, SyncStatusPayload,
 };
 use crate::identity::NodeIdentity;
+use crate::store::ObjectStore;
+
+/// Derive the Relay's HTTP fetch endpoint from its WebSocket URL. The scheme
+/// flips ws→http (wss→https) and the trailing /ws path segment is replaced by
+/// /buffer/fetch (a plain host/port keeps the endpoint). Parsed once at
+/// construction so the fetch URL is stable for the lifetime of the client
+/// rather than string-mangled per request. URL parsing (rather than raw string
+/// surgery) also drops stray query strings / trailing slashes that would
+/// otherwise corrupt the endpoint.
+pub fn relay_http_fetch_url(relay_url: &str) -> String {
+    let mut url = match Url::parse(relay_url) {
+        Ok(u) => u,
+        // Degenerate config: keep the raw value so the node still attempts a
+        // fetch instead of failing to boot over a malformed URL.
+        Err(_) => return relay_url.to_string(),
+    };
+    let _ = url.set_scheme(if url.scheme() == "wss" { "https" } else { "http" });
+    url.set_query(None);
+    url.set_fragment(None);
+
+    // Preserve any non-/ws base path (e.g. a proxied deployment) and only swap
+    // the trailing ws segment for the fetch endpoint.
+    let trimmed = url.path().trim_end_matches('/');
+    let base = match trimmed.strip_suffix("/ws") {
+        Some(dir) => dir.trim_end_matches('/'),
+        None => trimmed,
+    };
+    url.set_path(&format!("{base}/buffer/fetch"));
+    url.to_string()
+}
 
 pub struct SyncClient {
     pub relay_url: String,
     pub identity: Arc<NodeIdentity>,
     pub db: SqlitePool,
     pub batch_size: usize,
+    pub object_store: Arc<ObjectStore>,
+    pub http_fetch_url: String,
+    pub http_client: reqwest::Client,
 }
 
 impl SyncClient {
@@ -25,13 +60,17 @@ impl SyncClient {
         relay_url: String,
         identity: Arc<NodeIdentity>,
         db: SqlitePool,
+        object_store: Arc<ObjectStore>,
         batch_size: usize,
     ) -> Self {
         Self {
+            http_fetch_url: relay_http_fetch_url(&relay_url),
             relay_url,
             identity,
             db,
+            object_store,
             batch_size,
+            http_client: reqwest::Client::new(),
         }
     }
 
@@ -119,6 +158,21 @@ impl SyncClient {
             .send(Message::Text(serde_json::to_string(&hello_env)?.into()))
             .await?;
 
+        // 2b. Register with the Relay. The Relay only scans for RELAY_BUFFERED
+        // shards after a `register` envelope, so this is what triggers
+        // pending_notify delivery for shards uploaded while we were offline.
+        let reg = RegisterPayload {
+            account_id: None,
+            device_id: None,
+            node_id: self.identity.node_id.clone(),
+            public_key: hex::encode(self.identity.public_key.to_bytes()),
+            capabilities: vec!["node".to_string()],
+        };
+        let reg_env = ProtocolEnvelope::new("register", serde_json::to_value(&reg)?);
+        write
+            .send(Message::Text(serde_json::to_string(&reg_env)?.into()))
+            .await?;
+
         // 3. Drain local outbox
         let unsynced = drain_unsynced_events(&self.db, self.batch_size as i64).await?;
         if !unsynced.is_empty() {
@@ -159,11 +213,174 @@ impl SyncClient {
                     {
                         self.stream_snapshot(&mut write).await?;
                     }
+                    // Phase 10: a shard is sitting in the Relay buffer waiting
+                    // for us (Path C). Fetch it over HTTP, verify the BLAKE3
+                    // digest, store it, and ack the result.
+                    "pending_notify" => {
+                        let n: PendingNotifyPayload = serde_json::from_value(env.payload)?;
+                        self.handle_pending_notify(&mut write, n).await?;
+                    }
                     _ => {}
                 }
             }
         }
 
+        Ok(())
+    }
+
+    /// Send a typed protocol envelope over the WebSocket writer.
+    async fn send_envelope<W>(write: &mut W, msg_type: &str, payload: &serde_json::Value) -> anyhow::Result<()>
+    where
+        W: futures_util::Sink<Message> + Unpin,
+        W::Error: std::error::Error + Send + Sync + 'static,
+    {
+        let env = ProtocolEnvelope::new(msg_type, payload.clone());
+        write
+            .send(Message::Text(serde_json::to_string(&env)?.into()))
+            .await?;
+        Ok(())
+    }
+
+    /// Phase 10: consume a pending_notify — fetch the shard bytes from the
+    /// Relay buffer, verify + store them, then ack "verified" or "failed".
+    async fn handle_pending_notify<W>(&self, write: &mut W, n: PendingNotifyPayload) -> anyhow::Result<()>
+    where
+        W: futures_util::Sink<Message> + Unpin,
+        W::Error: std::error::Error + Send + Sync + 'static,
+    {
+        let transfer_id = uuid::Uuid::new_v4().to_string();
+
+        let ack = match self.fetch_verify_store(&n).await {
+            Ok(_) => ShardAckPayload {
+                file_id: n.file_id.clone(),
+                version_number: n.version_number,
+                shard_index: n.shard_index,
+                status: "verified".to_string(),
+                transfer_id: transfer_id.clone(),
+                error_message: None,
+            },
+            Err(e) => {
+                eprintln!("[sync] pending_notify failed for {}:{}:{}: {e}",
+                    n.file_id, n.version_number, n.shard_index);
+                ShardAckPayload {
+                    file_id: n.file_id.clone(),
+                    version_number: n.version_number,
+                    shard_index: n.shard_index,
+                    status: "failed".to_string(),
+                    transfer_id: transfer_id.clone(),
+                    error_message: Some(e.to_string()),
+                }
+            }
+        };
+
+        Self::send_envelope(write, "shard_ack", &serde_json::to_value(ack)?).await
+    }
+
+    /// Fetch a shard from the Relay buffer, verify its integrity digest and
+    /// declared size, persist it content-addressed, and record the shard
+    /// metadata (falling back to the pending landing zone when the
+    /// file_versions row hasn't synced yet).
+    async fn fetch_verify_store(&self, n: &PendingNotifyPayload) -> anyhow::Result<()> {
+        let url = format!("{}?token={}", self.http_fetch_url, n.fetch_token);
+        let resp = self.http_client.get(&url).send().await?;
+        if !resp.status().is_success() {
+            anyhow::bail!("relay /buffer/fetch returned {}", resp.status());
+        }
+        let bytes = resp.bytes().await?;
+
+        // The Relay already verified this digest on upload, but the node never
+        // trusts the wire, so recompute before persisting anything.
+        let got = blake3::hash(&bytes).to_hex().to_string();
+        if got != n.hash {
+            anyhow::bail!("hash mismatch: expected {}, got {}", n.hash, got);
+        }
+        if bytes.len() as i64 != n.size {
+            anyhow::bail!(
+                "size mismatch: expected {}, got {}",
+                n.size,
+                bytes.len()
+            );
+        }
+
+        // Content-addressed put returns the BLAKE3 hex of the bytes it stored;
+        // it must equal the digest we verified.
+        let object_id = self.object_store.put(&bytes).await?;
+        if object_id != got {
+            anyhow::bail!(
+                "object store addressed bytes as {object_id}, expected {got}"
+            );
+        }
+
+        self.record_shard_metadata(n, &object_id, bytes.len() as i64)
+            .await
+    }
+
+    /// Record shard metadata into `shards` when the file_versions row exists,
+    /// otherwise into `pending_shard_fetches` for a later drain (the version
+    /// event may trail the shard on the wire).
+    async fn record_shard_metadata(
+        &self,
+        n: &PendingNotifyPayload,
+        object_id: &str,
+        size: i64,
+    ) -> anyhow::Result<()> {
+        let has_version: Option<i64> = sqlx::query_scalar(
+            "SELECT 1 FROM file_versions WHERE file_id = ? AND version_number = ?",
+        )
+        .bind(&n.file_id)
+        .bind(n.version_number)
+        .fetch_optional(&self.db)
+        .await?;
+
+        if has_version.is_some() {
+            sqlx::query(
+                r#"
+                INSERT INTO shards (file_id, version_number, shard_index, object_id, size_bytes)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(file_id, version_number, shard_index) DO NOTHING
+                "#,
+            )
+            .bind(&n.file_id)
+            .bind(n.version_number)
+            .bind(n.shard_index)
+            .bind(object_id)
+            .bind(size)
+            .execute(&self.db)
+            .await?;
+        } else {
+            sqlx::query(
+                r#"
+                INSERT INTO pending_shard_fetches
+                    (file_id, version_number, shard_index, object_id, size_bytes, fetched_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(file_id, version_number, shard_index) DO NOTHING
+                "#,
+            )
+            .bind(&n.file_id)
+            .bind(n.version_number)
+            .bind(n.shard_index)
+            .bind(object_id)
+            .bind(size)
+            .bind(chrono::Utc::now().to_rfc3339())
+            .execute(&self.db)
+            .await?;
+
+            // The version row may have synced between the exists-check above
+            // and this insert (delivery and event ingestion interleave on the
+            // same session loop). Re-check before draining: drain's
+            // INSERT...SELECT demands the FK target, so calling it while the
+            // version is still absent would fail the whole fetch.
+            let version_now: Option<i64> = sqlx::query_scalar(
+                "SELECT 1 FROM file_versions WHERE file_id = ? AND version_number = ?",
+            )
+            .bind(&n.file_id)
+            .bind(n.version_number)
+            .fetch_optional(&self.db)
+            .await?;
+            if version_now.is_some() {
+                drain_pending_fetches(&self.db, &n.file_id, n.version_number).await?;
+            }
+        }
         Ok(())
     }
 
@@ -239,5 +456,109 @@ mod tests {
         assert_eq!(hello.cursors.len(), 1);
         assert_eq!(hello.cursors[0].origin_id, "origin-1");
         assert_eq!(hello.cursors[0].sequence, 42);
+    }
+
+    #[test]
+    fn test_relay_http_fetch_url_derivation() {
+        assert_eq!(
+            relay_http_fetch_url("ws://127.0.0.1:8080/ws"),
+            "http://127.0.0.1:8080/buffer/fetch"
+        );
+        assert_eq!(
+            relay_http_fetch_url("wss://relay.example.com/ws"),
+            "https://relay.example.com/buffer/fetch"
+        );
+        // No trailing /ws path: just append the endpoint.
+        assert_eq!(
+            relay_http_fetch_url("ws://127.0.0.1:8080"),
+            "http://127.0.0.1:8080/buffer/fetch"
+        );
+        // Query strings must not leak into the fetch endpoint.
+        assert_eq!(
+            relay_http_fetch_url("ws://127.0.0.1:8080/ws?token=abc"),
+            "http://127.0.0.1:8080/buffer/fetch"
+        );
+        // A trailing slash on /ws must not break the derivation.
+        assert_eq!(
+            relay_http_fetch_url("ws://127.0.0.1:8080/ws/"),
+            "http://127.0.0.1:8080/buffer/fetch"
+        );
+        // A non-/ws base path is preserved for proxied deployments.
+        assert_eq!(
+            relay_http_fetch_url("wss://relay.example.com/proxy/ws"),
+            "https://relay.example.com/proxy/buffer/fetch"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_record_shard_metadata_waits_for_version() {
+        let dir = tempdir().unwrap();
+        let pool = db::open(dir.path()).await.unwrap();
+        let store = ObjectStore::new(dir.path().join("objects"), pool.clone())
+            .await
+            .unwrap();
+        let client = SyncClient::new(
+            "ws://127.0.0.1:8080/ws".to_string(),
+            Arc::new(identity::load_or_generate(dir.path()).unwrap()),
+            pool.clone(),
+            Arc::new(store),
+            100,
+        );
+
+        let n = PendingNotifyPayload {
+            file_id: "file-wait".to_string(),
+            version_number: 1,
+            shard_index: 0,
+            buffer_id: "buf-1".to_string(),
+            fetch_token: "tok-1".to_string(),
+            from_device: "dev-1".to_string(),
+            hash: "h".to_string(),
+            size: 10,
+        };
+
+        // No file_versions row yet -> staged in the pending landing zone.
+        client
+            .record_shard_metadata(&n, "obj-1", 10)
+            .await
+            .unwrap();
+        let pending: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pending_shard_fetches WHERE file_id = 'file-wait'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(pending, 1);
+
+        // Once the version metadata arrives, the same call targets shards directly.
+        sqlx::query(
+            "INSERT INTO storage_objects (object_id, size_bytes, status, created_at) VALUES ('obj-1', 10, 'STORED', 'now')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO files (file_id, created_at, updated_at) VALUES ('file-wait', 'now', 'now')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO file_versions (file_id, version_number, version_hash, shard_count, created_at) VALUES ('file-wait', 1, 'h', 1, 'now')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        client
+            .record_shard_metadata(&n, "obj-1", 10)
+            .await
+            .unwrap();
+
+        let shards: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM shards WHERE file_id = 'file-wait' AND version_number = 1",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(shards, 1);
     }
 }

@@ -35,6 +35,7 @@ describe("parseMessage", () => {
   it("validates a shard_upload round-trip", () => {
     const raw = envelopePayload(MessageTypes.SHARD_UPLOAD, {
       file_id: "file-42",
+      version_number: 1,
       shard_index: 0,
       hash: "a".repeat(64),
       size: 1024,

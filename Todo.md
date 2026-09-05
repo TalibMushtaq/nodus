@@ -131,11 +131,18 @@ Checkboxes are for tracking; nest sub-tasks as you break work down further.
 
 ## Phase 10 — Buffer-and-Relay Transfer (Path C)
 
-- [ ] Client → Relay buffer upload
-- [ ] Relay → Storage Node asynchronous delivery when node comes online
-- [ ] Node verify + commit → Relay deletes temp copy
-- [ ] File state machine transitions: CREATED → UPLOADING → RELAY_BUFFERED →
-      NODE_RECEIVING → NODE_VERIFIED → NODE_STORED → RELAY_CLEANUP (§23)
+- [x] Client → Relay buffer upload (`POST /buffer/upload` — Relay handler; client-side
+      caller in `packages/relay-client` still pending)
+- [x] Relay → Storage Node asynchronous delivery when node comes online
+      (`GET /buffer/fetch` + `pending_notify` over WS; node pulls, verifies, commits)
+- [x] Node verify + commit → Relay deletes temp copy (`shard_ack` `verified`/`failed`;
+      buffer released on verified, kept + re-queued on failed)
+- [x] File state machine transitions: CREATED → UPLOADING → RELAY_BUFFERED →
+      NODE_RECEIVING → NODE_VERIFIED → NODE_STORED → RELAY_CLEANUP (§23) — enforced in
+      Relay `file_locations.status`, no state collapsing
+- [ ] Client-side uploader integration (`packages/relay-client`): shard the encrypted
+      stream, emit sync events, and POST each shard so Path C is usable from the app
+- [ ] Wire-level e2e: real Rust `run_sync_session` against a live Relay + client uploader
 
 ## Phase 11 — Local Discovery & Node Authentication
 

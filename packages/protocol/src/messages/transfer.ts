@@ -9,11 +9,11 @@ import {
 // ── Shard Upload ───────────────────────────────────────────────────
 
 /**
- * Metadata for a shard being uploaded. The actual encrypted bytes travel on a
- * separate binary transport (WebRTC DataChannel binary frame or WebSocket binary
- * frame), NOT inline in this JSON payload. `transfer_id` ties this metadata
- * message to the binary transfer, which the transport layer validates
- * independently.
+ * Metadata for a shard being uploaded. The actual encrypted bytes travel over
+ * HTTP (`POST /buffer/upload` for Path C relay buffering) or a separate binary
+ * transport (WebRTC DataChannel binary frame), NOT inline in this JSON payload.
+ * `transfer_id` ties this metadata to the binary transfer, which the transport
+ * layer validates independently.
  *
  * This design avoids base64-encoding up to 8 MB of shard data inside JSON
  * (which would add ~33% overhead) and lets the binary transport handle
@@ -21,11 +21,13 @@ import {
  */
 export const ShardUploadPayloadSchema = z.object({
   file_id: ProtocolFileId,
+  /** Monotonic version this shard belongs to — needed for file_locations PK */
+  version_number: z.number().int().min(1),
   /** 0-based shard index within the file */
   shard_index: z.number().int().min(0),
-  /** BLAKE3 hex digest of the encrypted ciphertext */
+  /** BLAKE3 hex digest of the encrypted ciphertext (the bytes being uploaded) */
   hash: z.string(),
-  /** Shard size in plaintext bytes */
+  /** Encrypted payload size in bytes (the bytes on the wire, not plaintext) */
   size: z.number().int().min(0),
   /** Ties this metadata to the separate binary transfer stream */
   transfer_id: TransferId,
@@ -48,6 +50,8 @@ export type ShardAckStatus = z.infer<typeof ShardAckStatusSchema>;
 
 export const ShardAckPayloadSchema = z.object({
   file_id: ProtocolFileId,
+  /** Version this shard belongs to — lets Relay disambiguate in file_locations */
+  version_number: z.number().int().min(1),
   shard_index: z.number().int().min(0),
   status: ShardAckStatusSchema,
   transfer_id: TransferId,
@@ -62,17 +66,24 @@ export type ShardAckPayload = z.infer<typeof ShardAckPayloadSchema>;
 /**
  * Relay → Node notification that a buffered shard is waiting for pickup
  * (Path C, §13 relay buffer lifecycle). Sent when a client uploads a shard
- * to the Relay buffer while the target Storage Node is offline.
+ * via `POST /buffer/upload` while the target Storage Node is offline.
+ * The `fetch_token` lets the node fetch the shard bytes over HTTP without
+ * needing its own auth middleware.
  */
 export const PendingNotifyPayloadSchema = z.object({
   file_id: ProtocolFileId,
+  /** Version this shard belongs to — needed for node to insert into shards table */
+  version_number: z.number().int().min(1),
   shard_index: z.number().int().min(0),
   /** Relay-assigned buffer identifier */
   buffer_id: z.string(),
+  /** Single-use token for GET /buffer/fetch (10-minute TTL, Redis GETDEL) */
+  fetch_token: z.string(),
   /** Device that uploaded the shard to the buffer */
   from_device: DeviceId,
-  /** Hash for integrity verification when the node fetches the shard */
+  /** BLAKE3 hex digest of the encrypted ciphertext — node verifies after fetch */
   hash: z.string(),
+  /** Encrypted payload size in bytes — node verifies after fetch */
   size: z.number().int().min(0),
 });
 

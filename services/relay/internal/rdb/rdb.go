@@ -85,3 +85,24 @@ func (c *Client) ConsumeAuthNonce(ctx context.Context, sessionID, expectedNonce 
 	}
 	return stored == expectedNonce && expectedNonce != "", nil
 }
+
+// SetFetchToken stores a single-use, time-limited fetch token for a buffered shard.
+// The token maps to bufferID so the node can call GET /buffer/fetch?token=...
+// without needing its own auth middleware. 10-minute TTL is the v1 default.
+func (c *Client) SetFetchToken(ctx context.Context, token, bufferID string, ttl time.Duration) error {
+	return c.Set(ctx, fmt.Sprintf("fetch_token:%s", token), bufferID, ttl).Err()
+}
+
+// ConsumeFetchToken atomically retrieves and deletes the fetch token, returning
+// the associated buffer_id. Returns ("", nil) if the token is missing/expired.
+func (c *Client) ConsumeFetchToken(ctx context.Context, token string) (string, error) {
+	key := fmt.Sprintf("fetch_token:%s", token)
+	bufferID, err := c.GetDel(ctx, key).Result()
+	if err == redis.Nil {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return bufferID, nil
+}
