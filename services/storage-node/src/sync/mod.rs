@@ -2,6 +2,7 @@ pub mod client;
 pub mod conflict;
 pub mod engine;
 pub mod outbox;
+pub mod snapshot;
 pub mod types;
 
 pub use client::SyncClient;

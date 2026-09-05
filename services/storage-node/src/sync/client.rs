@@ -6,6 +6,7 @@ use tokio_tungstenite::tungstenite::Message;
 
 use super::engine::apply_incoming_batch;
 use super::outbox::{drain_unsynced_events, mark_events_synced};
+use super::snapshot::is_rebuild_required_for;
 use super::types::{
     BatchAckPayload, EventBatchPayload, NodeAuthChallengePayload, NodeAuthResponsePayload,
     NodeAuthResultPayload, ProtocolEnvelope, SyncCursor, SyncHelloPayload, SyncStatusPayload,
@@ -151,10 +152,47 @@ impl SyncClient {
                             .send(Message::Text(serde_json::to_string(&ack_env)?.into()))
                             .await?;
                     }
+                    // Phase 9: Relay asked for a full snapshot/rebuild (§20).
+                    "rebuild_required" => {
+                        if is_rebuild_required_for(&env.payload, &self.identity.node_id).is_some() {
+                            self.stream_snapshot(&mut write).await?;
+                        }
+                    }
                     _ => {}
                 }
             }
         }
+
+        Ok(())
+    }
+
+    /// Streams a full snapshot to the Relay in response to REBUILD_REQUIRED:
+    /// SNAPSHOT_BEGIN, then each homogeneous chunk (up to 1000 records), then
+    /// SNAPSHOT_END with the final content hash.
+    async fn stream_snapshot<W>(&self, write: &mut W) -> anyhow::Result<()>
+    where
+        W: futures_util::Sink<Message> + Unpin,
+        W::Error: std::error::Error + Send + Sync + 'static,
+    {
+        let (begin, chunks, end) =
+            super::snapshot::build_snapshot(&self.db, &self.identity).await?;
+
+        let begin_env = ProtocolEnvelope::new("snapshot_begin", serde_json::to_value(begin)?);
+        write
+            .send(Message::Text(serde_json::to_string(&begin_env)?.into()))
+            .await?;
+
+        for chunk in chunks {
+            let chunk_env = ProtocolEnvelope::new("snapshot_chunk", serde_json::to_value(chunk)?);
+            write
+                .send(Message::Text(serde_json::to_string(&chunk_env)?.into()))
+                .await?;
+        }
+
+        let end_env = ProtocolEnvelope::new("snapshot_end", serde_json::to_value(end)?);
+        write
+            .send(Message::Text(serde_json::to_string(&end_env)?.into()))
+            .await?;
 
         Ok(())
     }

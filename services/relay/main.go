@@ -17,6 +17,7 @@ import (
 	"github.com/TalibMushtaq/nodus/services/relay/internal/handler"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/hub"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/rdb"
+	"github.com/TalibMushtaq/nodus/services/relay/internal/tombstone"
 )
 
 func main() {
@@ -69,6 +70,22 @@ func main() {
 		log.Println("[relay] buffer ttl sweeper: running")
 	}
 
+	// Phase 9: Start tombstone retention prune worker (90-day window,
+	// per ADR-0005). Sweeps hourly.
+	const tombstoneRetention = 90 * 24 * time.Hour
+	if pool != nil {
+		go tombstone.RunTombstonePrune(ctx, pool, tombstoneRetention, time.Hour)
+		log.Println("[relay] tombstone retention pruner: running")
+	}
+
+	// Phase 9: Prune terminal rebuild_requests after their audit-window
+	// (30 days) so the rebuild request table stays bounded. Sweeps hourly.
+	const rebuildRequestRetention = 30 * 24 * time.Hour
+	if pool != nil {
+		go handler.RunRebuildRequestPrune(ctx, pool, rebuildRequestRetention, time.Hour)
+		log.Println("[relay] rebuild request pruner: running")
+	}
+
 	// 7. Route registration
 	mux := http.NewServeMux()
 
@@ -89,6 +106,9 @@ func main() {
 
 		mux.Handle("POST /nodes/register", auth.RequireAuth(cfg)(handler.RegisterNode(pool)))
 		mux.Handle("GET /nodes", auth.RequireAuth(cfg)(handler.ListNodes(pool)))
+
+		// Phase 9: trigger a full snapshot / Relay rebuild from the primary node
+		mux.Handle("POST /rebuild", auth.RequireAuth(cfg)(handler.RequestRebuild(pool, wsHub)))
 	}
 
 	// WebSocket Gateway

@@ -131,6 +131,15 @@ func handleIncomingEnvelope(
 	case "event_batch":
 		HandleEventBatch(ctx, c, env, pool)
 
+	case "snapshot_begin":
+		HandleSnapshotBegin(ctx, c, env, pool)
+
+	case "snapshot_chunk":
+		HandleSnapshotChunk(ctx, c, env, pool)
+
+	case "snapshot_end":
+		HandleSnapshotEnd(ctx, c, env, pool)
+
 	case "register":
 		var reg RegisterPayload
 		if err := json.Unmarshal(env.Payload, &reg); err != nil {

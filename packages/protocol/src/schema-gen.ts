@@ -23,6 +23,7 @@ import {
   SnapshotBeginPayloadSchema,
   SnapshotChunkPayloadSchema,
   SnapshotEndPayloadSchema,
+  RebuildRequiredPayloadSchema,
   ErrorPayloadSchema,
   EventPayloadSchema,
   CURRENT_SCHEMA_VERSION,
@@ -62,6 +63,7 @@ const entries: SchemaEntry[] = [
   { name: "snapshot_begin", schema: SnapshotBeginPayloadSchema.toJSONSchema() },
   { name: "snapshot_chunk", schema: SnapshotChunkPayloadSchema.toJSONSchema() },
   { name: "snapshot_end", schema: SnapshotEndPayloadSchema.toJSONSchema() },
+  { name: "rebuild_required", schema: RebuildRequiredPayloadSchema.toJSONSchema() },
   { name: "error", schema: ErrorPayloadSchema.toJSONSchema() },
   { name: "event", schema: EventPayloadSchema.toJSONSchema() },
 ];

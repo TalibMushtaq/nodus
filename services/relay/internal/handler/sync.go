@@ -248,6 +248,9 @@ func HandleNodeAuthResponse(
 
 	_, _ = pool.Exec(ctx, "UPDATE storage_nodes SET last_seen_at = NOW() WHERE node_id = $1", c.NodeID)
 
+	// Phase 9: deliver any queued rebuild requests if this node is the primary.
+	deliverPendingRebuildRequests(ctx, pool, h, c.AccountID, c.NodeID)
+
 	_ = sendEnvelope(c, "node_auth_result", NodeAuthResultPayload{
 		Status: "ok",
 	})

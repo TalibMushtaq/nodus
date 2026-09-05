@@ -207,22 +207,98 @@ describe("message catalog round-trips", () => {
       msg(MessageTypes.SNAPSHOT_BEGIN, {
         snapshot_id: "snap-1",
         node_id: "node-1",
-        sequence: 2048,
+        snapshot_sequence: 3,
+        total_chunks: 10,
+        content_hash: "d".repeat(64),
+        signature: "sig".repeat(16),
+        data_schema_version: "1.0",
+        cursors: [{ origin_id: "node-1", sequence: 42 }],
+      }),
+    );
+    expect(r.ok).toBe(true);
+  });
+
+  it("snapshot_begin rejects missing cursor map", () => {
+    const r = parseMessage(
+      msg(MessageTypes.SNAPSHOT_BEGIN, {
+        snapshot_id: "snap-1",
+        node_id: "node-1",
+        snapshot_sequence: 3,
         total_chunks: 10,
         content_hash: "d".repeat(64),
         signature: "sig".repeat(16),
         data_schema_version: "1.0",
       }),
     );
-    expect(r.ok).toBe(true);
+    expect(r.ok).toBe(false);
   });
 
-  it("snapshot_chunk", () => {
+  it("snapshot_chunk carries typed homogeneous records", () => {
     const r = parseMessage(
       msg(MessageTypes.SNAPSHOT_CHUNK, {
         snapshot_id: "snap-1",
         chunk_index: 0,
-        data: "YWJjZA==",
+        record_type: "file_version",
+        records: [
+          {
+            file_id: "file-1",
+            version_number: 1,
+            parent_version_id: null,
+            conflict_status: "none",
+            version_hash: "b".repeat(64),
+            shard_count: 1,
+            encrypted_name: "photo.jpg",
+            parent_folder_id: null,
+          },
+        ],
+      }),
+    );
+    expect(r.ok).toBe(true);
+  });
+
+  it("snapshot_chunk rejects a chunk exceeding the 1000-record cap", () => {
+    const records = Array.from({ length: 1001 }, (_, i) => ({
+      file_id: `file-${i}`,
+      version_number: 1,
+      parent_version_id: null,
+      version_hash: "h",
+      shard_count: 1,
+    }));
+    const r = parseMessage(
+      msg(MessageTypes.SNAPSHOT_CHUNK, {
+        snapshot_id: "snap-1",
+        chunk_index: 0,
+        record_type: "file_version",
+        records,
+      }),
+    );
+    expect(r.ok).toBe(false);
+  });
+
+  it("snapshot_chunk tombstone records", () => {
+    const r = parseMessage(
+      msg(MessageTypes.SNAPSHOT_CHUNK, {
+        snapshot_id: "snap-1",
+        chunk_index: 1,
+        record_type: "tombstone",
+        records: [
+          {
+            entity_type: "file",
+            entity_id: "file-deleted-1",
+            deleted_at: "2026-09-01T00:00:00Z",
+          },
+        ],
+      }),
+    );
+    expect(r.ok).toBe(true);
+  });
+
+  it("rebuild_required", () => {
+    const r = parseMessage(
+      msg(MessageTypes.REBUILD_REQUIRED, {
+        node_id: "node-1",
+        reason: "restore",
+        expected_content_hash: "c".repeat(64),
       }),
     );
     expect(r.ok).toBe(true);

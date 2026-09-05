@@ -104,3 +104,80 @@ pub struct FileVersionPayload {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_folder_id: Option<String>,
 }
+
+// ── Phase 9: Snapshot / Rebuild wire types ─────────────────────────
+
+/// Relay → Node request to initiate a full snapshot / rebuild (§20).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RebuildRequiredPayload {
+    pub node_id: String,
+    pub reason: String, // "admin" | "restore" | "schema_mismatch"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expected_content_hash: Option<String>,
+}
+
+/// A file/version row captured in a snapshot chunk.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileVersionRecord {
+    pub file_id: String,
+    pub version_number: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_version_id: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub conflict_status: Option<String>,
+    pub version_hash: String,
+    pub shard_count: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub encrypted_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_folder_id: Option<String>,
+}
+
+/// A tombstone row captured in a snapshot chunk.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TombstoneRecord {
+    pub entity_type: String, // "file" | "folder"
+    pub entity_id: String,
+    pub deleted_at: String,
+}
+
+/// Snapshot chunk record — a single file_version or tombstone row.
+/// `untagged` keeps records as plain JSON objects on the wire (matching the TS
+/// `SnapshotChunkPayloadSchema`); the outer `record_type` discriminates which
+/// shape each record has.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum SnapshotRecord {
+    FileVersion(FileVersionRecord),
+    Tombstone(TombstoneRecord),
+}
+
+/// Snapshot_begin metadata (§20).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SnapshotBeginPayload {
+    pub snapshot_id: String,
+    pub node_id: String,
+    pub snapshot_sequence: i64,
+    pub total_chunks: i64,
+    pub content_hash: String,
+    pub signature: String,
+    pub data_schema_version: String,
+    pub cursors: Vec<SyncCursor>,
+}
+
+/// Snapshot chunk carrying up to 1000 homogeneous records.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SnapshotChunkPayload {
+    pub snapshot_id: String,
+    pub chunk_index: i64,
+    pub record_type: String, // "file_version" | "tombstone"
+    pub records: Vec<SnapshotRecord>,
+}
+
+/// Snapshot completion marker with end-to-end content hash.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SnapshotEndPayload {
+    pub snapshot_id: String,
+    pub final_hash: String,
+    pub signature: String,
+}

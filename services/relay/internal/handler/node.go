@@ -21,6 +21,7 @@ type NodeResponse struct {
 	PublicKey    string     `json:"public_key"`
 	Capabilities []string   `json:"capabilities"`
 	Status       string     `json:"status"`
+	IsPrimary    bool       `json:"is_primary"`
 	LastSeenAt   *time.Time `json:"last_seen_at,omitempty"`
 	CreatedAt    time.Time  `json:"created_at"`
 }
@@ -55,19 +56,24 @@ func RegisterNode(pool *db.Pool) http.HandlerFunc {
 			return
 		}
 
+		// v1 primary designation: the first Storage Node paired to an account is
+		// primary automatically; every subsequent node defaults to is_primary = false.
+		// On upsert (re-registration) is_primary is left untouched.
 		query := `
-			INSERT INTO storage_nodes (node_id, account_id, public_key, capabilities, status)
-			VALUES ($1, $2, $3, $4, 'ACTIVE')
+			INSERT INTO storage_nodes (node_id, account_id, public_key, capabilities, status, is_primary)
+			VALUES ($1, $2, $3, $4, 'ACTIVE',
+			        NOT EXISTS (SELECT 1 FROM storage_nodes WHERE account_id = $2))
 			ON CONFLICT (node_id) DO UPDATE SET
 				public_key = excluded.public_key,
 				capabilities = excluded.capabilities,
 				status = 'ACTIVE'
-			RETURNING node_id, account_id, public_key, capabilities, status, last_seen_at, created_at
+			RETURNING node_id, account_id, public_key, capabilities, status, last_seen_at, created_at, is_primary
 		`
 
 		var (
-			node    NodeResponse
-			capsRaw []byte
+			node      NodeResponse
+			capsRaw   []byte
+			isPrimary bool
 		)
 
 		err = pool.QueryRow(r.Context(), query, req.NodeID, accountID, req.PublicKey, capsJSON).Scan(
@@ -78,11 +84,14 @@ func RegisterNode(pool *db.Pool) http.HandlerFunc {
 			&node.Status,
 			&node.LastSeenAt,
 			&node.CreatedAt,
+			&isPrimary,
 		)
 		if err != nil {
 			respondError(w, http.StatusInternalServerError, "failed to register storage node")
 			return
 		}
+
+		node.IsPrimary = isPrimary
 
 		_ = json.Unmarshal(capsRaw, &node.Capabilities)
 		respondJSON(w, http.StatusCreated, node)
@@ -99,7 +108,7 @@ func ListNodes(pool *db.Pool) http.HandlerFunc {
 		}
 
 		query := `
-			SELECT node_id, account_id, public_key, capabilities, status, last_seen_at, created_at
+			SELECT node_id, account_id, public_key, capabilities, status, is_primary, last_seen_at, created_at
 			FROM storage_nodes
 			WHERE account_id = $1
 			ORDER BY created_at ASC
@@ -115,8 +124,9 @@ func ListNodes(pool *db.Pool) http.HandlerFunc {
 		nodes := make([]NodeResponse, 0)
 		for rows.Next() {
 			var (
-				node    NodeResponse
-				capsRaw []byte
+				node      NodeResponse
+				capsRaw   []byte
+				isPrimary bool
 			)
 			if err := rows.Scan(
 				&node.NodeID,
@@ -124,12 +134,14 @@ func ListNodes(pool *db.Pool) http.HandlerFunc {
 				&node.PublicKey,
 				&capsRaw,
 				&node.Status,
+				&isPrimary,
 				&node.LastSeenAt,
 				&node.CreatedAt,
 			); err != nil {
 				respondError(w, http.StatusInternalServerError, "failed to scan storage node")
 				return
 			}
+			node.IsPrimary = isPrimary
 			_ = json.Unmarshal(capsRaw, &node.Capabilities)
 			nodes = append(nodes, node)
 		}

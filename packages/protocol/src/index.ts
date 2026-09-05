@@ -120,6 +120,13 @@ export {
 // ── Snapshot messages ──────────────────────────────────────────────
 
 export {
+  SNAPSHOT_CHUNK_MAX_RECORDS,
+  SnapshotRecordTypeSchema,
+  type SnapshotRecordType,
+  FileVersionRecordSchema,
+  type FileVersionRecord,
+  TombstoneRecordSchema,
+  type TombstoneRecord,
   SnapshotBeginPayloadSchema,
   type SnapshotBeginPayload,
   SnapshotChunkPayloadSchema,
@@ -127,6 +134,13 @@ export {
   SnapshotEndPayloadSchema,
   type SnapshotEndPayload,
 } from "./messages/snapshot.js";
+
+// ── Rebuild messages ───────────────────────────────────────────────
+
+export {
+  RebuildRequiredPayloadSchema,
+  type RebuildRequiredPayload,
+} from "./messages/rebuild.js";
 
 // ── Event types ────────────────────────────────────────────────────
 

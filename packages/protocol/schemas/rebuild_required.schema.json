@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "node_id": {
+      "type": "string"
+    },
+    "reason": {
+      "type": "string",
+      "enum": [
+        "admin",
+        "restore",
+        "schema_mismatch"
+      ]
+    },
+    "expected_content_hash": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "node_id",
+    "reason"
+  ],
+  "additionalProperties": false
+}

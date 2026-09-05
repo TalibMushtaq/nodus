@@ -8,11 +8,11 @@ import { z } from "zod";
 export const CURRENT_SCHEMA_VERSION = "1.0" as const;
 
 /**
- * Default snapshot chunk size in bytes (256 KB).
- * Snapshot traffic (§20) is Relay ↔ Rust node only, not constrained by P2P/NAT
- * — fewer, larger chunks cut message overhead for what could be a large rebuild.
- * This is a starting point, not a protocol-enforced ceiling; implementations may
- * negotiate or override it.
+ * @deprecated Phase 9 moved snapshot chunking to a record-count model. Chunks
+ * are now bounded by [`SNAPSHOT_CHUNK_MAX_RECORDS`] (`src/messages/snapshot.ts`)
+ * rather than a byte budget. This byte constant is retained only as legacy
+ * metadata in the generated protocol manifest for backward compatibility; no
+ * runtime path uses it.
  */
 export const DEFAULT_SNAPSHOT_CHUNK_SIZE = 256 * 1024;
 

@@ -23,6 +23,7 @@
     "snapshot_begin": "snapshot_begin.schema.json",
     "snapshot_chunk": "snapshot_chunk.schema.json",
     "snapshot_end": "snapshot_end.schema.json",
+    "rebuild_required": "rebuild_required.schema.json",
     "error": "error.schema.json",
     "event": "event.schema.json"
   }

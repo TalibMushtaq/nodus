@@ -117,12 +117,17 @@ Checkboxes are for tracking; nest sub-tasks as you break work down further.
 
 ## Phase 9 — Full Snapshot / Relay Rebuild
 
-- [ ] Implement `SNAPSHOT_BEGIN` / `SNAPSHOT_CHUNK` / `SNAPSHOT_END` flow (§20)
-- [ ] Snapshot metadata: snapshot_id, node_id, sequence/checkpoint,
-      content_hash, signature, schema_version
-- [ ] Relay-side snapshot verification against trusted node public key
-- [ ] Enforce the "relay buffer entry not in snapshot ≠ delete" rule (§22)
-- [ ] Test: wipe a scratch PostgreSQL instance, rebuild fully from a Rust node
+- [x] Implement `SNAPSHOT_BEGIN` / `SNAPSHOT_CHUNK` / `SNAPSHOT_END` flow (§20)
+- [x] Snapshot metadata: snapshot_id, node_id, sequence/checkpoint,
+      content_hash, signature, schema_version, cursor map
+- [x] Relay-side snapshot verification against trusted node public key
+- [x] Enforce the "relay buffer entry not in snapshot ≠ delete" rule (§22)
+- [x] Test: wipe a scratch PostgreSQL instance, rebuild fully from a Rust node
+- [x] `REBUILD_REQUIRED` relay→node request + primary-node routing queue
+- [x] Rust snapshot builder + streaming (typed homogeneous chunks,
+      `SNAPSHOT_CHUNK_MAX_RECORDS=1000`, per-node `snapshot_sequence`)
+- [x] Atomic per-account promotion with FK drop/re-add (see
+      `services/relay/internal/handler/promote.go`)
 
 ## Phase 10 — Buffer-and-Relay Transfer (Path C)
 
@@ -215,6 +220,8 @@ but should be resolved before the phase that depends on them:
       `origin_id` + `origin_sequence` provide per-origin total ordering and
       cursor-based sync; see `docs/protocol/event-types.md` and
       `docs/protocol/message-catalog.md` (sync_hello/sync_status)
-- [ ] Tombstone retention window — final number (needed by Phase 9, informs §29a)
+- [x] Tombstone retention window — final number (needed by Phase 9, informs §29a)
+      — **resolved: 90 days** per `docs/decisions/0005-garbage-collection-policy.md`;
+      enforced by the hourly prune in `services/relay/internal/tombstone/tombstone.go`
 - [ ] Local (Wi-Fi/LAN) endpoint security details (needed by Phase 11)
 - [ ] Pairing/QR format spec (needed by Phase 11)

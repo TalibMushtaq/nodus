@@ -8,9 +8,9 @@
     "node_id": {
       "type": "string"
     },
-    "sequence": {
+    "snapshot_sequence": {
       "type": "integer",
-      "minimum": 0,
+      "minimum": 1,
       "maximum": 9007199254740991
     },
     "total_chunks": {
@@ -26,16 +26,38 @@
     },
     "data_schema_version": {
       "type": "string"
+    },
+    "cursors": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "origin_id": {
+            "type": "string"
+          },
+          "sequence": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          }
+        },
+        "required": [
+          "origin_id",
+          "sequence"
+        ],
+        "additionalProperties": false
+      }
     }
   },
   "required": [
     "snapshot_id",
     "node_id",
-    "sequence",
+    "snapshot_sequence",
     "total_chunks",
     "content_hash",
     "signature",
-    "data_schema_version"
+    "data_schema_version",
+    "cursors"
   ],
   "additionalProperties": false
 }

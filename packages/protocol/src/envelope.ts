@@ -33,6 +33,7 @@ import {
   SnapshotChunkPayloadSchema,
   SnapshotEndPayloadSchema,
 } from "./messages/snapshot.js";
+import { RebuildRequiredPayloadSchema } from "./messages/rebuild.js";
 import { ErrorPayloadSchema } from "./errors.js";
 
 // ── Message type literals ──────────────────────────────────────────
@@ -64,6 +65,7 @@ export const MessageTypes = {
   SNAPSHOT_BEGIN: "snapshot_begin",
   SNAPSHOT_CHUNK: "snapshot_chunk",
   SNAPSHOT_END: "snapshot_end",
+  REBUILD_REQUIRED: "rebuild_required",
   ERROR: "error",
 } as const;
 
@@ -125,6 +127,7 @@ export const MessagePayloadSchemas: Record<string, z.ZodType> = {
   [MessageTypes.SNAPSHOT_BEGIN]: SnapshotBeginPayloadSchema,
   [MessageTypes.SNAPSHOT_CHUNK]: SnapshotChunkPayloadSchema,
   [MessageTypes.SNAPSHOT_END]: SnapshotEndPayloadSchema,
+  [MessageTypes.REBUILD_REQUIRED]: RebuildRequiredPayloadSchema,
   [MessageTypes.ERROR]: ErrorPayloadSchema,
 };
 
