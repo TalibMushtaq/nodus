@@ -15,7 +15,7 @@ func TestDataSchemaCompatible(t *testing.T) {
 		{"exact same", "1.0", true},
 		{"same major, patch ok", "1.0.4", true},
 		{"unknown minor", "1.0.0", true},
-		{"newer minor", "1.1", true},  // minor is advisory, not blocking
+		{"newer minor", "1.1", true}, // minor is advisory, not blocking
 		{"older major", "0.9", false},
 		{"newer major", "2.0", false},
 		{"garbage", "banana2", false},

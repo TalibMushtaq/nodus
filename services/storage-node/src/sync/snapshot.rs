@@ -77,8 +77,14 @@ async fn load_file_version_records(db: &SqlitePool) -> anyhow::Result<Vec<FileVe
             conflict_status: None,
             version_hash,
             shard_count,
-            encrypted_name: row.try_get::<Option<String>, _>("encrypted_name").ok().flatten(),
-            parent_folder_id: row.try_get::<Option<String>, _>("parent_folder_id").ok().flatten(),
+            encrypted_name: row
+                .try_get::<Option<String>, _>("encrypted_name")
+                .ok()
+                .flatten(),
+            parent_folder_id: row
+                .try_get::<Option<String>, _>("parent_folder_id")
+                .ok()
+                .flatten(),
         });
     }
 
@@ -142,10 +148,9 @@ async fn load_cursors(db: &SqlitePool) -> anyhow::Result<Vec<SyncCursor>> {
 /// checkpoint marker for the snapshot. Not authoritative for resuming sync
 /// (that's the per-origin cursor map), but useful for logging/debugging.
 pub async fn load_total_events_sequence(db: &SqlitePool) -> anyhow::Result<i64> {
-    let total: Option<i64> =
-        sqlx::query_scalar("SELECT MAX(last_sequence_seen) FROM sync_cursors")
-            .fetch_one(db)
-            .await?;
+    let total: Option<i64> = sqlx::query_scalar("SELECT MAX(last_sequence_seen) FROM sync_cursors")
+        .fetch_one(db)
+        .await?;
     Ok(total.unwrap_or(0))
 }
 
@@ -195,11 +200,12 @@ pub async fn build_snapshot(
     let mut chunk_index: i64 = 0;
 
     for record in file_records.into_iter().map(SnapshotRecord::FileVersion) {
-        if let Some(last) = chunks.last_mut() {
-            if last.record_type == "file_version" && last.records.len() < SNAPSHOT_CHUNK_MAX_RECORDS {
-                last.records.push(record);
-                continue;
-            }
+        if let Some(last) = chunks.last_mut()
+            && last.record_type == "file_version"
+            && last.records.len() < SNAPSHOT_CHUNK_MAX_RECORDS
+        {
+            last.records.push(record);
+            continue;
         }
         chunks.push(SnapshotChunkPayload {
             snapshot_id: String::new(),
@@ -211,13 +217,12 @@ pub async fn build_snapshot(
     }
 
     for record in tombstone_records.into_iter().map(SnapshotRecord::Tombstone) {
-        if let Some(last) = chunks.last_mut() {
-            if last.record_type == "tombstone"
-                && last.records.len() < SNAPSHOT_CHUNK_MAX_RECORDS
-            {
-                last.records.push(record);
-                continue;
-            }
+        if let Some(last) = chunks.last_mut()
+            && last.record_type == "tombstone"
+            && last.records.len() < SNAPSHOT_CHUNK_MAX_RECORDS
+        {
+            last.records.push(record);
+            continue;
         }
         chunks.push(SnapshotChunkPayload {
             snapshot_id: String::new(),
@@ -278,10 +283,11 @@ async fn bump_snapshot_counter(db: &SqlitePool) -> anyhow::Result<i64> {
     .execute(db)
     .await?;
 
-    let current: i64 =
-        sqlx::query_scalar("SELECT value FROM snapshot_counter WHERE counter_name = 'snapshot_sequence'")
-            .fetch_one(db)
-            .await?;
+    let current: i64 = sqlx::query_scalar(
+        "SELECT value FROM snapshot_counter WHERE counter_name = 'snapshot_sequence'",
+    )
+    .fetch_one(db)
+    .await?;
     Ok(current)
 }
 
@@ -293,15 +299,17 @@ mod tests {
 
     #[tokio::test]
     async fn test_build_snapshot_round_trip() {
-let dir = tempdir().unwrap();
+        let dir = tempdir().unwrap();
         let pool = db::open(dir.path()).await.unwrap();
         let identity = crate::identity::load_or_generate(dir.path()).unwrap();
 
         // Seed a file, a version, a tombstone, and a cursor.
-        sqlx::query("INSERT INTO files (file_id, created_at, updated_at) VALUES ('f1', 'now', 'now')")
-            .execute(&pool)
-            .await
-            .unwrap();
+        sqlx::query(
+            "INSERT INTO files (file_id, created_at, updated_at) VALUES ('f1', 'now', 'now')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
         sqlx::query(
             "INSERT INTO file_versions (file_id, version_number, version_hash, shard_count, created_at) VALUES ('f1', 1, 'hash1', 2, 'now')",
         )
@@ -353,11 +361,13 @@ let dir = tempdir().unwrap();
         // Insert 2500 versions spread across 2500 files to force multi-chunk.
         for i in 0..2500 {
             let fid = format!("f-{i}");
-            sqlx::query("INSERT INTO files (file_id, created_at, updated_at) VALUES (?, 'now', 'now')")
-                .bind(&fid)
-                .execute(&pool)
-                .await
-                .unwrap();
+            sqlx::query(
+                "INSERT INTO files (file_id, created_at, updated_at) VALUES (?, 'now', 'now')",
+            )
+            .bind(&fid)
+            .execute(&pool)
+            .await
+            .unwrap();
             sqlx::query(
                 "INSERT INTO file_versions (file_id, version_number, version_hash, shard_count, created_at) VALUES (?, 1, 'h', 1, 'now')",
             )
@@ -372,7 +382,11 @@ let dir = tempdir().unwrap();
         let total: usize = chunks.iter().map(|c| c.records.len()).sum();
         assert_eq!(total, 2500);
         assert_eq!(begin.total_chunks, 3);
-        assert!(chunks.iter().all(|c| c.records.len() <= SNAPSHOT_CHUNK_MAX_RECORDS));
+        assert!(
+            chunks
+                .iter()
+                .all(|c| c.records.len() <= SNAPSHOT_CHUNK_MAX_RECORDS)
+        );
         assert!(chunks.iter().all(|c| c.record_type == "file_version"));
     }
 }

@@ -153,10 +153,11 @@ impl SyncClient {
                             .await?;
                     }
                     // Phase 9: Relay asked for a full snapshot/rebuild (§20).
-                    "rebuild_required" => {
-                        if is_rebuild_required_for(&env.payload, &self.identity.node_id).is_some() {
-                            self.stream_snapshot(&mut write).await?;
-                        }
+                    "rebuild_required"
+                        if is_rebuild_required_for(&env.payload, &self.identity.node_id)
+                            .is_some() =>
+                    {
+                        self.stream_snapshot(&mut write).await?;
                     }
                     _ => {}
                 }
