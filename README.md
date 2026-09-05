@@ -149,4 +149,4 @@ Relay corrupted:        Storage Node -> Snapshot/Rebuild -> New Relay DB
 
 ## License
 
-TBD.
+MIT
