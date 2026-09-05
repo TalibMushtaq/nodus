@@ -150,3 +150,11 @@ Relay corrupted:        Storage Node -> Snapshot/Rebuild -> New Relay DB
 ## License
 
 MIT
+
+## Developer setup
+
+After cloning, install the git hooks:
+```bash
+make install-hooks
+```
+This runs `gofmt`, `rustfmt`, and `cargo clippy` before every push.

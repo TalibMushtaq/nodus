@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+echo "[pre-push] Checking gofmt..."
+GOFMT_OUT=$(gofmt -l services/relay/ services/api/ 2>/dev/null || true)
+if [ -n "$GOFMT_OUT" ]; then
+  echo "❌ gofmt failures (run 'gofmt -w .'):"
+  echo "$GOFMT_OUT"
+  exit 1
+fi
+echo "  ✓ gofmt OK"
+
+echo "[pre-push] Running cargo fmt check..."
+if [ -d services/storage-node ]; then
+  (cd services/storage-node && cargo fmt --check)
+  echo "  ✓ rustfmt OK"
+fi
+
+echo "[pre-push] Running cargo clippy..."
+if [ -d services/storage-node ]; then
+  (cd services/storage-node && cargo clippy -- -D warnings 2>&1 | tail -5)
+  echo "  ✓ clippy OK"
+fi
+
+echo "[pre-push] All checks passed."
