@@ -48,6 +48,9 @@ pub const LOCAL_PORT: u16 = 9378;
 pub struct LocalState {
     pub identity: Arc<NodeIdentity>,
     pub db: SqlitePool,
+    #[allow(dead_code)]
+    pub store: Arc<crate::store::ObjectStore>,
+    pub webrtc_manager: Arc<crate::webrtc::WebRtcManager>,
     pub nonces: Arc<NonceStore>,
     pub challenge_limiter: Arc<RateLimiter>,
     /// Derived Relay HTTP base (ws→http, /ws dropped), reused for the
@@ -106,9 +109,9 @@ struct PairConfirm {
 }
 
 #[derive(Serialize, Deserialize)]
-struct LocalError {
-    error: String,
-    message: String,
+pub struct LocalError {
+    pub error: String,
+    pub message: String,
 }
 
 /// Pairing-token row shape returned by the Relay's `/pairing/sessions/verify`.
@@ -127,6 +130,18 @@ pub fn make_router(state: LocalState) -> Router {
         .route("/nodus/challenge", post(challenge))
         .route("/nodus/auth", post(auth))
         .route("/nodus/pair", post(pair))
+        .route(
+            "/nodus/webrtc/offer",
+            post(crate::webrtc::handler::handle_offer),
+        )
+        .route(
+            "/nodus/webrtc/ice",
+            post(crate::webrtc::handler::handle_ice_candidate),
+        )
+        .route(
+            "/nodus/webrtc/ice-candidates",
+            get(crate::webrtc::handler::stream_ice_candidates),
+        )
         // Permissive CORS: the web client (a *browser* origin) must be able to
         // read /nodus/discovery and POST /nodus/*. mDNS TXT is spoofable and
         // the node has no notion of allowed origins in v1, so allow all — the
@@ -142,6 +157,7 @@ pub fn make_router(state: LocalState) -> Router {
 pub async fn spawn(
     identity: Arc<NodeIdentity>,
     db: SqlitePool,
+    store: Arc<crate::store::ObjectStore>,
     relay_url: Option<&str>,
 ) -> anyhow::Result<tokio::task::JoinHandle<()>> {
     let relay_http_base = relay_url.map(|u| {
@@ -152,9 +168,17 @@ pub async fn spawn(
             .to_string()
     });
 
+    let webrtc_manager = Arc::new(crate::webrtc::WebRtcManager::new(
+        db.clone(),
+        store.clone(),
+        identity.clone(),
+    ));
+
     let state = LocalState {
         identity,
         db,
+        store,
+        webrtc_manager,
         nonces: Arc::new(NonceStore::default()),
         challenge_limiter: Arc::new(RateLimiter::new(
             super::auth::CHALLENGE_RATE_WINDOW,
@@ -544,6 +568,16 @@ mod tests {
         let dir = tempdir().unwrap();
         let db = db::open(dir.path()).await.unwrap();
         let identity = Arc::new(identity::load_or_generate(dir.path()).unwrap());
+        let store = Arc::new(
+            crate::store::ObjectStore::new(dir.path().to_path_buf(), db.clone())
+                .await
+                .unwrap(),
+        );
+        let webrtc_manager = Arc::new(crate::webrtc::WebRtcManager::new(
+            db.clone(),
+            store.clone(),
+            identity.clone(),
+        ));
         let nonces = Arc::new(NonceStore::default());
         let challenge_limiter = Arc::new(RateLimiter::new(
             Duration::from_secs(10),
@@ -552,6 +586,8 @@ mod tests {
         let state = LocalState {
             identity: identity.clone(),
             db: db.clone(),
+            store,
+            webrtc_manager,
             nonces,
             challenge_limiter,
             relay_http_base: None,

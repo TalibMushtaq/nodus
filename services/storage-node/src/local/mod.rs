@@ -14,6 +14,7 @@ use std::sync::Arc;
 use sqlx::sqlite::SqlitePool;
 
 use crate::identity::NodeIdentity;
+use crate::store::ObjectStore;
 
 /// Start mDNS advertisement and the local HTTP listener.
 ///
@@ -24,11 +25,12 @@ use crate::identity::NodeIdentity;
 pub async fn spawn_local(
     identity: Arc<NodeIdentity>,
     db: SqlitePool,
+    store: Arc<ObjectStore>,
     relay_url: Option<&str>,
     port: u16,
 ) -> anyhow::Result<(mdns::MdnsAdvertiser, tokio::task::JoinHandle<()>)> {
     let mdns =
         mdns::MdnsAdvertiser::start(&identity.node_id, identity.public_key.as_bytes(), port)?;
-    let handle = server::spawn(identity, db, relay_url).await?;
+    let handle = server::spawn(identity, db, store, relay_url).await?;
     Ok((mdns, handle))
 }

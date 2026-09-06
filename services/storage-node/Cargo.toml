@@ -33,8 +33,11 @@ tower-http = { version = "0.6", features = ["cors"] }
 libmdns = "0.10"
 base64 = "0.22"
 
+webrtc = "0.13"
+tokio-stream = { version = "0.1", features = ["sync"] }
+async-trait = "0.1"
+
 [dev-dependencies]
 tempfile = "3"
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
-

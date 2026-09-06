@@ -124,6 +124,9 @@ func handleIncomingEnvelope(
 	ctx := context.Background()
 
 	switch env.Type {
+	case "webrtc_offer", "webrtc_answer", "webrtc_ice_candidate":
+		HandleWebRTCSignaling(ctx, c, env, h)
+
 	case "node_auth_response":
 		HandleNodeAuthResponse(ctx, c, env, pool, rClient, h)
 

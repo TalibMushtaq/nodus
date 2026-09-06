@@ -4,6 +4,7 @@ mod identity;
 mod local;
 mod store;
 pub mod sync;
+mod webrtc;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -89,14 +90,15 @@ async fn main() -> anyhow::Result<()> {
     // for the local-discovery verify-fallback derivation below.
     let sync_relay_url = relay_url.clone();
     let sync_identity_for_loop = Arc::clone(&sync_identity_arc);
+    let sync_store = store_arc.clone();
     let _sync_handle = tokio::spawn(async move {
         loop {
             let client = sync::client::SyncClient::new(
                 sync_relay_url.clone(),
                 sync_identity_for_loop.clone(),
                 sync_db.clone(),
-                store_arc.clone(), // Phase 10: buffer-fetch flow writes shards
-                500,               // batch size
+                sync_store.clone(), // Phase 10: buffer-fetch flow writes shards
+                500,                // batch size
             );
             match client.run_sync_session().await {
                 Ok(_) => {
@@ -119,6 +121,7 @@ async fn main() -> anyhow::Result<()> {
     let _local_services = match local::spawn_local(
         Arc::clone(&sync_identity_arc),
         db.clone(),
+        store_arc.clone(),
         Some(&relay_url),
         local::server::LOCAL_PORT,
     )

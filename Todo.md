@@ -150,10 +150,10 @@ Checkboxes are for tracking; nest sub-tasks as you break work down further.
 
 ## Phase 12 — WebRTC Direct Transfer
 
-- [ ] `packages/webrtc-transport`: peer connection, SDP offer/answer, ICE,
+- [x] `packages/webrtc-transport`: peer connection, SDP offer/answer, ICE,
       DataChannel, streaming
-- [ ] Path A (direct local signaling + WebRTC) — no Relay involved
-- [ ] Path B (Relay-mediated signaling + direct WebRTC) — Relay carries
+- [x] Path A (direct local signaling + WebRTC) — no Relay involved
+- [x] Path B (Relay-mediated signaling + direct WebRTC) — Relay carries
       SDP/ICE only, never file data
 
 ## Phase 13 — Transfer Manager

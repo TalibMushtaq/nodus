@@ -1,5 +1,5 @@
 {
-  "name": "@repo/relay-client",
+  "name": "@repo/webrtc-transport",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -28,7 +28,8 @@
     "vitest": "4.1.11"
   },
   "dependencies": {
-    "@noble/curves": "^1.9.7",
-    "@repo/protocol": "workspace:*"
+    "@noble/hashes": "^1.8.0",
+    "@repo/protocol": "workspace:*",
+    "@repo/relay-client": "workspace:*"
   }
 }

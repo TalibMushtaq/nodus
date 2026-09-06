@@ -200,6 +200,44 @@ func (h *Hub) SendToDevice(deviceID string, msg []byte) bool {
 	return false
 }
 
+// SendToPeer sends a message to a specific peer (node or device) if connected.
+func (h *Hub) SendToPeer(peerID string, msg []byte) bool {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	if client, ok := h.byNode[peerID]; ok {
+		select {
+		case client.Send <- msg:
+			return true
+		default:
+			log.Printf("[hub] warning: send buffer full for node=%s", peerID)
+			return false
+		}
+	}
+
+	if client, ok := h.byDevice[peerID]; ok {
+		select {
+		case client.Send <- msg:
+			return true
+		default:
+			log.Printf("[hub] warning: send buffer full for device=%s", peerID)
+			return false
+		}
+	}
+
+	if client, ok := h.clients[peerID]; ok {
+		select {
+		case client.Send <- msg:
+			return true
+		default:
+			log.Printf("[hub] warning: send buffer full for conn=%s", peerID)
+			return false
+		}
+	}
+
+	return false
+}
+
 // RefreshPresence resets the Redis TTL for this client.
 func (h *Hub) RefreshPresence(ctx context.Context, peerID string) {
 	if h.rdb != nil && peerID != "" {

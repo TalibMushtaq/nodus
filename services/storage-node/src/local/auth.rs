@@ -214,7 +214,7 @@ mod tests {
     #[tokio::test]
     async fn unknown_nonce_rejected() {
         let store = NonceStore::new(Duration::from_secs(30));
-        assert!(!store.consume(&"deadbeef".to_string()).await);
+        assert!(!store.consume("deadbeef").await);
     }
 
     #[test]
