@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "node_id": {
+      "type": "string"
+    },
+    "account_id": {
+      "type": "string"
+    },
+    "device_id": {
+      "type": "string"
+    },
+    "device_public_key": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "node_id"
+  ],
+  "additionalProperties": false
+}

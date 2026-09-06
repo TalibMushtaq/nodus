@@ -24,6 +24,16 @@ import {
   SnapshotChunkPayloadSchema,
   SnapshotEndPayloadSchema,
   RebuildRequiredPayloadSchema,
+  PairingTokenPushPayloadSchema,
+  PairingRequestPayloadSchema,
+  PairingConfirmPayloadSchema,
+  PairingRejectPayloadSchema,
+  LocalDiscoveryAdvertisementSchema,
+  LocalDiscoveryPingSchema,
+  LocalDiscoveryPongSchema,
+  LocalChallengePayloadSchema,
+  LocalChallengeResponsePayloadSchema,
+  LocalAuthResultPayloadSchema,
   ErrorPayloadSchema,
   EventPayloadSchema,
   CURRENT_SCHEMA_VERSION,
@@ -64,6 +74,20 @@ const entries: SchemaEntry[] = [
   { name: "snapshot_chunk", schema: SnapshotChunkPayloadSchema.toJSONSchema() },
   { name: "snapshot_end", schema: SnapshotEndPayloadSchema.toJSONSchema() },
   { name: "rebuild_required", schema: RebuildRequiredPayloadSchema.toJSONSchema() },
+  // Phase 11 — pairing_token_push is a WS message; the other pairing/local
+  // payloads are the Storage Node's local-HTTP contract (device ↔ node) and
+  // are emitted as reference schemas for Rust/Go mirroring even though they
+  // never appear in the WS envelope dispatch.
+  { name: "pairing_token_push", schema: PairingTokenPushPayloadSchema.toJSONSchema() },
+  { name: "pairing_request", schema: PairingRequestPayloadSchema.toJSONSchema() },
+  { name: "pairing_confirm", schema: PairingConfirmPayloadSchema.toJSONSchema() },
+  { name: "pairing_reject", schema: PairingRejectPayloadSchema.toJSONSchema() },
+  { name: "local_discovery_advertisement", schema: LocalDiscoveryAdvertisementSchema.toJSONSchema() },
+  { name: "local_discovery_ping", schema: LocalDiscoveryPingSchema.toJSONSchema() },
+  { name: "local_discovery_pong", schema: LocalDiscoveryPongSchema.toJSONSchema() },
+  { name: "local_challenge", schema: LocalChallengePayloadSchema.toJSONSchema() },
+  { name: "local_challenge_response", schema: LocalChallengeResponsePayloadSchema.toJSONSchema() },
+  { name: "local_auth_result", schema: LocalAuthResultPayloadSchema.toJSONSchema() },
   { name: "error", schema: ErrorPayloadSchema.toJSONSchema() },
   { name: "event", schema: EventPayloadSchema.toJSONSchema() },
 ];

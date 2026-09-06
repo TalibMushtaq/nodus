@@ -99,6 +99,16 @@ describe("parseMessage", () => {
     }
   });
 
+  it("accepts a patch-level schema version emitted by the Go/Rust peers", () => {
+    const raw = envelopePayload(MessageTypes.HEARTBEAT, {
+      id: "node-1",
+      timestamp: new Date().toISOString(),
+    });
+    raw.schema_version = "1.0.0";
+    const result = parseMessage(raw);
+    expect(result.ok).toBe(true);
+  });
+
   it("rejects a malformed schema_version string", () => {
     const raw = envelopePayload(MessageTypes.HEARTBEAT, {
       id: "node-1",

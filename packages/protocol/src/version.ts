@@ -19,15 +19,24 @@ export const DEFAULT_SNAPSHOT_CHUNK_SIZE = 256 * 1024;
 /** Branded type for schema version strings on the wire. */
 export type SchemaVersion = string & { readonly __schemaVersion: unique symbol };
 
-/** Zod schema for schema_version strings — must be major.minor format. */
+/**
+ * Zod schema for schema_version strings — major.minor, optionally followed by
+ * a `.patch` segment. The Rust Storage Node and Go Relay emit patch-level
+ * versions ("1.0.0"); the TS implementation has always used major.minor. Both
+ * interop on the same major version, so accept the trailing segment instead of
+ * rejecting real peer traffic (Phase 11 relay-client depends on this).
+ */
 export const SchemaVersionSchema = z
   .string()
-  .regex(/^\d+\.\d+$/, 'schema_version must be in major.minor format (e.g. "1.0")')
+  .regex(
+    /^\d+\.\d+(\.\d+)?$/,
+    'schema_version must be in major.minor format (e.g. "1.0"; a trailing .patch is tolerated)',
+  )
   .brand<SchemaVersion>();
 
-/** Parse a raw string into a structured SchemaVersion. */
+/** Parse a raw string into a structured SchemaVersion (ignores patch). */
 export function parseVersion(raw: string): { major: number; minor: number } {
-  const match = raw.match(/^(\d+)\.(\d+)$/);
+  const match = raw.match(/^(\d+)\.(\d+)(?:\.\d+)?$/);
   if (!match) {
     throw new Error(
       `parseVersion: invalid schema version "${raw}", expected major.minor format`,

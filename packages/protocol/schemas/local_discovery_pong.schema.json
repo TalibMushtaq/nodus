@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "node_id": {
+      "type": "string"
+    },
+    "public_key": {
+      "type": "string"
+    },
+    "schema_version": {
+      "type": "string"
+    },
+    "pk_fp": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "node_id",
+    "public_key",
+    "schema_version"
+  ],
+  "additionalProperties": false
+}

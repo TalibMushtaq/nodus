@@ -34,6 +34,11 @@ import {
   SnapshotEndPayloadSchema,
 } from "./messages/snapshot.js";
 import { RebuildRequiredPayloadSchema } from "./messages/rebuild.js";
+// Phase 11: only the pairing_token_push payload travels over the Relay↔Node
+// WS; the local-discovery/local-auth and remaining pairing payloads are HTTP
+// bodies on the node's local listener and intentionally absent from this
+// registry (see docs/protocol/local-discovery.md).
+import { PairingTokenPushPayloadSchema } from "./messages/pairing.js";
 import { ErrorPayloadSchema } from "./errors.js";
 
 // ── Message type literals ──────────────────────────────────────────
@@ -66,6 +71,7 @@ export const MessageTypes = {
   SNAPSHOT_CHUNK: "snapshot_chunk",
   SNAPSHOT_END: "snapshot_end",
   REBUILD_REQUIRED: "rebuild_required",
+  PAIRING_TOKEN_PUSH: "pairing_token_push",
   ERROR: "error",
 } as const;
 
@@ -128,6 +134,7 @@ export const MessagePayloadSchemas: Record<string, z.ZodType> = {
   [MessageTypes.SNAPSHOT_CHUNK]: SnapshotChunkPayloadSchema,
   [MessageTypes.SNAPSHOT_END]: SnapshotEndPayloadSchema,
   [MessageTypes.REBUILD_REQUIRED]: RebuildRequiredPayloadSchema,
+  [MessageTypes.PAIRING_TOKEN_PUSH]: PairingTokenPushPayloadSchema,
   [MessageTypes.ERROR]: ErrorPayloadSchema,
 };
 

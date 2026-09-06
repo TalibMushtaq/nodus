@@ -3,7 +3,10 @@
   "version": "1.0.0",
   "main": "index.ts",
   "dependencies": {
+    "@repo/relay-client": "workspace:*",
     "expo": "~57.0.18",
+    "expo-network": "~57.0.1",
+    "expo-secure-store": "~57.0.3",
     "expo-status-bar": "~57.0.1",
     "react": "19.2.3",
     "react-native": "0.86.3"
@@ -17,6 +20,8 @@
     "android": "expo start --android",
     "ios": "expo start --ios",
     "web": "expo start --web",
+    "build": "expo export --platform android",
+    "check-types": "tsc --noEmit",
     "test": "echo \"No tests yet\" && exit 0"
   },
   "private": true

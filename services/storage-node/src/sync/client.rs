@@ -10,8 +10,8 @@ use super::outbox::{drain_unsynced_events, mark_events_synced};
 use super::snapshot::is_rebuild_required_for;
 use super::types::{
     BatchAckPayload, EventBatchPayload, NodeAuthChallengePayload, NodeAuthResponsePayload,
-    NodeAuthResultPayload, PendingNotifyPayload, ProtocolEnvelope, RegisterPayload,
-    ShardAckPayload, SyncCursor, SyncHelloPayload, SyncStatusPayload,
+    NodeAuthResultPayload, PairingTokenPushPayload, PendingNotifyPayload, ProtocolEnvelope,
+    RegisterPayload, ShardAckPayload, SyncCursor, SyncHelloPayload, SyncStatusPayload,
 };
 use crate::identity::NodeIdentity;
 use crate::store::ObjectStore;
@@ -224,6 +224,13 @@ impl SyncClient {
                         let n: PendingNotifyPayload = serde_json::from_value(env.payload)?;
                         self.handle_pending_notify(&mut write, n).await?;
                     }
+                    // Phase 11: the Relay issued a pairing token for this node —
+                    // persist it so /nodus/pair can redeem locally (fast path),
+                    // even if the device scans the QR while the Relay is down.
+                    "pairing_token_push" => {
+                        let push: PairingTokenPushPayload = serde_json::from_value(env.payload)?;
+                        store_pairing_token(&self.db, &push).await?;
+                    }
                     _ => {}
                 }
             }
@@ -422,6 +429,40 @@ impl SyncClient {
 
         Ok(())
     }
+}
+
+/// Persist a Relay-pushed pairing token so `/nodus/pair` can redeem it locally.
+///
+/// Drops pushes aimed at a *different* node id, and rejects keys that fail to
+/// decode as base64 (a malformed push is a programming error upstream, not a
+/// reason to fail the whole sync session). Upserting on the token keeps the
+/// row's expiry fresh if the Relay ever re-pushes a token.
+async fn store_pairing_token(
+    db: &SqlitePool,
+    push: &PairingTokenPushPayload,
+) -> anyhow::Result<()> {
+    use base64::Engine;
+
+    let device_pubkey =
+        match base64::engine::general_purpose::STANDARD.decode(&push.device_public_key) {
+            Ok(bytes) if bytes.len() == 32 => bytes,
+            _ => return Ok(()),
+        };
+
+    sqlx::query(
+        "INSERT INTO pairing_sessions (token, device_public_key, node_id, issued_at, expires_at)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(token) DO UPDATE SET expires_at = excluded.expires_at",
+    )
+    .bind(&push.token)
+    .bind(&device_pubkey)
+    .bind(&push.node_id)
+    .bind(chrono::Utc::now().to_rfc3339())
+    .bind(&push.expires_at)
+    .execute(db)
+    .await?;
+
+    Ok(())
 }
 
 #[cfg(test)]

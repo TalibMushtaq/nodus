@@ -41,6 +41,19 @@ pub struct NodeAuthResultPayload {
     pub message: Option<String>,
 }
 
+/// Phase 11: Relay → Node delivery of a freshly issued pairing token. The
+/// node stores it in `pairing_sessions` so the device's `/nodus/pair` call
+/// can redeem it locally without a round trip to the Relay.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PairingTokenPushPayload {
+    pub node_id: String,
+    pub token: String,
+    /// Raw Ed25519 public key the token is bound to, **base64-encoded**.
+    pub device_public_key: String,
+    /// RFC3339 instant after which the token is invalid.
+    pub expires_at: String,
+}
+
 /// Node → Relay: identity registration. The Relay keys pending-buffer delivery
 /// on node_id, so the node must register before it can receive pending_notify.
 #[derive(Debug, Clone, Serialize, Deserialize)]

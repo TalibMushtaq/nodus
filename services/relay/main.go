@@ -107,6 +107,12 @@ func main() {
 		mux.Handle("POST /nodes/register", auth.RequireAuth(cfg)(handler.RegisterNode(pool)))
 		mux.Handle("GET /nodes", auth.RequireAuth(cfg)(handler.ListNodes(pool)))
 
+		// Phase 11: pairing session issuance (device-bound tokens pushed to the
+		// node over WS) plus the node's + client's open verification endpoints.
+		mux.Handle("POST /pairing/sessions", auth.RequireAuth(cfg)(handler.CreatePairingSession(pool, wsHub)))
+		mux.HandleFunc("POST /pairing/sessions/verify", handler.VerifyPairingSession(pool))
+		mux.HandleFunc("GET /nodes/verify", handler.VerifyNodeURL(pool))
+
 		// Phase 9: trigger a full snapshot / Relay rebuild from the primary node
 		mux.Handle("POST /rebuild", auth.RequireAuth(cfg)(handler.RequestRebuild(pool, wsHub)))
 

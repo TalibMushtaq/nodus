@@ -142,6 +142,39 @@ export {
   type RebuildRequiredPayload,
 } from "./messages/rebuild.js";
 
+// ── Phase 11: Pairing (WS: pairing_token_push only) ─────────────────
+
+export {
+  PairingRequestPayloadSchema,
+  type PairingRequestPayload,
+  PairingConfirmPayloadSchema,
+  type PairingConfirmPayload,
+  PairingRejectPayloadSchema,
+  type PairingRejectPayload,
+  PairingTokenPushPayloadSchema,
+  type PairingTokenPushPayload,
+} from "./messages/pairing.js";
+
+// ── Phase 11: Local discovery + auth (HTTP-only contracts) ──────────
+
+export {
+  LocalDiscoveryAdvertisementSchema,
+  type LocalDiscoveryAdvertisement,
+  LocalDiscoveryPingSchema,
+  type LocalDiscoveryPing,
+  LocalDiscoveryPongSchema,
+  type LocalDiscoveryPong,
+} from "./messages/local-discovery.js";
+
+export {
+  LocalChallengePayloadSchema,
+  type LocalChallengePayload,
+  LocalChallengeResponsePayloadSchema,
+  type LocalChallengeResponsePayload,
+  LocalAuthResultPayloadSchema,
+  type LocalAuthResultPayload,
+} from "./messages/local-auth.js";
+
 // ── Event types ────────────────────────────────────────────────────
 
 export {

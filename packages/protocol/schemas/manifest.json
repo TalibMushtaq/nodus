@@ -24,6 +24,16 @@
     "snapshot_chunk": "snapshot_chunk.schema.json",
     "snapshot_end": "snapshot_end.schema.json",
     "rebuild_required": "rebuild_required.schema.json",
+    "pairing_token_push": "pairing_token_push.schema.json",
+    "pairing_request": "pairing_request.schema.json",
+    "pairing_confirm": "pairing_confirm.schema.json",
+    "pairing_reject": "pairing_reject.schema.json",
+    "local_discovery_advertisement": "local_discovery_advertisement.schema.json",
+    "local_discovery_ping": "local_discovery_ping.schema.json",
+    "local_discovery_pong": "local_discovery_pong.schema.json",
+    "local_challenge": "local_challenge.schema.json",
+    "local_challenge_response": "local_challenge_response.schema.json",
+    "local_auth_result": "local_auth_result.schema.json",
     "error": "error.schema.json",
     "event": "event.schema.json"
   }

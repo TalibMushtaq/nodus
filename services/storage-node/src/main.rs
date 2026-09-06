@@ -1,6 +1,7 @@
 mod config;
 mod db;
 mod identity;
+mod local;
 mod store;
 pub mod sync;
 
@@ -84,11 +85,15 @@ async fn main() -> anyhow::Result<()> {
     let relay_url =
         std::env::var("NODUS_RELAY_URL").unwrap_or_else(|_| "ws://127.0.0.1:8080/ws".to_string());
 
+    // The sync loop owns its own copy of the relay URL; the original is kept
+    // for the local-discovery verify-fallback derivation below.
+    let sync_relay_url = relay_url.clone();
+    let sync_identity_for_loop = Arc::clone(&sync_identity_arc);
     let _sync_handle = tokio::spawn(async move {
         loop {
             let client = sync::client::SyncClient::new(
-                relay_url.clone(),
-                sync_identity_arc.clone(),
+                sync_relay_url.clone(),
+                sync_identity_for_loop.clone(),
                 sync_db.clone(),
                 store_arc.clone(), // Phase 10: buffer-fetch flow writes shards
                 500,               // batch size
@@ -104,6 +109,23 @@ async fn main() -> anyhow::Result<()> {
             tokio::time::sleep(Duration::from_secs(5)).await;
         }
     });
+
+    // Phase 11: Local discovery mDNS advertisement + HTTP listener for
+    // pairing and challenge-response auth. Shares the node identity; the
+    // relay URL is passed along only to derive the pairing-verify fallback.
+    // mDNS binds multicast sockets on startup; a best-effort failure should
+    // not brick an otherwise-healthy node, so log and continue without local
+    // discovery rather than aborting the process.
+    if let Err(e) = local::spawn_local(
+        Arc::clone(&sync_identity_arc),
+        db.clone(),
+        Some(&relay_url),
+        local::server::LOCAL_PORT,
+    )
+    .await
+    {
+        eprintln!("warning: local discovery disabled: {e}");
+    }
 
     println!("storage node running. Press Ctrl+C to stop.");
     tokio::signal::ctrl_c()

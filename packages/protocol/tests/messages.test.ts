@@ -368,5 +368,118 @@ describe("message catalog round-trips", () => {
     );
     expect(r.ok).toBe(true);
   });
+
+  // ── Phase 11: pairing_token_push is the only new WS-registered message ──
+
+  it("pairing_token_push", () => {
+    const r = parseMessage(
+      msg(MessageTypes.PAIRING_TOKEN_PUSH, {
+        node_id: "node-1",
+        token: "tok-123",
+        device_public_key: "a".repeat(64),
+        expires_at: "2026-09-06T12:00:00Z",
+      }),
+    );
+    expect(r.ok).toBe(true);
+  });
+
+  it("pairing_token_push rejects non-datetime expires_at", () => {
+    const r = parseMessage(
+      msg(MessageTypes.PAIRING_TOKEN_PUSH, {
+        node_id: "node-1",
+        token: "tok-123",
+        device_public_key: "a".repeat(64),
+        expires_at: "not-a-date",
+      }),
+    );
+    expect(r.ok).toBe(false);
+  });
+});
+
+// ── Phase 11: HTTP-only payloads validate directly (not via WS dispatch) ──
+
+import {
+  LocalAuthResultPayloadSchema,
+  LocalChallengePayloadSchema,
+  LocalChallengeResponsePayloadSchema,
+  LocalDiscoveryAdvertisementSchema,
+  LocalDiscoveryPongSchema,
+  PairingConfirmPayloadSchema,
+  PairingRejectPayloadSchema,
+  PairingRequestPayloadSchema,
+} from "../src/index.js";
+
+describe("phase 11 local-HTTP contracts validate directly", () => {
+  it("local discovery advertisement", () => {
+    const ok = LocalDiscoveryAdvertisementSchema.safeParse({
+      node_id: "node-1",
+      public_key: "a".repeat(64),
+      schema_version: "1.0",
+      pk_fp: "deadbeef",
+    });
+    expect(ok.success).toBe(true);
+  });
+
+  it("local discovery pong is a strict advertisement", () => {
+    // strict() rejects unknown keys — keeps node/client contract tight.
+    const ok = LocalDiscoveryPongSchema.safeParse({
+      node_id: "node-1",
+      public_key: "a".repeat(64),
+      schema_version: "1.0",
+      extra: "nope",
+    });
+    expect(ok.success).toBe(false);
+  });
+
+  it("local challenge + response round-trip", () => {
+    const challenge = LocalChallengePayloadSchema.parse({
+      nonce: "0123456789abcdef0123456789abcdef",
+      ttl_seconds: 30,
+    });
+    const resp = LocalChallengeResponsePayloadSchema.parse({
+      device_id: "dev-1",
+      nonce: "0123456789abcdef0123456789abcdef",
+      signature: "sig".repeat(16),
+    });
+    const result = LocalAuthResultPayloadSchema.parse({
+      status: "ok",
+      node_id: "node-1",
+    });
+    expect(challenge.nonce).toHaveLength(32);
+    expect(resp.nonce).toHaveLength(32);
+    expect(resp.signature).toBe("sig".repeat(16));
+    expect(result.status).toBe("ok");
+  });
+
+  it("pairing request/confirm/reject shapes", () => {
+    const req = PairingRequestPayloadSchema.parse({
+      node_id: "node-1",
+      token: "tok-123",
+      device_public_key: "a".repeat(64),
+      device_id: "dev-1",
+    });
+    const confirm = PairingConfirmPayloadSchema.parse({
+      node_id: "node-1",
+      account_id: "acc-1",
+      device_id: "dev-1",
+      device_public_key: "a".repeat(64),
+    });
+    const reject = PairingRejectPayloadSchema.parse({
+      node_id: "node-1",
+      reason: "token_consumed",
+      message: "already used",
+    });
+    expect(req.token).toBe("tok-123");
+    expect(confirm.device_public_key).toBe("a".repeat(64));
+    expect(reject.reason).toBe("token_consumed");
+  });
+
+  it("pairing request requires device_public_key", () => {
+    const ok = PairingRequestPayloadSchema.safeParse({
+      node_id: "node-1",
+      token: "tok-123",
+    });
+    expect(ok.success).toBe(false);
+  });
 });
 
