@@ -110,7 +110,7 @@ export async function sendShard(
 
     const end = Math.min(offset + CHUNK_SIZE, total);
     const chunk = opts.data.subarray(offset, end);
-    channel.send(chunk as unknown as ArrayBufferView);
+    channel.send(chunk as unknown as ArrayBufferView<ArrayBuffer>);
     offset = end;
     opts.onProgress?.(offset, total);
   }

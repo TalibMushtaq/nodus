@@ -133,7 +133,7 @@ export function createRelaySignalingChannel(
   wsClient: RelayWsClient,
   fromPeer: string,
   toPeer: string,
-): SignalingChannel {
+): SignalingChannel & { handleMessage: (parsed: ParseResult) => void } {
   let onAnswerCb: ((sdp: string) => void) | null = null;
   let onIceCandidateCb: ((candidate: string) => void) | null = null;
 
