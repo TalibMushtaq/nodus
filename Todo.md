@@ -131,8 +131,7 @@ Checkboxes are for tracking; nest sub-tasks as you break work down further.
 
 ## Phase 10 — Buffer-and-Relay Transfer (Path C)
 
-- [x] Client → Relay buffer upload (`POST /buffer/upload` — Relay handler; client-side
-      caller in `packages/relay-client` still pending)
+- [x] Client → Relay buffer upload (`POST /buffer/upload` — Relay handler completed)
 - [x] Relay → Storage Node asynchronous delivery when node comes online
       (`GET /buffer/fetch` + `pending_notify` over WS; node pulls, verifies, commits)
 - [x] Node verify + commit → Relay deletes temp copy (`shard_ack` `verified`/`failed`;
@@ -140,19 +139,14 @@ Checkboxes are for tracking; nest sub-tasks as you break work down further.
 - [x] File state machine transitions: CREATED → UPLOADING → RELAY_BUFFERED →
       NODE_RECEIVING → NODE_VERIFIED → NODE_STORED → RELAY_CLEANUP (§23) — enforced in
       Relay `file_locations.status`, no state collapsing
-- [ ] Client-side uploader integration (`packages/relay-client`): shard the encrypted
-      stream, emit sync events, and POST each shard so Path C is usable from the app
-- [ ] Wire-level e2e: real Rust `run_sync_session` against a live Relay + client uploader
+*(Note: Client-side integration and E2E moved to Phases 14/15)*
 
 ## Phase 11 — Local Discovery & Node Authentication
 
 - [x] mDNS advertisement (Rust node)
-- [ ] mDNS discovery (clients)
 - [x] First-time pairing flow (Node/Relay infrastructure): account auth → Relay auth → pair node (fast path + fallback)
-- [ ] First-time pairing flow (Client UI): establish identities, QR-based where possible (§7)
 - [x] Subsequent offline auth (Node infrastructure): known Node ID? → challenge-response → verify signature → authenticated
-- [ ] Apply Phase 0 mobile-discovery decision (foreground/background policy,
-      Expo vs. native)
+*(Note: UI flows, mDNS discovery, and mobile policies moved to Phases 14/15)*
 
 ## Phase 12 — WebRTC Direct Transfer
 
@@ -172,17 +166,22 @@ Checkboxes are for tracking; nest sub-tasks as you break work down further.
       conditions (not just LAN-in-a-lab) before locking it in
 
 ## Phase 14 — Next.js Web Client
-
-- [ ] `packages/relay-client`: WebSocket connection, reconnection, heartbeats,
-      message routing, presence
+ 
+- [ ] Scaffold Next.js application structure
+- [ ] `packages/relay-client`: WebSocket connection, reconnection, heartbeats, message routing, presence
+- [ ] Client-side uploader integration (Path C): shard the encrypted stream, emit sync events, and POST shards
+- [ ] Wire-level e2e: real Rust `run_sync_session` against a live Relay + Next.js client uploader
+- [ ] First-time pairing flow (Web UI): establish identities, render QR-based pairing UI
 - [ ] Client local DB (cached catalog, credentials, trusted nodes, sync state)
-- [ ] Browser-specific WebRTC/mDNS handling, with fallback UX when local
-      network access is unavailable
-
+- [ ] Browser-specific WebRTC/mDNS handling, with fallback UX when local network access is unavailable
+ 
 ## Phase 15 — Expo Mobile Client
-
-- [ ] Reuse `packages/sdk` where portable; native/mobile-specific pieces
-      per Phase 0 decision
+ 
+- [ ] Scaffold Expo application structure
+- [ ] Reuse `packages/sdk` where portable; native/mobile-specific pieces per Phase 0 decision
+- [ ] mDNS discovery (Mobile) & Path A/B fallback logic
+- [ ] First-time pairing flow (Mobile UI): QR-based scanner and pairing screens
+- [ ] Apply Phase 0 mobile-discovery decision (foreground/background policy, Expo vs. native)
 - [ ] Local network permission prompt handling + denial fallback UX (§7a)
 
 ## Phase 16 — Device / Key Recovery
