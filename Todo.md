@@ -146,11 +146,11 @@ Checkboxes are for tracking; nest sub-tasks as you break work down further.
 
 ## Phase 11 — Local Discovery & Node Authentication
 
-- [ ] mDNS advertisement (Rust node) + discovery (clients)
-- [ ] First-time pairing flow: account auth → Relay auth → pair node →
-      establish identities, QR-based where possible (§7)
-- [ ] Subsequent offline auth: known Node ID? → challenge-response →
-      verify signature → authenticated
+- [x] mDNS advertisement (Rust node)
+- [ ] mDNS discovery (clients)
+- [x] First-time pairing flow (Node/Relay infrastructure): account auth → Relay auth → pair node (fast path + fallback)
+- [ ] First-time pairing flow (Client UI): establish identities, QR-based where possible (§7)
+- [x] Subsequent offline auth (Node infrastructure): known Node ID? → challenge-response → verify signature → authenticated
 - [ ] Apply Phase 0 mobile-discovery decision (foreground/background policy,
       Expo vs. native)
 
@@ -230,5 +230,5 @@ but should be resolved before the phase that depends on them:
 - [x] Tombstone retention window — final number (needed by Phase 9, informs §29a)
       — **resolved: 90 days** per `docs/decisions/0005-garbage-collection-policy.md`;
       enforced by the hourly prune in `services/relay/internal/tombstone/tombstone.go`
-- [ ] Local (Wi-Fi/LAN) endpoint security details (needed by Phase 11)
+- [x] Local (Wi-Fi/LAN) endpoint security details (needed by Phase 11) — **resolved in Phase 11**; implemented rate limiting, nonce caps, and node_id cross-checking.
 - [ ] Pairing/QR format spec (needed by Phase 11)
