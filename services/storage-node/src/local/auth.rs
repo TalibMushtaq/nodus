@@ -103,7 +103,10 @@ impl RateLimiter {
         let mut guard = self.hits.lock().await;
         let now = Instant::now();
         let entry = guard.entry(ip).or_default();
-        while entry.front().is_some_and(|t| now.duration_since(*t) >= self.window) {
+        while entry
+            .front()
+            .is_some_and(|t| now.duration_since(*t) >= self.window)
+        {
             entry.pop_front();
         }
         if entry.len() >= self.max_per_window {
@@ -196,10 +199,16 @@ mod tests {
         assert!(rl.check_and_record(ip).await);
         assert!(rl.check_and_record(ip).await);
         assert!(rl.check_and_record(ip).await);
-        assert!(!rl.check_and_record(ip).await, "4th request must be blocked");
+        assert!(
+            !rl.check_and_record(ip).await,
+            "4th request must be blocked"
+        );
 
         let other_ip: IpAddr = "192.168.1.1".parse().unwrap();
-        assert!(rl.check_and_record(other_ip).await, "other IP is unaffected");
+        assert!(
+            rl.check_and_record(other_ip).await,
+            "other IP is unaffected"
+        );
     }
 
     #[tokio::test]

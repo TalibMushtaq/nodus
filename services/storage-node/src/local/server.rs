@@ -353,7 +353,11 @@ async fn pair(
         }
 
         // Defence-in-depth: confirm the Relay's response is for *this* node.
-        if relay.node_id.as_deref().is_some_and(|id| id != state.identity.node_id) {
+        if relay
+            .node_id
+            .as_deref()
+            .is_some_and(|id| id != state.identity.node_id)
+        {
             return Err(LocalError {
                 error: "wrong_node".into(),
                 message: "relay verified token for a different node".into(),
@@ -617,7 +621,9 @@ mod tests {
             .method("POST")
             .body(Body::empty())
             .unwrap();
-        req2.extensions_mut().insert(ConnectInfo("192.168.1.51:54321".parse::<SocketAddr>().unwrap()));
+        req2.extensions_mut().insert(ConnectInfo(
+            "192.168.1.51:54321".parse::<SocketAddr>().unwrap(),
+        ));
         let resp2 = app.oneshot(req2).await.unwrap();
         assert_eq!(resp2.status(), StatusCode::OK);
     }
@@ -634,7 +640,7 @@ mod tests {
         // Seed the device in DB as ACTIVE
         sqlx::query(
             "INSERT INTO devices (device_id, public_key_bytes, status, created_at, paired_at)
-             VALUES (?, ?, 'ACTIVE', 'now', 'now')"
+             VALUES (?, ?, 'ACTIVE', 'now', 'now')",
         )
         .bind(device_id)
         .bind(&device_pubkey[..])
@@ -740,24 +746,22 @@ mod tests {
         assert_eq!(json["device_public_key"], hex::encode(device_pubkey));
 
         // Verify DB row is updated in devices table
-        let row: (Vec<u8>, String) = sqlx::query_as(
-            "SELECT public_key_bytes, status FROM devices WHERE device_id = ?"
-        )
-        .bind(device_id)
-        .fetch_one(&db)
-        .await
-        .unwrap();
+        let row: (Vec<u8>, String) =
+            sqlx::query_as("SELECT public_key_bytes, status FROM devices WHERE device_id = ?")
+                .bind(device_id)
+                .fetch_one(&db)
+                .await
+                .unwrap();
         assert_eq!(row.0, device_pubkey);
         assert_eq!(row.1, "ACTIVE");
 
         // Verify pairing_sessions is marked consumed
-        let consumed_at: Option<String> = sqlx::query_scalar(
-            "SELECT consumed_at FROM pairing_sessions WHERE token = ?"
-        )
-        .bind(token)
-        .fetch_one(&db)
-        .await
-        .unwrap();
+        let consumed_at: Option<String> =
+            sqlx::query_scalar("SELECT consumed_at FROM pairing_sessions WHERE token = ?")
+                .bind(token)
+                .fetch_one(&db)
+                .await
+                .unwrap();
         assert!(consumed_at.is_some());
 
         // 2. Second use must be rejected (token_consumed)
@@ -819,8 +823,12 @@ mod tests {
     async fn test_pair_fast_path_key_mismatch_rejected() {
         let (app, db, identity, _dir) = setup_test_server().await;
 
-        let bound_key = SigningKey::from_bytes(&[1u8; 32]).verifying_key().to_bytes();
-        let other_key = SigningKey::from_bytes(&[2u8; 32]).verifying_key().to_bytes();
+        let bound_key = SigningKey::from_bytes(&[1u8; 32])
+            .verifying_key()
+            .to_bytes();
+        let other_key = SigningKey::from_bytes(&[2u8; 32])
+            .verifying_key()
+            .to_bytes();
         let other_key_b64 = base64::engine::general_purpose::STANDARD.encode(other_key);
         let token = "test-bound-key-token";
         let expires_at = (chrono::Utc::now() + chrono::Duration::minutes(15)).to_rfc3339();
