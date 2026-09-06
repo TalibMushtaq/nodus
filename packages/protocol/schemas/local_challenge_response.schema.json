@@ -5,12 +5,16 @@
     "device_id": {
       "type": "string"
     },
+    "nonce": {
+      "type": "string"
+    },
     "signature": {
       "type": "string"
     }
   },
   "required": [
     "device_id",
+    "nonce",
     "signature"
   ],
   "additionalProperties": false

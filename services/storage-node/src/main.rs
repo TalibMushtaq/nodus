@@ -116,7 +116,7 @@ async fn main() -> anyhow::Result<()> {
     // mDNS binds multicast sockets on startup; a best-effort failure should
     // not brick an otherwise-healthy node, so log and continue without local
     // discovery rather than aborting the process.
-    if let Err(e) = local::spawn_local(
+    let _local_services = match local::spawn_local(
         Arc::clone(&sync_identity_arc),
         db.clone(),
         Some(&relay_url),
@@ -124,8 +124,12 @@ async fn main() -> anyhow::Result<()> {
     )
     .await
     {
-        eprintln!("warning: local discovery disabled: {e}");
-    }
+        Ok(services) => Some(services),
+        Err(e) => {
+            eprintln!("warning: local discovery disabled: {e}");
+            None
+        }
+    };
 
     println!("storage node running. Press Ctrl+C to stop.");
     tokio::signal::ctrl_c()

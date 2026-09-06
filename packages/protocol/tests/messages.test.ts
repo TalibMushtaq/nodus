@@ -378,6 +378,7 @@ describe("message catalog round-trips", () => {
         token: "tok-123",
         device_public_key: "a".repeat(64),
         expires_at: "2026-09-06T12:00:00Z",
+        account_id: "acc-1",
       }),
     );
     expect(r.ok).toBe(true);

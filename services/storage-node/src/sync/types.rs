@@ -52,6 +52,7 @@ pub struct PairingTokenPushPayload {
     pub device_public_key: String,
     /// RFC3339 instant after which the token is invalid.
     pub expires_at: String,
+    pub account_id: String,
 }
 
 /// Node → Relay: identity registration. The Relay keys pending-buffer delivery

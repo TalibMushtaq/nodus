@@ -183,13 +183,13 @@ export class NodeClient {
       );
     }
     if (!res.ok) {
-let parsed: NodeErrorBody;
-    try {
-      parsed = (await res.json()) as NodeErrorBody;
-    } catch {
-      // Keep the raw text; a non-JSON error is still informative.
-      parsed = { message: (await res.text().catch(() => "")) || undefined };
-    }
+      let parsed: NodeErrorBody;
+      try {
+        parsed = (await res.json()) as NodeErrorBody;
+      } catch {
+        // Keep the raw text; a non-JSON error is still informative.
+        parsed = { message: (await res.text().catch(() => "")) || undefined };
+      }
       throw new NodeClientError(
         parsed.error ?? "http_error",
         parsed.message ?? `HTTP ${res.status}`,

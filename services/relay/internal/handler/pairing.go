@@ -43,6 +43,7 @@ type PairingTokenPushPayload struct {
 	Token           string `json:"token"`
 	DevicePublicKey string `json:"device_public_key"`
 	ExpiresAt       string `json:"expires_at"`
+	AccountID       string `json:"account_id"`
 }
 
 // How long a pairing token stays redeemable. Mirrors docs/security endpoints.
@@ -123,6 +124,7 @@ func CreatePairingSession(pool *db.Pool, wsHub *hub.Hub) http.HandlerFunc {
 			Token:           token,
 			DevicePublicKey: devicePublicKey,
 			ExpiresAt:       expiresAt.UTC().Format(time.RFC3339),
+			AccountID:       accountID,
 		}
 		payload, _ := json.Marshal(push)
 		envelope := ProtocolEnvelope{

@@ -73,6 +73,7 @@ export const PairingTokenPushPayloadSchema = z.object({
   token: z.string(),
   device_public_key: z.string(),
   expires_at: z.string().datetime(),
+  account_id: z.string(),
 });
 
 export type PairingTokenPushPayload = z.infer<typeof PairingTokenPushPayloadSchema>;

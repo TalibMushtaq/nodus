@@ -6,7 +6,8 @@
 //! `docs/security/local-endpoints.md` — a nonce can never be replayed, even if
 //! the client tries.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
+use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
 use anyhow::Context;
@@ -17,12 +18,20 @@ use tokio::sync::Mutex;
 /// Mirrors the 30s window documented for `POST /nodus/challenge`.
 pub const NONCE_TTL: Duration = Duration::from_secs(30);
 
+/// Max /nodus/challenge requests allowed per IP within the rate window.
+pub const CHALLENGE_RATE_LIMIT: usize = 10;
+/// Sliding window for the challenge endpoint rate limiter.
+pub const CHALLENGE_RATE_WINDOW: Duration = Duration::from_secs(10);
+/// Hard cap on outstanding unconsumed nonces across all clients.
+pub const NONCE_OUTSTANDING_CAP: usize = 500;
+
 /// In-memory single-use nonce registry. Held behind a tokio mutex because the
 /// challenge endpoint and every concurrent auth attempt share it; contention
 /// is negligible at LAN scale.
 pub struct NonceStore {
     inner: Mutex<HashMap<String, Instant>>,
     ttl: Duration,
+    max_outstanding: usize,
 }
 
 impl Default for NonceStore {
@@ -33,20 +42,29 @@ impl Default for NonceStore {
 
 impl NonceStore {
     pub fn new(ttl: Duration) -> Self {
+        Self::with_cap(ttl, NONCE_OUTSTANDING_CAP)
+    }
+
+    pub fn with_cap(ttl: Duration, max_outstanding: usize) -> Self {
         Self {
             inner: Mutex::new(HashMap::new()),
             ttl,
+            max_outstanding,
         }
     }
 
     /// Issue a fresh 32-byte random nonce, hex-encoded, and remember it.
-    pub async fn issue(&self) -> String {
+    /// Evicts expired nonces and enforces the outstanding cap.
+    pub async fn issue(&self) -> Option<String> {
+        let mut guard = self.inner.lock().await;
+        let now = Instant::now();
+        guard.retain(|_, issued_at| now.duration_since(*issued_at) < self.ttl);
+        if guard.len() >= self.max_outstanding {
+            return None;
+        }
         let nonce = hex::encode(rand::random::<[u8; 32]>());
-        self.inner
-            .lock()
-            .await
-            .insert(nonce.clone(), Instant::now());
-        nonce
+        guard.insert(nonce.clone(), now);
+        Some(nonce)
     }
 
     /// Redeem a nonce. Returns `true` only for a known, unexpired nonce, which
@@ -61,6 +79,38 @@ impl NonceStore {
             }
             _ => false,
         }
+    }
+}
+
+/// Simple in-memory sliding-window rate limiter per IP address.
+pub struct RateLimiter {
+    window: Duration,
+    max_per_window: usize,
+    hits: Mutex<HashMap<IpAddr, VecDeque<Instant>>>,
+}
+
+impl RateLimiter {
+    pub fn new(window: Duration, max_per_window: usize) -> Self {
+        Self {
+            window,
+            max_per_window,
+            hits: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Returns `true` if this IP is allowed to proceed, `false` if rate-limited.
+    pub async fn check_and_record(&self, ip: IpAddr) -> bool {
+        let mut guard = self.hits.lock().await;
+        let now = Instant::now();
+        let entry = guard.entry(ip).or_default();
+        while entry.front().is_some_and(|t| now.duration_since(*t) >= self.window) {
+            entry.pop_front();
+        }
+        if entry.len() >= self.max_per_window {
+            return false;
+        }
+        entry.push_back(now);
+        true
     }
 }
 
@@ -108,7 +158,7 @@ mod tests {
     #[tokio::test]
     async fn nonce_is_single_use() {
         let store = NonceStore::new(Duration::from_secs(30));
-        let nonce = store.issue().await;
+        let nonce = store.issue().await.expect("should issue nonce");
         assert!(store.consume(&nonce).await, "first use should succeed");
         assert!(!store.consume(&nonce).await, "second use must fail");
     }
@@ -116,11 +166,40 @@ mod tests {
     #[tokio::test]
     async fn nonce_ttl_expiry_rejected() {
         let store = NonceStore::new(Duration::ZERO);
-        let nonce = store.issue().await;
+        let nonce = store.issue().await.expect("should issue nonce");
         assert!(
             !store.consume(&nonce).await,
             "an already-expired nonce must be rejected"
         );
+    }
+
+    #[tokio::test]
+    async fn nonce_cap_enforced() {
+        let store = NonceStore::with_cap(Duration::from_secs(30), 2);
+        let n1 = store.issue().await;
+        let n2 = store.issue().await;
+        let n3 = store.issue().await;
+        assert!(n1.is_some());
+        assert!(n2.is_some());
+        assert!(n3.is_none(), "cap of 2 must reject third issue");
+
+        // Consuming one frees up a slot
+        assert!(store.consume(&n1.unwrap()).await);
+        let n4 = store.issue().await;
+        assert!(n4.is_some(), "after consume, capacity is available");
+    }
+
+    #[tokio::test]
+    async fn rate_limiter_blocks_after_limit() {
+        let rl = RateLimiter::new(Duration::from_secs(10), 3);
+        let ip: IpAddr = "127.0.0.1".parse().unwrap();
+        assert!(rl.check_and_record(ip).await);
+        assert!(rl.check_and_record(ip).await);
+        assert!(rl.check_and_record(ip).await);
+        assert!(!rl.check_and_record(ip).await, "4th request must be blocked");
+
+        let other_ip: IpAddr = "192.168.1.1".parse().unwrap();
+        assert!(rl.check_and_record(other_ip).await, "other IP is unaffected");
     }
 
     #[tokio::test]

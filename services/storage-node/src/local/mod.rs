@@ -26,8 +26,9 @@ pub async fn spawn_local(
     db: SqlitePool,
     relay_url: Option<&str>,
     port: u16,
-) -> anyhow::Result<tokio::task::JoinHandle<()>> {
-    let _mdns =
+) -> anyhow::Result<(mdns::MdnsAdvertiser, tokio::task::JoinHandle<()>)> {
+    let mdns =
         mdns::MdnsAdvertiser::start(&identity.node_id, identity.public_key.as_bytes(), port)?;
-    server::spawn(identity, db, relay_url).await
+    let handle = server::spawn(identity, db, relay_url).await?;
+    Ok((mdns, handle))
 }

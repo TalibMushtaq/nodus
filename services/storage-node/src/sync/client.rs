@@ -450,15 +450,18 @@ async fn store_pairing_token(
         };
 
     sqlx::query(
-        "INSERT INTO pairing_sessions (token, device_public_key, node_id, issued_at, expires_at)
-         VALUES (?, ?, ?, ?, ?)
-         ON CONFLICT(token) DO UPDATE SET expires_at = excluded.expires_at",
+        "INSERT INTO pairing_sessions (token, device_public_key, node_id, issued_at, expires_at, account_id)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(token) DO UPDATE SET
+             expires_at = excluded.expires_at,
+             account_id = excluded.account_id",
     )
     .bind(&push.token)
     .bind(&device_pubkey)
     .bind(&push.node_id)
     .bind(chrono::Utc::now().to_rfc3339())
     .bind(&push.expires_at)
+    .bind(&push.account_id)
     .execute(db)
     .await?;
 
