@@ -8,7 +8,7 @@ use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 
 use super::config::TransferConfig;
-use super::types::{ShardTransferRequest, TransferResult, TransferPath};
+use super::types::{ShardTransferRequest, TransferPath, TransferResult};
 
 /// Node as WebRTC initiator — creates offers, handles answers, and
 /// transfers shard bytes over a DataChannel. This is the Rust counterpart
@@ -58,7 +58,10 @@ pub async fn initiate_transfer(
 
     // Create the DataChannel for shard transfer
     let channel_name = format!("nodus-shard-{}", request.shard_index);
-    let dc = match pc.create_data_channel(&channel_name, Default::default()).await {
+    let dc = match pc
+        .create_data_channel(&channel_name, Default::default())
+        .await
+    {
         Ok(dc) => Arc::new(dc),
         Err(e) => {
             pc.close().await.ok();
@@ -234,28 +237,27 @@ pub async fn initiate_transfer(
         let ack_tx = std::sync::Mutex::new(Some(ack_tx));
 
         dc.on_message(Box::new(move |msg: DataChannelMessage| {
-            if msg.is_string {
-                if let Ok(text) = String::from_utf8(msg.data.to_vec()) {
-                    if let Ok(ack) = serde_json::from_str::<serde_json::Value>(&text) {
-                        match ack.get("status").and_then(|s| s.as_str()) {
-                            Some("verified") => {
-                                if let Some(tx) = ack_tx.lock().unwrap().take() {
-                                    let _ = tx.send(Ok(()));
-                                }
-                            }
-                            Some("failed") => {
-                                let err = ack
-                                    .get("error_message")
-                                    .and_then(|e| e.as_str())
-                                    .unwrap_or("unknown error")
-                                    .to_string();
-                                if let Some(tx) = ack_tx.lock().unwrap().take() {
-                                    let _ = tx.send(Err(err));
-                                }
-                            }
-                            _ => {}
+            if msg.is_string
+                && let Ok(text) = String::from_utf8(msg.data.to_vec())
+                && let Ok(ack) = serde_json::from_str::<serde_json::Value>(&text)
+            {
+                match ack.get("status").and_then(|s| s.as_str()) {
+                    Some("verified") => {
+                        if let Some(tx) = ack_tx.lock().unwrap().take() {
+                            let _ = tx.send(Ok(()));
                         }
                     }
+                    Some("failed") => {
+                        let err = ack
+                            .get("error_message")
+                            .and_then(|e| e.as_str())
+                            .unwrap_or("unknown error")
+                            .to_string();
+                        if let Some(tx) = ack_tx.lock().unwrap().take() {
+                            let _ = tx.send(Err(err));
+                        }
+                    }
+                    _ => {}
                 }
             }
             Box::pin(async {})

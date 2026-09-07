@@ -148,44 +148,62 @@ pub fn spawn_reconcile_task(
     interval: Duration,
     manager: Option<crate::transfer::manager::TransferManager>,
 ) -> tokio::task::JoinHandle<()> {
-    let run_repairs = async |store: &ObjectStore, manager: &Option<crate::transfer::manager::TransferManager>| {
-        let manager = match manager {
-            Some(m) => m,
-            None => return,
-        };
-        // Best-effort repair: failures are logged, objects stay DEGRADED,
-        // and the next scan re-attempts them.
-        let shards = match find_degraded_shards(store).await {
-            Ok(s) if !s.is_empty() => s,
-            Ok(_) => return,
-            Err(e) => {
-                eprintln!("[reconcile] repair scan error: {e}");
-                return;
+    let run_repairs =
+        async |store: &ObjectStore, manager: &Option<crate::transfer::manager::TransferManager>| {
+            let manager = match manager {
+                Some(m) => m,
+                None => return,
+            };
+            // Best-effort repair: failures are logged, objects stay DEGRADED,
+            // and the next scan re-attempts them.
+            let shards = match find_degraded_shards(store).await {
+                Ok(s) if !s.is_empty() => s,
+                Ok(_) => return,
+                Err(e) => {
+                    eprintln!("[reconcile] repair scan error: {e}");
+                    return;
+                }
+            };
+            let peers = match crate::store::reconcile::trusted_peers_for_repair(store).await {
+                Ok(p) if !p.is_empty() => p,
+                Ok(_) => {
+                    eprintln!(
+                        "[reconcile] no trusted peers for repair; leaving {} shards DEGRADED",
+                        shards.len()
+                    );
+                    return;
+                }
+                Err(e) => {
+                    eprintln!("[reconcile] trusted peer query error: {e}");
+                    return;
+                }
+            };
+            println!(
+                "[reconcile] submitting repair for {} degraded shards across {} trusted peers",
+                shards.len(),
+                peers.len()
+            );
+            // TODO(receive-path): when a repair succeeds, the received bytes must
+            // be hash-verified and the `storage_objects` row flipped DEGRADED →
+            // STORED. Today every path reports failure (see `NodePathAttempter`),
+            // so we log outcomes and let the next scan retry.
+            for rx in submit_repairs(manager, shards, peers) {
+                match rx.await {
+                    Ok(r) if r.success => println!(
+                        "[reconcile] repair succeeded via {:?} (transfer={})",
+                        r.path, r.transfer_id
+                    ),
+                    Ok(r) => println!(
+                        "[reconcile] repair failed for transfer {}: {}",
+                        r.transfer_id,
+                        r.error.unwrap_or_else(|| "unknown error".to_string())
+                    ),
+                    Err(_) => {
+                        eprintln!("[reconcile] repair task aborted before reporting")
+                    }
+                }
             }
         };
-        let peers = match crate::store::reconcile::trusted_peers_for_repair(store).await {
-            Ok(p) if !p.is_empty() => p,
-            Ok(_) => {
-                eprintln!("[reconcile] no trusted peers for repair; leaving {} shards DEGRADED", shards.len());
-                return;
-            }
-            Err(e) => {
-                eprintln!("[reconcile] trusted peer query error: {e}");
-                return;
-            }
-        };
-        println!(
-            "[reconcile] submitting repair for {} degraded shards across {} trusted peers",
-            shards.len(),
-            peers.len()
-        );
-        for rx in submit_repairs(manager, shards, peers) {
-            // Wait for the manager's result; on success the object store was
-            // already re-populated by the attempter, on failure we retry next
-            // scan.
-            let _ = rx.await;
-        }
-    };
 
     tokio::spawn(async move {
         // Run immediately on boot
@@ -269,12 +287,14 @@ pub async fn find_degraded_shards(store: &ObjectStore) -> anyhow::Result<Vec<Deg
 
     Ok(rows
         .into_iter()
-        .map(|(file_id, version_number, shard_index, object_id)| DegradedShard {
-            file_id,
-            version_number,
-            shard_index,
-            object_id,
-        })
+        .map(
+            |(file_id, version_number, shard_index, object_id)| DegradedShard {
+                file_id,
+                version_number,
+                shard_index,
+                object_id,
+            },
+        )
         .collect())
 }
 
@@ -487,13 +507,15 @@ mod tests {
             .execute(&pool)
             .await
             .unwrap();
-        sqlx::query("INSERT INTO trusted_nodes (node_id, public_key_bytes, created_at) VALUES (?, ?, ?)")
-            .bind("peer-plain")
-            .bind(vec![0u8; 32])
-            .bind(&now)
-            .execute(&pool)
-            .await
-            .unwrap();
+        sqlx::query(
+            "INSERT INTO trusted_nodes (node_id, public_key_bytes, created_at) VALUES (?, ?, ?)",
+        )
+        .bind("peer-plain")
+        .bind(vec![0u8; 32])
+        .bind(&now)
+        .execute(&pool)
+        .await
+        .unwrap();
 
         let store = ObjectStore::new(dir.path().to_path_buf(), pool.clone())
             .await
@@ -514,19 +536,16 @@ mod tests {
 
         // One DEGRADED shard × 2 peers → 2 repair fetches.
         let identity_dir = tempdir().unwrap();
-        let identity = std::sync::Arc::new(
-            crate::identity::load_or_generate(identity_dir.path()).unwrap(),
-        );
+        let identity =
+            std::sync::Arc::new(crate::identity::load_or_generate(identity_dir.path()).unwrap());
         let manager = crate::transfer::manager::TransferManager::new(
             crate::transfer::config::TransferConfig::default(),
             crate::transfer::cache::SqlitePathCache::new(pool.clone()),
-            std::sync::Arc::new(
-                crate::transfer::node_attempter::NodePathAttempter::new(
-                    pool,
-                    std::sync::Arc::new(store),
-                    identity,
-                ),
-            ),
+            std::sync::Arc::new(crate::transfer::node_attempter::NodePathAttempter::new(
+                pool,
+                std::sync::Arc::new(store),
+                identity,
+            )),
         );
         let receivers = submit_repairs(&manager, degraded, peers);
         assert_eq!(receivers.len(), 2);

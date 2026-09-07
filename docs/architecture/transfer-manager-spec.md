@@ -93,6 +93,11 @@ Formula:
 delay = base_ms * 2^attempt + random(0, jitter_ms)
 ```
 
+> Jitter bound nuance: the TS side samples `[0, jitter)` (exclusive upper
+> bound); the Rust side samples `[0, jitter]` (inclusive) because
+> `rand::gen_range(0..0)` would panic when jitter is configured to 0. The
+> ≤1ms difference is immaterial to the scheduling contract.
+
 Default constants:
 - `backoff_base_ms`: 500
 - `backoff_jitter_ms`: 300

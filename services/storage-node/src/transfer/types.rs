@@ -22,6 +22,12 @@ impl TransferPath {
         }
     }
 
+    /// Parse a TransferPath from its persisted string form.
+    ///
+    /// Deliberately returns `Option` (not `Result`) to keep callers that only
+    /// need to recognize stored values simple; clippy's `should_implement_trait`
+    /// hint is inapplicable because we are not adopting `std::str::FromStr`.
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "local_signaling" => Some(Self::LocalSignaling),

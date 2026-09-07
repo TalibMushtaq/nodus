@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use super::cache::SqlitePathCache;
 use super::config::TransferConfig;
-use super::executor::{execute_transfer, PathAttempt};
+use super::executor::{PathAttempt, execute_transfer};
 use super::types::{ShardTransferRequest, TransferResult};
 use tokio::sync::Semaphore;
 
@@ -98,7 +98,11 @@ mod tests {
 
     #[async_trait::async_trait]
     impl PathAttempt for CountingAttempter {
-        async fn attempt(&self, request: &ShardTransferRequest, path: TransferPath) -> TransferResult {
+        async fn attempt(
+            &self,
+            request: &ShardTransferRequest,
+            path: TransferPath,
+        ) -> TransferResult {
             let now = self.running.fetch_add(1, Ordering::SeqCst) + 1;
             self.peak.fetch_max(now, Ordering::SeqCst);
             // Yield so concurrent transfers overlap; bounded by the semaphore.
@@ -133,6 +137,10 @@ mod tests {
             assert!(rx.await.unwrap().success);
         }
 
-        assert!(attempter.peak.load(Ordering::SeqCst) <= 2, "peak was {}", attempter.peak.load(Ordering::SeqCst));
+        assert!(
+            attempter.peak.load(Ordering::SeqCst) <= 2,
+            "peak was {}",
+            attempter.peak.load(Ordering::SeqCst)
+        );
     }
 }

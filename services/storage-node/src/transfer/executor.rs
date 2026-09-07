@@ -12,17 +12,14 @@ const FALLBACK_CHAIN: &[TransferPath] = &[
 ];
 
 /// Paths whose success should be cached.
-const CACHABLE_PATHS: &[TransferPath] = &[TransferPath::LocalSignaling, TransferPath::RelaySignaling];
+const CACHABLE_PATHS: &[TransferPath] =
+    &[TransferPath::LocalSignaling, TransferPath::RelaySignaling];
 
 /// Attempt a single transfer path. Injected by the manager.
 /// The caller provides the actual WebRTC/relay/buffer logic.
 #[async_trait::async_trait]
 pub trait PathAttempt: Send + Sync {
-    async fn attempt(
-        &self,
-        request: &ShardTransferRequest,
-        path: TransferPath,
-    ) -> TransferResult;
+    async fn attempt(&self, request: &ShardTransferRequest, path: TransferPath) -> TransferResult;
 }
 
 /// Execute the full fallback chain for a single shard transfer.
@@ -134,7 +131,11 @@ mod tests {
 
     #[async_trait::async_trait]
     impl PathAttempt for RecordingAttempter {
-        async fn attempt(&self, request: &ShardTransferRequest, path: TransferPath) -> TransferResult {
+        async fn attempt(
+            &self,
+            request: &ShardTransferRequest,
+            path: TransferPath,
+        ) -> TransferResult {
             self.seen.lock().unwrap().push(path);
             let ok = self.succeed_on.contains(&path);
             TransferResult {
@@ -174,7 +175,10 @@ mod tests {
         let result = execute_transfer(&request("node-1"), &fast_config(), &cache, &attempter).await;
 
         assert!(result.success);
-        assert_eq!(*attempter.seen.lock().unwrap(), vec![TransferPath::RelaySignaling]);
+        assert_eq!(
+            *attempter.seen.lock().unwrap(),
+            vec![TransferPath::RelaySignaling]
+        );
     }
 
     #[tokio::test]
@@ -182,13 +186,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let cache = test_db(dir.path()).await;
         // Cache writes are an UPDATE on an existing trusted_nodes row.
-        sqlx::query("INSERT INTO trusted_nodes (node_id, public_key_bytes, created_at) VALUES (?, ?, ?)")
-            .bind("node-2")
-            .bind(vec![0u8; 32])
-            .bind(chrono::Utc::now().to_rfc3339())
-            .execute(cache.pool())
-            .await
-            .unwrap();
+        sqlx::query(
+            "INSERT INTO trusted_nodes (node_id, public_key_bytes, created_at) VALUES (?, ?, ?)",
+        )
+        .bind("node-2")
+        .bind(vec![0u8; 32])
+        .bind(chrono::Utc::now().to_rfc3339())
+        .execute(cache.pool())
+        .await
+        .unwrap();
         let attempter = RecordingAttempter {
             seen: std::sync::Mutex::new(Vec::new()),
             succeed_on: vec![TransferPath::RelaySignaling],
@@ -200,10 +206,20 @@ mod tests {
         assert_eq!(result.path, TransferPath::RelaySignaling);
         // local_signaling was attempted max_retries_per_stage+1 times, then relay succeeds.
         let seen = attempter.seen.lock().unwrap().clone();
-        assert_eq!(seen, vec![TransferPath::LocalSignaling, TransferPath::LocalSignaling, TransferPath::RelaySignaling]);
+        assert_eq!(
+            seen,
+            vec![
+                TransferPath::LocalSignaling,
+                TransferPath::LocalSignaling,
+                TransferPath::RelaySignaling
+            ]
+        );
 
         // The relay success is a cachable path — the cache is written.
-        assert_eq!(cache.get("node-2").await.unwrap(), Some(TransferPath::RelaySignaling));
+        assert_eq!(
+            cache.get("node-2").await.unwrap(),
+            Some(TransferPath::RelaySignaling)
+        );
     }
 
     #[tokio::test]
@@ -229,7 +245,13 @@ mod tests {
 
         assert!(!result.success);
         assert_eq!(
-            attempter.seen.lock().unwrap().iter().filter(|p| **p == TransferPath::LocalSignaling).count(),
+            attempter
+                .seen
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|p| **p == TransferPath::LocalSignaling)
+                .count(),
             1
         );
         // The failed cached path is evicted immediately.
