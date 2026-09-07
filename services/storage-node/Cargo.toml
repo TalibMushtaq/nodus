@@ -31,6 +31,10 @@ url = "2"
 axum = "0.8"
 tower-http = { version = "0.6", features = ["cors"] }
 libmdns = "0.10"
+# Pure-Rust mDNS *browser* for §21a repair peer discovery (libmdns advertises
+# only). The node looks up a peer's `_nodus._tcp` record to reach its HTTP
+# shard-fetch endpoint without any external discovery service.
+mdns = "3"
 base64 = "0.22"
 
 webrtc = "0.13"

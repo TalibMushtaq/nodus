@@ -61,6 +61,7 @@ mod tests {
             shard_index: 0,
             data: vec![1],
             hash: "hash".into(),
+            object_id: "hash".into(),
             target_node: "node-1".into(),
             source_device: None,
         }

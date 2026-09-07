@@ -55,8 +55,15 @@ pub struct ShardTransferRequest {
     pub file_id: String,
     pub version_number: i64,
     pub shard_index: i64,
+    /// The shard bytes. For a push this is the payload to send; for a fetch
+    /// the peer supplies these, so the outgoing request carries empty data.
     pub data: Vec<u8>,
+    /// Expected content hash (BLAKE3 hex) of the shard. For a repair fetch
+    /// this is the `object_id` the receiver restores bytes under.
     pub hash: String,
+    /// The `object_id` (BLAKE3 hex) the receiving node restores the shard
+    /// bytes under. Needed by the repair loop to verify and write-on-restore.
+    pub object_id: String,
     pub target_node: String,
     pub source_device: Option<String>,
 }
@@ -70,4 +77,10 @@ pub struct TransferResult {
     pub bytes_transferred: usize,
     pub success: bool,
     pub error: Option<String>,
+    /// Bytes actually received for a fetch. Empty for pushes and for failed
+    /// or not-yet-implemented paths (e.g. relay signaling).
+    pub data: Vec<u8>,
+    /// The `object_id` this result expected (copied from the request). Lets
+    /// the repair loop verify and restore without an extra mapping.
+    pub object_id: String,
 }

@@ -166,11 +166,35 @@ When reconciliation marks an object `DEGRADED`, the repair path:
 
 1. Query `trusted_nodes` for all peers.
 2. Order: path-cache hits first, then by `last_success_at` descending.
-3. Attempt `fetch_shard` from each peer using the full Transfer Manager
-   fallback chain (fresh mDNS for Path A, then Path B, then Path C, then
-   Path D).
-4. On success: store object, mark `STORED`.
+3. Submit one `fetch_shard(peer, object_id)` per DEGRADED object to the
+   best-candidate peer only (v1: no N×M fan-out — the executor has no
+   peer-fallback loop, and failed repairs are retried by the next scan).
+4. On success: BLAKE3-verify the received bytes against `object_id`, then
+   atomically write (`<data_dir>/objects/<ab>/<object_id>`, temp-file +
+   rename) and flip `storage_objects` `DEGRADED → STORED`.
 5. On permanent failure: leave `DEGRADED`; retry on next reconciliation
    scan.
 
-v1 strategy: brute-force try all trusted nodes. No peer location index.
+`object_id` (the BLAKE3 content hash) is threaded through `ShardTransferRequest`
+and `TransferResult` on both sides — it is both the fetch target and the key
+under which restored bytes are verified and written.
+
+### Node→node Path A transport (v1)
+
+Client-initiated Path A still uses live mDNS discovery + WebRTC
+(`/nodus/webrtc/*`), but the *node→node repair* backhaul uses plain
+authenticated HTTP on the same advertised port instead of WebRTC: the peer's
+`WebRtcManager` only accepts inbound offers from paired *devices*, not other
+nodes. The v1 repair Path A is:
+
+- `GET /nodus/shard/{object_id}` served by the receiving node.
+- Stateless authentication via `X-Nodus-*` headers on the request:
+  - `X-Nodus-Node-Id`: the requester's hex node id.
+  - `X-Nodus-Timestamp`: unix epoch milliseconds.
+  - `X-Nodus-Signature`: hex Ed25519 signature over
+    `"{node_id}:{object_id}:{timestamp_ms}"`.
+- The receiving node checks the caller is in `trusted_nodes`, the timestamp is
+  within ±60 s, and the signature verifies against the caller's stored public
+  key. Non-2xx/404 responses surface as a failed attempt; the reconcile loop
+  hash-verifies the payload before restoring. Paths B/C/D remain honest
+  failures for node→node repair (see `transfer/node_attempter.rs`).

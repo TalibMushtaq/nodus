@@ -89,6 +89,7 @@ mod tests {
             shard_index: i as i64,
             data: vec![1],
             hash: "hash".into(),
+            object_id: "hash".into(),
             target_node: "node-1".into(),
             source_device: None,
         }
@@ -118,6 +119,8 @@ mod tests {
                 bytes_transferred: 1,
                 success: true,
                 error: None,
+                data: request.data.clone(),
+                object_id: request.object_id.clone(),
             }
         }
     }

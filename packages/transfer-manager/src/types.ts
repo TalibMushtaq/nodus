@@ -34,6 +34,10 @@ export interface TransferResult {
   bytesTransferred: number;
   success: boolean;
   error?: string;
+  /** Bytes actually received for a fetch. Empty for pushes and failed paths. */
+  data?: Uint8Array;
+  /** Content-hash the received bytes are expected to match (repair fetches). */
+  objectId?: string;
 }
 
 /** Path cache entry. */

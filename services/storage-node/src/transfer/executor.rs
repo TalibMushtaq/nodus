@@ -88,6 +88,8 @@ pub async fn execute_transfer(
         bytes_transferred: 0,
         success: false,
         error: Some("all paths exhausted".to_string()),
+        data: Vec::new(),
+        object_id: request.object_id.clone(),
     })
 }
 
@@ -117,6 +119,7 @@ mod tests {
             shard_index: 0,
             data: vec![1, 2, 3],
             hash: "hash".into(),
+            object_id: "hash".into(),
             target_node: node.to_string(),
             source_device: None,
         }
@@ -145,6 +148,8 @@ mod tests {
                 bytes_transferred: if ok { request.data.len() } else { 0 },
                 success: ok,
                 error: if ok { None } else { Some("down".into()) },
+                data: if ok { request.data.clone() } else { Vec::new() },
+                object_id: request.object_id.clone(),
             }
         }
     }

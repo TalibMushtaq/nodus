@@ -1,4 +1,5 @@
-//! mDNS advertisement of the node on the LAN (`_nodus._tcp.local`).
+//! mDNS advertisement (`MdnsAdvertiser`) and peer discovery (`discover_node`)
+//! of the node on the LAN (`_nodus._tcp.local`).
 //!
 //! Service type and TXT keys are locked by the Phase 11 design
 //! (`docs/protocol/local-discovery.md`):
@@ -12,6 +13,16 @@
 //! basis only — the on-link attacker can spoof them. They are advisory for the
 //! discovery UI; the actual pairing/challenge-response handshake is what
 //! establishes durable trust (see docs/security/local-endpoints.md).
+//!
+//! `discover_node` is the §21a repair peer lookup: it browses the same service
+//! (libmdns can only advertise) and returns the address to reach a peer's
+//! shard-fetch HTTP endpoint (`GET /nodus/shard/{object_id}` on `LOCAL_PORT`).
+
+use std::net::{IpAddr, SocketAddr};
+use std::time::Duration;
+
+use futures_util::{StreamExt, pin_mut};
+use mdns::{Record, RecordKind};
 
 pub struct MdnsAdvertiser {
     // Kept alive for the process lifetime: libmdns `register` returns a
@@ -46,6 +57,67 @@ impl MdnsAdvertiser {
             _responder: responder,
             _service: service,
         })
+    }
+}
+
+/// Browsing timeout for a single peer lookup. Must accommodate one multicast
+/// query + answer round-trip plus a re-query; the executor's per-stage budget
+/// rarely applies because repair retries happen on the next reconciliation
+/// scan anyway.
+const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Find the LAN address of a peer node's shard-fetch endpoint.
+///
+/// Browsers the `_nodus._tcp.local` mDNS service and matches the responder
+/// whose TXT records carry `node_id=<node_id>` (the same key the advertiser
+/// publishes). The port is fixed (`server::LOCAL_PORT`), so only the address
+/// is needed; IPv4 is preferred, IPv6 link-local is the fallback.
+///
+/// Honest absence: returns `None` if no matching responder answers within
+/// `DISCOVERY_TIMEOUT`, letting the executor fall through to later paths.
+pub async fn discover_node(node_id: &str) -> Option<SocketAddr> {
+    let discovery = mdns::discover::all("_nodus._tcp.local", DISCOVERY_TIMEOUT).ok()?;
+    let stream = discovery.listen();
+    pin_mut!(stream);
+
+    let deadline = std::time::Instant::now() + DISCOVERY_TIMEOUT;
+    loop {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            return None;
+        }
+        // Timeout each `next()` by the remaining budget; the stream would
+        // otherwise re-query forever instead of ending on its own.
+        match tokio::time::timeout(remaining, stream.next()).await {
+            Ok(Some(Ok(response))) => {
+                let txt = format!("node_id={node_id}");
+                let records: Vec<Record> = response.records().cloned().collect();
+                // TXT match is exact so a truncated/spoofed record can't alias
+                // another node.
+                let is_target = records
+                    .iter()
+                    .any(|r| matches!(&r.kind, RecordKind::TXT(entries) if entries.contains(&txt)));
+                if !is_target {
+                    continue;
+                }
+                // IPv4 first (typical LAN), then IPv6 link-local.
+                let addr = records
+                    .iter()
+                    .find_map(|r| match r.kind {
+                        RecordKind::A(a) => Some(IpAddr::V4(a)),
+                        _ => None,
+                    })
+                    .or_else(|| {
+                        records.iter().find_map(|r| match r.kind {
+                            RecordKind::AAAA(a) => Some(IpAddr::V6(a)),
+                            _ => None,
+                        })
+                    })?;
+                return Some(SocketAddr::new(addr, super::server::LOCAL_PORT));
+            }
+            // Stream error or end, or the remaining budget elapsed.
+            Ok(Some(Err(_))) | Ok(None) | Err(_) => return None,
+        }
     }
 }
 

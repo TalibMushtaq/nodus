@@ -52,6 +52,8 @@ pub async fn initiate_transfer(
                 bytes_transferred: 0,
                 success: false,
                 error: Some(format!("peer connection creation failed: {e}")),
+                data: Vec::new(),
+                object_id: request.object_id.clone(),
             };
         }
     };
@@ -72,6 +74,8 @@ pub async fn initiate_transfer(
                 bytes_transferred: 0,
                 success: false,
                 error: Some(format!("data channel creation failed: {e}")),
+                data: Vec::new(),
+                object_id: request.object_id.clone(),
             };
         }
     };
@@ -104,6 +108,8 @@ pub async fn initiate_transfer(
                 bytes_transferred: 0,
                 success: false,
                 error: Some(format!("SDP offer creation failed: {e}")),
+                data: Vec::new(),
+                object_id: request.object_id.clone(),
             };
         }
     };
@@ -122,6 +128,8 @@ pub async fn initiate_transfer(
                 bytes_transferred: 0,
                 success: false,
                 error: Some(format!("signaling offer failed: {e}")),
+                data: Vec::new(),
+                object_id: request.object_id.clone(),
             };
         }
     };
@@ -136,6 +144,8 @@ pub async fn initiate_transfer(
             bytes_transferred: 0,
             success: false,
             error: Some(format!("set local description failed: {e}")),
+            data: Vec::new(),
+            object_id: request.object_id.clone(),
         };
     }
 
@@ -151,6 +161,8 @@ pub async fn initiate_transfer(
                 bytes_transferred: 0,
                 success: false,
                 error: Some(format!("invalid SDP answer: {e}")),
+                data: Vec::new(),
+                object_id: request.object_id.clone(),
             };
         }
     };
@@ -163,6 +175,8 @@ pub async fn initiate_transfer(
             bytes_transferred: 0,
             success: false,
             error: Some(format!("set remote description failed: {e}")),
+            data: Vec::new(),
+            object_id: request.object_id.clone(),
         };
     }
 
@@ -181,6 +195,8 @@ pub async fn initiate_transfer(
                     "WebRTC negotiation timed out after {}ms",
                     config.webrtc_negotiation_timeout_ms
                 )),
+                data: Vec::new(),
+                object_id: request.object_id.clone(),
             };
         }
     }
@@ -203,6 +219,8 @@ pub async fn initiate_transfer(
             bytes_transferred: 0,
             success: false,
             error: Some(format!("send metadata failed: {e}")),
+            data: Vec::new(),
+            object_id: request.object_id.clone(),
         };
     }
 
@@ -215,6 +233,8 @@ pub async fn initiate_transfer(
             bytes_transferred: 0,
             success: false,
             error: Some(format!("send data failed: {e}")),
+            data: Vec::new(),
+            object_id: request.object_id.clone(),
         };
     }
 
@@ -227,6 +247,8 @@ pub async fn initiate_transfer(
             bytes_transferred: request.data.len(),
             success: false,
             error: Some(format!("send done signal failed: {e}")),
+            data: Vec::new(),
+            object_id: request.object_id.clone(),
         };
     }
 
@@ -276,6 +298,8 @@ pub async fn initiate_transfer(
                 bytes_transferred: request.data.len(),
                 success: true,
                 error: None,
+                data: request.data.clone(),
+                object_id: request.object_id.clone(),
             }
         }
         Ok(Ok(Err(e))) => {
@@ -287,6 +311,8 @@ pub async fn initiate_transfer(
                 bytes_transferred: request.data.len(),
                 success: false,
                 error: Some(format!("transfer rejected: {e}")),
+                data: Vec::new(),
+                object_id: request.object_id.clone(),
             }
         }
         _ => {
@@ -298,6 +324,8 @@ pub async fn initiate_transfer(
                 bytes_transferred: request.data.len(),
                 success: false,
                 error: Some("timed out waiting for shard ack".to_string()),
+                data: Vec::new(),
+                object_id: request.object_id.clone(),
             }
         }
     }

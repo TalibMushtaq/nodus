@@ -183,16 +183,31 @@ pub fn spawn_reconcile_task(
                 shards.len(),
                 peers.len()
             );
-            // TODO(receive-path): when a repair succeeds, the received bytes must
-            // be hash-verified and the `storage_objects` row flipped DEGRADED →
-            // STORED. Today every path reports failure (see `NodePathAttempter`),
-            // so we log outcomes and let the next scan retry.
             for rx in submit_repairs(manager, shards, peers) {
                 match rx.await {
-                    Ok(r) if r.success => println!(
-                        "[reconcile] repair succeeded via {:?} (transfer={})",
-                        r.path, r.transfer_id
-                    ),
+                    Ok(r) if r.success => {
+                        // The object_id is the BLAKE3 hash of the shard bytes;
+                        // verify before touching disk so a malicious/wrong peer
+                        // can't plant arbitrary content under a known hash.
+                        // Failures leave the object DEGRADED for the next scan.
+                        if blake3::hash(&r.data).to_hex().to_string() != r.object_id {
+                            eprintln!(
+                                "[reconcile] repair fetch for {} returned bytes not matching the object_id; ignoring",
+                                r.object_id
+                            );
+                            continue;
+                        }
+                        match restore_object(store, &r.object_id, &r.data).await {
+                            Ok(()) => println!(
+                                "[reconcile] repair restored object {} via {:?} (transfer={})",
+                                r.object_id, r.path, r.transfer_id
+                            ),
+                            Err(e) => eprintln!(
+                                "[reconcile] repair obtained valid bytes for {} but restore failed: {e:#}",
+                                r.object_id
+                            ),
+                        }
+                    }
                     Ok(r) => println!(
                         "[reconcile] repair failed for transfer {}: {}",
                         r.transfer_id,
@@ -255,27 +270,22 @@ pub fn spawn_reconcile_task(
     })
 }
 
-/// A shard whose backing object is DEGRADED and eligible for repair.
+/// A shard whose backing object is DEGRADED and eligible for repair. Only the
+/// `object_id` matters for restoration: `fetch_shard` targets it as the content
+/// hash, and the write-back restores under it.
 #[derive(Debug, Clone)]
 pub struct DegradedShard {
-    pub file_id: String,
-    pub version_number: i64,
-    pub shard_index: i64,
-    /// The object to re-verify/mark STORED once repair succeeds. The repair
-    /// path consumes `file_id`/`version`/`shard_index` today; `object_id` is
-    /// carried for the caller that re-stores on success.
-    #[allow(dead_code)]
     pub object_id: String,
 }
 
-/// Find all shards whose storage object is DEGRADED (missing or corrupted),
-/// so the repair path knows exactly which (file, version, shard) tuples need
+/// Find all storage objects that are DEGRADED (missing or corrupted) and still
+/// referenced by a shard, so the repair path knows which objects need
 /// re-fetching from a peer (§21a re-fetch-from-peer repair action).
 pub async fn find_degraded_shards(store: &ObjectStore) -> anyhow::Result<Vec<DegradedShard>> {
     let pool = store.pool();
-    let rows: Vec<(String, i64, i64, String)> = sqlx::query_as(
+    let rows: Vec<(String,)> = sqlx::query_as(
         r#"
-        SELECT s.file_id, s.version_number, s.shard_index, s.object_id
+        SELECT DISTINCT s.object_id
         FROM shards s
         JOIN storage_objects o ON o.object_id = s.object_id
         WHERE o.status = 'DEGRADED'
@@ -287,14 +297,7 @@ pub async fn find_degraded_shards(store: &ObjectStore) -> anyhow::Result<Vec<Deg
 
     Ok(rows
         .into_iter()
-        .map(
-            |(file_id, version_number, shard_index, object_id)| DegradedShard {
-                file_id,
-                version_number,
-                shard_index,
-                object_id,
-            },
-        )
+        .map(|(object_id,)| DegradedShard { object_id })
         .collect())
 }
 
@@ -339,14 +342,31 @@ pub fn submit_repairs(
         return receivers;
     };
     for shard in degraded {
-        receivers.push(manager.fetch_shard(
-            peer,
-            &shard.file_id,
-            shard.version_number,
-            shard.shard_index,
-        ));
+        receivers.push(manager.fetch_shard(peer, &shard.object_id));
     }
     receivers
+}
+
+/// Write restored repair bytes to disk atomically and flip the object's row
+/// DEGRADED → STORED. The caller hash-verifies `bytes` before calling.
+async fn restore_object(store: &ObjectStore, object_id: &str, bytes: &[u8]) -> anyhow::Result<()> {
+    let dest = layout::object_path(store.data_dir(), object_id);
+    if let Some(parent) = dest.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("creating object directory {}", parent.display()))?;
+    }
+    let tmp = dest.with_extension("repair.tmp");
+    fs::write(&tmp, bytes)?;
+    // Same-directory rename is atomic within the filesystem: a crash mid-way
+    // leaves either the old state (missing file) or the new file, never a
+    // torn write.
+    fs::rename(&tmp, &dest)?;
+    sqlx::query("UPDATE storage_objects SET status = 'STORED' WHERE object_id = ?")
+        .bind(object_id)
+        .execute(store.pool())
+        .await
+        .context("marking repaired object STORED")?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -530,9 +550,7 @@ mod tests {
 
         let degraded = find_degraded_shards(&store).await.unwrap();
         assert_eq!(degraded.len(), 1);
-        assert_eq!(degraded[0].file_id, "f1");
-        assert_eq!(degraded[0].version_number, 1);
-        assert_eq!(degraded[0].shard_index, 0);
+        assert_eq!(degraded[0].object_id, "obj-degraded");
 
         // peer-cached (has last_successful_path) ranks ahead of peer-plain.
         let peers = trusted_peers_for_repair(&store).await.unwrap();

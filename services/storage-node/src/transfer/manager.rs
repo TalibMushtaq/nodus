@@ -29,19 +29,21 @@ impl TransferManager {
     pub fn fetch_shard(
         &self,
         from_node: &str,
-        file_id: &str,
-        version_number: i64,
-        shard_index: i64,
+        object_id: &str,
     ) -> tokio::sync::oneshot::Receiver<TransferResult> {
+        let file_id = "";
         self.pool.submit(ShardTransferRequest {
             transfer_id: uuid::Uuid::new_v4().to_string(),
             file_id: file_id.to_string(),
-            version_number,
-            shard_index,
-            // fetch: `data` and `hash` are response fields; for requests
-            // the peer supplies the shard bytes, so these stay empty.
+            version_number: 0,
+            shard_index: 0,
+            // fetch: `data` is the response field; for the outgoing request
+            // the peer supplies the shard bytes, so it stays empty.
             data: Vec::new(),
-            hash: String::new(),
+            // `object_id` is the expected BLAKE3 hash the repair loop
+            // restores bytes under; carried through so the result can verify.
+            hash: object_id.to_string(),
+            object_id: object_id.to_string(),
             target_node: from_node.to_string(),
             source_device: None,
         })
@@ -100,6 +102,7 @@ mod tests {
             shard_index: i as i64,
             data: vec![1, 2, 3],
             hash: "hash".into(),
+            object_id: "hash".into(),
             target_node: "node-1".into(),
             source_device: None,
         }
@@ -125,6 +128,8 @@ mod tests {
                 bytes_transferred: request.data.len(),
                 success: true,
                 error: None,
+                data: request.data.clone(),
+                object_id: request.object_id.clone(),
             }
         }
     }

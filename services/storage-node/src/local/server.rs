@@ -5,6 +5,7 @@
 //! - `POST /nodus/challenge` — issue a single-use nonce
 //! - `POST /nodus/auth`      — Ed25519 challenge-response against `devices`
 //! - `POST /nodus/pair`      — redeem a Relay-issued pairing token
+//! - `GET  /nodus/shard/{object_id}` — authenticated node→node shard fetch (§21a repair)
 //!
 //! The listener is intentionally *plain HTTP* with permissive CORS (design
 //! decision B in the Phase 11 spec): local-network exposure is acceptable
@@ -20,8 +21,8 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use anyhow::Context;
-use axum::extract::{ConnectInfo, State};
-use axum::http::StatusCode;
+use axum::extract::{ConnectInfo, Path, State};
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -42,13 +43,17 @@ pub const SCHEMA_VERSION: &str = "1.0";
 /// Local listener port. Advertised in mDNS and used for the pairing QR URL.
 pub const LOCAL_PORT: u16 = 9378;
 
+/// How far in the past/future a node shard-fetch request timestamp may be.
+/// Binds the signed message to a wall-clock moment so captured signatures
+/// can't be replayed blindly; 60s mirrors the challenge nonce window.
+const NODE_AUTH_FRESHNESS_MS: i64 = 60_000;
+
 /// HTTP base on which startup failures are the caller's problem: the server
 /// returns bind results to the caller via this shared struct.
 #[derive(Clone)]
 pub struct LocalState {
     pub identity: Arc<NodeIdentity>,
     pub db: SqlitePool,
-    #[allow(dead_code)]
     pub store: Arc<crate::store::ObjectStore>,
     pub webrtc_manager: Arc<crate::webrtc::WebRtcManager>,
     pub nonces: Arc<NonceStore>,
@@ -130,6 +135,7 @@ pub fn make_router(state: LocalState) -> Router {
         .route("/nodus/challenge", post(challenge))
         .route("/nodus/auth", post(auth))
         .route("/nodus/pair", post(pair))
+        .route("/nodus/shard/{object_id}", get(handle_shard_fetch))
         .route(
             "/nodus/webrtc/offer",
             post(crate::webrtc::handler::handle_offer),
@@ -303,6 +309,77 @@ async fn auth(
         status: "ok",
         node_id: state.identity.node_id.clone(),
     }))
+}
+
+// ── Node-to-node shard fetch (§21a repair) ───────────────────────────────
+
+/// Serve a shard object's bytes to a *trusted node* requesting a repair.
+///
+/// v1 Path A backhaul: instead of the nonce handshake (which requires two
+/// round-trips and a server-side nonce store shared with device pairing), the
+/// requester signs a stateless message `"{node_id}:{object_id}:{timestamp_ms}"`
+/// and sends it in the `X-Nodus-*` headers. The receiver checks, in order:
+/// the caller is a known `trusted_nodes` entry, the timestamp is within
+/// [`NODE_AUTH_FRESHNESS_MS`], and the Ed25519 signature verifies against the
+/// caller's stored public key. Only then are the bytes read from disk.
+async fn handle_shard_fetch(
+    State(state): State<LocalState>,
+    Path(object_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<(StatusCode, Vec<u8>), LocalError> {
+    let caller = headers
+        .get("x-nodus-node-id")
+        .and_then(|v| v.to_str().ok())
+        .ok_or_else(|| unauthorized("missing X-Nodus-Node-Id header"))?;
+    let timestamp = headers
+        .get("x-nodus-timestamp")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<i64>().ok())
+        .ok_or_else(|| unauthorized("missing or invalid X-Nodus-Timestamp header"))?;
+    let signature = headers
+        .get("x-nodus-signature")
+        .and_then(|v| v.to_str().ok())
+        .ok_or_else(|| unauthorized("missing X-Nodus-Signature header"))?;
+
+    if (chrono::Utc::now().timestamp_millis() - timestamp).abs() > NODE_AUTH_FRESHNESS_MS {
+        return Err(unauthorized(
+            "request timestamp is outside the freshness window",
+        ));
+    }
+
+    let row: Option<(Vec<u8>,)> =
+        sqlx::query_as("SELECT public_key_bytes FROM trusted_nodes WHERE node_id = ?")
+            .bind(caller)
+            .fetch_optional(&state.db)
+            .await
+            .map_err(internal_err)?;
+    let Some((pubkey,)) = row else {
+        return Err(unauthorized("caller is not a trusted node"));
+    };
+
+    // The signed message binds caller, target object, and time together, so a
+    // captured signature can't be replayed against a different object.
+    let message = format!("{caller}:{object_id}:{timestamp}");
+    if let Err(e) = verify_signature(&pubkey, message.as_bytes(), signature) {
+        return Err(unauthorized(&format!("signature verification failed: {e}")));
+    }
+
+    // Presence check only: the requester hash-verifies against the object_id
+    // it asked for, so corrupt local content fails verification there (and is
+    // DEGRADED here after the next reconciliation scan anyway).
+    let path = crate::store::layout::object_path(state.store.data_dir(), &object_id);
+    let bytes = tokio::fs::read(&path).await.map_err(|_| LocalError {
+        error: "not_found".into(),
+        message: "object not present on this node".into(),
+    })?;
+    Ok((StatusCode::OK, bytes))
+}
+
+fn unauthorized(message: &str) -> LocalError {
+    LocalError {
+        error: "unauthorized".into(),
+        message: message.to_string(),
+    }
 }
 
 // ── Pairing ──────────────────────────────────────────────────────────────
@@ -544,6 +621,8 @@ impl IntoResponse for LocalError {
     fn into_response(self) -> axum::response::Response {
         let status = match self.error.as_str() {
             "rate_limited" | "overloaded" => StatusCode::TOO_MANY_REQUESTS,
+            "unauthorized" => StatusCode::UNAUTHORIZED,
+            "not_found" => StatusCode::NOT_FOUND,
             _ => StatusCode::BAD_REQUEST,
         };
         (status, Json(self)).into_response()
@@ -921,5 +1000,138 @@ mod tests {
         let bytes = resp.into_body().collect().await.unwrap().to_bytes();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(json["error"], "wrong_node");
+    }
+
+    // ── §21a node→node shard fetch (Path A receive) ──────────────────────
+
+    /// Seeds a `trusted_nodes` entry for `peer` (so later handlers treat it
+    /// as trusted) and stores the given bytes, returning the object_id.
+    async fn seed_peer_and_object(
+        db: &SqlitePool,
+        store: &crate::store::ObjectStore,
+        peer_id: &str,
+        peer_pubkey: [u8; 32],
+        payload: &[u8],
+    ) -> String {
+        sqlx::query("INSERT INTO trusted_nodes (node_id, public_key_bytes, created_at) VALUES (?, ?, 'now')")
+            .bind(peer_id)
+            .bind(&peer_pubkey[..])
+            .execute(db)
+            .await
+            .unwrap();
+        store.put(payload).await.unwrap()
+    }
+
+    fn signed_fetch_request(
+        peer_id: &str,
+        peer_key: &SigningKey,
+        object_id: &str,
+    ) -> Request<Body> {
+        let timestamp = chrono::Utc::now().timestamp_millis();
+        let message = format!("{peer_id}:{object_id}:{timestamp}");
+        let signature = hex::encode(peer_key.sign(message.as_bytes()).to_bytes());
+        Request::builder()
+            .uri(format!("/nodus/shard/{object_id}"))
+            .method("GET")
+            .header("x-nodus-node-id", peer_id)
+            .header("x-nodus-timestamp", timestamp.to_string())
+            .header("x-nodus-signature", signature)
+            .body(Body::empty())
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_shard_fetch_serves_bytes_to_trusted_node() {
+        let (app, db, _identity, dir) = setup_test_server().await;
+
+        let peer_key = SigningKey::from_bytes(&[55u8; 32]);
+        let peer_pubkey = peer_key.verifying_key().to_bytes();
+        let peer_id = "repair-peer-1";
+        let payload = b"shard bytes for repair";
+        let store = crate::store::ObjectStore::new(dir.path().to_path_buf(), db.clone())
+            .await
+            .unwrap();
+        let object_id = seed_peer_and_object(&db, &store, peer_id, peer_pubkey, payload).await;
+
+        let resp = app
+            .oneshot(signed_fetch_request(peer_id, &peer_key, &object_id))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(&bytes[..], payload);
+    }
+
+    #[tokio::test]
+    async fn test_shard_fetch_rejects_untrusted_missing_bad_signature_stale() {
+        let (app, db, _identity, dir) = setup_test_server().await;
+
+        let peer_key = SigningKey::from_bytes(&[66u8; 32]);
+        let peer_pubkey = peer_key.verifying_key().to_bytes();
+        let peer_id = "repair-peer-2";
+        let payload = b"shard bytes";
+        let store = crate::store::ObjectStore::new(dir.path().to_path_buf(), db.clone())
+            .await
+            .unwrap();
+        let object_id = seed_peer_and_object(&db, &store, peer_id, peer_pubkey, payload).await;
+
+        // Unknown node (not in trusted_nodes) → 401.
+        let stranger_key = SigningKey::from_bytes(&[77u8; 32]);
+        let unknown = app
+            .clone()
+            .oneshot(signed_fetch_request("stranger", &stranger_key, &object_id))
+            .await
+            .unwrap();
+        assert_eq!(
+            unknown.status(),
+            StatusCode::UNAUTHORIZED,
+            "untrusted node must be rejected"
+        );
+
+        // Known node but wrong signature → 401.
+        let bad_key = SigningKey::from_bytes(&[88u8; 32]);
+        let resp = app
+            .clone()
+            .oneshot(signed_fetch_request(peer_id, &bad_key, &object_id))
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::UNAUTHORIZED,
+            "valid-key holder verification is signature-based"
+        );
+
+        // Stale timestamp → 401 (headers built manually to pin the past).
+        let stale = {
+            let timestamp = chrono::Utc::now().timestamp_millis() - 5 * 60_000;
+            let message = format!("{peer_id}:{object_id}:{timestamp}");
+            let signature = hex::encode(peer_key.sign(message.as_bytes()).to_bytes());
+            Request::builder()
+                .uri(format!("/nodus/shard/{object_id}"))
+                .method("GET")
+                .header("x-nodus-node-id", peer_id)
+                .header("x-nodus-timestamp", timestamp.to_string())
+                .header("x-nodus-signature", signature)
+                .body(Body::empty())
+                .unwrap()
+        };
+        let resp = app.clone().oneshot(stale).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::UNAUTHORIZED,
+            "stale request rejected"
+        );
+
+        // Unknown object id → 404 even for a trusted, validly-signed caller.
+        let ghost = blake3::hash(b"never stored").to_hex().to_string();
+        let resp = app
+            .oneshot(signed_fetch_request(peer_id, &peer_key, &ghost))
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::NOT_FOUND,
+            "missing object returns 404 for authenticated caller"
+        );
     }
 }
