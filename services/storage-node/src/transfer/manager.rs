@@ -38,7 +38,9 @@ impl TransferManager {
             file_id: file_id.to_string(),
             version_number,
             shard_index,
-            data: Vec::new(), // Populated by the attempter
+            // fetch: `data` and `hash` are response fields; for requests
+            // the peer supplies the shard bytes, so these stay empty.
+            data: Vec::new(),
             hash: String::new(),
             target_node: from_node.to_string(),
             source_device: None,

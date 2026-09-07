@@ -51,9 +51,12 @@ impl ConcurrencyPool {
         let attempter = self.attempter.clone();
 
         tokio::spawn(async move {
-            let _permit = sem.acquire().await.expect("semaphore closed");
-            let result = execute_transfer(&request, &config, &cache, attempter.as_ref()).await;
-            let _ = tx.send(result);
+            // Graceful shutdown: if the semaphore is closed, drop the
+            // transfer (the caller's oneshot resolves with RecvError).
+            if let Ok(_permit) = sem.acquire().await {
+                let result = execute_transfer(&request, &config, &cache, attempter.as_ref()).await;
+                let _ = tx.send(result);
+            }
         });
 
         rx

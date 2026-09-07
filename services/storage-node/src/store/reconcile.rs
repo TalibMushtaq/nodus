@@ -318,26 +318,33 @@ pub async fn trusted_peers_for_repair(
     Ok(rows)
 }
 
-/// Submit repair fetches for all DEGRADED shards through the Transfer
-/// Manager, one fetch per trusted peer, so the repair gets the same
-/// fallback/backoff/cache behavior as any client-initiated transfer.
-/// On completion the caller resolves the manager's oneshot result and
-/// marks the object STORED.
+/// Submit one repair fetch per DEGRADED shard through the Transfer Manager,
+/// to the best-candidate peer only. `peers` arrives ordered (path-cache hit
+/// first, then last_success_at desc), so the first entry is the most likely
+/// holder of the shard.
+///
+/// ponytail: v1 submits a single best-peer fetch instead of fanning out to
+/// every peer — the executor has no peer-fallback loop, so N×M fetches would
+/// merely burn pool slots on duplicative requests for the same shard.
+/// Failed repairs are retried by the next reconciliation scan; add sequential
+/// peer fallback (try the next peer after the first fails) once a node→node
+/// receive path exists to feed that loop.
 pub fn submit_repairs(
     manager: &crate::transfer::manager::TransferManager,
     degraded: Vec<DegradedShard>,
     peers: Vec<(String, Option<String>)>,
 ) -> Vec<tokio::sync::oneshot::Receiver<crate::transfer::types::TransferResult>> {
     let mut receivers = Vec::new();
+    let Some((peer, _path)) = peers.first() else {
+        return receivers;
+    };
     for shard in degraded {
-        for (peer, _path) in &peers {
-            receivers.push(manager.fetch_shard(
-                peer,
-                &shard.file_id,
-                shard.version_number,
-                shard.shard_index,
-            ));
-        }
+        receivers.push(manager.fetch_shard(
+            peer,
+            &shard.file_id,
+            shard.version_number,
+            shard.shard_index,
+        ));
     }
     receivers
 }
@@ -534,7 +541,8 @@ mod tests {
         assert_eq!(peers[1].0, "peer-plain");
         assert_eq!(peers[1].1, None);
 
-        // One DEGRADED shard × 2 peers → 2 repair fetches.
+        // One DEGRADED shard × 2 peers: v1 submits one fetch to the best peer
+        // only (peer-cached ranks first), not both.
         let identity_dir = tempdir().unwrap();
         let identity =
             std::sync::Arc::new(crate::identity::load_or_generate(identity_dir.path()).unwrap());
@@ -548,6 +556,6 @@ mod tests {
             )),
         );
         let receivers = submit_repairs(&manager, degraded, peers);
-        assert_eq!(receivers.len(), 2);
+        assert_eq!(receivers.len(), 1);
     }
 }

@@ -1,5 +1,15 @@
 # Changelog
 
+## [2026-09-07] - Transfer Manager: submit_repairs fan-out fix, graceful semaphore, comment cleanup
+
+**What changed:** `submit_repairs` in `reconcile.rs` now submits one `fetch_shard` per DEGRADED shard to the best-candidate peer (first entry in the ordered `peers` vec) instead of fanning out to all `N×M` peers simultaneously — the executor has no peer-fallback loop, so multiple concurrent fetches of the same shard merely burn pool slots. Updated the §21 test to assert the single-fetch behavior. `pool.rs` `ConcurrencyPool::submit` no longer panics with `expect("semaphore closed")` on shutdown; instead it gracefully drops the transfer (the caller's oneshot receiver resolves with `RecvError`). Fixed a misleading comment in `manager.rs` `fetch_shard`: the comment now explains that `data`/`hash` are response fields and remain empty in the outgoing request.
+
+**Why:** The `N×M` fan-out wasted bandwidth and could starve the 4-slot pool on duplicative requests for the same shard. The semaphore panic risked a crash during graceful shutdown. The original "Populated by the attempter" comment was inaccurate for fetches.
+
+**Impact:** No behavior change to working paths (node→node receive is still unimplemented); repairs now request only 1 fetch per shard per scan, making the pool usage linear in degraded-shard count and eliminating unnecessary peer traffic. `pool.rs` shutdown path is panic-free. Tests pass (88 unit + 2 integration).
+
+**Follow-ups:** P2 (data return path in `TransferResult`) and P3 (`object_id` threading through `fetch_shard`) remain the two blockers for a working repair-receive path; both depend on the yet-unimplemented node→node receive architecture.
+
 ## [2026-09-07] - Transfer Manager verification fixes
 
 **What changed:** Post-implementation audit of Phase 13. Removed the dead-end `pending_repairs` buffer from `NodePathAttempter` — Path C/D attempts were pushed into a separate vector that nothing ever drained, while the manager's `MemoryLocalQueue` (the thing `drain_queue()` retries) stayed empty. The attempter now returns honest hard failures for all four paths (PHASE A/B unimplemented receive/signaling, C/D rewired retry semantics: repairs are re-driven by the scheduled reconciliation scan, not the memory queue). The reconcile repair loop no longer discards its results: `run_repairs` logs each repair outcome (success/failure/aborted) and carries an explicit TODO for the DEGRADED→STORED flip once a receive path lands. Added Rust tests for `MemoryLocalQueue` (FIFO, remove, empty) and a `TransferManager` test proving `enqueue` → `drain_queue` re-submits into the pool (88 unit + 2 integration tests pass). Documented in `transfer-manager-spec.md` that the Rust jitter term is inclusive `[0, jitter]` vs TS exclusive `[0, jitter)` (inclusive avoids a `gen_range(0..0)` panic at jitter=0), and made the crate `clippy -D warnings`-clean: dropped the fire-and-forget receiver explicitly (`std::mem::drop`), collapsed the nested `if`s in `webrtc_client.rs`'s ack handler to let-chains, and annotated `TransferPath::from_str`. `cargo fmt` reformatted previously non-rustfmt-clean test inserts.
