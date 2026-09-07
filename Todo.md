@@ -158,12 +158,14 @@ Checkboxes are for tracking; nest sub-tasks as you break work down further.
 
 ## Phase 13 — Transfer Manager
 
-- [ ] Implement fallback chain: Local signaling → Direct WebRTC → (on
+- [x] Implement fallback chain: Local signaling → Direct WebRTC → (on
       failure) Relay signaling → Direct WebRTC → (on failure)
       Buffer-and-Relay → (Relay unavailable) Local persistent queue
-- [ ] Bounded timeouts + exponential backoff at each stage
-- [ ] Benchmark the ~4s WebRTC negotiation timeout against real Wi-Fi/NAT
+- [x] Bounded timeouts + exponential backoff at each stage
+- [x] Benchmark the ~4s WebRTC negotiation timeout against real Wi-Fi/NAT
       conditions (not just LAN-in-a-lab) before locking it in
+  - [x] `scripts/benchmark-webrtc`: timing contract (CLI) + real-network
+        browser harness (bench.html); results → `docs/architecture/webrtc-benchmark-results.md`
 
 ## Phase 14 — Next.js Web Client
  

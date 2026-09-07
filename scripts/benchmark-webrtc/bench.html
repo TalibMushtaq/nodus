@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Nodus WebRTC negotiation benchmark</title>
+  <style>
+    body { font: 14px/1.5 system-ui, sans-serif; max-width: 720px; margin: 2rem auto; padding: 0 1rem; }
+    input, button { padding: 0.4rem 0.6rem; font-size: 1rem; }
+    label { display: block; margin: 0.75rem 0 0.25rem; }
+    pre { background: #f4f4f4; padding: 1rem; overflow-x: auto; }
+    .pass { color: #0a7d2c; } .fail { color: #b00020; }
+  </style>
+</head>
+<body>
+  <h1>Nodus WebRTC negotiation benchmark</h1>
+  <p>
+    Measures Path A (local signaling) and Path B (Relay signaling) negotiation
+    time — from "send SDP offer" to "DataChannel open" — against real network
+    conditions. Run this page from a device on the target network and save the
+    JSON output into <code>docs/architecture/webrtc-benchmark-results.md</code>.
+  </p>
+
+  <label>network condition (label only): <input id="condition" value="same-subnet-wifi" /></label>
+  <label>node_id to signal to: <input id="nodeId" value="" placeholder="node_id" /></label>
+  <label>relay WS URL (Path B): <input id="relayUrl" value="ws://127.0.0.1:8080/ws" /></label>
+  <label>node local HTTP base (Path A, e.g. http://192.168.1.50:9378): <input id="localUrl" value="" placeholder="http://…:9378" /></label>
+  <label>peers (two browser tabs, this one is the OFFERER): <input id="numRounds" type="number" value="10" min="1" /></label>
+
+  <button id="run">Run</button>
+  <pre id="output">awaiting run…</pre>
+
+  <script type="module" src="./bench.js"></script>
+</body>
+</html>

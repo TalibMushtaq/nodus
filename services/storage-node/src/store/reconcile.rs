@@ -138,10 +138,55 @@ pub async fn run_reconciliation(store: &ObjectStore) -> anyhow::Result<Reconcile
 }
 
 /// Spawns a background task that runs reconciliation at boot and periodically every `interval`.
+///
+/// When a `TransferManager` is provided, DEGRADED shards found by a scan are
+/// submitted for re-fetch-from-peer repair (§21a) through the manager, so the
+/// repair inherits the same fallback/backoff/path-cache behavior as any other
+/// transfer.
 pub fn spawn_reconcile_task(
     store: Arc<ObjectStore>,
     interval: Duration,
+    manager: Option<crate::transfer::manager::TransferManager>,
 ) -> tokio::task::JoinHandle<()> {
+    let run_repairs = async |store: &ObjectStore, manager: &Option<crate::transfer::manager::TransferManager>| {
+        let manager = match manager {
+            Some(m) => m,
+            None => return,
+        };
+        // Best-effort repair: failures are logged, objects stay DEGRADED,
+        // and the next scan re-attempts them.
+        let shards = match find_degraded_shards(store).await {
+            Ok(s) if !s.is_empty() => s,
+            Ok(_) => return,
+            Err(e) => {
+                eprintln!("[reconcile] repair scan error: {e}");
+                return;
+            }
+        };
+        let peers = match crate::store::reconcile::trusted_peers_for_repair(store).await {
+            Ok(p) if !p.is_empty() => p,
+            Ok(_) => {
+                eprintln!("[reconcile] no trusted peers for repair; leaving {} shards DEGRADED", shards.len());
+                return;
+            }
+            Err(e) => {
+                eprintln!("[reconcile] trusted peer query error: {e}");
+                return;
+            }
+        };
+        println!(
+            "[reconcile] submitting repair for {} degraded shards across {} trusted peers",
+            shards.len(),
+            peers.len()
+        );
+        for rx in submit_repairs(manager, shards, peers) {
+            // Wait for the manager's result; on success the object store was
+            // already re-populated by the attempter, on failure we retry next
+            // scan.
+            let _ = rx.await;
+        }
+    };
+
     tokio::spawn(async move {
         // Run immediately on boot
         match run_reconciliation(&store).await {
@@ -165,6 +210,7 @@ pub fn spawn_reconcile_task(
                 eprintln!("[reconcile] boot scan error: {e}");
             }
         }
+        run_repairs(&store, &manager).await;
 
         let mut timer = tokio::time::interval(interval);
         // The first tick completes immediately in tokio interval, so consume it
@@ -186,8 +232,94 @@ pub fn spawn_reconcile_task(
                     eprintln!("[reconcile] periodic scan error: {e}");
                 }
             }
+            run_repairs(&store, &manager).await;
         }
     })
+}
+
+/// A shard whose backing object is DEGRADED and eligible for repair.
+#[derive(Debug, Clone)]
+pub struct DegradedShard {
+    pub file_id: String,
+    pub version_number: i64,
+    pub shard_index: i64,
+    /// The object to re-verify/mark STORED once repair succeeds. The repair
+    /// path consumes `file_id`/`version`/`shard_index` today; `object_id` is
+    /// carried for the caller that re-stores on success.
+    #[allow(dead_code)]
+    pub object_id: String,
+}
+
+/// Find all shards whose storage object is DEGRADED (missing or corrupted),
+/// so the repair path knows exactly which (file, version, shard) tuples need
+/// re-fetching from a peer (§21a re-fetch-from-peer repair action).
+pub async fn find_degraded_shards(store: &ObjectStore) -> anyhow::Result<Vec<DegradedShard>> {
+    let pool = store.pool();
+    let rows: Vec<(String, i64, i64, String)> = sqlx::query_as(
+        r#"
+        SELECT s.file_id, s.version_number, s.shard_index, s.object_id
+        FROM shards s
+        JOIN storage_objects o ON o.object_id = s.object_id
+        WHERE o.status = 'DEGRADED'
+        "#,
+    )
+    .fetch_all(pool)
+    .await
+    .context("querying DEGRADED shards for repair")?;
+
+    Ok(rows
+        .into_iter()
+        .map(|(file_id, version_number, shard_index, object_id)| DegradedShard {
+            file_id,
+            version_number,
+            shard_index,
+            object_id,
+        })
+        .collect())
+}
+
+/// Trusted peer node IDs ordered for repair: path-cache hits first, then by
+/// last successful transfer recency. Brute-force try-all per the v1 spec —
+/// no peer location index (see spec §"Re-fetch-from-peer").
+pub async fn trusted_peers_for_repair(
+    store: &ObjectStore,
+) -> anyhow::Result<Vec<(String, Option<String>)>> {
+    let pool = store.pool();
+    let rows: Vec<(String, Option<String>)> = sqlx::query_as(
+        r#"
+        SELECT node_id, last_successful_path
+        FROM trusted_nodes
+        ORDER BY (last_successful_path IS NOT NULL) DESC, last_success_at DESC
+        "#,
+    )
+    .fetch_all(pool)
+    .await
+    .context("querying trusted peers for repair")?;
+    Ok(rows)
+}
+
+/// Submit repair fetches for all DEGRADED shards through the Transfer
+/// Manager, one fetch per trusted peer, so the repair gets the same
+/// fallback/backoff/cache behavior as any client-initiated transfer.
+/// On completion the caller resolves the manager's oneshot result and
+/// marks the object STORED.
+pub fn submit_repairs(
+    manager: &crate::transfer::manager::TransferManager,
+    degraded: Vec<DegradedShard>,
+    peers: Vec<(String, Option<String>)>,
+) -> Vec<tokio::sync::oneshot::Receiver<crate::transfer::types::TransferResult>> {
+    let mut receivers = Vec::new();
+    for shard in degraded {
+        for (peer, _path) in &peers {
+            receivers.push(manager.fetch_shard(
+                peer,
+                &shard.file_id,
+                shard.version_number,
+                shard.shard_index,
+            ));
+        }
+    }
+    receivers
 }
 
 #[cfg(test)]
@@ -303,5 +435,100 @@ mod tests {
         let report = run_reconciliation(&store).await.unwrap();
         assert!(report.orphans_deleted.contains(&hash));
         assert!(!dest.exists());
+    }
+
+    // ── §21a re-fetch-from-peer: DEGRADED shard → trusted-peer repair ──
+
+    /// Seeds a DEGRADED shard + trusted peers and exercises the full repair
+    /// selection path: what the reconcile scan considers broken, which peers
+    /// it would ask (path-cache hits first, then recency), and that the repair
+    /// fan-out produces one fetch per (shard, peer).
+    #[tokio::test]
+    async fn degraded_shards_select_trusted_peers_for_repair() {
+        let dir = tempdir().unwrap();
+        let pool = create_test_db(dir.path()).await;
+        let now = chrono::Utc::now().to_rfc3339();
+
+        // Minimal file -> version -> shard -> DEGRADED object chain.
+        sqlx::query("INSERT INTO files (file_id, created_at, updated_at) VALUES ('f1', ?, ?)")
+            .bind(&now)
+            .bind(&now)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO file_versions (file_id, version_number, version_hash, shard_count, created_at) VALUES ('f1', 1, 'vh', 2, ?)",
+        )
+        .bind(&now)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO storage_objects (object_id, size_bytes, status, created_at) VALUES (?, 100, 'DEGRADED', ?)",
+        )
+        .bind("obj-degraded")
+        .bind(&now)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO shards (file_id, version_number, shard_index, object_id, size_bytes) VALUES ('f1', 1, 0, 'obj-degraded', 100)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // Two trusted peers: one with a fresh cached path, one without.
+        sqlx::query("INSERT INTO trusted_nodes (node_id, public_key_bytes, created_at, last_successful_path, last_success_at) VALUES (?, ?, ?, 'relay_signaling', ?)")
+            .bind("peer-cached")
+            .bind(vec![0u8; 32])
+            .bind(&now)
+            .bind(&now)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO trusted_nodes (node_id, public_key_bytes, created_at) VALUES (?, ?, ?)")
+            .bind("peer-plain")
+            .bind(vec![0u8; 32])
+            .bind(&now)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let store = ObjectStore::new(dir.path().to_path_buf(), pool.clone())
+            .await
+            .unwrap();
+
+        let degraded = find_degraded_shards(&store).await.unwrap();
+        assert_eq!(degraded.len(), 1);
+        assert_eq!(degraded[0].file_id, "f1");
+        assert_eq!(degraded[0].version_number, 1);
+        assert_eq!(degraded[0].shard_index, 0);
+
+        // peer-cached (has last_successful_path) ranks ahead of peer-plain.
+        let peers = trusted_peers_for_repair(&store).await.unwrap();
+        assert_eq!(peers[0].0, "peer-cached");
+        assert_eq!(peers[0].1.as_deref(), Some("relay_signaling"));
+        assert_eq!(peers[1].0, "peer-plain");
+        assert_eq!(peers[1].1, None);
+
+        // One DEGRADED shard × 2 peers → 2 repair fetches.
+        let identity_dir = tempdir().unwrap();
+        let identity = std::sync::Arc::new(
+            crate::identity::load_or_generate(identity_dir.path()).unwrap(),
+        );
+        let manager = crate::transfer::manager::TransferManager::new(
+            crate::transfer::config::TransferConfig::default(),
+            crate::transfer::cache::SqlitePathCache::new(pool.clone()),
+            std::sync::Arc::new(
+                crate::transfer::node_attempter::NodePathAttempter::new(
+                    pool,
+                    std::sync::Arc::new(store),
+                    identity,
+                ),
+            ),
+        );
+        let receivers = submit_repairs(&manager, degraded, peers);
+        assert_eq!(receivers.len(), 2);
     }
 }

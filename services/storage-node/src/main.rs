@@ -4,6 +4,7 @@ mod identity;
 mod local;
 mod store;
 pub mod sync;
+mod transfer;
 mod webrtc;
 
 use std::path::PathBuf;
@@ -69,9 +70,30 @@ async fn main() -> anyhow::Result<()> {
 
     let store_arc = Arc::new(object_store);
 
-    // Phase 6: Reconciliation background task (runs at boot then every 24h)
-    let _reconcile_handle =
-        store::spawn_reconcile_task(store_arc.clone(), Duration::from_secs(24 * 3600));
+    // Phase 5 Node identity is Arc'd once here and shared by the sync loop
+    // (Phase 8), local discovery (Phase 11), and the Transfer Manager (13).
+    let sync_identity_arc = Arc::new(node_id_info);
+
+    // Phase 13: Transfer Manager — wires the §21a re-fetch-from-peer repair
+    // action through the same fallback/backoff/path-cache machinery as any
+    // other transfer.
+    let transfer_manager = transfer::manager::TransferManager::new(
+        transfer::config::TransferConfig::default(),
+        transfer::cache::SqlitePathCache::new(db.clone()),
+        Arc::new(transfer::node_attempter::NodePathAttempter::new(
+            db.clone(),
+            store_arc.clone(),
+            Arc::clone(&sync_identity_arc),
+        )),
+    );
+
+    // Phase 6: Reconciliation background task (runs at boot then every 24h);
+    // repairs DEGRADED objects through the Transfer Manager.
+    let _reconcile_handle = store::spawn_reconcile_task(
+        store_arc.clone(),
+        Duration::from_secs(24 * 3600),
+        Some(transfer_manager),
+    );
 
     // Phase 6: Garbage collection background task (runs every 6h)
     let _gc_handle = store::spawn_gc_task(
@@ -81,7 +103,6 @@ async fn main() -> anyhow::Result<()> {
     );
 
     // Phase 8: Start WebSocket sync loop
-    let sync_identity_arc = Arc::new(node_id_info);
     let sync_db = db.clone();
     let relay_url =
         std::env::var("NODUS_RELAY_URL").unwrap_or_else(|_| "ws://127.0.0.1:8080/ws".to_string());
