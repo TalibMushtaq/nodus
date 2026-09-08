@@ -1,50 +1,46 @@
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
+@import "tailwindcss";
+@import "@repo/ui/tokens.css";
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+/* Make Tailwind scan the shared UI package too, so classes used only there
+ * are still generated for the app bundle. */
+@source "../../packages/ui/src";
+
+@layer base {
+  html,
+  body {
+    height: 100%;
+  }
+
+  body {
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    color: var(--color-foreground);
+    background: var(--color-background);
+  }
+
+  a {
+    color: inherit;
+    text-decoration: none;
   }
 }
 
-html,
-body {
-  max-width: 100vw;
-  overflow-x: hidden;
-}
-
-body {
-  color: var(--foreground);
-  background: var(--background);
-}
-
+/* Scrollbar — hidden unless hovering, matching the prototype's restraint */
 * {
-  box-sizing: border-box;
-  padding: 0;
-  margin: 0;
+  scrollbar-width: none;
 }
-
-a {
-  color: inherit;
-  text-decoration: none;
-}
-
-.imgDark {
+*::-webkit-scrollbar {
   display: none;
 }
-
-@media (prefers-color-scheme: dark) {
-  html {
-    color-scheme: dark;
-  }
-
-  .imgLight {
-    display: none;
-  }
-  .imgDark {
-    display: unset;
-  }
+*:hover {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border) transparent;
+}
+*:hover::-webkit-scrollbar {
+  display: block;
+  width: 4px;
+  height: 4px;
+}
+*:hover::-webkit-scrollbar-thumb {
+  background: var(--color-border);
+  border-radius: 2px;
 }

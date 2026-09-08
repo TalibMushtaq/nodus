@@ -1,0 +1,98 @@
+/* Nodus design tokens (Tailwind v4 CSS-first theme).
+ * Single source of truth for the visual identity — imported by apps/web via
+ * `@import "@repo/ui/tokens.css"`. Values mirror nodus-design/src/index.css
+ * exactly: light is primary, dark is a deliberate second mood.
+ */
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --color-background: #f7f5f2;
+  --color-foreground: #1c1a17;
+  --color-card: #ffffff;
+  --color-card-foreground: #1c1a17;
+  --color-primary: #1c1a17;
+  --color-primary-foreground: #f7f5f2;
+  --color-secondary: #edebe6;
+  --color-secondary-foreground: #1c1a17;
+  --color-muted: #edebe6;
+  --color-muted-foreground: #78746e;
+  --color-accent: #b85c1a;
+  --color-accent-foreground: #ffffff;
+  --color-destructive: #c0442b;
+  --color-destructive-foreground: #ffffff;
+  --color-border: #ddd9d3;
+  --color-input: #ddd9d3;
+  --color-ring: #b85c1a;
+  --radius: 10px;
+  --font-sans: "Inter", var(--font-inter), system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", var(--font-jetbrains-mono), "Fira Code", monospace;
+}
+
+/* Dark mode is a designed mood, not an inversion of light */
+.dark {
+  --color-background: #141210;
+  --color-foreground: #ede9e2;
+  --color-card: #1e1c19;
+  --color-card-foreground: #ede9e2;
+  --color-primary: #ede9e2;
+  --color-primary-foreground: #141210;
+  --color-secondary: #252320;
+  --color-secondary-foreground: #ede9e2;
+  --color-muted: #252320;
+  --color-muted-foreground: #857f78;
+  --color-accent: #c8722a;
+  --color-accent-foreground: #ffffff;
+  --color-destructive: #c05535;
+  --color-destructive-foreground: #ffffff;
+  --color-border: #2a2824;
+  --color-input: #2a2824;
+  --color-ring: #c8722a;
+}
+
+/* Status palette (light + dark) — the sync/connection "wordmark". Consumed
+ * programmatically by StatusBadge/PathIndicator via var(), so it stays a
+ * plain custom property rather than a @theme color utility. */
+:root {
+  --status-synced: #1d7a45;
+  --status-synced-bg: #d6f0e3;
+  --status-pending: #b85c1a;
+  --status-pending-bg: #fdebd6;
+  --status-conflict: #b33a22;
+  --status-conflict-bg: #fce0da;
+  --status-offline: #6b6560;
+  --status-offline-bg: #e8e6e2;
+  --status-local: #2e5f8a;
+  --status-local-bg: #d6e8f8;
+}
+.dark {
+  --status-synced: #34c472;
+  --status-synced-bg: #0f2e1c;
+  --status-pending: #e07830;
+  --status-pending-bg: #2e1a08;
+  --status-conflict: #e0604a;
+  --status-conflict-bg: #2e100c;
+  --status-offline: #908a83;
+  --status-offline-bg: #1c1b18;
+  --status-local: #4fa0d4;
+  --status-local-bg: #0c1e2c;
+}
+
+/* Accent gradient used by primary buttons, nav-active, and brand moments. */
+.accent-gradient {
+  background: linear-gradient(135deg, var(--color-accent), #d4773a);
+}
+
+/* Warm surface gradient for Sidebar/TopBar — each has a designed dark twin. */
+.surface-warm {
+  background: linear-gradient(180deg, #fff8f3 0%, #fff0e6 100%);
+}
+.dark .surface-warm {
+  background: linear-gradient(180deg, #1c1a17 0%, #2a1f14 100%);
+}
+.topbar-warm {
+  background: linear-gradient(90deg, #fff8f3 0%, #ffffff 60%);
+}
+.dark .topbar-warm {
+  background: linear-gradient(90deg, #1c1a17 0%, #1e1c19 60%);
+}
