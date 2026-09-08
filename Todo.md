@@ -107,6 +107,120 @@ Checkboxes are for tracking; nest sub-tasks as you break work down further.
       node ack, §13)
 - [x] Auth/account service (registration, login, device registration)
 
+## Phase 7a — Opaque Server-Side Session Auth Migration (new, plan §8/§13/§29)
+
+Replace account auth's JWT/refresh-token model with **opaque, randomly
+generated server-side sessions** (PostgreSQL stores only SHA-256 hashes;
+cookie = `HttpOnly; Secure; SameSite=Lax`). This is a migration of the *auth
+layer only* — device identity (asymmetric key), Storage Node identity
+(Ed25519 challenge-response) and file encryption (key envelopes) are
+**unchanged**.
+
+### Non-goals (explicit)
+
+- ❌ No JWTs, no access tokens, no refresh tokens anywhere in Nodus auth
+- ❌ No auth frameworks (no Better Auth / Clerk / Auth0)
+- ❌ No custom password/KDF primitives (Argon2id hash in `accounts.password_hash`
+      stays as-is)
+- ❌ No `POST /auth/refresh` route; `/auth/login`/`/auth/register` never return
+      tokens in the response body
+- ❌ No idle/logout after 30 minutes — the 30-min `last_used_at` bump is a
+      write-amplification optimization only
+
+### Locked session lifecycle (plan §13)
+
+- Absolute maximum lifetime: **30 days** (`expires_at`)
+- `last_used_at` bumped **at most once per 30 min** per session
+- **Max 10 active sessions/account**; 11th issue revokes the oldest
+- Logout/revocation invalidates **immediately**
+- Session ID rotated (new row, old revoked) on privilege/credential change
+- Every session **requires** a `device_id`; devices **auto-register on first
+      login** (client generates device keypair and registers beside session
+      creation — no manual pre-pairing to authenticate)
+
+### 1. Relay backend
+
+- [ ] `services/relay/internal/auth/token.go`: remove `IssueAccessToken` /
+      `ParseAccessToken` (JWT HS256) and refresh-token rotation; add session ID
+      generation (32 random bytes → base64url, `crypto/rand`) and SHA-256
+      `HashSession`
+- [ ] New `services/relay/internal/auth/session.go`: `CreateSession`,
+      `LookupSession` (expiry/revoked check), `TouchSession` (last_used_at ≤
+      once/30 min), `RevokeSession`, `RevokeAllForAccount`/`ForDevice`
+- [ ] `middleware.go`: rewrite `RequireAuth` to read the session cookie
+      (`nodus_session`), hash it, look up `sessions`, populate
+      `AccountID` + `DeviceID` in request context; drop JWT claims
+- [ ] `config.go`: remove `JWTSecret`/`JWTExpiry`/`RefreshExpiry`; add
+      `SessionCookieName`, `SessionMaxAge` (30d), `SessionTouchInterval` (30m),
+      cookie flags (HttpOnly/Secure/SameSite=Lax)
+- [ ] Migration `006_sessions.{up,down}.sql`: create `sessions`
+      (`session_hash UNIQUE`, `account_id FK`, `device_id FK NOT NULL`,
+      `created_at`, `expires_at`, `last_used_at`, `revoked_at`); **drop
+      `refresh_tokens` outright** — no migration window, no dual auth model
+- [ ] `main.go` routes: `POST /auth/login|register`, `POST /auth/logout`,
+      `GET /auth/session`; **remove `POST /auth/refresh`**
+- [ ] Verify Rust Storage Node WS/HTTP auth is untouched (challenge-response,
+      signed requests) and unaffected by the JWT removal
+
+### 2. Auth API
+
+- [ ] `internal/handler/auth.go`: `Login`/`Register` set the session cookie and
+      return `{account_id, device_id, session_expires_at}` — no token in body
+- [ ] New `Session` handler: return current session info from cookie;
+      401 when missing/expired/revoked
+- [ ] `Logout`: revoke the session row + clear cookie (`Max-Age=0`)
+- [ ] Device **auto-registration on first login**: generate device keypair
+      client-side, `POST /devices/register` alongside session creation, bind
+      `sessions.device_id`
+- [ ] Session fixation: rotate session ID (new row, revoke old) on password
+      change / device revocation
+- [ ] Update `auth_test.go`, `token_test.go`, `middleware_test.go` to
+      session-cookie tests; update `handler/*` tests that relied on Bearer
+
+### 3. Next.js integration
+
+- [ ] Remove `better-auth` dependency
+- [ ] Route handlers `app/api/auth/{login,register,logout,session}/route.ts`
+      proxying Relay + setting/clearing the HttpOnly/Secure/SameSite=Lax cookie
+- [ ] `lib/session.ts`: server `getSession()` / `requireAuth()` via Relay
+      `GET /auth/session` using the cookie
+- [ ] `lib/auth-client.ts` + `useAuth()` hook; **remove all
+      `sessionStorage`/`localStorage` JWT handling**
+- [ ] Route guards: `/` → `/overview` if authed else `/auth`; dashboard group
+      requires a valid session
+- [ ] Single-page wizard auth (`AuthFlow` at `/auth`) wired to route handlers
+      (no mock `setTimeout`)
+
+### 4. Pairing
+
+- [ ] Unify `apps/web/app/pair` onto the session-cookie boundary: replace
+      direct `Authorization: Bearer` + `sessionStorage` JWT with
+      session-authenticated proxied calls
+- [ ] Confirm `packages/relay-client` fetches use the authenticated session
+      (no Bearer construction client-side)
+
+### 5. Security tests
+
+- [ ] Session expiry (past `expires_at` → 401)
+- [ ] Revocation (logout/revoke → 401, row `revoked_at` set)
+- [ ] Fixation (rotate on policy change; old ID invalid)
+- [ ] Cookie flags asserted (HttpOnly/Secure/SameSite=Lax, Secure in prod)
+- [ ] Hash-only storage (raw token never stored/returned; DB holds SHA-256)
+- [ ] Max-10-sessions eviction (11th issue revokes oldest)
+- [ ] Device-bound session (session without valid `device_id` rejected)
+- [ ] 30-min `last_used_at` throttle (no write-per-request)
+
+### 6. Client tests
+
+- [ ] Web: login/register sets cookie, session persists across reload, session
+      guard redirects when unauthenticated, logout clears cookie
+- [ ] Web: auto device-registration on first login (keypair + `device_id` in
+      every session)
+- [ ] WebSocket: browser WS handshake authenticates via session cookie
+      (`?token=` removed)
+- [ ] Mobile (Phase 15 when reached): same session model via secure platform
+      storage (requirement §8 identity matrix preserved)
+
 ## Phase 8 — Rust ↔ Relay Incremental Sync
 
 - [x] Implement `sync_outbox` draining from Rust to Relay

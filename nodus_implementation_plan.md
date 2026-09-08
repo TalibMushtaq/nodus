@@ -548,6 +548,19 @@ Node     -> ACTIVE
 
 without destroying the account.
 
+### Identity layers (account vs device vs node vs file)
+
+The four identity concerns are distinct and never substitute for one another:
+
+| Layer | Mechanism | Verifier |
+|---|---|---|
+| Account authentication | **opaque, randomly generated server-side session ID** (only a SHA-256 hash is stored in PostgreSQL) | Relay session lookup |
+| Device identity | device asymmetric key (public key registered to the account) | signature / key-envelope binding |
+| Storage Node identity | node asymmetric key (Ed25519) | challenge-response + signature |
+| File encryption | per-file encryption keys wrapped in key envelopes | cryptographic; Relay never sees plaintext |
+
+Account authentication is **not** a JWT, access token, or refresh token — it is a server-side opaque session. Device and Node identity are already asymmetric-key based and are unchanged; only account authentication moves off JWT. See §13 (sessions table) and the auth-migration checklist in `Todo.md`.
+
 ---
 
 ## 9. App Password and Recovery
@@ -570,6 +583,8 @@ Encrypted device credentials
 ```
 
 The device private key remains the cryptographic identity.
+
+On login, the verifying credential is the **account password** (stored only as an Argon2id hash, never as a plaintext/network credential). A successful password check mints a new **opaque server-side session** bound to a registered device (see §8 identity layers and §13). The app password itself is never transmitted as a bearer credential and never maps to a JWT or refresh token.
 
 A separate recovery credential should be provided for the case where the user loses their only trusted device.
 
@@ -744,6 +759,8 @@ accounts
 devices
 storage_nodes
 
+sessions                  <- replaces refresh_tokens; opaque server-side sessions
+
 files
 file_versions
 file_locations
@@ -755,6 +772,31 @@ sync_cursors
 
 tombstones
 ```
+
+### Sessions (account authentication)
+
+Account authentication uses **server-side opaque sessions** — no JWTs, no access tokens, no refresh tokens. The `refresh_tokens` table is **dropped outright** (pre-production; no migration window, no dual auth model). It is replaced by a `sessions` table:
+
+| Column | Notes |
+|---|---|
+| `session_id` | PK — ID of the session (opaque token value stored server-side) |
+| `session_hash` | `UNIQUE` — SHA-256 of the raw session token; **only the hash is stored**, never the raw token (see below) |
+| `account_id` | FK → `accounts` |
+| `device_id` | FK → `devices` (**required** — every session is bound to a registered device) |
+| `created_at` | set on issue |
+| `expires_at` | absolute maximum lifetime (30 days) |
+| `last_used_at` | bumped at most once per 30 minutes per session to avoid a write on every request |
+| `revoked_at` | set on logout/revocation; non-NULL means invalid immediately |
+
+The raw session token is handed to the client exactly once (as an `HttpOnly; Secure; SameSite=Lax` cookie) and is never stored, logged, or returned again; the database keeps only its SHA-256 hash. Redis may cache `last_used_at`/presence but is **not** the source of truth for sessions.
+
+Session lifecycle decisions (locked):
+
+- Absolute maximum lifetime: **30 days** (`expires_at`).
+- `last_used_at` is bumped **at most once every 30 minutes** per session — this is a write-amplification optimization, **not** an idle timeout. There is **no automatic idle logout**; a session stays valid within its absolute lifetime until logout/revocation.
+- **Maximum 10 active sessions per account**; issuing an 11th revokes the oldest active session.
+- Logout or revocation invalidates the session **immediately** (revoke row + clear cookie).
+- On a privilege/credential change (password change, device revocation), the affected sessions are rotated: new session ID issued, old row revoked — preventing session fixation.
 
 ### Redis
 
@@ -1398,7 +1440,12 @@ Build the system incrementally.
           |
 7. Go Relay + PostgreSQL + Redis
           |
-8. Rust <-> Relay incremental sync
+ 7a. Opaque server-side session auth (see auth-migration checklist in `Todo.md`):
+     replace JWT/refresh-token auth in the Relay backend and auth API, then
+     Next.js integration, then pairing/device auto-registration, then Rust
+     Storage Node verification, then security + client tests
+          |
+ 8. Rust <-> Relay incremental sync
           |
 9. Full snapshot / Relay rebuild
           |
@@ -1428,6 +1475,15 @@ Do not start with the UI. The distributed storage, synchronization, identity, an
 ## 29. Remaining Design Decisions
 
 Before implementation, finalize these:
+
+### Authentication and Session (resolved for opaque server-side sessions)
+
+- **No JWTs, no access tokens, no refresh tokens, no Better Auth/Clerk/Auth0.** Account auth is a server-side opaque session ID (32 random bytes → base64url), delivered as an `HttpOnly; Secure; SameSite=Lax` cookie, stored in PostgreSQL only as a SHA-256 hash (see §13).
+- **Session lifetime:** 30-day absolute maximum; `last_used_at` bumped at most once per 30 minutes (write-amplification optimization, **not** an idle logout — no automatic idle timeout); immediate invalidation on logout/revocation; max 10 active sessions/account (11th revokes oldest).
+- **Device binding:** every session requires a `device_id` (FK → devices). Devices are **auto-registered on first login** — the client generates a device keypair and registers it alongside session creation, so a user need not manually pair before they can authenticate.
+- **WebSocket auth:** the browser WebSocket handshake authenticates via the session **cookie**; `?token=<JWT>` is removed entirely. Rust Storage Node WebSocket/HTTP auth stays on its cryptographic challenge-response / signed-request mechanism (unchanged).
+- **Session fixation:** rotate the session ID (new row, revoke old) on privilege/credential change.
+- **API shape:** `POST /auth/register`, `POST /auth/login`, `GET /auth/session`, `POST /auth/logout`. `/auth/refresh` is removed.
 
 ### Cryptography
 - Exact account/device/node key hierarchy

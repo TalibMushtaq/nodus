@@ -1,5 +1,15 @@
 # Changelog
 
+## [2026-09-08] - Plan: opaque server-side session auth migration (replace JWT/refresh tokens)
+
+**What changed:** Documentation-only refactor of the auth roadmap. Updated `nodus_implementation_plan.md`: added the four-layer identity matrix (account session vs device key vs node key vs file encryption keys) to §8, clarified in §9 that the app password is Argon2id-hashed and never a bearer/network credential, replaced the `refresh_tokens` model with a `sessions` table + locked session-lifecycle semantics in §13 (30-day absolute lifetime, `last_used_at` bumped at most once per 30 min, max 10 sessions/account, immediate revocation, every session bound to an auto-registered device), inserted step 7a into the §28 implementation order, and resolved the §29 auth design decisions (no JWT/access/refresh tokens, no Better Auth, session-cookie WS auth, `?token=` removed, `GET /auth/session` added, `/auth/refresh` removed). Rewrote the root `Todo.md` with a new **Phase 7a** auth-migration checklist (Relay backend, auth API, Next.js integration, pairing, security + client tests) plus explicit non-goals.
+
+**Why:** The user's spec requires opaque server-side sessions with PostgreSQL storing only SHA-256 hashes and cookie-based auth, with no JWT/access/refresh tokens anywhere — so the out-of-date JWT-planning had to be replanned and tracked before any code migration. `accounts.password_hash` was already Argon2id (requirement already met).
+
+**Impact:** No production code changed. Affects planning docs and the migration checklist only; `services/relay` auth code (`token.go`, `middleware.go`, `handler/auth.go`, `config.go`, migration `001`), `apps/web/app/pair`, and `packages/relay-client` are the entities slated for the migration. Breaking API change planned: `/auth/refresh` removed, `GET /auth/session` added, WS auth via cookie instead of `?token=`.
+
+**Follow-ups:** Code migration itself is intentionally deferred — do not implement until explicitly asked.
+
 ## [2026-09-07] - Transfer Manager: repair data-return path (P2) + object_id threading (P3)
 
 **What changed:** Finished the §21a repair receive path behind the Option B backhaul (mDNS + authenticated HTTP). P3: `object_id` (the BLAKE3 content hash) is now threaded end-to-end — `ShardTransferRequest`/`TransferResult` gained `object_id: String`, `fetch_shard(peer, object_id)` takes it directly, and `DegradedShard` was slimmed to `object_id` (its `file_id`/`version_number`/`shard_index` were unread once fetch became object-addressed; the `find_degraded_shards` query selects `DISTINCT s.object_id`). P2: `TransferResult` gained `data: Vec<u8>`, and the dead `TODO(receive-path)` in `reconcile.rs` `run_repairs` is replaced by a real restore: on success it BLAKE3-verifies the fetched bytes against `object_id`, atomically writes them (`<data_dir>/objects/<ab>/<object_id>` via same-directory temp-file + rename), then flips `storage_objects` `DEGRADED → STORED`.

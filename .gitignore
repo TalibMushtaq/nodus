@@ -5,6 +5,10 @@ node_modules
 .pnp
 .pnp.js
 
+
+# Locat development files
+nodus-design
+
 # Local env files
 .env
 .env.local
