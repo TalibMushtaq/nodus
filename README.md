@@ -140,7 +140,9 @@ Implemented and tested (see `CHANGELOG.md` for detail):
   plus a real auth wizard (Phase 7a §3), accessible (axe-clean) in light and
   dark themes. `/auth` signs in / creates accounts through `app/api/auth/*`
   route handlers that proxy the Relay and set the HttpOnly session cookie;
-  `/` and the dashboard group require a valid session. `/pair` is deferred.
+  `/` and the dashboard group require a valid session. `/pair` (Phase 7a §4)
+  is server-guarded and pairs Storage Nodes through session-authenticated
+  proxies (`/api/nodes`, `/api/pairing/*`) — no client-side Bearer/JWT.
 
 Full build order and the phase-by-phase checklist:
 

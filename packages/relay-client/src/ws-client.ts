@@ -69,6 +69,11 @@ export class RelayWsClient {
   }
 
   connect(): void {
+    // Phase 7a §1/§4: relay auth is the host-scoped `nodus_session` cookie,
+    // which browsers attach to the WebSocket *handshake* automatically — no
+    // token in the URL or headers (JWT `?token=` and Authorization were
+    // removed). Storage Nodes authenticate separately over this socket via the
+    // Ed25519 challenge-response, so no browser-side credential is needed here.
     const ws = new WebSocket(this.endpoint);
     this.ws = ws;
     ws.onopen = () => this.handlers.onOpen?.();

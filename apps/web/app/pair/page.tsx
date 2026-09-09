@@ -2,11 +2,17 @@
 
 // Storage Node pairing & LAN discovery for the web app.
 //
+// Phase 7a §4: pairing is session-authenticated. The account session lives in
+// the HttpOnly nodus_session cookie (managed by Next route handlers + Relay);
+// this page calls proxied handlers (/api/nodes, /api/pairing/*) and never
+// constructs a Bearer header or touches sessionStorage. The device's Ed25519
+// keypair lives only in this browser (localStorage), never leaves it, and is
+// used to bind + sign tokens.
+//
 // Web clients skip active mDNS (design decision D): this screen walks the
 // Relay Path B flow (token issued by the Relay, node already knows it via the
 // WS push) and offers manual-IP probing of `/nodus/discovery` for the
-// offline/fast-path pairing. The device's Ed25519 keypair lives only in this
-// browser (localStorage), never leaves it, and is used to bind + sign tokens.
+// offline/fast-path pairing.
 //
 // NOTE (mixed content): the browser blocks http://<LAN node>:9378 requests
 // from an https:// page. Dev flows run over http://localhost:3000; production
@@ -25,31 +31,23 @@ import {
   type StoredDeviceIdentity,
 } from "@repo/relay-client/device-identity";
 import { useCallback, useEffect, useMemo, useState } from "react";
-
+import { useRouter } from "next/navigation";
 import { addTrustedNode, getTrustedNodes, type TrustedNode } from "../../lib/trusted-nodes";
+import {
+  listNodes,
+  registerDevice,
+  issuePairingToken,
+  type PairingSession,
+  type RelayNode,
+} from "../../lib/pairing";
+import { useAuth } from "../../providers/auth-provider";
 
-const RELAY_BASE =
-  process.env.NEXT_PUBLIC_RELAY_URL ?? "http://localhost:8080";
 const IDENTITY_KEY = "nodus.device.identity";
 
-interface RelayNode {
-  node_id: string;
-  account_id: string;
-  public_key: string;
-  capabilities: string[];
-  status: string;
-  is_primary: boolean;
-  created_at: string;
-}
-
-interface StoredSession {
-  token: string;
-  expires_at: string;
-  node_id?: string;
-  device_id?: string;
-}
-
 export default function PairPage() {
+  const router = useRouter();
+  const { status, session, logout } = useAuth();
+
   // ── device identity (persisted). Lazy initializer avoids setState-in-effect
   // (react-hooks v6 rule) and keeps this a pure render-time concern. On the
   // server pass (SSR/SSG prerender) window is undefined so this stays null;
@@ -69,86 +67,66 @@ export default function PairPage() {
     return fresh;
   });
 
-  // ── relay auth + catalog ────────────────────────────────────────
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [jwt, setJwt] = useState<string | null>(null);
-  const [authError, setAuthError] = useState<string | null>(null);
+  // ── session status + node catalog ───────────────────────────────
   const [nodes, setNodes] = useState<RelayNode[]>([]);
+  const [nodeError, setNodeError] = useState<string | null>(null);
 
-  const login = useCallback(async () => {
-    setAuthError(null);
-    const res = await fetch(`${RELAY_BASE}/auth/login`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ email, password }),
-    });
-    if (!res.ok) {
-      setAuthError(await res.text());
-      return;
+  // Auto-load the node catalog once the session resolves (§4). The server-side
+  // /pair layout already gated on requireAuth(), but the client status starts
+  // "loading" until the session handler round-trips.
+  useEffect(() => {
+    if (status !== "authenticated") return;
+    let cancelled = false;
+    listNodes()
+      .then((n) => {
+        if (!cancelled) setNodes(n);
+      })
+      .catch((err) => {
+        if (!cancelled) setNodeError(err instanceof Error ? err.message : String(err));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [status]);
+
+  const handleLogout = useCallback(async () => {
+    await logout();
+    router.push("/auth");
+  }, [logout, router]);
+
+  const refreshNodes = useCallback(async () => {
+    setNodeError(null);
+    try {
+      setNodes(await listNodes());
+    } catch (err) {
+      setNodeError(err instanceof Error ? err.message : String(err));
     }
-    const body = (await res.json()) as { access_token: string };
-    sessionStorage.setItem("nodus.jwt", body.access_token);
-    setJwt(body.access_token);
-  }, [email, password]);
-
-  const loadNodes = useCallback(async () => {
-    if (!jwt) return;
-    const res = await fetch(`${RELAY_BASE}/nodes`, {
-      headers: { authorization: `Bearer ${jwt}` },
-    });
-    if (!res.ok) {
-      setAuthError(await res.text());
-      return;
-    }
-    setNodes((await res.json()) as RelayNode[]);
-  }, [jwt]);
-
-  const jsonHeaders = useCallback((token: string | null): Record<string, string> => {
-    const headers: Record<string, string> = { "content-type": "application/json" };
-    if (token) headers.authorization = `Bearer ${token}`;
-    return headers;
   }, []);
 
   // ── token issuance (RELAY_PATH_B) ───────────────────────────────
   const [selectedNode, setSelectedNode] = useState<string | null>(null);
-  const [pending, setPending] = useState<StoredSession | null>(null);
+  const [pending, setPending] = useState<PairingSession | null>(null);
   const [pairError, setPairError] = useState<string | null>(null);
 
   const issueToken = useCallback(async () => {
-    if (!device || !jwt || !selectedNode) return;
+    if (!device || !selectedNode) return;
     setPairError(null);
-    // Ensure the device is registered to the account (idempotent upsert),
-    // otherwise CreatePairingSession rejects the device lookup.
-    const regRes = await fetch(`${RELAY_BASE}/devices/register`, {
-      method: "POST",
-      headers: jsonHeaders(jwt),
-      body: JSON.stringify({
-        device_id: device.device_id,
-        public_key: device.public_key,
-      }),
-    });
-    if (!regRes.ok) {
-      setPairError(`device registration failed: ${await regRes.text()}`);
-      return;
+    try {
+      // Ensure the device is registered to the account (idempotent upsert),
+      // otherwise CreatePairingSession rejects the device lookup.
+      await registerDevice(device);
+      const sess = await issuePairingToken(selectedNode, device);
+      setPending(sess);
+    } catch (err) {
+      setPairError(err instanceof Error ? err.message : String(err));
     }
-    const res = await fetch(`${RELAY_BASE}/pairing/sessions`, {
-      method: "POST",
-      headers: jsonHeaders(jwt),
-      body: JSON.stringify({ node_id: selectedNode, device_id: device.device_id }),
-    });
-    if (!res.ok) {
-      setPairError(`token issuance failed: ${await res.text()}`);
-      return;
-    }
-    setPending((await res.json()) as StoredSession);
-  }, [device, jsonHeaders, jwt, selectedNode]);
+  }, [device, selectedNode]);
 
   const pairingUrl = useMemo(() => {
     if (!pending || !device) return null;
     // Decision C: QR deep link carries node_id (hex) + pubkey (base64) + token.
-    return `nodus://pair?node_id=${encodeURIComponent(pending.node_id ?? selectedNode ?? "")}&pubkey=${encodeURIComponent(device.public_key)}&token=${encodeURIComponent(pending.token)}`;
-  }, [device, pending, selectedNode]);
+    return `nodus://pair?node_id=${encodeURIComponent(pending.node_id)}&pubkey=${encodeURIComponent(device.public_key)}&token=${encodeURIComponent(pending.token)}`;
+  }, [device, pending]);
 
   // ── LAN discovery (manual-IP fallback) + direct pair/auth ───────
   const [lanHost, setLanHost] = useState("");
@@ -183,12 +161,12 @@ export default function PairPage() {
     try {
       const confirm = await client.pair(
         pending.token,
-        pending.node_id ?? selectedNode ?? "",
+        pending.node_id,
         device.device_id,
         identityPublicKey(device),
       );
       await addTrustedNode({
-        node_id: (confirm.node_id as string) ?? pending.node_id ?? "",
+        node_id: (confirm.node_id as string) ?? pending.node_id,
         host: probe.host,
         account_id: (confirm.account_id as string) ?? "local_push",
         device_id: device.device_id,
@@ -200,7 +178,7 @@ export default function PairPage() {
         err instanceof NodeClientError ? `pair failed: ${err.message}` : String(err),
       );
     }
-  }, [device, pending, probe, selectedNode]);
+  }, [device, pending, probe]);
 
   const authenticateOnDevice = useCallback(async () => {
     if (!device || !probe?.ok) return;
@@ -226,29 +204,29 @@ export default function PairPage() {
       </p>
 
       <section>
-        <h2>1 · Relay sign-in</h2>
-        <div className="row">
-          <input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="email" />
-          <input
-            type="password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            placeholder="password"
-          />
-          <button onClick={() => void login()} disabled={!device}>
-            Sign in
-          </button>
-        </div>
-        <p className="error">{authError}</p>
+        <h2>1 · Relay session</h2>
+        {status === "loading" ? (
+          <p className="hint">Checking session…</p>
+        ) : status === "authenticated" && session ? (
+          <div className="row">
+            <span>
+              Signed in as <code>{session.account_id.slice(0, 12)}…</code> (device <code>{session.device_id.slice(0, 12)}…</code>)
+            </span>
+            <button onClick={() => void handleLogout()}>Sign out</button>
+          </div>
+        ) : (
+          <a href="/auth">Sign in to pair a storage node</a>
+        )}
       </section>
 
       <section>
         <h2>2 · Choose your node</h2>
         <div className="row">
-          <button onClick={() => void loadNodes()} disabled={!jwt}>
-            Load my nodes
+          <button onClick={() => void refreshNodes()} disabled={status !== "authenticated"}>
+            Refresh nodes
           </button>
         </div>
+        {nodeError && <p className="error">{nodeError}</p>}
         <ul>
           {nodes.map((n) => (
             <li key={n.node_id}>
@@ -266,7 +244,7 @@ export default function PairPage() {
           ))}
         </ul>
         <div className="row">
-          <button onClick={() => void issueToken()} disabled={!jwt || !selectedNode}>
+          <button onClick={() => void issueToken()} disabled={status !== "authenticated" || !selectedNode}>
             Issue pairing token
           </button>
         </div>
@@ -339,6 +317,7 @@ export default function PairPage() {
           display: flex;
           gap: 0.5rem;
           flex-wrap: wrap;
+          align-items: center;
         }
         input {
           flex: 1;
@@ -364,3 +343,4 @@ export default function PairPage() {
     </main>
   );
 }
+

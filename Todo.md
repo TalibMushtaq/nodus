@@ -193,10 +193,10 @@ layer only* — device identity (asymmetric key), Storage Node identity
 
 ### 4. Pairing
 
-- [ ] Unify `apps/web/app/pair` onto the session-cookie boundary: replace
+- [x] Unify `apps/web/app/pair` onto the session-cookie boundary: replace
       direct `Authorization: Bearer` + `sessionStorage` JWT with
       session-authenticated proxied calls
-- [ ] Confirm `packages/relay-client` fetches use the authenticated session
+- [x] Confirm `packages/relay-client` fetches use the authenticated session
       (no Bearer construction client-side)
 
 ### 5. Security tests
