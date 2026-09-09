@@ -33,7 +33,7 @@ Four components, one protocol:
 
 | Component | Directory | Stack | Status |
 |---|---|---|---|
-| **Web client** | `apps/web` | Next.js + `packages/ui` (Tailwind v4) | UI ported; mock auth; live sync TBD |
+| **Web client** | `apps/web` | Next.js + `packages/ui` (Tailwind v4) | UI ported; session auth wired; live sync TBD |
 | **Mobile client** | `apps/mobile` | React Native / Expo | Scaffold only |
 | **Storage Node** | `services/storage-node` | Rust, SQLite | Sync + object store implemented |
 | **Relay** | `services/relay` | Go, PostgreSQL, Redis | Control plane + buffer implemented |
@@ -137,10 +137,10 @@ Implemented and tested (see `CHANGELOG.md` for detail):
   fan-out, and repair orchestration for the four transfer paths.
 - **Web client** (`apps/web`) — the Figma prototype (`nodus-design/`) ported
   to a Tailwind v4 shared design system (`packages/ui`); six dashboard routes
-  plus a mock auth wizard, accessible (axe-clean) in light and dark themes.
-  `/auth` is currently a **mock** wizard — real authentication is planned
-  (opaque server-side session migration, `Todo.md` Phase 7a); `/pair` is
-  deferred.
+  plus a real auth wizard (Phase 7a §3), accessible (axe-clean) in light and
+  dark themes. `/auth` signs in / creates accounts through `app/api/auth/*`
+  route handlers that proxy the Relay and set the HttpOnly session cookie;
+  `/` and the dashboard group require a valid session. `/pair` is deferred.
 
 Full build order and the phase-by-phase checklist:
 
@@ -187,7 +187,10 @@ pnpm dev                # http://localhost:3000
 ```
 
 The dashboard, overview, and settings routes render with mock data; `/auth`
-is a mock wizard. `pnpm build && pnpm start` for a production-style build.
+is the real session-cookie wizard. `pnpm build && pnpm start` for a
+production-style build. To run the web client against the Relay locally, start
+the Relay with `SESSION_COOKIE_SECURE=false` (plain HTTP) and point the web
+app at it via `RELAY_URL` (defaults to `http://localhost:8080`).
 
 ### 3. Run the Relay (Go)
 

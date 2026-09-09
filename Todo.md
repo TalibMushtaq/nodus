@@ -179,16 +179,16 @@ layer only* — device identity (asymmetric key), Storage Node identity
 
 ### 3. Next.js integration
 
-- [ ] Remove `better-auth` dependency
-- [ ] Route handlers `app/api/auth/{login,register,logout,session}/route.ts`
+- [x] Remove `better-auth` dependency
+- [x] Route handlers `app/api/auth/{login,register,logout,session}/route.ts`
       proxying Relay + setting/clearing the HttpOnly/Secure/SameSite=Lax cookie
-- [ ] `lib/session.ts`: server `getSession()` / `requireAuth()` via Relay
+- [x] `lib/session.ts`: server `getSession()` / `requireAuth()` via Relay
       `GET /auth/session` using the cookie
-- [ ] `lib/auth-client.ts` + `useAuth()` hook; **remove all
+- [x] `lib/auth-client.ts` + `useAuth()` hook; **remove all
       `sessionStorage`/`localStorage` JWT handling**
-- [ ] Route guards: `/` → `/overview` if authed else `/auth`; dashboard group
+- [x] Route guards: `/` → `/overview` if authed else `/auth`; dashboard group
       requires a valid session
-- [ ] Single-page wizard auth (`AuthFlow` at `/auth`) wired to route handlers
+- [x] Single-page wizard auth (`AuthFlow` at `/auth`) wired to route handlers
       (no mock `setTimeout`)
 
 ### 4. Pairing

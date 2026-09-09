@@ -1,45 +1,66 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Icon } from "@repo/ui/primitives/icons";
 
-// Mock auth wizard. No real auth wired yet — clicking "Continue" sets a
-// fake localStorage flag and redirects to /overview after a simulated delay.
-// This page is NOT a server component because it uses useState + localStorage.
+import { useAuth } from "../../providers/auth-provider";
 
-type AuthStep = "email" | "password" | "totp" | "done";
+// Phase 7a §3 auth wizard (AuthFlow). Two-step email → password, with a
+// sign-in / create-account toggle. Real auth: on submit the device identity
+// (id + Ed25519 public key) is passed alongside credentials, the route handler
+// proxies to the Relay and sets the HttpOnly session cookie, then we land on
+// the dashboard. No more mock setTimeout / localStorage "nodus-session" flag.
+
+type AuthStep = "email" | "password";
+type AuthMode = "signin" | "register";
 
 export default function AuthPage() {
   const router = useRouter();
+  const { login, register, status } = useAuth();
+
   const [step, setStep] = useState<AuthStep>("email");
+  const [mode, setMode] = useState<AuthMode>("signin");
   const [loading, setLoading] = useState(false);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [totp, setTotp] = useState("");
   const [error, setError] = useState<string | null>(null);
 
-  const fakeDelay = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  // Already signed in (client-side navigation onto /auth): bounce to the
+  // dashboard once the session resolves.
+  useEffect(() => {
+    if (status === "authenticated") {
+      router.replace("/overview");
+    }
+  }, [status, router]);
 
   const handleContinue = async () => {
     setError(null);
-    setLoading(true);
-    await fakeDelay(800);
 
     if (step === "email") {
-      if (!email.includes("@")) { setError("Enter a valid email"); setLoading(false); return; }
+      if (!email.includes("@")) {
+        setError("Enter a valid email");
+        return;
+      }
       setStep("password");
-    } else if (step === "password") {
-      if (password.length < 4) { setError("Password too short"); setLoading(false); return; }
-      setStep("totp");
-    } else if (step === "totp") {
-      if (totp.length !== 6) { setError("Enter 6-digit code"); setLoading(false); return; }
-      setStep("done");
-      await fakeDelay(400);
-      localStorage.setItem("nodus-session", "mock");
-      router.push("/overview");
+      return;
     }
+
+    if (password.length < 8) {
+      setError(mode === "register" ? "Password must be at least 8 characters" : "Enter your password");
+      return;
+    }
+
+    setLoading(true);
+    const res = mode === "register" ? await register(email, password) : await login(email, password);
     setLoading(false);
+
+    if (!res.ok) {
+      setError(res.error ?? "Authentication failed");
+      return;
+    }
+
+    router.push("/overview");
   };
 
   const inputCls = "w-full px-4 py-3 text-sm bg-secondary border border-border text-foreground placeholder-muted-foreground outline-none focus:border-accent transition-colors";
@@ -57,30 +78,40 @@ export default function AuthPage() {
           {/* Header */}
           <div>
             <h1 className="text-sm font-semibold text-foreground">
-              {step === "email" && "Welcome back"}
-              {step === "password" && "Enter your password"}
-              {step === "totp" && "Two-factor authentication"}
-              {step === "done" && "Signing in..."}
+              {mode === "register" && step === "email" && "Create your account"}
+              {mode === "register" && step === "password" && "Choose a password"}
+              {mode === "signin" && step === "email" && "Welcome back"}
+              {mode === "signin" && step === "password" && "Enter your password"}
             </h1>
             <p className="text-xs text-muted-foreground mt-1">
-              {step === "email" && "Sign in to sync your files across devices"}
-              {step === "password" && `For ${email}`}
-              {step === "totp" && "Enter the 6-digit code from your authenticator app"}
-              {step === "done" && "Redirecting to your dashboard..."}
+              {step === "email"
+                ? mode === "register"
+                  ? "Sign up to sync your files across devices"
+                  : "Sign in to sync your files across devices"
+                : `For ${email}`}
             </p>
           </div>
 
           {/* Fields */}
           {step === "email" && (
-            <input
-              type="email"
-              placeholder="you@example.com"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              className={inputCls}
-              autoFocus
-              onKeyDown={(e) => e.key === "Enter" && handleContinue()}
-            />
+            <>
+              <input
+                type="email"
+                placeholder="you@example.com"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                className={inputCls}
+                autoFocus
+                onKeyDown={(e) => e.key === "Enter" && handleContinue()}
+              />
+              <button
+                type="button"
+                onClick={() => setMode(mode === "signin" ? "register" : "signin")}
+                className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+              >
+                {mode === "signin" ? "Don't have an account? Create one" : "Already have an account? Sign in"}
+              </button>
+            </>
           )}
           {step === "password" && (
             <input
@@ -89,18 +120,6 @@ export default function AuthPage() {
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               className={inputCls}
-              autoFocus
-              onKeyDown={(e) => e.key === "Enter" && handleContinue()}
-            />
-          )}
-          {step === "totp" && (
-            <input
-              type="text"
-              placeholder="000000"
-              maxLength={6}
-              value={totp}
-              onChange={(e) => setTotp(e.target.value.replace(/\D/g, ""))}
-              className={`${inputCls} text-center text-lg tracking-[0.3em] font-mono`}
               autoFocus
               onKeyDown={(e) => e.key === "Enter" && handleContinue()}
             />
@@ -116,7 +135,7 @@ export default function AuthPage() {
             disabled={loading}
             className="w-full py-2.5 text-sm font-medium bg-accent text-accent-foreground hover:opacity-90 transition-opacity disabled:opacity-50"
           >
-            {loading ? "Please wait..." : step === "done" ? "Redirecting..." : "Continue"}
+            {loading ? "Please wait..." : step === "email" ? "Continue" : mode === "register" ? "Create account" : "Sign in"}
           </button>
         </div>
 

@@ -1,9 +1,12 @@
 import type { ReactNode } from "react";
 import { AppShell } from "../../components/app-shell";
+import { requireAuth } from "../../lib/session";
 
 // Dashboard layout wraps every page under the (dashboard) group in AppShell.
-// The layout is a server component; AppShell is client.
+// Phase 7a §3: the group now requires a valid session — the guard runs server
+// side before AppShell (a client component) renders.
 
-export default function DashboardLayout({ children }: { children: ReactNode }) {
+export default async function DashboardLayout({ children }: { children: ReactNode }) {
+  await requireAuth();
   return <AppShell>{children}</AppShell>;
 }
