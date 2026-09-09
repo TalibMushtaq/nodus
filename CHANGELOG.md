@@ -1,5 +1,15 @@
 # Changelog
 
+## [2026-09-09] - Phase 7a §5: cookie flags security tests
+
+**What changed:** Added `TestAuthSessionCookieFlags` and `TestAuthSessionCookieSecureFlag` to `services/relay/internal/handler/auth_integration_test.go`. The first test asserts the always-on attributes (`HttpOnly`, `Path=/`, `SameSite=Lax`) on the `nodus_session` cookie during a normal login. The second test spins up a separate server with `SessionCookieSecure=true` (production mode) and verifies the `Secure` flag is set on the `Set-Cookie` header. Together they close the only gap in the Phase 7a §5 security test matrix; the remaining seven tests (expiry, revocation, fixation, hash-only storage, max-10 eviction, device-bound, throttle) were already in place.
+
+**Why:** Todo.md Phase 7a §5 required cookie-flag assertions; the implementation was correct but untested.
+
+**Impact:** `services/relay/internal/handler` test file only. No production code changed. `go vet` clean; tests require `TEST_DATABASE_URL` (integration gate). Todo.md §5 all items checked.
+
+**Follow-ups:** Phase 7a §6 client test suites remain.
+
 ## [2026-09-09] - Web client: session-cookie pairing (Phase 7a §4)
 
 **What changed:** Unified the Storage-Node pairing flow onto the session-cookie boundary, completing Phase 7a. `apps/web/app/pair` no longer builds `Authorization: Bearer` headers or reads a JWT from `sessionStorage` (the `nodus.jwt` artifact of the pre-§1 API is gone). The Relay has no CORS handling, so pairing calls are proxied server-side like §3: new `app/api/nodes/route.ts` (`GET /nodes`), `app/api/devices/register/route.ts`, and `app/api/pairing/sessions/route.ts` forward the HttpOnly `nodus_session` cookie via `lib/relay.ts relayFetch` and pass Relay errors through. `lib/pairing.ts` adds typed client helpers `listNodes()` / `registerDevice()` / `issuePairingToken(nodeId, device)` with `RelayNode`/`PairingSession` types mirroring the Go `NodeResponse`/`PairingSessionResponse` shapes. New `app/pair/layout.tsx` runs `requireAuth()` (matching the dashboard guard), so `/pair` redirects unauthenticated users to `/auth` and the page's old embedded sign-in form is deleted — section 1 now shows the session (`useAuth()`) with a sign-out action. The node catalog auto-loads once the session resolves (manual refresh button kept); "Issue pairing token" registers the browser device (idempotent ownership-safe upsert) and requests a device-bound token through the proxies before rendering the QR deep link. LAN discovery (`NodeClient.pair`/`authenticate`, `/nodus/discovery` probe) and trusted-node IndexedDB storage are unchanged — they address the Storage Node over the direct HTTP listener, outside the Relay's auth boundary. `packages/relay-client` audit: `RelayWsClient` opens a plain `WebSocket(url)` and authenticates via the host-scoped session cookie on the handshake (documented with a comment; no token in URL/headers), and `NodeClient`'s Ed25519 challenge-response is Bearer-free by design — nothing to change.

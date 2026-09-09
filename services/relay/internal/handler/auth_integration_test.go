@@ -277,3 +277,94 @@ func TestAuthDeviceRevocationInvalidatesSessions(t *testing.T) {
 	sessAfter, _ := h.do(t, "GET", "/auth/session", "")
 	require.Equal(t, http.StatusUnauthorized, sessAfter.StatusCode, "sessions of a revoked device must die")
 }
+
+// TestAuthSessionCookieFlags asserts the §5 cookie security contract: HttpOnly,
+// Path=/, SameSite=Lax are always set; Secure depends on config (false in test
+// because httptest speaks plain HTTP).
+func TestAuthSessionCookieFlags(t *testing.T) {
+	h := setupAuthHarness(t)
+	h.seedAccount(t, "acct-cookies", "cookies@test.local")
+
+	resp, _ := h.do(t, "POST", "/auth/login",
+		`{"email":"cookies@test.local","password":"password123","device_id":"dev-cookies","device_public_key":"pub-cookies"}`)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var sessionCookie *http.Cookie
+	for _, c := range resp.Cookies() {
+		if c.Name == h.cfg.SessionCookieName {
+			sessionCookie = c
+			break
+		}
+	}
+	require.NotNil(t, sessionCookie, "response must set the session cookie")
+
+	require.True(t, sessionCookie.HttpOnly, "cookie must be HttpOnly")
+	require.Equal(t, "/", sessionCookie.Path, "cookie must have Path=/")
+	require.Equal(t, http.SameSiteLaxMode, sessionCookie.SameSite, "cookie must be SameSite=Lax")
+	// Secure=false in test (plain HTTP); production default is true.
+	require.False(t, sessionCookie.Secure, "Secure should be false in test (plain HTTP)")
+}
+
+// TestAuthSessionCookieSecureFlag verifies the Secure flag is set when
+// SESSION_COOKIE_SECURE=true (production mode). A separate server is spun up
+// with Secure=true to validate the cookie attribute end to end.
+func TestAuthSessionCookieSecureFlag(t *testing.T) {
+	url := os.Getenv("TEST_DATABASE_URL")
+	if url == "" {
+		t.Skip("TEST_DATABASE_URL not set; skipping integration test")
+	}
+
+	ctx := context.Background()
+	require.NoError(t, db.RunMigrations(url))
+	pool, err := db.Open(ctx, &config.Config{DatabaseURL: url})
+	require.NoError(t, err)
+	t.Cleanup(pool.Close)
+
+	cfg := &config.Config{
+		SessionCookieName:    "nodus_session",
+		SessionMaxAge:        30 * 24 * time.Hour,
+		SessionTouchInterval: 30 * time.Minute,
+		SessionCookieSecure:  true, // production mode
+	}
+	store := auth.NewPGSessionStore(pool, cfg)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /auth/register", Register(pool, store, cfg))
+	mux.HandleFunc("POST /auth/login", Login(pool, store, cfg))
+	mux.HandleFunc("GET /auth/session", Session(store, cfg))
+	mux.HandleFunc("POST /auth/logout", Logout(store, cfg))
+	mux.Handle("DELETE /devices/{id}", auth.RequireAuth(store, cfg)(RevokeDevice(pool, store)))
+
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+
+	// No cookie jar — inspect raw Set-Cookie headers.
+	client := &http.Client{Jar: nil}
+
+	u := fmt.Sprintf("%d", time.Now().UnixNano())
+	email := "secure-cookie-" + u + "@test.local"
+	device := "dev-secure-" + u
+
+	req, err := http.NewRequest("POST", server.URL+"/auth/register",
+		bytes.NewReader([]byte(fmt.Sprintf(`{"email":%q,"password":"password123","device_id":%q,"device_public_key":"pub-secure"}`, email, device))))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.Do(req)
+	require.NoError(t, err)
+	resp.Body.Close()
+	require.Equal(t, http.StatusCreated, resp.StatusCode)
+
+	var sessionCookie *http.Cookie
+	for _, c := range resp.Cookies() {
+		if c.Name == cfg.SessionCookieName {
+			sessionCookie = c
+			break
+		}
+	}
+	require.NotNil(t, sessionCookie, "response must set the session cookie")
+	require.True(t, sessionCookie.Secure, "Secure must be true in production mode")
+	require.True(t, sessionCookie.HttpOnly, "cookie must be HttpOnly")
+	require.Equal(t, "/", sessionCookie.Path, "cookie must have Path=/")
+	require.Equal(t, http.SameSiteLaxMode, sessionCookie.SameSite, "cookie must be SameSite=Lax")
+}

@@ -201,14 +201,14 @@ layer only* — device identity (asymmetric key), Storage Node identity
 
 ### 5. Security tests
 
-- [ ] Session expiry (past `expires_at` → 401)
-- [ ] Revocation (logout/revoke → 401, row `revoked_at` set)
-- [ ] Fixation (rotate on policy change; old ID invalid)
-- [ ] Cookie flags asserted (HttpOnly/Secure/SameSite=Lax, Secure in prod)
-- [ ] Hash-only storage (raw token never stored/returned; DB holds SHA-256)
-- [ ] Max-10-sessions eviction (11th issue revokes oldest)
-- [ ] Device-bound session (session without valid `device_id` rejected)
-- [ ] 30-min `last_used_at` throttle (no write-per-request)
+- [x] Session expiry (past `expires_at` → 401)
+- [x] Revocation (logout/revoke → 401, row `revoked_at` set)
+- [x] Fixation (rotate on policy change; old ID invalid)
+- [x] Cookie flags asserted (HttpOnly/Secure/SameSite=Lax, Secure in prod)
+- [x] Hash-only storage (raw token never stored/returned; DB holds SHA-256)
+- [x] Max-10-sessions eviction (11th issue revokes oldest)
+- [x] Device-bound session (session without valid `device_id` rejected)
+- [x] 30-min `last_used_at` throttle (no write-per-request)
 
 ### 6. Client tests
 
