@@ -5,9 +5,9 @@ primarily on a storage node you control, sync directly between your own
 devices over the local network, and use the Internet only as an enhancement —
 never a hard dependency.
 
-> 🚧 **Status: pre-implementation.** This repo currently contains the design
-> and planning docs. See [Status & Roadmap](#status--roadmap) below before
-> looking for code.
+> 🚀 **Status: active implementation.** Core storage, sync, and transit
+> components are built and tested; the web client has a working UI ported from
+> the design prototype. See [Current status](#current-status) below.
 
 ---
 
@@ -31,12 +31,12 @@ source of truth. Nodus flips that:
 
 Four components, one protocol:
 
-| Component | Role | Stack |
-|---|---|---|
-| **Web client** | Browser UI | Next.js |
-| **Mobile client** | iOS / Android UI | React Native / Expo |
-| **Storage Node** | Durable local storage, authoritative for its own data | Rust, SQLite |
-| **Relay** | Internet-facing signaling, sync, auth, temporary buffering | Go, PostgreSQL, Redis |
+| Component | Directory | Stack | Status |
+|---|---|---|---|
+| **Web client** | `apps/web` | Next.js + `packages/ui` (Tailwind v4) | UI ported; mock auth; live sync TBD |
+| **Mobile client** | `apps/mobile` | React Native / Expo | Scaffold only |
+| **Storage Node** | `services/storage-node` | Rust, SQLite | Sync + object store implemented |
+| **Relay** | `services/relay` | Go, PostgreSQL, Redis | Control plane + buffer implemented |
 
 ```text
                          INTERNET
@@ -88,26 +88,25 @@ Nodus is a single monorepo — one repo, multiple languages:
 ```text
 nodus/
 ├─ apps/
-│  ├─ web/                 # Next.js web client
-│  └─ mobile/               # React Native / Expo mobile client
+│  ├─ web/                 # Next.js web client (ported design UI)
+│  └─ mobile/               # React Native / Expo mobile client (scaffold)
 ├─ packages/
 │  ├─ core/                 # Domain logic: sharding, crypto abstractions
-│  ├─ protocol/              # Canonical protocol schemas/types
+│  ├─ protocol/              # Canonical protocol schemas/types (zod, JSON Schema)
 │  ├─ relay-client/          # WebSocket client (web + mobile)
 │  ├─ webrtc-transport/      # WebRTC abstraction
-│  └─ config/                 # Shared TypeScript tooling
+│  ├─ transfer-manager/      # Cross-path transfer orchestration + repair
+│  ├─ ui/                    # Shared design system (Tailwind v4, ported prototype)
+│  └─ config/                # Shared TypeScript tooling (eslint/ts configs)
 ├─ services/
 │  ├─ relay/                 # Go Relay (control plane + buffer)
 │  └─ storage-node/           # Rust Storage Node (data plane)
-├─ infra/                    # Docker, compose, scripts
 ├─ docs/
 │  ├─ architecture/
 │  ├─ protocol/
 │  ├─ security/
-│  └─ decisions/             # ADRs
-├─ tests/
-│  ├─ integration/
-│  └─ e2e/
+│  ├─ decisions/             # ADRs (key hierarchy, recovery, GC, ...)
+│  └─ design-port-plan.md    # Prototype → implementation mapping
 ├─ pnpm-workspace.yaml
 └─ turbo.json
 ```
@@ -116,19 +115,33 @@ The TypeScript apps and packages are managed by Turborepo + pnpm. The Rust
 Storage Node and Go Relay live in the same repository under `services/` but
 sit outside the pnpm/Turborepo workspace, with their own native tooling.
 
-## Status & Roadmap
+## Current status
 
-Nothing is implemented yet. Before any code is written, five foundational
-design decisions have to be locked in on paper (see `docs/decisions/` once
-ADRs exist):
+Implemented and tested (see `CHANGELOG.md` for detail):
 
-1. Key hierarchy & recovery-key mechanism
-2. Conflict-resolution UX
-3. Mobile local-discovery approach
-4. Reconciliation repair action
-5. Garbage-collection policy
+- **Design foundations** — five ADRs locked in `docs/decisions/`: key
+  hierarchy, recovery mechanism, conflict-resolution UX, mobile local
+  discovery, and GC policy.
+- **Protocol** (`packages/protocol`) — canonical wire schemas with runtime
+  (zod) validation and generated JSON Schema, versioned and documented.
+- **Storage Node** (`services/storage-node`, Rust) — SQLite schema, run-time
+  configurable data directory, content-addressed object store with atomic
+  writes, crash recovery, reconciliation, and automatic GC per ADR-0005.
+- **Relay** (`services/relay`, Go) — REST API (Argon2id auth, JWTs), WebSocket
+  hub with presence, and a transient encrypted shard buffer with TTL sweep.
+- **Transfer sync** (`services/relay` ↔ `services/storage-node`) — incremental
+  sync, full snapshot / relay rebuild (`Path C`), buffer-and-relay transfers,
+  and the repair (data-return) path.
+- **Transfer Manager** (`packages/transfer-manager`) — path selection,
+  fan-out, and repair orchestration for the four transfer paths.
+- **Web client** (`apps/web`) — the Figma prototype (`nodus-design/`) ported
+  to a Tailwind v4 shared design system (`packages/ui`); six dashboard routes
+  plus a mock auth wizard, accessible (axe-clean) in light and dark themes.
+  `/auth` is currently a **mock** wizard — real authentication is planned
+  (opaque server-side session migration, `Todo.md` Phase 7a); `/pair` is
+  deferred.
 
-Full build order and detailed task breakdown:
+Full build order and the phase-by-phase checklist:
 
 - [`nodus_implementation_plan.md`](./nodus_implementation_plan.md) — the
   complete architecture and design plan (protocol, schemas, key envelopes,
@@ -147,14 +160,23 @@ Storage Node offline:   Client -> Relay Buffer -> Storage Node
 Relay corrupted:        Storage Node -> Snapshot/Rebuild -> New Relay DB
 ```
 
-## License
-
-MIT
-
 ## Developer setup
 
 After cloning, install the git hooks:
+
 ```bash
 make install-hooks
 ```
+
 This runs `gofmt`, `rustfmt`, and `cargo clippy` before every push.
+
+To run the web client locally:
+
+```bash
+pnpm install
+cd apps/web && pnpm dev     # http://localhost:3000
+```
+
+## License
+
+MIT
