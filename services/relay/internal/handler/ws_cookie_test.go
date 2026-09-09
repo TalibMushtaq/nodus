@@ -17,17 +17,19 @@ import (
 
 type wsCookieSessionStore struct{}
 
-func (wsCookieSessionStore) CreateSession(context.Context, string, string) (string, error) { return "", nil }
+func (wsCookieSessionStore) CreateSession(context.Context, string, string) (string, error) {
+	return "", nil
+}
 func (wsCookieSessionStore) LookupSession(_ context.Context, rawID string) (*auth.Session, error) {
 	if rawID != "browser-session" {
 		return nil, auth.ErrSessionInvalid
 	}
 	return &auth.Session{AccountID: "acct-browser", DeviceID: "device-browser"}, nil
 }
-func (wsCookieSessionStore) TouchSession(context.Context, string) error                  { return nil }
-func (wsCookieSessionStore) RevokeSession(context.Context, string) error                 { return nil }
-func (wsCookieSessionStore) RevokeAllForAccount(context.Context, string) error           { return nil }
-func (wsCookieSessionStore) RevokeAllForDevice(context.Context, string) error            { return nil }
+func (wsCookieSessionStore) TouchSession(context.Context, string) error        { return nil }
+func (wsCookieSessionStore) RevokeSession(context.Context, string) error       { return nil }
+func (wsCookieSessionStore) RevokeAllForAccount(context.Context, string) error { return nil }
+func (wsCookieSessionStore) RevokeAllForDevice(context.Context, string) error  { return nil }
 func (wsCookieSessionStore) RotateSession(context.Context, string, string, string) (string, error) {
 	return "", nil
 }
