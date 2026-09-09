@@ -135,7 +135,7 @@ func CreatePairingSession(pool *db.Pool, wsHub *hub.Hub) http.HandlerFunc {
 			Payload:       payload,
 		}
 		if msg, err := json.Marshal(envelope); err == nil && !wsHub.SendToNode(req.NodeID, msg) {
-			log.Printf("[pairing] node %s not connected; token %s available via verify fallback", req.NodeID, token)
+			log.Printf("[pairing] node %s not connected; token available via verify fallback", req.NodeID)
 		}
 
 		respondJSON(w, http.StatusCreated, PairingSessionResponse{

@@ -13,11 +13,14 @@ import (
 
 // Argon2id parameters per OWASP recommendations
 const (
-	argonMemory      = 64 * 1024 // 64 MB
-	argonIterations  = 3
-	argonParallelism = 2
-	argonKeyLen      = 32
-	argonSaltLen     = 16
+	argonMemory          = 64 * 1024 // 64 MB
+	argonIterations      = 3
+	argonParallelism     = 2
+	argonKeyLen          = 32
+	argonSaltLen         = 16
+	maxVerifyMemory      = 256 * 1024
+	maxVerifyTime        = 10
+	maxVerifyParallelism = 16
 )
 
 var (
@@ -69,15 +72,24 @@ func VerifyPassword(encodedHash, password string) (bool, error) {
 	if _, err := fmt.Sscanf(vals[3], "m=%d,t=%d,p=%d", &memory, &iterations, &parallelism); err != nil {
 		return false, err
 	}
+	if memory < 8*1024 || memory > maxVerifyMemory || iterations == 0 || iterations > maxVerifyTime || parallelism == 0 || parallelism > maxVerifyParallelism {
+		return false, ErrInvalidHash
+	}
 
 	salt, err := base64.RawStdEncoding.DecodeString(vals[4])
 	if err != nil {
 		return false, err
 	}
+	if len(salt) < 8 || len(salt) > 64 {
+		return false, ErrInvalidHash
+	}
 
 	hash, err := base64.RawStdEncoding.DecodeString(vals[5])
 	if err != nil {
 		return false, err
+	}
+	if len(hash) < 16 || len(hash) > 128 {
+		return false, ErrInvalidHash
 	}
 
 	comparisonHash := argon2.IDKey([]byte(password), salt, iterations, memory, parallelism, uint32(len(hash)))

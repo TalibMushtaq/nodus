@@ -2,8 +2,11 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/TalibMushtaq/nodus/services/relay/internal/auth"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/db"
@@ -67,6 +70,7 @@ func RegisterNode(pool *db.Pool) http.HandlerFunc {
 				public_key = excluded.public_key,
 				capabilities = excluded.capabilities,
 				status = 'ACTIVE'
+				WHERE storage_nodes.account_id = excluded.account_id
 			RETURNING node_id, account_id, public_key, capabilities, status, last_seen_at, created_at, is_primary
 		`
 
@@ -87,6 +91,10 @@ func RegisterNode(pool *db.Pool) http.HandlerFunc {
 			&isPrimary,
 		)
 		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				respondError(w, http.StatusConflict, "node_id is registered to another account")
+				return
+			}
 			respondError(w, http.StatusInternalServerError, "failed to register storage node")
 			return
 		}

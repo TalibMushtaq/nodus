@@ -145,6 +145,13 @@ func HandleNodeAuthResponse(
 	rClient *rdb.Client,
 	h *hub.Hub,
 ) {
+	if c.IsAuthenticated {
+		_ = sendEnvelope(c, "node_auth_result", NodeAuthResultPayload{
+			Status:  "fail",
+			Message: "connection is already authenticated",
+		})
+		return
+	}
 	var resp NodeAuthResponsePayload
 	if err := json.Unmarshal(env.Payload, &resp); err != nil {
 		_ = sendEnvelope(c, "node_auth_result", NodeAuthResultPayload{

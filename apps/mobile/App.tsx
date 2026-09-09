@@ -12,6 +12,7 @@ import "./src/compat";
 // never leaves the device, and is what binds + signs pairing tokens.
 
 import * as React from "react";
+import * as SecureStore from "expo-secure-store";
 import {
   Button,
   ScrollView,
@@ -76,6 +77,7 @@ export default function App() {
     void (async () => {
       setDevice(await loadOrCreateDevice());
       setTrusted(await getTrustedNodes());
+      setJwt(await SecureStore.getItemAsync("nodus.relay.session"));
     })();
   }, []);
 
@@ -83,13 +85,16 @@ export default function App() {
     setBusy("signing-in");
     setError(null);
     try {
-      setJwt(await relayLogin(email, password));
+      if (!device) throw new Error("device identity is not ready");
+      const token = await relayLogin(email, password, device);
+      await SecureStore.setItemAsync("nodus.relay.session", token);
+      setJwt(token);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(null);
     }
-  }, [email, password]);
+  }, [device, email, password]);
 
   const loadNodes = React.useCallback(async () => {
     if (!jwt) return;

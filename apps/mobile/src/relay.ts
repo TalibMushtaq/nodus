@@ -30,11 +30,12 @@ export interface PairingSession {
 }
 
 async function json<T>(
-  url: string,
-  init: { method?: string; token?: string; body?: unknown } = {},
+	url: string,
+	init: { method?: string; token?: string; body?: unknown; mobileAuth?: boolean } = {},
 ): Promise<T> {
-  const headers: Record<string, string> = { "content-type": "application/json" };
-  if (init.token) headers.authorization = `Bearer ${init.token}`;
+	const headers: Record<string, string> = { "content-type": "application/json" };
+	if (init.token) headers.authorization = `Bearer ${init.token}`;
+	if (init.mobileAuth) headers["x-nodus-client"] = "mobile";
   const res = await fetch(url, {
     method: init.method ?? "GET",
     headers,
@@ -46,10 +47,11 @@ async function json<T>(
   return (await res.json()) as T;
 }
 
-export async function relayLogin(email: string, password: string): Promise<string> {
-  const body = await json<{ access_token: string }>(`${RELAY_BASE}/auth/login`, {
-    method: "POST",
-    body: { email, password },
+export async function relayLogin(email: string, password: string, device: StoredDeviceIdentity): Promise<string> {
+	const body = await json<{ access_token: string }>(`${RELAY_BASE}/auth/login`, {
+		method: "POST",
+		mobileAuth: true,
+		body: { email, password, device_id: device.device_id, device_public_key: device.public_key },
   });
   return body.access_token;
 }

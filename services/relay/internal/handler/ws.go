@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"net/url"
 
 	"github.com/TalibMushtaq/nodus/services/relay/internal/auth"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/buffer"
@@ -19,9 +20,7 @@ import (
 var upgrader = websocket.Upgrader{
 	ReadBufferSize:  1024 * 1024,
 	WriteBufferSize: 1024 * 1024,
-	CheckOrigin: func(r *http.Request) bool {
-		return true // Allow all origins in development
-	},
+	CheckOrigin:     func(r *http.Request) bool { return true }, // checked per Relay config below
 }
 
 // ProtocolEnvelope represents the canonical wire format.
@@ -69,6 +68,10 @@ type PendingNotifyPayload struct {
 // WebSocket handles incoming WebSocket connection upgrades and message lifecycle.
 func WebSocket(h *hub.Hub, pool *db.Pool, rClient *rdb.Client, buf *buffer.Buffer, store auth.SessionStore, cfg *config.Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if !originAllowed(r, cfg) {
+			http.Error(w, "forbidden origin", http.StatusForbidden)
+			return
+		}
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
 			log.Printf("[ws] upgrade error: %v", err)
@@ -91,6 +94,7 @@ func WebSocket(h *hub.Hub, pool *db.Pool, rClient *rdb.Client, buf *buffer.Buffe
 			if sess, err := store.LookupSession(r.Context(), cookie.Value); err == nil {
 				client.AccountID = sess.AccountID
 				client.DeviceID = sess.DeviceID
+				client.IsAuthenticated = true
 			}
 		}
 
@@ -126,6 +130,9 @@ func handleIncomingEnvelope(
 	h *hub.Hub,
 ) {
 	ctx := context.Background()
+	if !c.IsAuthenticated && env.Type != "node_auth_response" {
+		return
+	}
 
 	switch env.Type {
 	case "webrtc_offer", "webrtc_answer", "webrtc_ice_candidate":
@@ -156,22 +163,13 @@ func handleIncomingEnvelope(
 			return
 		}
 
-		if c.AccountID != "" && c.AccountID != reg.AccountID {
+		if !c.IsAuthenticated || c.AccountID == "" || c.AccountID != reg.AccountID {
 			log.Printf("[ws] account ID mismatch for conn=%s", c.ConnID)
 			return
 		}
-
-		c.AccountID = reg.AccountID
-		c.NodeID = reg.NodeID
-		c.DeviceID = reg.DeviceID
-
-		// Re-register with the hub so indexing maps are updated
-		h.Register(c)
-
-		// If a node connected, deliver any pending buffered shards
-		if c.NodeID != "" && pool != nil {
-			go checkAndDeliverPendingShards(ctx, c, pool, rClient)
-		}
+		// Browser identity is derived from the session; never accept peer-supplied
+		// node/device IDs or account IDs.
+		log.Printf("[ws] ignoring client register identity fields for conn=%s", c.ConnID)
 
 	case "heartbeat":
 		var hb HeartbeatPayload
@@ -211,6 +209,23 @@ func handleIncomingEnvelope(
 			handleShardAckFailed(ctx, c, ack, pool, rClient)
 		}
 	}
+}
+
+func originAllowed(r *http.Request, cfg *config.Config) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return true
+	} // native nodes do not send browser Origin
+	u, err := url.Parse(origin)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return false
+	}
+	for _, allowed := range cfg.AllowedOrigins {
+		if origin == allowed {
+			return true
+		}
+	}
+	return false
 }
 
 // checkAndDeliverPendingShards runs when a node (re)connects and registers. It

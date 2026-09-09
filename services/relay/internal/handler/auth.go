@@ -32,12 +32,14 @@ type SessionResponse struct {
 	AccountID        string    `json:"account_id"`
 	DeviceID         string    `json:"device_id"`
 	SessionExpiresAt time.Time `json:"session_expires_at"`
+	AccessToken      string    `json:"access_token,omitempty"`
 }
 
 // Register creates a new user account, auto-registers its first device, and
 // mints the session cookie so one call leaves the client authenticated.
 func Register(pool *db.Pool, store auth.SessionStore, cfg *config.Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
 		var req AuthRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			respondError(w, http.StatusBadRequest, "invalid request body")
@@ -108,6 +110,7 @@ func Register(pool *db.Pool, store auth.SessionStore, cfg *config.Config) http.H
 // on first use (§2), then mints a session cookie bound to that device.
 func Login(pool *db.Pool, store auth.SessionStore, cfg *config.Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
 		var req AuthRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			respondError(w, http.StatusBadRequest, "invalid request body")
@@ -159,15 +162,9 @@ func Login(pool *db.Pool, store auth.SessionStore, cfg *config.Config) http.Hand
 // the cookie is missing/expired/revoked.
 func Session(store auth.SessionStore, cfg *config.Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		cookie, err := r.Cookie(cfg.SessionCookieName)
-		if err != nil || cookie.Value == "" {
-			respondError(w, http.StatusUnauthorized, "missing session cookie")
-			return
-		}
-
-		sess, err := store.LookupSession(r.Context(), cookie.Value)
+		sess, _, err := auth.AuthenticateRequest(r, store, cfg)
 		if err != nil {
-			respondError(w, http.StatusUnauthorized, "invalid or expired session")
+			respondError(w, http.StatusUnauthorized, "missing session cookie")
 			return
 		}
 
@@ -184,9 +181,10 @@ func Session(store auth.SessionStore, cfg *config.Config) http.HandlerFunc {
 // still be cleared client-side.
 func Logout(store auth.SessionStore, cfg *config.Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		cookie, err := r.Cookie(cfg.SessionCookieName)
-		if err == nil && cookie.Value != "" {
-			_ = store.RevokeSession(r.Context(), cookie.Value)
+		if sess, raw, err := auth.AuthenticateRequest(r, store, cfg); err == nil && sess != nil {
+			_ = store.RevokeSession(r.Context(), raw)
+		} else if header := r.Header.Get("Authorization"); strings.HasPrefix(header, "Bearer ") {
+			_ = store.RevokeSession(r.Context(), strings.TrimSpace(strings.TrimPrefix(header, "Bearer ")))
 		}
 		clearSessionCookie(w, cfg)
 		respondJSON(w, http.StatusOK, map[string]string{"status": "logged out"})
@@ -205,11 +203,15 @@ func issueSession(w http.ResponseWriter, r *http.Request, store auth.SessionStor
 	expiresAt := time.Now().UTC().Add(cfg.SessionMaxAge)
 	setSessionCookie(w, cfg, rawID, expiresAt)
 
-	respondJSON(w, status, SessionResponse{
+	response := SessionResponse{
 		AccountID:        accountID,
 		DeviceID:         deviceID,
 		SessionExpiresAt: expiresAt,
-	})
+	}
+	if r.Header.Get("X-Nodus-Client") == "mobile" {
+		response.AccessToken = rawID
+	}
+	respondJSON(w, status, response)
 }
 
 // setSessionCookie writes the session token as an HttpOnly; Secure; SameSite=Lax

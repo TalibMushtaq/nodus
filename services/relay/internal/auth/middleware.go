@@ -4,9 +4,41 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/TalibMushtaq/nodus/services/relay/internal/config"
 )
+
+// AuthenticateRequest resolves either the session cookie or an opaque bearer
+// token. Native clients use the bearer form; browsers remain cookie-only.
+func AuthenticateRequest(r *http.Request, store SessionStore, cfg *config.Config) (*Session, string, error) {
+	var candidates []string
+	if cookie, err := r.Cookie(cfg.SessionCookieName); err == nil {
+		if cookie.Value != "" {
+			candidates = append(candidates, cookie.Value)
+		}
+	}
+	if header := r.Header.Get("Authorization"); strings.HasPrefix(header, "Bearer ") {
+		if bearer := strings.TrimSpace(strings.TrimPrefix(header, "Bearer ")); bearer != "" {
+			candidates = append(candidates, bearer)
+		}
+	}
+	if len(candidates) == 0 {
+		return nil, "", ErrSessionInvalid
+	}
+	var lastErr error
+	for _, raw := range candidates {
+		sess, err := store.LookupSession(r.Context(), raw)
+		if err == nil && sess != nil {
+			return sess, raw, nil
+		}
+		lastErr = err
+	}
+	if lastErr == nil {
+		lastErr = ErrSessionInvalid
+	}
+	return nil, "", lastErr
+}
 
 type contextKey string
 
@@ -23,13 +55,7 @@ const (
 func RequireAuth(store SessionStore, cfg *config.Config) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			cookie, err := r.Cookie(cfg.SessionCookieName)
-			if err != nil || cookie.Value == "" {
-				http.Error(w, `{"error":"missing session cookie"}`, http.StatusUnauthorized)
-				return
-			}
-
-			sess, err := store.LookupSession(r.Context(), cookie.Value)
+			sess, raw, err := AuthenticateRequest(r, store, cfg)
 			if err != nil {
 				if errors.Is(err, ErrSessionInvalid) {
 					http.Error(w, `{"error":"invalid or expired session"}`, http.StatusUnauthorized)
@@ -45,7 +71,7 @@ func RequireAuth(store SessionStore, cfg *config.Config) func(http.Handler) http
 
 			// last_used_at bump best-effort; failures must not fail the request,
 			// and the store throttles it to at most once per 30 minutes anyway.
-			_ = store.TouchSession(r.Context(), cookie.Value)
+			_ = store.TouchSession(r.Context(), raw)
 
 			ctx := context.WithValue(r.Context(), AccountIDKey, sess.AccountID)
 			ctx = context.WithValue(ctx, DeviceIDKey, sess.DeviceID)

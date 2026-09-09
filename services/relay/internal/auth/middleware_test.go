@@ -121,3 +121,21 @@ func TestRequireAuthSessionCookie(t *testing.T) {
 		t.Fatalf("touch must not run for an invalid session")
 	}
 }
+
+func TestRequireAuthBearerSession(t *testing.T) {
+	cfg := &config.Config{SessionCookieName: testCookieName}
+	store := &fakeStore{sess: &auth.Session{AccountID: "acc-bearer", DeviceID: "dev-bearer"}}
+	h := auth.RequireAuth(store, cfg)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if id, ok := auth.GetAccountID(r.Context()); !ok || id != "acc-bearer" {
+			t.Fatalf("unexpected account context: %q", id)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	req := httptest.NewRequest("GET", "/protected", nil)
+	req.Header.Set("Authorization", "Bearer native-session")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("expected bearer session to authenticate, got %d", rec.Code)
+	}
+}
