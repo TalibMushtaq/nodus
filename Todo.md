@@ -347,3 +347,5 @@ but should be resolved before the phase that depends on them:
       enforced by the hourly prune in `services/relay/internal/tombstone/tombstone.go`
 - [x] Local (Wi-Fi/LAN) endpoint security details (needed by Phase 11) — **resolved in Phase 11**; implemented rate limiting, nonce caps, and node_id cross-checking.
 - [ ] Pairing/QR format spec (needed by Phase 11)
+
+- [ ] Replace the device private key stored in `localStorage` with a non-exportable WebCrypto Ed25519 key persisted in IndexedDB, and refactor the identity/signing API to use the key handle instead of exposing `private_key`.
