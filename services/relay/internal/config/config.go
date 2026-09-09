@@ -1,10 +1,10 @@
 package config
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -19,10 +19,13 @@ type Config struct {
 	// Redis
 	RedisURL string
 
-	// JWT / Auth
-	JWTSecret     string
-	JWTExpiry     time.Duration
-	RefreshExpiry time.Duration
+	// Sessions (opaque server-side auth, see Todo.md Phase 7a)
+	SessionCookieName    string
+	SessionMaxAge        time.Duration
+	SessionTouchInterval time.Duration
+	// SessionCookieSecure hardcodes the Secure flag; local dev over plain HTTP
+	// must set SESSION_COOKIE_SECURE=false or browsers will drop the cookie.
+	SessionCookieSecure bool
 
 	// Relay Shard Buffer
 	BufferDir string
@@ -39,13 +42,22 @@ func Load() (*Config, error) {
 	dbURL := getEnv("DATABASE_URL", "postgres://nodus:nodus_password@localhost:5432/nodus_relay?sslmode=disable")
 	redisURL := getEnv("REDIS_URL", "redis://localhost:6379/0")
 
-	jwtSecret := getEnv("JWT_SECRET", "nodus-development-secret-key-change-in-production-min-32-chars")
-	if len(jwtSecret) < 16 {
-		return nil, fmt.Errorf("JWT_SECRET must be at least 16 characters")
+	sessionCookieName := getEnv("SESSION_COOKIE_NAME", "nodus_session")
+
+	sessionMaxAgeDays, _ := strconv.Atoi(getEnv("SESSION_MAX_AGE_DAYS", "30"))
+	if sessionMaxAgeDays <= 0 {
+		sessionMaxAgeDays = 30
 	}
 
-	jwtExpiryMins, _ := strconv.Atoi(getEnv("JWT_EXPIRY_MINUTES", "15"))
-	refreshExpiryDays, _ := strconv.Atoi(getEnv("REFRESH_EXPIRY_DAYS", "30"))
+	sessionTouchIntervalMins, _ := strconv.Atoi(getEnv("SESSION_TOUCH_INTERVAL_MINUTES", "30"))
+	if sessionTouchIntervalMins <= 0 {
+		sessionTouchIntervalMins = 30
+	}
+
+	sessionCookieSecure := true // Secure by default; dev over HTTP opts out explicitly.
+	if v := getEnv("SESSION_COOKIE_SECURE", "true"); strings.EqualFold(v, "false") || v == "0" {
+		sessionCookieSecure = false
+	}
 
 	defaultBufferDir := filepath.Join(os.TempDir(), "nodus-relay", "buffer")
 	bufferDir := getEnv("BUFFER_DIR", defaultBufferDir)
@@ -53,14 +65,15 @@ func Load() (*Config, error) {
 	bufferTTLHours, _ := strconv.Atoi(getEnv("BUFFER_TTL_HOURS", "72"))
 
 	cfg := &Config{
-		ListenAddr:    listenAddr,
-		DatabaseURL:   dbURL,
-		RedisURL:      redisURL,
-		JWTSecret:     jwtSecret,
-		JWTExpiry:     time.Duration(jwtExpiryMins) * time.Minute,
-		RefreshExpiry: time.Duration(refreshExpiryDays) * 24 * time.Hour,
-		BufferDir:     bufferDir,
-		BufferTTL:     time.Duration(bufferTTLHours) * time.Hour,
+		ListenAddr:           listenAddr,
+		DatabaseURL:          dbURL,
+		RedisURL:             redisURL,
+		SessionCookieName:    sessionCookieName,
+		SessionMaxAge:        time.Duration(sessionMaxAgeDays) * 24 * time.Hour,
+		SessionTouchInterval: time.Duration(sessionTouchIntervalMins) * time.Minute,
+		SessionCookieSecure:  sessionCookieSecure,
+		BufferDir:            bufferDir,
+		BufferTTL:            time.Duration(bufferTTLHours) * time.Hour,
 	}
 
 	return cfg, nil

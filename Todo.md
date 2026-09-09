@@ -140,26 +140,26 @@ layer only* — device identity (asymmetric key), Storage Node identity
 
 ### 1. Relay backend
 
-- [ ] `services/relay/internal/auth/token.go`: remove `IssueAccessToken` /
+- [x] `services/relay/internal/auth/token.go`: remove `IssueAccessToken` /
       `ParseAccessToken` (JWT HS256) and refresh-token rotation; add session ID
       generation (32 random bytes → base64url, `crypto/rand`) and SHA-256
       `HashSession`
-- [ ] New `services/relay/internal/auth/session.go`: `CreateSession`,
+- [x] New `services/relay/internal/auth/session.go`: `CreateSession`,
       `LookupSession` (expiry/revoked check), `TouchSession` (last_used_at ≤
       once/30 min), `RevokeSession`, `RevokeAllForAccount`/`ForDevice`
-- [ ] `middleware.go`: rewrite `RequireAuth` to read the session cookie
+- [x] `middleware.go`: rewrite `RequireAuth` to read the session cookie
       (`nodus_session`), hash it, look up `sessions`, populate
       `AccountID` + `DeviceID` in request context; drop JWT claims
-- [ ] `config.go`: remove `JWTSecret`/`JWTExpiry`/`RefreshExpiry`; add
+- [x] `config.go`: remove `JWTSecret`/`JWTExpiry`/`RefreshExpiry`; add
       `SessionCookieName`, `SessionMaxAge` (30d), `SessionTouchInterval` (30m),
       cookie flags (HttpOnly/Secure/SameSite=Lax)
-- [ ] Migration `006_sessions.{up,down}.sql`: create `sessions`
+- [x] Migration `006_sessions.{up,down}.sql`: create `sessions`
       (`session_hash UNIQUE`, `account_id FK`, `device_id FK NOT NULL`,
       `created_at`, `expires_at`, `last_used_at`, `revoked_at`); **drop
       `refresh_tokens` outright** — no migration window, no dual auth model
-- [ ] `main.go` routes: `POST /auth/login|register`, `POST /auth/logout`,
+- [x] `main.go` routes: `POST /auth/login|register`, `POST /auth/logout`,
       `GET /auth/session`; **remove `POST /auth/refresh`**
-- [ ] Verify Rust Storage Node WS/HTTP auth is untouched (challenge-response,
+- [x] Verify Rust Storage Node WS/HTTP auth is untouched (challenge-response,
       signed requests) and unaffected by the JWT removal
 
 ### 2. Auth API

@@ -127,8 +127,9 @@ Implemented and tested (see `CHANGELOG.md` for detail):
 - **Storage Node** (`services/storage-node`, Rust) — SQLite schema, run-time
   configurable data directory, content-addressed object store with atomic
   writes, crash recovery, reconciliation, and automatic GC per ADR-0005.
-- **Relay** (`services/relay`, Go) — REST API (Argon2id auth, JWTs), WebSocket
-  hub with presence, and a transient encrypted shard buffer with TTL sweep.
+- **Relay** (`services/relay`, Go) — REST API (Argon2id password auth, opaque
+  server-side sessions via HttpOnly cookie), WebSocket hub with presence, and a
+  transient encrypted shard buffer with TTL sweep.
 - **Transfer sync** (`services/relay` ↔ `services/storage-node`) — incremental
   sync, full snapshot / relay rebuild (`Path C`), buffer-and-relay transfers,
   and the repair (data-return) path.

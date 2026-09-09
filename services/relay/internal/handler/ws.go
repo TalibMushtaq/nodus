@@ -67,7 +67,7 @@ type PendingNotifyPayload struct {
 }
 
 // WebSocket handles incoming WebSocket connection upgrades and message lifecycle.
-func WebSocket(h *hub.Hub, pool *db.Pool, rClient *rdb.Client, buf *buffer.Buffer, cfg *config.Config) http.HandlerFunc {
+func WebSocket(h *hub.Hub, pool *db.Pool, rClient *rdb.Client, buf *buffer.Buffer, store auth.SessionStore, cfg *config.Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
@@ -83,10 +83,14 @@ func WebSocket(h *hub.Hub, pool *db.Pool, rClient *rdb.Client, buf *buffer.Buffe
 			Send:   make(chan []byte, 256),
 		}
 
-		// Check if token was provided in query params (?token=...)
-		if tokenParam := r.URL.Query().Get("token"); tokenParam != "" {
-			if claims, err := auth.ParseAccessToken(cfg, tokenParam); err == nil {
-				client.AccountID = claims.AccountID
+		// Browser WebSocket handshakes authenticate via the session cookie
+		// (?token= JWT removed in Phase 7a §1). Storage Nodes authenticate
+		// separately through the Ed25519 challenge-response below, so a missing
+		// cookie here only leaves the client's AccountID/DeviceID unset.
+		if cookie, err := r.Cookie(cfg.SessionCookieName); store != nil && err == nil && cookie.Value != "" {
+			if sess, err := store.LookupSession(r.Context(), cookie.Value); err == nil {
+				client.AccountID = sess.AccountID
+				client.DeviceID = sess.DeviceID
 			}
 		}
 

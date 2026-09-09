@@ -66,7 +66,7 @@ CORS on the node listener is permissive so the browser web client can probe
 ```text
 Client                                Relay                             Node
   |                                     |                                |
-  | account auth (JWT)                  |                                |
+  | account auth (session cookie)        |                                |
   |------------------------------------>|                                |
   | POST /pairing/sessions              |                                |
   |   { node_id, device_pubkey }        |                                |

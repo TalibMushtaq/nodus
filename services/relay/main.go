@@ -92,39 +92,43 @@ func main() {
 	// Health Check
 	mux.HandleFunc("GET /health", handler.Health(pool, redisClient))
 
-	// Auth Endpoints (Unauthenticated)
+	// Auth Endpoints (Phase 7a §1: opaque server-side sessions — no JWT/refresh)
+	var sessionStore auth.SessionStore
 	if pool != nil {
+		sessionStore = auth.NewPGSessionStore(pool, cfg)
+
 		mux.HandleFunc("POST /auth/register", handler.Register(pool, cfg))
-		mux.HandleFunc("POST /auth/login", handler.Login(pool, cfg))
-		mux.HandleFunc("POST /auth/refresh", handler.RefreshToken(pool, cfg))
-		mux.Handle("POST /auth/logout", auth.RequireAuth(cfg)(handler.Logout(pool)))
+		mux.HandleFunc("POST /auth/login", handler.Login(pool, sessionStore, cfg))
+		mux.HandleFunc("GET /auth/session", handler.Session(sessionStore, cfg))
+		mux.HandleFunc("POST /auth/logout", handler.Logout(sessionStore, cfg))
 
 		// Device & Node Management (Authenticated)
-		mux.Handle("POST /devices/register", auth.RequireAuth(cfg)(handler.RegisterDevice(pool)))
-		mux.Handle("GET /devices", auth.RequireAuth(cfg)(handler.ListDevices(pool)))
-		mux.Handle("DELETE /devices/{id}", auth.RequireAuth(cfg)(handler.RevokeDevice(pool)))
+		mux.Handle("POST /devices/register", auth.RequireAuth(sessionStore, cfg)(handler.RegisterDevice(pool)))
+		mux.Handle("GET /devices", auth.RequireAuth(sessionStore, cfg)(handler.ListDevices(pool)))
+		mux.Handle("DELETE /devices/{id}", auth.RequireAuth(sessionStore, cfg)(handler.RevokeDevice(pool)))
 
-		mux.Handle("POST /nodes/register", auth.RequireAuth(cfg)(handler.RegisterNode(pool)))
-		mux.Handle("GET /nodes", auth.RequireAuth(cfg)(handler.ListNodes(pool)))
+		mux.Handle("POST /nodes/register", auth.RequireAuth(sessionStore, cfg)(handler.RegisterNode(pool)))
+		mux.Handle("GET /nodes", auth.RequireAuth(sessionStore, cfg)(handler.ListNodes(pool)))
 
 		// Phase 11: pairing session issuance (device-bound tokens pushed to the
 		// node over WS) plus the node's + client's open verification endpoints.
-		mux.Handle("POST /pairing/sessions", auth.RequireAuth(cfg)(handler.CreatePairingSession(pool, wsHub)))
+		mux.Handle("POST /pairing/sessions", auth.RequireAuth(sessionStore, cfg)(handler.CreatePairingSession(pool, wsHub)))
 		mux.HandleFunc("POST /pairing/sessions/verify", handler.VerifyPairingSession(pool))
 		mux.HandleFunc("GET /nodes/verify", handler.VerifyNodeURL(pool))
 
 		// Phase 9: trigger a full snapshot / Relay rebuild from the primary node
-		mux.Handle("POST /rebuild", auth.RequireAuth(cfg)(handler.RequestRebuild(pool, wsHub)))
+		mux.Handle("POST /rebuild", auth.RequireAuth(sessionStore, cfg)(handler.RequestRebuild(pool, wsHub)))
 
 		// Phase 10: Path C relay buffer — client pushes shards here when the
 		// target Storage Node is offline; the node pulls them with a single-use
-		// token via /buffer/fetch (no JWT required there).
-		mux.Handle("POST /buffer/upload", auth.RequireAuth(cfg)(handler.BufferUpload(pool, redisClient, buf, wsHub)))
+		// token via /buffer/fetch (deliberately unauthenticated).
+		mux.Handle("POST /buffer/upload", auth.RequireAuth(sessionStore, cfg)(handler.BufferUpload(pool, redisClient, buf, wsHub)))
 		mux.HandleFunc("GET /buffer/fetch", handler.BufferFetch(pool, redisClient, buf))
 	}
 
-	// WebSocket Gateway
-	mux.HandleFunc("GET /ws", handler.WebSocket(wsHub, pool, redisClient, buf, cfg))
+	// WebSocket Gateway (browser auth via session cookie; node auth via Ed25519
+	// challenge-response)
+	mux.HandleFunc("GET /ws", handler.WebSocket(wsHub, pool, redisClient, buf, sessionStore, cfg))
 
 	// 8. HTTP Server Lifecycle
 	server := &http.Server{

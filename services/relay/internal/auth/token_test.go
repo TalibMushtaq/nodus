@@ -1,74 +1,51 @@
 package auth_test
 
 import (
+	"strings"
 	"testing"
-	"time"
 
 	"github.com/TalibMushtaq/nodus/services/relay/internal/auth"
-	"github.com/TalibMushtaq/nodus/services/relay/internal/config"
 )
 
-func TestJWTIssueAndParse(t *testing.T) {
-	cfg := &config.Config{
-		JWTSecret: "test-secret-key-1234567890",
-		JWTExpiry: 15 * time.Minute,
-	}
-
-	accountID := "acc-12345-uuid"
-
-	tokenStr, expiresAt, err := auth.IssueAccessToken(cfg, accountID)
+func TestGenerateSessionID(t *testing.T) {
+	a, err := auth.GenerateSessionID()
 	if err != nil {
-		t.Fatalf("failed to issue jwt: %v", err)
+		t.Fatalf("failed to generate session id: %v", err)
 	}
-
-	if time.Now().UTC().After(expiresAt) {
-		t.Fatalf("expiresAt should be in the future")
-	}
-
-	claims, err := auth.ParseAccessToken(cfg, tokenStr)
+	b, err := auth.GenerateSessionID()
 	if err != nil {
-		t.Fatalf("failed to parse jwt: %v", err)
+		t.Fatalf("failed to generate second session id: %v", err)
 	}
 
-	if claims.AccountID != accountID {
-		t.Fatalf("expected accountID %s, got %s", accountID, claims.AccountID)
+	// 32 random bytes -> base64url, unpadded: 43 characters.
+	if len(a) != 43 {
+		t.Fatalf("expected 43-char base64url id, got %q (%d chars)", a, len(a))
+	}
+
+	// base64url alphabet only (no '+' '/', no padding '=').
+	for _, ch := range a {
+		if !strings.ContainsRune("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_", ch) {
+			t.Fatalf("session id contains out-of-alphabet char %q", ch)
+		}
+	}
+
+	if a == b {
+		t.Fatalf("expected two session ids to differ")
 	}
 }
 
-func TestJWTExpired(t *testing.T) {
-	cfg := &config.Config{
-		JWTSecret: "test-secret-key-1234567890",
-		JWTExpiry: -1 * time.Minute, // already expired
-	}
+func TestHashSession(t *testing.T) {
+	const raw = "some-raw-session-token"
+	d1 := auth.HashSession(raw)
+	d2 := auth.HashSession(raw)
 
-	tokenStr, _, err := auth.IssueAccessToken(cfg, "acc-expired")
-	if err != nil {
-		t.Fatalf("failed to issue jwt: %v", err)
+	if len(d1) != 64 { // SHA-256 hex digest
+		t.Fatalf("expected 64-hex-char digest, got %q (%d chars)", d1, len(d1))
 	}
-
-	_, err = auth.ParseAccessToken(cfg, tokenStr)
-	if err == nil {
-		t.Fatalf("expected error parsing expired jwt")
+	if d1 != d2 {
+		t.Fatalf("expected deterministic hash, got %q then %q", d1, d2)
 	}
-}
-
-func TestJWTInvalidSecret(t *testing.T) {
-	cfg1 := &config.Config{
-		JWTSecret: "secret-key-one-1234567890",
-		JWTExpiry: 15 * time.Minute,
-	}
-	cfg2 := &config.Config{
-		JWTSecret: "secret-key-two-0987654321",
-		JWTExpiry: 15 * time.Minute,
-	}
-
-	tokenStr, _, err := auth.IssueAccessToken(cfg1, "acc-test")
-	if err != nil {
-		t.Fatalf("failed to issue jwt: %v", err)
-	}
-
-	_, err = auth.ParseAccessToken(cfg2, tokenStr)
-	if err == nil {
-		t.Fatalf("expected error when validating jwt with mismatched secret")
+	if auth.HashSession("other-token") == d1 {
+		t.Fatalf("expected different tokens to hash differently")
 	}
 }
