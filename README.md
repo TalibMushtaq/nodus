@@ -226,11 +226,19 @@ generates the node identity. Without `--data-dir` it prompts interactively
 ### Tests
 
 ```bash
-pnpm --filter @repo/protocol test        # or any other TS package (vitest)
-cargo test                               # in services/storage-node
-go test ./...                            # in services/relay; integration tests need
-                                         #   docker compose up + TEST_DATABASE_URL/
-                                         #   TEST_REDIS_URL
+pnpm test                                # all JS/TS, Relay (Go), and Storage Node (Rust) tests
+```
+
+This requires Node/pnpm, Go, and Cargo. Relay tests that require external
+services are skipped by default. To include them, start the Relay Compose
+dependencies and provide `TEST_DATABASE_URL` (and `TEST_REDIS_URL` where
+needed):
+
+```bash
+docker compose -f services/relay/docker-compose.yml up -d
+TEST_DATABASE_URL='postgres://nodus:nodus_password@localhost:5432/nodus_relay?sslmode=disable' \
+  TEST_REDIS_URL='redis://localhost:6379/0' \
+  pnpm test
 ```
 
 ## License
