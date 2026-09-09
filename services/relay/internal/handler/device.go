@@ -2,12 +2,62 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/TalibMushtaq/nodus/services/relay/internal/auth"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/db"
 )
+
+// errDeviceOwnedElsewhere is returned by upsertDeviceForAccount when a
+// device_id already exists under a different account; callers map it to 409.
+var errDeviceOwnedElsewhere = errors.New("device_id registered to another account")
+
+// upsertDeviceForAccount registers (or re-activates) a device, but refuses to
+// do so when the device_id already belongs to another account: the DO UPDATE
+// WHERE clause pins the upsert to this account's own row, so a foreign
+// collision yields zero returned rows (ErrNoRows) instead of silently
+// overwriting the other account's public_key/status.
+func upsertDeviceForAccount(pool *db.Pool, r *http.Request, deviceID, publicKey, accountID string) (*DeviceResponse, error) {
+	var dev DeviceResponse
+	err := pool.QueryRow(r.Context(), `
+		INSERT INTO devices (device_id, account_id, public_key, status)
+		VALUES ($1, $2, $3, 'ACTIVE')
+		ON CONFLICT (device_id) DO UPDATE SET
+			public_key = excluded.public_key,
+			status = 'ACTIVE',
+			revoked_at = NULL
+		WHERE devices.account_id = excluded.account_id
+		RETURNING device_id, account_id, public_key, status, created_at, revoked_at
+	`, deviceID, accountID, publicKey).Scan(
+		&dev.DeviceID,
+		&dev.AccountID,
+		&dev.PublicKey,
+		&dev.Status,
+		&dev.CreatedAt,
+		&dev.RevokedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, errDeviceOwnedElsewhere
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &dev, nil
+}
+
+// respondDeviceUpsertError maps the ownership conflict to 409 and any other
+// failure to 500.
+func respondDeviceUpsertError(w http.ResponseWriter, err error) {
+	if errors.Is(err, errDeviceOwnedElsewhere) {
+		respondError(w, http.StatusConflict, "device_id is registered to another account")
+		return
+	}
+	respondError(w, http.StatusInternalServerError, "failed to register device")
+}
 
 type RegisterDeviceRequest struct {
 	DeviceID  string `json:"device_id"`
@@ -23,7 +73,9 @@ type DeviceResponse struct {
 	RevokedAt *time.Time `json:"revoked_at,omitempty"`
 }
 
-// RegisterDevice registers a new cryptographic device identity for the authenticated account.
+// RegisterDevice registers a new cryptographic device identity for the
+// authenticated account. Same ownership-safe upsert as the login/auth path so a
+// device_id belonging to another account is rejected, not hijacked.
 func RegisterDevice(pool *db.Pool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		accountID, ok := auth.GetAccountID(r.Context())
@@ -43,27 +95,9 @@ func RegisterDevice(pool *db.Pool) http.HandlerFunc {
 			return
 		}
 
-		query := `
-			INSERT INTO devices (device_id, account_id, public_key, status)
-			VALUES ($1, $2, $3, 'ACTIVE')
-			ON CONFLICT (device_id) DO UPDATE SET
-				public_key = excluded.public_key,
-				status = 'ACTIVE',
-				revoked_at = NULL
-			RETURNING device_id, account_id, public_key, status, created_at, revoked_at
-		`
-
-		var dev DeviceResponse
-		err := pool.QueryRow(r.Context(), query, req.DeviceID, accountID, req.PublicKey).Scan(
-			&dev.DeviceID,
-			&dev.AccountID,
-			&dev.PublicKey,
-			&dev.Status,
-			&dev.CreatedAt,
-			&dev.RevokedAt,
-		)
+		dev, err := upsertDeviceForAccount(pool, r, req.DeviceID, req.PublicKey, accountID)
 		if err != nil {
-			respondError(w, http.StatusInternalServerError, "failed to register device")
+			respondDeviceUpsertError(w, err)
 			return
 		}
 
@@ -115,8 +149,10 @@ func ListDevices(pool *db.Pool) http.HandlerFunc {
 	}
 }
 
-// RevokeDevice marks a device as REVOKED and removes its key envelopes (per ADR-0001).
-func RevokeDevice(pool *db.Pool) http.HandlerFunc {
+// RevokeDevice marks a device as REVOKED, removes its key envelopes
+// (per ADR-0001), and immediately kills every session bound to it so a
+// lost/compromised device cannot keep an authenticated session alive (§2).
+func RevokeDevice(pool *db.Pool, store auth.SessionStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		accountID, ok := auth.GetAccountID(r.Context())
 		if !ok {
@@ -150,6 +186,12 @@ func RevokeDevice(pool *db.Pool) http.HandlerFunc {
 
 		// Also delete any key envelopes associated with this device (ADR-0001)
 		_, _ = pool.Exec(r.Context(), "DELETE FROM key_envelopes WHERE recipient_id = $1", deviceID)
+
+		// Revoke all sessions bound to the revoked device.
+		if err := store.RevokeAllForDevice(r.Context(), deviceID); err != nil {
+			respondError(w, http.StatusInternalServerError, "failed to revoke device sessions")
+			return
+		}
 
 		respondJSON(w, http.StatusOK, map[string]string{
 			"status":    "REVOKED",

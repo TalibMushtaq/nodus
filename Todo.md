@@ -164,17 +164,17 @@ layer only* — device identity (asymmetric key), Storage Node identity
 
 ### 2. Auth API
 
-- [ ] `internal/handler/auth.go`: `Login`/`Register` set the session cookie and
+- [x] `internal/handler/auth.go`: `Login`/`Register` set the session cookie and
       return `{account_id, device_id, session_expires_at}` — no token in body
-- [ ] New `Session` handler: return current session info from cookie;
+- [x] New `Session` handler: return current session info from cookie;
       401 when missing/expired/revoked
-- [ ] `Logout`: revoke the session row + clear cookie (`Max-Age=0`)
-- [ ] Device **auto-registration on first login**: generate device keypair
+- [x] `Logout`: revoke the session row + clear cookie (`Max-Age=0`)
+- [x] Device **auto-registration on first login**: generate device keypair
       client-side, `POST /devices/register` alongside session creation, bind
       `sessions.device_id`
-- [ ] Session fixation: rotate session ID (new row, revoke old) on password
+- [x] Session fixation: rotate session ID (new row, revoke old) on password
       change / device revocation
-- [ ] Update `auth_test.go`, `token_test.go`, `middleware_test.go` to
+- [x] Update `auth_test.go`, `token_test.go`, `middleware_test.go` to
       session-cookie tests; update `handler/*` tests that relied on Bearer
 
 ### 3. Next.js integration

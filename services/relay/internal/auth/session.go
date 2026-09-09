@@ -41,6 +41,7 @@ type SessionStore interface {
 	RevokeSession(ctx context.Context, rawID string) error
 	RevokeAllForAccount(ctx context.Context, accountID string) error
 	RevokeAllForDevice(ctx context.Context, deviceID string) error
+	RotateSession(ctx context.Context, oldRawID, accountID, deviceID string) (newRawID string, err error)
 }
 
 // PGSessionStore persists sessions in PostgreSQL. Only SHA-256 hashes of raw
@@ -170,4 +171,47 @@ func (s *PGSessionStore) RevokeAllForDevice(ctx context.Context, deviceID string
 		WHERE device_id = $2 AND revoked_at IS NULL
 	`, time.Now().UTC(), deviceID)
 	return err
+}
+
+// RotateSession issues a replacement session for the same account/device and
+// revokes the previous one in the same transaction — the session-fixation
+// primitive for a credential change. The old raw token fails LookupSession
+// immediately after commit; the revocation is scoped to the caller's own
+// account/device so a stale cookie can never revoke somebody else's session.
+func (s *PGSessionStore) RotateSession(ctx context.Context, oldRawID, accountID, deviceID string) (string, error) {
+	newRawID, err := GenerateSessionID()
+	if err != nil {
+		return "", err
+	}
+	now := time.Now().UTC()
+	expiresAt := now.Add(s.cfg.SessionMaxAge)
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback(ctx) // nolint:errcheck
+
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO sessions (session_hash, account_id, device_id, expires_at, last_used_at)
+		VALUES ($1, $2, $3, $4, $5)
+	`, HashSession(newRawID), accountID, deviceID, expiresAt, now); err != nil {
+		return "", fmt.Errorf("inserting rotated session: %w", err)
+	}
+
+	tag, err := tx.Exec(ctx, `
+		UPDATE sessions SET revoked_at = $1
+		WHERE session_hash = $2 AND account_id = $3 AND device_id = $4 AND revoked_at IS NULL
+	`, now, HashSession(oldRawID), accountID, deviceID)
+	if err != nil {
+		return "", fmt.Errorf("revoking old session: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return "", ErrSessionInvalid
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return "", err
+	}
+	return newRawID, nil
 }

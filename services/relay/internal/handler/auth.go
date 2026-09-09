@@ -15,30 +15,30 @@ import (
 	"github.com/google/uuid"
 )
 
-type RegisterRequest struct {
-	Email    string `json:"email"`
-	Password string `json:"password"`
-	DeviceID string `json:"device_id"`
+// AuthRequest is the shared login/register body. device_id + device_public_key
+// are required (§2): the client generates the device keypair up front and the
+// relay auto-registers the device beside session creation.
+type AuthRequest struct {
+	Email           string `json:"email"`
+	Password        string `json:"password"`
+	DeviceID        string `json:"device_id"`
+	DevicePublicKey string `json:"device_public_key"`
 }
 
-// SessionResponse is the post-JWT login/register body: the old AuthResponse
-// shape minus access/refresh tokens. Phase 7a §2 replaces it with the locked
-// {account_id, device_id, session_expires_at} shape plus device auto-registration.
+// SessionResponse is the locked Phase 7a §2 post-auth body: account/device ids
+// plus the absolute session expiry. No token ever travels in the body — the
+// session lives in the HttpOnly cookie.
 type SessionResponse struct {
-	AccountID string    `json:"account_id"`
-	DeviceID  string    `json:"device_id"`
-	ExpiresAt time.Time `json:"expires_at"`
-	ExpiresIn int64     `json:"expires_in"` // in seconds
+	AccountID        string    `json:"account_id"`
+	DeviceID         string    `json:"device_id"`
+	SessionExpiresAt time.Time `json:"session_expires_at"`
 }
 
-// Register creates a new user account. It does not mint a session: a session
-// cannot exist without a registered, ACTIVE device (sessions.device_id is NOT
-// NULL, plan §13), and a fresh account owns none yet. The client registers a
-// device via POST /devices/register, then logs in to obtain the session cookie;
-// §2 makes device registration automatic.
-func Register(pool *db.Pool, cfg *config.Config) http.HandlerFunc {
+// Register creates a new user account, auto-registers its first device, and
+// mints the session cookie so one call leaves the client authenticated.
+func Register(pool *db.Pool, store auth.SessionStore, cfg *config.Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		var req RegisterRequest
+		var req AuthRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			respondError(w, http.StatusBadRequest, "invalid request body")
 			return
@@ -55,8 +55,8 @@ func Register(pool *db.Pool, cfg *config.Config) http.HandlerFunc {
 			return
 		}
 
-		if req.DeviceID == "" {
-			respondError(w, http.StatusBadRequest, "device_id is required")
+		if req.DeviceID == "" || req.DevicePublicKey == "" {
+			respondError(w, http.StatusBadRequest, "device_id and device_public_key are required")
 			return
 		}
 
@@ -82,30 +82,31 @@ func Register(pool *db.Pool, cfg *config.Config) http.HandlerFunc {
 			return
 		}
 
-		// A fresh account owns no device yet, so no device-bound session can be
-		// issued here (sessions.device_id is NOT NULL). The client registers the
-		// device via POST /devices/register, then logs in to mint the session;
-		// §2 wires auto-registration directly beside session creation.
-		respondJSON(w, http.StatusCreated, SessionResponse{
-			AccountID: accountID,
-			DeviceID:  req.DeviceID,
-		})
+		// The first device auto-registers with the account (§2). If it fails
+		// the brand-new account is rolled back so no orphan row lingers.
+		if _, err := upsertDeviceForAccount(pool, r, req.DeviceID, req.DevicePublicKey, accountID); err != nil {
+			_, _ = pool.Exec(r.Context(), `DELETE FROM accounts WHERE account_id = $1`, accountID)
+			respondDeviceUpsertError(w, err)
+			return
+		}
+
+		issueSession(w, r, store, cfg, accountID, req.DeviceID, http.StatusCreated)
 	}
 }
 
-// Login authenticates a user by email and password, then mints a session cookie
-// bound to the supplied device.
+// Login authenticates a user by email and password, auto-registers the device
+// on first use (§2), then mints a session cookie bound to that device.
 func Login(pool *db.Pool, store auth.SessionStore, cfg *config.Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		var req RegisterRequest
+		var req AuthRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			respondError(w, http.StatusBadRequest, "invalid request body")
 			return
 		}
 
 		req.Email = strings.TrimSpace(strings.ToLower(req.Email))
-		if req.Email == "" || req.Password == "" || req.DeviceID == "" {
-			respondError(w, http.StatusBadRequest, "email, password and device_id are required")
+		if req.Email == "" || req.Password == "" || req.DeviceID == "" || req.DevicePublicKey == "" {
+			respondError(w, http.StatusBadRequest, "email, password, device_id and device_public_key are required")
 			return
 		}
 
@@ -131,15 +132,16 @@ func Login(pool *db.Pool, store auth.SessionStore, cfg *config.Config) http.Hand
 			return
 		}
 
-		// Sessions are device-bound; the device must exist and belong to this
-		// account, otherwise a session row could not satisfy the FK nor pass
-		// the ACTIVE check in LookupSession.
-		if !deviceExistsForAccount(r, pool, req.DeviceID, accountID) {
-			respondError(w, http.StatusUnauthorized, "device_id is not registered to this account")
+		// Device auto-registration replaces the old pre-registration gate: the
+		// supplied device_id/public_key is upserted for THIS account (ownership
+		// guarded), so first login from a new device needs no separate
+		// /devices/register call.
+		if _, err := upsertDeviceForAccount(pool, r, req.DeviceID, req.DevicePublicKey, accountID); err != nil {
+			respondDeviceUpsertError(w, err)
 			return
 		}
 
-		issueSession(w, r, store, cfg, accountID, req.DeviceID)
+		issueSession(w, r, store, cfg, accountID, req.DeviceID, http.StatusOK)
 	}
 }
 
@@ -160,10 +162,9 @@ func Session(store auth.SessionStore, cfg *config.Config) http.HandlerFunc {
 		}
 
 		respondJSON(w, http.StatusOK, SessionResponse{
-			AccountID: sess.AccountID,
-			DeviceID:  sess.DeviceID,
-			ExpiresAt: sess.ExpiresAt,
-			ExpiresIn: int64(time.Until(sess.ExpiresAt).Seconds()),
+			AccountID:        sess.AccountID,
+			DeviceID:         sess.DeviceID,
+			SessionExpiresAt: sess.ExpiresAt,
 		})
 	}
 }
@@ -182,20 +183,9 @@ func Logout(store auth.SessionStore, cfg *config.Config) http.HandlerFunc {
 	}
 }
 
-// deviceExistsForAccount reports whether the device is registered to the
-// account and ACTIVE (device identity owns asymmetric keys; sessions must bind
-// to one of them).
-func deviceExistsForAccount(r *http.Request, pool *db.Pool, deviceID, accountID string) bool {
-	var exists bool
-	err := pool.QueryRow(r.Context(),
-		`SELECT EXISTS(SELECT 1 FROM devices WHERE device_id = $1 AND account_id = $2 AND status = 'ACTIVE')`,
-		deviceID, accountID,
-	).Scan(&exists)
-	return err == nil && exists
-}
-
-// issueSession mints a session, writes the HttpOnly cookie, and responds.
-func issueSession(w http.ResponseWriter, r *http.Request, store auth.SessionStore, cfg *config.Config, accountID, deviceID string) {
+// issueSession mints a session, writes the HttpOnly cookie, and responds with
+// the §2 body. status distinguishes register (201) from login (200).
+func issueSession(w http.ResponseWriter, r *http.Request, store auth.SessionStore, cfg *config.Config, accountID, deviceID string, status int) {
 	rawID, err := store.CreateSession(r.Context(), accountID, deviceID)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "failed to create session")
@@ -203,19 +193,15 @@ func issueSession(w http.ResponseWriter, r *http.Request, store auth.SessionStor
 	}
 	setSessionCookie(w, cfg, rawID, time.Now().UTC().Add(cfg.SessionMaxAge))
 
-	sess, _ := store.LookupSession(r.Context(), rawID)
 	expiresAt := time.Now().UTC().Add(cfg.SessionMaxAge)
-	expiresIn := int64(cfg.SessionMaxAge.Seconds())
-	if sess != nil {
+	if sess, err := store.LookupSession(r.Context(), rawID); err == nil {
 		expiresAt = sess.ExpiresAt
-		expiresIn = int64(time.Until(sess.ExpiresAt).Seconds())
 	}
 
-	respondJSON(w, http.StatusCreated, SessionResponse{
-		AccountID: accountID,
-		DeviceID:  deviceID,
-		ExpiresAt: expiresAt,
-		ExpiresIn: expiresIn,
+	respondJSON(w, status, SessionResponse{
+		AccountID:        accountID,
+		DeviceID:         deviceID,
+		SessionExpiresAt: expiresAt,
 	})
 }
 

@@ -41,6 +41,9 @@ func (f *fakeStore) RevokeAllForAccount(ctx context.Context, accountID string) e
 func (f *fakeStore) RevokeAllForDevice(ctx context.Context, deviceID string) error {
 	return nil
 }
+func (f *fakeStore) RotateSession(ctx context.Context, oldRawID, accountID, deviceID string) (string, error) {
+	return "", errors.New("not used in middleware test")
+}
 
 const (
 	testCookieName = "nodus_session"

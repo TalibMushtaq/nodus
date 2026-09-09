@@ -92,12 +92,13 @@ func main() {
 	// Health Check
 	mux.HandleFunc("GET /health", handler.Health(pool, redisClient))
 
-	// Auth Endpoints (Phase 7a §1: opaque server-side sessions — no JWT/refresh)
+	// Auth Endpoints (Phase 7a: opaque server-side sessions — no JWT/refresh;
+	// §2 completes the surface with device auto-registration and session body)
 	var sessionStore auth.SessionStore
 	if pool != nil {
 		sessionStore = auth.NewPGSessionStore(pool, cfg)
 
-		mux.HandleFunc("POST /auth/register", handler.Register(pool, cfg))
+		mux.HandleFunc("POST /auth/register", handler.Register(pool, sessionStore, cfg))
 		mux.HandleFunc("POST /auth/login", handler.Login(pool, sessionStore, cfg))
 		mux.HandleFunc("GET /auth/session", handler.Session(sessionStore, cfg))
 		mux.HandleFunc("POST /auth/logout", handler.Logout(sessionStore, cfg))
@@ -105,7 +106,7 @@ func main() {
 		// Device & Node Management (Authenticated)
 		mux.Handle("POST /devices/register", auth.RequireAuth(sessionStore, cfg)(handler.RegisterDevice(pool)))
 		mux.Handle("GET /devices", auth.RequireAuth(sessionStore, cfg)(handler.ListDevices(pool)))
-		mux.Handle("DELETE /devices/{id}", auth.RequireAuth(sessionStore, cfg)(handler.RevokeDevice(pool)))
+		mux.Handle("DELETE /devices/{id}", auth.RequireAuth(sessionStore, cfg)(handler.RevokeDevice(pool, sessionStore)))
 
 		mux.Handle("POST /nodes/register", auth.RequireAuth(sessionStore, cfg)(handler.RegisterNode(pool)))
 		mux.Handle("GET /nodes", auth.RequireAuth(sessionStore, cfg)(handler.ListNodes(pool)))

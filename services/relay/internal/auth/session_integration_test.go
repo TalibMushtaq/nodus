@@ -230,6 +230,35 @@ func TestSessionCapRevokesOldest(t *testing.T) {
 	require.True(t, errors.Is(err, auth.ErrSessionInvalid), "oldest session must be revoked")
 }
 
+func TestSessionRotate(t *testing.T) {
+	h := setupSessionHarness(t)
+
+	oldRaw, err := h.store.CreateSession(h.ctx, h.accountID, h.deviceID)
+	require.NoError(t, err)
+
+	newRaw, err := h.store.RotateSession(h.ctx, oldRaw, h.accountID, h.deviceID)
+	require.NoError(t, err)
+	require.NotEqual(t, oldRaw, newRaw, "rotation must issue a fresh token")
+
+	// Old token dies immediately; new token is valid with same ownership.
+	_, err = h.store.LookupSession(h.ctx, oldRaw)
+	require.True(t, errors.Is(err, auth.ErrSessionInvalid), "pre-rotation session must be revoked")
+
+	sess, err := h.store.LookupSession(h.ctx, newRaw)
+	require.NoError(t, err)
+	require.Equal(t, h.accountID, sess.AccountID)
+	require.Equal(t, h.deviceID, sess.DeviceID)
+}
+
+func TestSessionRotateUnknownOldSessionFails(t *testing.T) {
+	h := setupSessionHarness(t)
+
+	// Rotating an unknown/stale token must not mint a session: the revocation
+	// scoping to account+device turns a 0-row UPDATE into ErrSessionInvalid.
+	_, err := h.store.RotateSession(h.ctx, "not-a-real-session", h.accountID, h.deviceID)
+	require.True(t, errors.Is(err, auth.ErrSessionInvalid), "unknown old session must not rotate")
+}
+
 func TestSessionTouchThrottle(t *testing.T) {
 	h := setupSessionHarness(t)
 
