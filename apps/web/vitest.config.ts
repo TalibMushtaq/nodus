@@ -19,6 +19,7 @@ export default defineConfig({
   resolve: {
     alias: {
       "@repo/relay-client": resolve(import.meta.dirname, "../../packages/relay-client/src/index.ts"),
+      "server-only": resolve(import.meta.dirname, "./test/server-only.ts"),
     },
   },
 });

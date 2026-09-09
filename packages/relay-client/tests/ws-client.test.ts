@@ -24,6 +24,11 @@ describe("relayWsEndpoint", () => {
     expect(relayWsEndpoint("http://localhost:8080/ws")).toBe("ws://localhost:8080/ws");
   });
 
+  it("does not strip hostnames or paths that merely end in ws", () => {
+    expect(relayWsEndpoint("https://relay-news")).toBe("wss://relay-news/ws");
+    expect(relayWsEndpoint("https://relay.example.com/news")).toBe("wss://relay.example.com/news/ws");
+  });
+
   it("handles ws:// input", () => {
     expect(relayWsEndpoint("ws://localhost:8080")).toBe("ws://localhost:8080/ws");
   });
