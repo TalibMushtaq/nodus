@@ -2,7 +2,7 @@
 
 ## [2026-09-09] - Docs: refresh README to reflect current implementation status
 
-**What changed:** Replaced the README's "pre-implementation" framing with the real state of the repo: per-component status column (web client ported with mock auth, mobile scaffold, Rust/Go services implemented), corrected repository layout (added `packages/ui`, `packages/transfer-manager`, removed stubs), a "Current status" section summarizing Phases 0–13 + the design port, and quick instructions for running the web client.
+**What changed:** Replaced the README's "pre-implementation" framing with the real state of the repo: per-component status column (web client ported with mock auth, mobile scaffold, Rust/Go services implemented), corrected repository layout (added `packages/ui`, `packages/transfer-manager`, removed stubs), a "Current status" section summarizing Phases 0–13 + the design port, and a "Getting started" section covering prerequisites and how to run each component — web (`pnpm dev`), Relay (compose + `go run .`, with env-var table), Storage Node (`cargo run -- --data-dir`), plus a test command cheat-sheet.
 
 **Why:** README.md still said "Nothing is implemented yet" after Phases 0–13, the design port, and the QA pass shipped.
 **Impact:** Documentation only.

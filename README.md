@@ -160,21 +160,71 @@ Storage Node offline:   Client -> Relay Buffer -> Storage Node
 Relay corrupted:        Storage Node -> Snapshot/Rebuild -> New Relay DB
 ```
 
-## Developer setup
+## Getting started
 
-After cloning, install the git hooks:
+### Prerequisites
+
+| Tool | Version | Used for |
+|---|---|---|
+| Node.js + pnpm | Node ≥ 20, pnpm 11 | Web client, TypeScript packages |
+| Rust | stable toolchain + `cargo` | Storage Node |
+| Go | ≥ 1.22 | Relay |
+| Docker | Compose v2 | Postgres + Redis for the Relay |
+
+### 1. Install dependencies & hooks
 
 ```bash
-make install-hooks
+make install-hooks      # gofmt/rustfmt/clippy pre-push hooks
+pnpm install            # TypeScript workspace (apps + packages)
 ```
 
-This runs `gofmt`, `rustfmt`, and `cargo clippy` before every push.
-
-To run the web client locally:
+### 2. Run the web client
 
 ```bash
-pnpm install
-cd apps/web && pnpm dev     # http://localhost:3000
+cd apps/web
+pnpm dev                # http://localhost:3000
+```
+
+The dashboard, overview, and settings routes render with mock data; `/auth`
+is a mock wizard. `pnpm build && pnpm start` for a production-style build.
+
+### 3. Run the Relay (Go)
+
+```bash
+cd services/relay
+docker compose up -d    # Postgres 17 + Redis 7 (health-checked)
+go run .
+```
+
+The relay listens on `:8080` by default. Configuration via env vars:
+
+| Env | Default |
+|---|---|
+| `PORT` | `8080` |
+| `DATABASE_URL` | `postgres://nodus:nodus_password@localhost:5432/nodus_relay?sslmode=disable` |
+| `REDIS_URL` | `redis://localhost:6379/0` |
+
+Migrations run automatically on startup.
+
+### 4. Run the Storage Node (Rust)
+
+```bash
+cd services/storage-node
+cargo run -- --data-dir ~/NodusBackup       # or export NODUS_DATA_DIR=~/NodusBackup
+```
+
+First run creates the data directory, initializes the SQLite database, and
+generates the node identity. Without `--data-dir` it prompts interactively
+(and picks `~/NodusBackup` by default).
+
+### Tests
+
+```bash
+pnpm --filter @repo/protocol test        # or any other TS package (vitest)
+cargo test                               # in services/storage-node
+go test ./...                            # in services/relay; integration tests need
+                                         #   docker compose up + TEST_DATABASE_URL/
+                                         #   TEST_REDIS_URL
 ```
 
 ## License
