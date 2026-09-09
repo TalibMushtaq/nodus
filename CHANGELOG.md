@@ -1,5 +1,15 @@
 # Changelog
 
+## [2026-09-09] - Phase 7a §6: client test suites
+
+**What changed:** Added Vitest unit tests for the web client and relay-client packages. `apps/web`: added `vitest.config.ts`, `vitest.setup.ts`, and tests for `lib/device.ts` (identity generation, localStorage persistence, corruption recovery), `lib/auth-client.ts` (login/register/logout/fetchSession API calls), `lib/session.ts` (getSession/requireAuth with mocked relayFetch), and `providers/auth-provider.tsx` (AuthProvider component status transitions, login/register/logout handlers). `packages/relay-client`: added `tests/ws-client.test.ts` for `RelayWsClient` (relayWsEndpoint URL conversion, connect/send/close lifecycle, no `?token=` in URL). All tests use mocked fetch/WebSocket — no live Relay required.
+
+**Why:** Todo.md Phase 7a §6 required client test suites covering the session-cookie auth flow, device auto-registration, and WebSocket handshake authentication.
+
+**Impact:** `apps/web` (new Vitest deps + 4 test files), `packages/relay-client` (1 new test file), `Todo.md` (§6 items 1–3 checked). Mobile deferred to Phase 15.
+
+**Follow-ups:** Mobile session model tests (Phase 15). Consider E2E tests with Playwright for end-to-end browser flows.
+
 ## [2026-09-09] - Phase 7a §5: cookie flags security tests
 
 **What changed:** Added `TestAuthSessionCookieFlags` and `TestAuthSessionCookieSecureFlag` to `services/relay/internal/handler/auth_integration_test.go`. The first test asserts the always-on attributes (`HttpOnly`, `Path=/`, `SameSite=Lax`) on the `nodus_session` cookie during a normal login. The second test spins up a separate server with `SessionCookieSecure=true` (production mode) and verifies the `Secure` flag is set on the `Set-Cookie` header. Together they close the only gap in the Phase 7a §5 security test matrix; the remaining seven tests (expiry, revocation, fixation, hash-only storage, max-10 eviction, device-bound, throttle) were already in place.

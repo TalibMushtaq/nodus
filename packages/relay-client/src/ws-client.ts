@@ -17,7 +17,7 @@ import {
 
 /** Derive the relay WS endpoint from an HTTP(S)/WS(s) base URL. */
 export function relayWsEndpoint(baseUrl: string): string {
-  const stripped = baseUrl.trim().replace(/\/ws\/?$/, "");
+  const stripped = baseUrl.trim().replace(/\/?ws\/?$/, "").replace(/\/$/, "");
   return stripped.startsWith("ws://") || stripped.startsWith("wss://")
     ? `${stripped}/ws`
     : `${stripped.replace(/^http/, "ws")}/ws`;

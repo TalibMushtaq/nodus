@@ -7,6 +7,21 @@ import type { StoredDeviceIdentity } from "@repo/relay-client";
 
 export const DEVICE_IDENTITY_KEY = "nodus.device.identity";
 
+function isStoredDeviceIdentity(value: unknown): value is StoredDeviceIdentity {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  const identity = value as Record<string, unknown>;
+  return (
+    typeof identity.device_id === "string" &&
+    identity.device_id.length > 0 &&
+    typeof identity.public_key === "string" &&
+    identity.public_key.length > 0 &&
+    typeof identity.private_key === "string" &&
+    identity.private_key.length > 0
+  );
+}
+
 /**
  * Returns the browser's persistent device identity, generating + storing one
  * on first use (Phase 7a §2/§3: login/register require device_id +
@@ -16,7 +31,10 @@ export function getOrCreateDeviceIdentity(): StoredDeviceIdentity {
   const existing = localStorage.getItem(DEVICE_IDENTITY_KEY);
   if (existing) {
     try {
-      return JSON.parse(existing) as StoredDeviceIdentity;
+      const identity = JSON.parse(existing) as unknown;
+      if (isStoredDeviceIdentity(identity)) {
+        return identity;
+      }
     } catch {
       // Corrupt store → regenerate below.
     }

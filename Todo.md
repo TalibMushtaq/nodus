@@ -212,11 +212,11 @@ layer only* — device identity (asymmetric key), Storage Node identity
 
 ### 6. Client tests
 
-- [ ] Web: login/register sets cookie, session persists across reload, session
+- [x] Web: login/register sets cookie, session persists across reload, session
       guard redirects when unauthenticated, logout clears cookie
-- [ ] Web: auto device-registration on first login (keypair + `device_id` in
+- [x] Web: auto device-registration on first login (keypair + `device_id` in
       every session)
-- [ ] WebSocket: browser WS handshake authenticates via session cookie
+- [x] WebSocket: browser WS handshake authenticates via session cookie
       (`?token=` removed)
 - [ ] Mobile (Phase 15 when reached): same session model via secure platform
       storage (requirement §8 identity matrix preserved)

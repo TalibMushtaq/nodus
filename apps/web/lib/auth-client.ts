@@ -47,7 +47,12 @@ export async function logout(): Promise<void> {
 }
 
 export async function fetchSession(): Promise<SessionInfo | null> {
-  const res = await fetch("/api/auth/session");
+  let res: Response;
+  try {
+    res = await fetch("/api/auth/session");
+  } catch {
+    return null;
+  }
   if (!res.ok) {
     return null;
   }
