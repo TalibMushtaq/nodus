@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -16,14 +17,18 @@ import (
 // device_id already exists under a different account; callers map it to 409.
 var errDeviceOwnedElsewhere = errors.New("device_id registered to another account")
 
+type dbQuerier interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}
+
 // upsertDeviceForAccount registers (or re-activates) a device, but refuses to
 // do so when the device_id already belongs to another account: the DO UPDATE
 // WHERE clause pins the upsert to this account's own row, so a foreign
 // collision yields zero returned rows (ErrNoRows) instead of silently
 // overwriting the other account's public_key/status.
-func upsertDeviceForAccount(pool *db.Pool, r *http.Request, deviceID, publicKey, accountID string) (*DeviceResponse, error) {
+func upsertDeviceForAccount(q dbQuerier, r *http.Request, deviceID, publicKey, accountID string) (*DeviceResponse, error) {
 	var dev DeviceResponse
-	err := pool.QueryRow(r.Context(), `
+	err := q.QueryRow(r.Context(), `
 		INSERT INTO devices (device_id, account_id, public_key, status)
 		VALUES ($1, $2, $3, 'ACTIVE')
 		ON CONFLICT (device_id) DO UPDATE SET

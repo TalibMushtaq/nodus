@@ -72,7 +72,14 @@ func Register(pool *db.Pool, store auth.SessionStore, cfg *config.Config) http.H
 			VALUES ($1, $2, $3)
 		`
 
-		_, err = pool.Exec(r.Context(), query, accountID, req.Email, hashedPassword)
+		tx, err := pool.Begin(r.Context())
+		if err != nil {
+			respondError(w, http.StatusInternalServerError, "failed to start transaction")
+			return
+		}
+		defer tx.Rollback(r.Context()) // nolint:errcheck
+
+		_, err = tx.Exec(r.Context(), query, accountID, req.Email, hashedPassword)
 		if err != nil {
 			if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
 				respondError(w, http.StatusConflict, "an account with this email already exists")
@@ -82,11 +89,14 @@ func Register(pool *db.Pool, store auth.SessionStore, cfg *config.Config) http.H
 			return
 		}
 
-		// The first device auto-registers with the account (§2). If it fails
-		// the brand-new account is rolled back so no orphan row lingers.
-		if _, err := upsertDeviceForAccount(pool, r, req.DeviceID, req.DevicePublicKey, accountID); err != nil {
-			_, _ = pool.Exec(r.Context(), `DELETE FROM accounts WHERE account_id = $1`, accountID)
+		// The first device auto-registers with the account (§2).
+		if _, err := upsertDeviceForAccount(tx, r, req.DeviceID, req.DevicePublicKey, accountID); err != nil {
 			respondDeviceUpsertError(w, err)
+			return
+		}
+
+		if err := tx.Commit(r.Context()); err != nil {
+			respondError(w, http.StatusInternalServerError, "failed to commit transaction")
 			return
 		}
 
@@ -191,12 +201,9 @@ func issueSession(w http.ResponseWriter, r *http.Request, store auth.SessionStor
 		respondError(w, http.StatusInternalServerError, "failed to create session")
 		return
 	}
-	setSessionCookie(w, cfg, rawID, time.Now().UTC().Add(cfg.SessionMaxAge))
 
 	expiresAt := time.Now().UTC().Add(cfg.SessionMaxAge)
-	if sess, err := store.LookupSession(r.Context(), rawID); err == nil {
-		expiresAt = sess.ExpiresAt
-	}
+	setSessionCookie(w, cfg, rawID, expiresAt)
 
 	respondJSON(w, status, SessionResponse{
 		AccountID:        accountID,

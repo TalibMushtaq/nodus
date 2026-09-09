@@ -1,3 +1,5 @@
+import "server-only";
+
 import { cookies } from "next/headers";
 
 // Server-only HTTP boundary to the Relay. The Relay sets the session as an

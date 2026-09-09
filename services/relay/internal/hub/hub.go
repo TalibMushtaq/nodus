@@ -65,7 +65,9 @@ func (h *Hub) Run(ctx context.Context) {
 			h.mu.Lock()
 			for _, client := range h.clients {
 				close(client.Send)
-				_ = client.Conn.Close()
+				if client.Conn != nil {
+					_ = client.Conn.Close()
+				}
 			}
 			h.clients = make(map[string]*Client)
 			h.byAccount = make(map[string]map[string]*Client)

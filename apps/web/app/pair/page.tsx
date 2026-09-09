@@ -35,7 +35,6 @@ import { useRouter } from "next/navigation";
 import { addTrustedNode, getTrustedNodes, type TrustedNode } from "../../lib/trusted-nodes";
 import {
   listNodes,
-  registerDevice,
   issuePairingToken,
   type PairingSession,
   type RelayNode,
@@ -112,15 +111,16 @@ export default function PairPage() {
     if (!device || !selectedNode) return;
     setPairError(null);
     try {
-      // Ensure the device is registered to the account (idempotent upsert),
-      // otherwise CreatePairingSession rejects the device lookup.
-      await registerDevice(device);
       const sess = await issuePairingToken(selectedNode, device);
       setPending(sess);
     } catch (err) {
+      if (err instanceof Error && err.message.includes("401")) {
+        router.push("/auth");
+        return;
+      }
       setPairError(err instanceof Error ? err.message : String(err));
     }
-  }, [device, selectedNode]);
+  }, [device, selectedNode, router]);
 
   const pairingUrl = useMemo(() => {
     if (!pending || !device) return null;
