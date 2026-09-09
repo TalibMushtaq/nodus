@@ -63,7 +63,7 @@ export function Sidebar({ collapsed, onCollapse, nodeStatus = "local" }: Sidebar
       )}
 
       {/* Nav */}
-      <nav className="flex-1 px-2 py-2 space-y-0.5 overflow-y-auto">
+      <nav aria-label="Primary" className="flex-1 px-2 py-2 space-y-0.5 overflow-y-auto">
         {navItems.map((item) => {
           const active = pathname === `/${item.id}`;
           return (
@@ -99,6 +99,8 @@ export function Sidebar({ collapsed, onCollapse, nodeStatus = "local" }: Sidebar
       <button
         type="button"
         onClick={onCollapse}
+        aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+        title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
         className="flex items-center justify-center h-9 border-t border-border text-muted-foreground hover:text-foreground transition-colors"
       >
         <Icon name="chevron-left" size={14} className={`transition-transform ${collapsed ? "rotate-180" : ""}`} />

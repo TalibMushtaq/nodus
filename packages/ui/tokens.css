@@ -16,8 +16,8 @@
   --color-secondary: #edebe6;
   --color-secondary-foreground: #1c1a17;
   --color-muted: #edebe6;
-  --color-muted-foreground: #78746e;
-  --color-accent: #b85c1a;
+  --color-muted-foreground: #6b655e;
+  --color-accent: #a94d12;
   --color-accent-foreground: #ffffff;
   --color-destructive: #c0442b;
   --color-destructive-foreground: #ffffff;
@@ -40,10 +40,10 @@
   --color-secondary: #252320;
   --color-secondary-foreground: #ede9e2;
   --color-muted: #252320;
-  --color-muted-foreground: #857f78;
+  --color-muted-foreground: #938d84;
   --color-accent: #c8722a;
-  --color-accent-foreground: #ffffff;
-  --color-destructive: #c05535;
+  --color-accent-foreground: #2b1507;
+  --color-destructive: #d76a50;
   --color-destructive-foreground: #ffffff;
   --color-border: #2a2824;
   --color-input: #2a2824;
@@ -54,9 +54,9 @@
  * programmatically by StatusBadge/PathIndicator via var(), so it stays a
  * plain custom property rather than a @theme color utility. */
 :root {
-  --status-synced: #1d7a45;
+  --status-synced: #1c7341;
   --status-synced-bg: #d6f0e3;
-  --status-pending: #b85c1a;
+  --status-pending: #a94d12;
   --status-pending-bg: #fdebd6;
   --status-conflict: #b33a22;
   --status-conflict-bg: #fce0da;

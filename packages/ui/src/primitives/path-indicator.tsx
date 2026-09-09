@@ -50,7 +50,11 @@ export function PathIndicator({ path }: { path: TransferPath }) {
   return (
     <span
       className="inline-flex items-center gap-1 text-xs font-mono font-semibold px-2 py-0.5 rounded-full"
-      style={{ color: cfg.color, background: cfg.color + "18", border: `1px solid ${cfg.color}40` }}
+      style={{
+        color: cfg.color,
+        background: `color-mix(in srgb, ${cfg.color} 9%, transparent)`,
+        border: `1px solid color-mix(in srgb, ${cfg.color} 25%, transparent)`,
+      }}
     >
       {cfg.icon}
       {cfg.label}

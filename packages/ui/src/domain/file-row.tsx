@@ -35,6 +35,7 @@ export function FileRow({ file, selected, onToggle, onResolve, onSelect }: FileR
           type="checkbox"
           checked={selected}
           onChange={() => onToggle?.(file.id)}
+          aria-label={`Select ${file.name}`}
           className="accent-accent size-3.5"
         />
       </td>
@@ -62,7 +63,7 @@ export function FileRow({ file, selected, onToggle, onResolve, onSelect }: FileR
       <td className="px-3 py-2.5 text-xs text-muted-foreground hidden lg:table-cell">{file.location}</td>
       <td className="px-3 py-2.5"><StatusBadge status={file.status} /></td>
       <td className="px-3 py-2.5">
-        <button type="button" className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-foreground transition-all px-1">
+        <button type="button" aria-label={`More actions for ${file.name}`} className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-foreground transition-all px-1">
           &middot;&middot;&middot;
         </button>
       </td>

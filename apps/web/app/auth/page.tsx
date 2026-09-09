@@ -45,7 +45,7 @@ export default function AuthPage() {
   const inputCls = "w-full px-4 py-3 text-sm bg-secondary border border-border text-foreground placeholder-muted-foreground outline-none focus:border-accent transition-colors";
 
   return (
-    <div className="min-h-dvh flex items-center justify-center bg-gradient-to-br from-orange-100 via-orange-50 to-amber-100 dark:from-stone-950 dark:via-stone-950 dark:to-stone-900">
+    <main className="min-h-dvh flex items-center justify-center bg-gradient-to-br from-orange-100 via-orange-50 to-amber-100 dark:from-stone-950 dark:via-stone-950 dark:to-stone-900">
       <div className="w-full max-w-sm mx-4">
         {/* Logo */}
         <div className="flex items-center justify-center gap-2.5 mb-8">
@@ -124,6 +124,6 @@ export default function AuthPage() {
           Nodus &middot; End-to-end encrypted peer-to-peer file sync
         </p>
       </div>
-    </div>
+    </main>
   );
 }

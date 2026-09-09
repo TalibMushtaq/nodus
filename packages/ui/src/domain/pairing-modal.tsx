@@ -33,6 +33,7 @@ export function PairingModal({ onClose }: { onClose: () => void }) {
         <input
           type="text"
           placeholder="XXXX-XXXX-XXXX-XXXX"
+          aria-label="Pairing code"
           className="w-full px-3 py-2 text-sm font-mono bg-secondary border border-border text-foreground placeholder-muted-foreground outline-none focus:border-accent"
         />
         <div className="flex gap-2">

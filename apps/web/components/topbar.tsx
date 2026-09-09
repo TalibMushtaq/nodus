@@ -33,6 +33,7 @@ export function TopBar({ title, showNew = false, onNew }: TopBarProps) {
         <input
           type="text"
           placeholder="Search files, devices\u2026"
+          aria-label="Search files and devices"
           className="pl-8 pr-3 py-1.5 text-xs bg-secondary border border-border rounded-sm text-foreground placeholder-muted-foreground outline-none focus:border-accent w-48"
         />
       </div>
@@ -46,7 +47,7 @@ export function TopBar({ title, showNew = false, onNew }: TopBarProps) {
       )}
 
       {/* Notifications */}
-      <button type="button" className="relative text-muted-foreground hover:text-foreground transition-colors">
+      <button type="button" aria-label="Notifications" title="Notifications" className="relative text-muted-foreground hover:text-foreground transition-colors">
         <Icon name="bell" size={16} />
         <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 bg-accent rounded-full" />
       </button>
@@ -55,6 +56,7 @@ export function TopBar({ title, showNew = false, onNew }: TopBarProps) {
       <button
         type="button"
         onClick={cycleTheme}
+        aria-label="Toggle theme"
         className="text-muted-foreground hover:text-foreground transition-colors"
         title={`Current: ${theme}${theme === "system" ? ` (${resolvedDark ? "dark" : "light"})` : ""}`}
       >

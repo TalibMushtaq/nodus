@@ -26,8 +26,14 @@ export default function RootLayout({
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  // The next/font variable classes define --font-inter / --font-jetbrains-mono.
+  // They must live on <html>: tokens.css computes --font-sans / --font-mono on
+  // :root by alias to those variables, and a custom property whose var() chain
+  // fails at the root element computes to the empty (guaranteed-invalid) value
+  // that then inherits down. That silently dropped the app back to the system
+  // font stack.
   return (
-    <html lang="en" suppressHydrationWarning>
+    <html lang="en" suppressHydrationWarning className={`${inter.variable} ${jetbrainsMono.variable}`}>
       <head>
         {/* Pre-hydration theme application to avoid a light-mode flash. */}
         <script
@@ -36,7 +42,7 @@ export default function RootLayout({
           }}
         />
       </head>
-      <body className={`${inter.variable} ${jetbrainsMono.variable}`}>
+      <body>
         <ThemeProvider>{children}</ThemeProvider>
       </body>
     </html>

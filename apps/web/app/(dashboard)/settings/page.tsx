@@ -19,6 +19,7 @@ export default function SettingsPage() {
         <div className="border border-border rounded-xl bg-card px-4">
           <SettingRow label="Theme" detail="Light, dark, or system preference">
             <Select
+              aria-label="Theme"
               value={theme}
               onChange={(e) => setTheme(e.target.value as "light" | "dark" | "system")}
             >
@@ -33,10 +34,10 @@ export default function SettingsPage() {
       <Section title="Sync">
         <div className="border border-border rounded-xl bg-card px-4">
           <SettingRow label="Auto-sync" detail="Automatically sync changes when detected">
-            <Toggle checked={autoSync} onChange={setAutoSync} />
+            <Toggle aria-label="Auto-sync" checked={autoSync} onChange={setAutoSync} />
           </SettingRow>
           <SettingRow label="Max nodes" detail="Maximum number of storage nodes to connect to simultaneously">
-            <Select value={nodeLimit} onChange={(e) => setNodeLimit(e.target.value)}>
+            <Select aria-label="Max nodes" value={nodeLimit} onChange={(e) => setNodeLimit(e.target.value)}>
               <option value="3">3</option>
               <option value="5">5</option>
               <option value="10">10</option>

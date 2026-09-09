@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button } from "@repo/ui/primitives/button";
 import { Breadcrumb } from "@repo/ui/primitives/breadcrumb";
 import { FileRow as FileRowComp } from "@repo/ui/domain/file-row";
@@ -14,6 +14,16 @@ export default function FilesPage() {
   const [detailFile, setDetailFile] = useState<FileRowType | null>(null);
   const [conflictFile, setConflictFile] = useState<FileRowType | null>(null);
 
+  const allChecked = checked.size === files.length;
+  const someChecked = checked.size > 0 && !allChecked;
+  const selectAllRef = useRef<HTMLInputElement>(null);
+
+  // Reflect the tri-state (none / some / all) on the header checkbox,
+  // which React's `checked` prop alone can't express.
+  useEffect(() => {
+    if (selectAllRef.current) selectAllRef.current.indeterminate = someChecked;
+  }, [someChecked]);
+
   const toggleCheck = (id: string) => {
     setChecked((prev) => {
       const next = new Set(prev);
@@ -24,6 +34,10 @@ export default function FilesPage() {
       }
       return next;
     });
+  };
+
+  const toggleAll = () => {
+    setChecked(allChecked ? new Set() : new Set(files.map((f) => f.id)));
   };
 
   return (
@@ -44,13 +58,22 @@ export default function FilesPage() {
           <table className="w-full">
             <thead>
               <tr className="border-b border-border text-[10px] text-muted-foreground uppercase tracking-wider">
-                <th className="w-10 px-3 py-2"><input type="checkbox" className="accent-accent size-3.5" /></th>
+                <th className="w-10 px-3 py-2">
+                  <input
+                    ref={selectAllRef}
+                    type="checkbox"
+                    checked={allChecked}
+                    onChange={toggleAll}
+                    aria-label={allChecked ? "Deselect all files" : "Select all files"}
+                    className="accent-accent size-3.5"
+                  />
+                </th>
                 <th className="text-left px-3 py-2 font-medium">Name</th>
                 <th className="text-left px-3 py-2 font-medium hidden md:table-cell">Size</th>
                 <th className="text-left px-3 py-2 font-medium hidden lg:table-cell">Modified</th>
                 <th className="text-left px-3 py-2 font-medium hidden lg:table-cell">Location</th>
                 <th className="text-left px-3 py-2 font-medium">Status</th>
-                <th className="w-10 px-3 py-2"></th>
+                <th scope="col" className="w-10 px-3 py-2"><span className="sr-only">Actions</span></th>
               </tr>
             </thead>
             <tbody>

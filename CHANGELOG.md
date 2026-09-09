@@ -1,5 +1,19 @@
 # Changelog
 
+## [2026-09-09] - QA pass: accessibility + interaction fixes on the ported UI
+
+**What changed:** Ran a visual/interaction/accessibility QA pass over the design port and fixed everything it surfaced (axe-core via CDN probe in both light and dark themes — zero remaining violations).
+- **Fonts** (`apps/web/app/layout.tsx`): moved next/font `variable` classes from `<body>` onto `<html>` — they were undefined at `:root`, so `--font-sans`/`--font-mono` computed to an invalid (empty) value and the body silently rendered in the system sans face instead of Inter.
+- **Interactions** (`apps/web/app/(dashboard)/files/page.tsx`, `overview/page.tsx`): wired the files table select-all checkbox (indeterminate, count "7 selected"); made overview stat cards and quick-access tiles navigate (`/files`, `/devices`, `/activity`).
+- **A11y** (`packages/ui/src/primitives/{overlay,toggle}.tsx`, `domain/{file-row,pairing-modal}.tsx`, `apps/web/{components/{sidebar,topbar}.tsx, app/auth/page.tsx, app/(dashboard)/files/page.tsx}`): `role="dialog"`/`aria-modal`/labelled-by + Escape-to-close on modals, sr-only "Actions" header cell on the files table, aria-labels on icon buttons/search/pairing-code/row checkboxes, `aria-label="Primary"` on the sidebar nav, and `auth/page.tsx` `<div>` → `<main>`.
+- **Contrast** (`packages/ui/tokens.css`, `apps/web/app/(dashboard)/overview/page.tsx`, `packages/ui/src/primitives/{stat-card,path-indicator}.tsx`): darkened light-mode `--color-accent`/`--status-pending`/`--status-synced` and muted-foreground, and brightened their dark twins; switched card/badge tint hairlines from hex-suffix alpha (`var(--x)18` — invalid, silently dropped) to `color-mix(...)`, and made the "Used"/Photos greens theme-aware via `var(--status-synced)`.
+
+**Why:** The ported UI is the end-user surface; axe found real contrast failures (stat-card colored labels 2.9–4.2:1, dark muted text ~4.0:1) and the inert select-all was the one true interaction bug (the "missing" activity rows / inert pairing modal were hydration-timing artifacts in the test driver, not app bugs).
+
+**Impact:** All six dashboard routes + `/auth` + `/` redirect are axe-clean (`color-contrast` and `empty-table-header` included) in both light and dark themes; server + client lint, `check-types`, and `pnpm build` still green.
+
+**Follow-ups:** `/pair` remains untouched (deferred); auth stays a mock wizard until the real authenticated/session wiring (Phase 7a); the `color-contrast` `incomplete` notes in axe output are gradient/`background-image` surfaces axe cannot evaluate rather than violations.
+
 ## [2026-09-08] - Design port: prototype UI shipped in Tailwind v4 with centralized packages/ui
 
 **What changed:** Ported the `nodus-design/` Figma prototype into the Next.js app. A complete shared component library was built in `packages/ui` (design tokens + 17 primitives + 13 domain panels, all Tailwind v4 CSS-first) and consumed by six new dashboard routes plus a single-step mock auth flow:
