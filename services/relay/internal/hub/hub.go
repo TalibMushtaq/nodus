@@ -15,6 +15,12 @@ const (
 	pongWait       = 60 * time.Second
 	pingPeriod     = (pongWait * 9) / 10
 	maxMessageSize = 10 * 1024 * 1024 // 10MB (supports 8MB shard binary messages)
+	// Per-connection read throttle (Phase 14a audit V4): a token bucket bounds
+	// how fast a client's envelopes are processed. Without it an authenticated
+	// client could amplify Redis SETs (heartbeat) or DB writes (event_batch)
+	// across many connections.
+	rateLimitBurst  = 250
+	rateLimitRefill = 100 // tokens refilled per second
 )
 
 // Custom WebSocket close codes (RFC 6455 §7.4.1: 4000–4999 are
@@ -34,6 +40,17 @@ type Client struct {
 
 	Conn *websocket.Conn
 	Send chan []byte
+
+	// LastSeenAtSync throttles the node last_seen_at DB write to once a minute
+	// (heartbeats arrive every 30s; a bespoke UPDATE per beat is wasteful).
+	LastSeenAtSync time.Time
+
+	// Phase 14a audit (V4): per-connection rate limiter state.
+	rlMu      sync.Mutex
+	rlBurst   float64
+	rlRefill  float64
+	rlTokens  float64
+	rlLastRef time.Time
 }
 
 // Hub maintains the set of active clients and broadcasts messages.
@@ -249,6 +266,37 @@ func (h *Hub) RefreshPresence(ctx context.Context, peerID string) {
 	if h.rdb != nil && peerID != "" {
 		_ = h.rdb.SetPresence(ctx, peerID, 2*pongWait)
 	}
+}
+
+// RateLimitAllowed reports whether this connection may process another message
+// now (token bucket: burst fills, then refills at rateLimitRefill/s). Excess
+// messages are silently dropped rather than disconnecting the socket, so a
+// transient flood doesn't kill a legitimate client. See Phase 14a audit V4.
+func (c *Client) RateLimitAllowed(now time.Time) bool {
+	c.rlMu.Lock()
+	defer c.rlMu.Unlock()
+
+	// Lazy init: hand-built Client values (tests, older call sites) get defaults.
+	if c.rlBurst == 0 {
+		c.rlBurst = rateLimitBurst
+		c.rlRefill = rateLimitRefill
+		c.rlTokens = rateLimitBurst
+		c.rlLastRef = now
+	}
+
+	if delta := now.Sub(c.rlLastRef); delta > 0 {
+		c.rlTokens += delta.Seconds() * c.rlRefill
+		if c.rlTokens > c.rlBurst {
+			c.rlTokens = c.rlBurst
+		}
+		c.rlLastRef = now
+	}
+
+	if c.rlTokens >= 1 {
+		c.rlTokens--
+		return true
+	}
+	return false
 }
 
 // ReadPump pumps messages from the websocket connection to the hub/application.

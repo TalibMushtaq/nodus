@@ -71,3 +71,25 @@ func TestHandleWebRTCSignaling_ProxiesOfferToTargetPeer(t *testing.T) {
 		t.Fatal("timed out waiting for relayed WebRTC signaling message")
 	}
 }
+
+func TestHandleWebRTCSignaling_RejectsSpoofedFromPeer(t *testing.T) {
+	h := hub.New(nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go h.Run(ctx)
+
+	sender := &hub.Client{Hub: h, ConnID: "conn-device-1", DeviceID: "device-1", Send: make(chan []byte, 1)}
+	receiver := &hub.Client{Hub: h, ConnID: "conn-node-1", NodeID: "node-1", Send: make(chan []byte, 1)}
+	h.Register(sender)
+	h.Register(receiver)
+	time.Sleep(20 * time.Millisecond)
+
+	payload, _ := json.Marshal(map[string]string{"from_peer": "victim-device", "to_peer": "node-1"})
+	handler.HandleWebRTCSignaling(context.Background(), sender, handler.ProtocolEnvelope{Type: "webrtc_offer", Payload: payload}, h)
+
+	select {
+	case <-receiver.Send:
+		t.Fatal("spoofed signal was forwarded")
+	case <-time.After(100 * time.Millisecond):
+	}
+}

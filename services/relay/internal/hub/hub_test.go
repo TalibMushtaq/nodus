@@ -52,3 +52,19 @@ func TestHubClientLifecycle(t *testing.T) {
 		t.Fatalf("expected message not to be sent after unregister")
 	}
 }
+
+func TestClientRateLimitAllowed(t *testing.T) {
+	c := &hub.Client{}
+	now := time.Now()
+	for i := 0; i < 250; i++ {
+		if !c.RateLimitAllowed(now) {
+			t.Fatalf("request %d in burst was rejected", i)
+		}
+	}
+	if c.RateLimitAllowed(now) {
+		t.Fatal("request beyond burst was accepted")
+	}
+	if !c.RateLimitAllowed(now.Add(10 * time.Millisecond)) {
+		t.Fatal("refilled token was not accepted")
+	}
+}

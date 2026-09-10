@@ -9,6 +9,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { useRouter } from "next/navigation";
 import type { ReactNode } from "react";
 import { RelayWsClient, relayWsEndpoint } from "@repo/relay-client";
 import type { ConnectionState, WsOutgoing } from "@repo/relay-client";
@@ -39,8 +40,14 @@ function relayWsUrl(): string {
 export function WsProvider({ children }: { children: ReactNode }) {
   // The device identity is this client's peer identity for heartbeats/presence.
   const { device } = useAuth();
+  const router = useRouter();
   const [status, setStatus] = useState<ConnectionState>("disconnected");
   const clientRef = useRef<RelayWsClient | null>(null);
+  // This outlives individual RelayWsClient instances. Device changes and React
+  // StrictMode recreate the client, but consumers' subscriptions remain valid.
+  const subscriptionsRef = useRef(
+    new Map<string, Set<(payload: unknown) => void>>(),
+  );
 
   const peerId = device?.device_id ?? "";
 
@@ -57,28 +64,39 @@ export function WsProvider({ children }: { children: ReactNode }) {
       peerId,
       handlers: {
         onStateChange: setStatus,
-        // Auth rejection lands here AND in `status` as disconnected_max_retries;
-        // the UI can hook this to redirect to /auth when wired up.
-        onAuthError: () => {},
+        onAuthError: () => router.replace("/auth"),
       },
     });
     clientRef.current = client;
+    for (const [type, handlers] of subscriptionsRef.current) {
+      for (const handler of handlers) client.on(type, handler);
+    }
     client.connect();
 
     return () => {
       client.close();
       clientRef.current = null;
     };
-  }, [peerId]);
+  }, [peerId, router]);
 
   const send = useCallback((msg: WsOutgoing) => {
-    // No-op before the client exists; throws upstream if not connected.
+    // No-op before the client exists or its socket has opened.
     clientRef.current?.send(msg);
   }, []);
 
   const on = useCallback(
     (type: string, handler: (payload: unknown) => void) => {
-      return clientRef.current?.on(type, handler) ?? (() => {});
+      let handlers = subscriptionsRef.current.get(type);
+      if (!handlers) {
+        handlers = new Set();
+        subscriptionsRef.current.set(type, handlers);
+      }
+      handlers.add(handler);
+      clientRef.current?.on(type, handler);
+      return () => {
+        subscriptionsRef.current.get(type)?.delete(handler);
+        clientRef.current?.off(type, handler);
+      };
     },
     [],
   );

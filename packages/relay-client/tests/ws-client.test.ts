@@ -94,14 +94,14 @@ class MockWebSocket {
 
   send = vi.fn();
 
-  close(code?: number, reason?: string) {
+  close = vi.fn((code?: number, reason?: string) => {
     this.closeCode = code ?? null;
     this.closeReason = reason ?? null;
     this.readyState = MockWebSocket.CLOSED;
     this.onclose?.(
       new CloseEvent("close", { code: code ?? 1000, reason: reason ?? "" }),
     );
-  }
+  });
 
   // Test helpers
   simulateOpen() {
@@ -109,7 +109,7 @@ class MockWebSocket {
     this.onopen?.(new Event("open"));
   }
 
-  simulateMessage(data: string) {
+  simulateMessage(data: unknown) {
     this.onmessage?.(new MessageEvent("message", { data }));
   }
 
@@ -212,6 +212,21 @@ describe("RelayWsClient", () => {
       expect(onError.mock.calls[0][0].message).toContain("non-JSON");
     });
 
+    it("closes on a non-text frame without coercing it to JSON", () => {
+      const onError = vi.fn();
+      const client = new RelayWsClient("ws://localhost:8080/ws", { onError });
+      client.connect();
+      const ws = (client as unknown as { ws: MockWebSocket }).ws;
+      ws.simulateOpen();
+      ws.simulateMessage(new ArrayBuffer(4));
+
+      expect(onError).toHaveBeenCalledWith(expect.any(Error));
+      expect((onError.mock.calls[0]![0] as Error).message).toContain(
+        "non-text",
+      );
+      expect(ws.close).toHaveBeenCalledWith(1003, "non-text relay frame");
+    });
+
     it("calls onClose on close", () => {
       const onClose = vi.fn();
       const client = new RelayWsClient("ws://localhost:8080/ws", { onClose });
@@ -249,12 +264,9 @@ describe("RelayWsClient", () => {
       expect(sent.payload).toEqual({ id: "peer-1" });
     });
 
-    it("throws if not connected", () => {
+    it("is a no-op if not connected", () => {
       const client = new RelayWsClient("ws://localhost:8080/ws");
-
-      expect(() => client.send({ type: "test", payload: {} })).toThrow(
-        "relay ws client is not connected",
-      );
+      expect(() => client.send({ type: "test", payload: {} })).not.toThrow();
     });
   });
 
@@ -351,6 +363,27 @@ describe("RelayWsClient", () => {
       expect(client.connectionState).toBe("disconnected");
 
       expect(states).toEqual(["connecting", "connected", "disconnected"]);
+    });
+  });
+
+  describe("socket identity", () => {
+    it("ignores close and open callbacks from a stale socket", () => {
+      const onClose = vi.fn();
+      const client = new RelayWsClient("ws://localhost:8080/ws", { onClose });
+      client.connect();
+      const first = lastSocket();
+
+      client.close();
+      client.connect();
+      const second = lastSocket();
+      second.simulateOpen();
+      first.simulateOpen();
+      first.simulateClose(1006, "stale");
+
+      expect(client.connectionState).toBe("connected");
+      expect(client.connected).toBe(true);
+      expect(onClose).toHaveBeenCalledTimes(1); // the explicit first close only
+      client.close();
     });
   });
 

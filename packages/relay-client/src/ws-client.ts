@@ -166,6 +166,9 @@ export class RelayWsClient {
     this.ws = ws;
 
     ws.onopen = () => {
+      // A prior socket can fire after a newer connection was installed.
+      // It must never revive state or start a second heartbeat loop.
+      if (this.ws !== ws) return;
       this.reconnectAttempt = 0;
       this.setState("connected");
       this.startHeartbeat();
@@ -173,9 +176,13 @@ export class RelayWsClient {
       this.handlers.onOpen?.();
     };
 
-    ws.onerror = (ev) => this.handlers.onError?.(ev);
+    ws.onerror = (ev) => {
+      if (this.ws === ws) this.handlers.onError?.(ev);
+    };
 
     ws.onclose = (ev) => {
+      // Ignore stale callbacks from sockets replaced by a manual reconnect.
+      if (this.ws !== ws) return;
       this.stopHeartbeat();
       this.ws = null;
       this.handlers.onClose?.(ev.code, ev.reason);
@@ -198,9 +205,16 @@ export class RelayWsClient {
     };
 
     ws.onmessage = (ev) => {
+      if (this.ws !== ws) return;
+
+      if (typeof ev.data !== "string") {
+        this.handlers.onError?.(new Error("relay sent a non-text frame"));
+        ws.close(1003, "non-text relay frame");
+        return;
+      }
       let raw: unknown;
       try {
-        raw = JSON.parse(String(ev.data));
+        raw = JSON.parse(ev.data);
       } catch {
         // A non-JSON frame is a protocol violation; surface via onError so
         // the app can decide whether to drop or reconnect.
@@ -242,7 +256,7 @@ export class RelayWsClient {
 
   send(msg: WsOutgoing): void {
     if (!this.connected) {
-      throw new Error("relay ws client is not connected");
+      return;
     }
     this.ws!.send(buildEnvelope(msg));
   }

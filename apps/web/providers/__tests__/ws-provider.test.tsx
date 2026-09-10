@@ -2,45 +2,61 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, act } from "@testing-library/react";
 import { WsProvider, useWs } from "../ws-provider";
 
-const { MockRelayWsClient, connect, close, on, send } = vi.hoisted(() => {
-  const connect = vi.fn();
-  const close = vi.fn();
-  const on = vi.fn(() => () => {});
-  const send = vi.fn();
+const { MockRelayWsClient, connect, close, on, off, send, replace, authState } =
+  vi.hoisted(() => {
+    const connect = vi.fn();
+    const close = vi.fn();
+    const on = vi.fn(() => () => {});
+    const off = vi.fn();
+    const send = vi.fn();
+    const replace = vi.fn();
+    const authState = { deviceId: "test-device-id" };
 
-  class MockRelayWsClient {
-    static instances: MockRelayWsClient[] = [];
-    options: {
-      endpoint: string;
-      peerId: string;
-      handlers?: {
-        onStateChange?: (state: string) => void;
-        onAuthError?: (code: number, reason: string) => void;
+    class MockRelayWsClient {
+      static instances: MockRelayWsClient[] = [];
+      options: {
+        endpoint: string;
+        peerId: string;
+        handlers?: {
+          onStateChange?: (state: string) => void;
+          onAuthError?: (code: number, reason: string) => void;
+        };
       };
-    };
-    connect = connect;
-    close = close;
-    on = on;
-    send = send;
+      connect = connect;
+      close = close;
+      on = on;
+      off = off;
+      send = send;
 
-    constructor(options: MockRelayWsClient["options"]) {
-      this.options = options;
-      MockRelayWsClient.instances.push(this);
+      constructor(options: MockRelayWsClient["options"]) {
+        this.options = options;
+        MockRelayWsClient.instances.push(this);
+      }
     }
-  }
 
-  return { MockRelayWsClient, connect, close, on, send };
-});
+    return {
+      MockRelayWsClient,
+      connect,
+      close,
+      on,
+      off,
+      send,
+      replace,
+      authState,
+    };
+  });
 
 vi.mock("@repo/relay-client", () => ({
   RelayWsClient: MockRelayWsClient,
   relayWsEndpoint: (baseUrl: string) => `${baseUrl}/ws`,
 }));
 
+vi.mock("next/navigation", () => ({ useRouter: () => ({ replace }) }));
+
 vi.mock("../auth-provider", () => ({
   useAuth: () => ({
     // Single stable identity; the provider derives its peerId from this.
-    device: { device_id: "test-device-id" },
+    device: { device_id: authState.deviceId },
   }),
 }));
 
@@ -56,6 +72,7 @@ function renderWithProvider() {
 beforeEach(() => {
   vi.clearAllMocks();
   MockRelayWsClient.instances = [];
+  authState.deviceId = "test-device-id";
 });
 
 describe("WsProvider", () => {
@@ -128,6 +145,51 @@ describe("WsProvider", () => {
 
     expect(send).toHaveBeenCalledWith({ type: "test", payload: {} });
     expect(on).toHaveBeenCalledWith("heartbeat", expect.any(Function));
+  });
+
+  it("keeps subscriptions when its client is recreated", async () => {
+    let unsubscribe: (() => void) | undefined;
+    function Probe() {
+      const ws = useWs();
+      return (
+        <button
+          data-testid="subscribe"
+          onClick={() => {
+            unsubscribe = ws.on("heartbeat", () => {});
+          }}
+        />
+      );
+    }
+    const view = render(
+      <WsProvider>
+        <Probe />
+      </WsProvider>,
+    );
+    await act(async () => screen.getByTestId("subscribe").click());
+    expect(on).toHaveBeenCalledTimes(1);
+
+    authState.deviceId = "replacement-device-id";
+    await act(async () =>
+      view.rerender(
+        <WsProvider>
+          <Probe />
+        </WsProvider>,
+      ),
+    );
+    expect(on).toHaveBeenCalledTimes(2);
+    unsubscribe?.();
+    expect(off).toHaveBeenCalledWith("heartbeat", expect.any(Function));
+  });
+
+  it("redirects to auth when the relay rejects the session", async () => {
+    await act(async () => {
+      renderWithProvider();
+    });
+    MockRelayWsClient.instances[0]!.options.handlers?.onAuthError?.(
+      4001,
+      "unauthorized",
+    );
+    expect(replace).toHaveBeenCalledWith("/auth");
   });
 });
 

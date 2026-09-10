@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"time"
 
 	"github.com/TalibMushtaq/nodus/services/relay/internal/auth"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/buffer"
@@ -63,6 +64,24 @@ type PendingNotifyPayload struct {
 	FromDevice    string `json:"from_device"`
 	Hash          string `json:"hash"`
 	Size          int64  `json:"size"`
+}
+
+func nodeOnlyMessageTypes(messageType string) bool {
+	switch messageType {
+	case "sync_hello", "event_batch", "snapshot_begin", "snapshot_chunk", "snapshot_end", "shard_ack":
+		return true
+	default:
+		return false
+	}
+}
+
+// presencePeerID returns only the identity authenticated for this connection.
+// Heartbeat payloads deliberately do not participate in this decision.
+func presencePeerID(c *hub.Client) string {
+	if c.NodeID != "" {
+		return c.NodeID
+	}
+	return c.DeviceID
 }
 
 // WebSocket handles incoming WebSocket connection upgrades and message lifecycle.
@@ -125,6 +144,13 @@ func WebSocket(h *hub.Hub, pool *db.Pool, rClient *rdb.Client, buf *buffer.Buffe
 				return
 			}
 
+			// Phase 14a audit (V4): bound how fast a single connection's
+			// messages are processed (Redis SETs, DB writes, forwarding). Floods
+			// are dropped, not disconnected — the socket stays usable.
+			if !c.RateLimitAllowed(time.Now()) {
+				return
+			}
+
 			var env ProtocolEnvelope
 			if err := json.Unmarshal(payload, &env); err != nil {
 				log.Printf("[ws] invalid JSON from conn=%s: %v", c.ConnID, err)
@@ -146,6 +172,16 @@ func handleIncomingEnvelope(
 ) {
 	ctx := context.Background()
 	if !c.IsAuthenticated && env.Type != "node_auth_response" {
+		return
+	}
+
+	// Phase 14a audit (V5): the sync/snapshot/shard_ack surfaces belong to the
+	// storage-node protocol. A browser connection authenticated by session
+	// cookie must never reach them, even though the payload handlers re-check
+	// identity. Defense in depth: browsers can only heartbeat, register, and
+	// do WebRTC signaling.
+	if nodeOnlyMessageTypes(env.Type) && c.NodeID == "" {
+		log.Printf("[ws] rejected node-only message type %q from conn=%s", env.Type, c.ConnID)
 		return
 	}
 
@@ -192,19 +228,17 @@ func handleIncomingEnvelope(
 			return
 		}
 
-		peerID := hb.ID
-		if peerID == "" {
-			if c.NodeID != "" {
-				peerID = c.NodeID
-			} else if c.DeviceID != "" {
-				peerID = c.DeviceID
-			}
-		}
-
-		if peerID != "" {
+		// Phase 14a audit (V2): presence is keyed off the authenticated session
+		// identity, never the client-supplied heartbeat id — otherwise any
+		// authenticated client could mark arbitrary peers (e.g. a dead storage
+		// node) as online. The DB write is throttled to once a minute per conn.
+		if peerID := presencePeerID(c); peerID != "" {
 			h.RefreshPresence(ctx, peerID)
-			if c.NodeID != "" && pool != nil {
+		}
+		if c.NodeID != "" {
+			if pool != nil && time.Since(c.LastSeenAtSync) > time.Minute {
 				_, _ = pool.Exec(ctx, "UPDATE storage_nodes SET last_seen_at = NOW() WHERE node_id = $1", c.NodeID)
+				c.LastSeenAtSync = time.Now()
 			}
 		}
 

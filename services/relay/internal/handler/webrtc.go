@@ -35,8 +35,17 @@ func HandleWebRTCSignaling(
 		return
 	}
 
-	if (c.NodeID != "" && payload.FromPeer != c.NodeID) && (c.DeviceID != "" && payload.FromPeer != c.DeviceID) {
-		log.Printf("[relay-webrtc] from_peer spoofing attempt from conn=%s: claimed=%s actual_node=%s actual_device=%s", c.ConnID, payload.FromPeer, c.NodeID, c.DeviceID)
+	// The claimed from_peer must match the connection's authenticated identity.
+	// A client is either a storage node (NodeID) or a user device (DeviceID);
+	// anything else is a spoofing attempt. (Phase 14a audit V1: the earlier
+	// AND-combined check was always false for single-identity connections.)
+	expectedPeer := c.NodeID
+	if expectedPeer == "" {
+		expectedPeer = c.DeviceID
+	}
+	if expectedPeer == "" || payload.FromPeer != expectedPeer {
+		log.Printf("[relay-webrtc] from_peer spoofing attempt from conn=%s: claimed=%s actual_node=%s actual_device=%s",
+			c.ConnID, payload.FromPeer, c.NodeID, c.DeviceID)
 		return
 	}
 

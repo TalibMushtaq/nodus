@@ -420,15 +420,19 @@ func applySingleEvent(
 	accountID string,
 	item SyncEventItem,
 ) bool {
-	// 1. Idempotency check by (origin_id, origin_sequence) or event_id
+	// 1. Idempotency check by account-scoped (origin_id, origin_sequence) or
+	// event_id. Phase 14a audit (V3): the check used to be global, letting one
+	// account pre-insert a poison row on another account's origin/sequence and
+	// swallow its real event (mirrors the 007 migration that scopes the unique
+	// constraint to (account_id, origin_id, origin_sequence)).
 	var exists bool
 	checkQuery := `
 		SELECT EXISTS(
 			SELECT 1 FROM sync_events 
-			WHERE (origin_id = $1 AND origin_sequence = $2) OR event_id = $3
+			WHERE account_id = $4 AND ((origin_id = $1 AND origin_sequence = $2) OR event_id = $3)
 		)
 	`
-	_ = pool.QueryRow(ctx, checkQuery, item.OriginID, item.OriginSequence, item.EventID).Scan(&exists)
+	_ = pool.QueryRow(ctx, checkQuery, item.OriginID, item.OriginSequence, item.EventID, accountID).Scan(&exists)
 	if exists {
 		// Already applied: return true so it's included in BATCH_ACK
 		return true
@@ -444,7 +448,7 @@ func applySingleEvent(
 	insertQuery := `
 		INSERT INTO sync_events (event_id, account_id, origin_id, origin_sequence, event_type, payload, timestamp)
 		VALUES ($1, $2, $3, $4, $5, $6, $7)
-		ON CONFLICT (origin_id, origin_sequence) DO NOTHING
+		ON CONFLICT (account_id, origin_id, origin_sequence) DO NOTHING
 	`
 	_, err = pool.Exec(ctx, insertQuery, item.EventID, accountID, item.OriginID, item.OriginSequence, item.Type, item.Payload, t)
 	if err != nil {
@@ -457,6 +461,10 @@ func applySingleEvent(
 	case "FILE_CREATED":
 		var data FileCreatedEventData
 		if err := json.Unmarshal(item.Payload, &data); err == nil && data.FileID != "" {
+			// Phase 14a audit (V3): file_id is globally unique, so an upsert
+			// could otherwise overwrite another account's file metadata. The
+			// WHERE clause makes the update a no-op for a foreign row while the
+			// insert still creates the file under the sender's account.
 			upsertFile := `
 				INSERT INTO files (file_id, account_id, parent_folder_id, encrypted_name, created_at, updated_at)
 				VALUES ($1, $2, $3, $4, $5, $5)
@@ -464,6 +472,7 @@ func applySingleEvent(
 					parent_folder_id = EXCLUDED.parent_folder_id,
 					encrypted_name = EXCLUDED.encrypted_name,
 					updated_at = EXCLUDED.updated_at
+				WHERE files.account_id = EXCLUDED.account_id
 			`
 			_, _ = pool.Exec(ctx, upsertFile, data.FileID, accountID, data.ParentFolderID, data.EncryptedName, t)
 		}
@@ -477,6 +486,17 @@ func applySingleEvent(
 				VALUES ($1, $2, $3, $3)
 				ON CONFLICT (file_id) DO NOTHING
 			`, data.FileID, accountID, t)
+
+			// Phase 14a audit (V3): file_versions has no account column, so
+			// before writing versions/conflict flags for this file do an explicit
+			// ownership check. A foreign file (created here takes DO NOTHING
+			// if the id is taken) must not be touched by another account.
+			var owner string
+			if err := pool.QueryRow(ctx,
+				`SELECT account_id FROM files WHERE file_id = $1`, data.FileID).Scan(&owner); err != nil || owner != accountID {
+				log.Printf("[sync] rejecting %s for foreign file %s from account %s", item.Type, data.FileID, accountID)
+				return false
+			}
 
 			// Conflict detection:
 			// Check if any existing version shares the same (file_id, parent_version_id) but has a different version_number

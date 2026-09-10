@@ -145,10 +145,10 @@ func hasActiveSessionForAccount(accountID string) bool {
 
 // Ed25519-verify `signature` (hex) over `message` bytes against the node's
 // registered public key from storage_nodes.
-func verifyNodeSignature(ctx context.Context, pool *db.Pool, nodeID string, message []byte, signatureHex string) error {
+func verifyNodeSignature(ctx context.Context, pool *db.Pool, accountID, nodeID string, message []byte, signatureHex string) error {
 	var pubKeyHex string
 	err := pool.QueryRow(ctx,
-		`SELECT public_key FROM storage_nodes WHERE node_id = $1`, nodeID).Scan(&pubKeyHex)
+		`SELECT public_key FROM storage_nodes WHERE node_id = $1 AND account_id = $2`, nodeID, accountID).Scan(&pubKeyHex)
 	if err != nil {
 		return fmt.Errorf("lookup node public key: %w", err)
 	}
@@ -207,7 +207,7 @@ func HandleSnapshotBegin(ctx context.Context, c *hub.Client, env ProtocolEnvelop
 	}
 
 	// Verify the node's signature over the promised content hash.
-	if err := verifyNodeSignature(ctx, pool, begin.NodeID, []byte(begin.ContentHash), begin.Signature); err != nil {
+	if err := verifyNodeSignature(ctx, pool, c.AccountID, begin.NodeID, []byte(begin.ContentHash), begin.Signature); err != nil {
 		log.Printf("[snapshot] rejecting snapshot %s: %v", begin.SnapshotID, err)
 		_ = sendEnvelope(c, "error", map[string]any{
 			"correlation_id": env.MessageID,
@@ -334,7 +334,10 @@ func stageRebuildChunk(ctx context.Context, pool *db.Pool, accountID string, chu
 			if _, err := tx.Exec(ctx, `
 				INSERT INTO rebuild_files (file_id, account_id, parent_folder_id, encrypted_name, created_at, updated_at)
 				VALUES ($1, $2, $3, $4, NOW(), NOW())
-				ON CONFLICT (file_id) DO NOTHING
+				ON CONFLICT (account_id, file_id) DO UPDATE SET
+					parent_folder_id = EXCLUDED.parent_folder_id,
+					encrypted_name = EXCLUDED.encrypted_name,
+					updated_at = EXCLUDED.updated_at
 			`, r.FileID, accountID, r.ParentFolderID, r.EncryptedName); err != nil {
 				return err
 			}
@@ -345,7 +348,7 @@ func stageRebuildChunk(ctx context.Context, pool *db.Pool, accountID string, chu
 			if _, err := tx.Exec(ctx, `
 				INSERT INTO rebuild_file_versions (file_id, account_id, version_number, parent_version_id, conflict_status, version_hash, shard_count, created_at)
 				VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
-				ON CONFLICT (file_id, version_number) DO UPDATE SET
+				ON CONFLICT (account_id, file_id, version_number) DO UPDATE SET
 					parent_version_id = EXCLUDED.parent_version_id,
 					conflict_status = EXCLUDED.conflict_status,
 					version_hash = EXCLUDED.version_hash,
@@ -402,7 +405,7 @@ func HandleSnapshotEnd(ctx context.Context, c *hub.Client, env ProtocolEnvelope,
 	}
 
 	// 1. Verify the END signature over final_hash.
-	if err := verifyNodeSignature(ctx, pool, sess.nodeID, []byte(end.FinalHash), end.Signature); err != nil {
+	if err := verifyNodeSignature(ctx, pool, sess.accountID, sess.nodeID, []byte(end.FinalHash), end.Signature); err != nil {
 		log.Printf("[snapshot] aborting snapshot %s: end signature failed: %v", end.SnapshotID, err)
 		abortRebuildSession(ctx, pool, sess, "end signature verification failed")
 		return
