@@ -10,7 +10,7 @@ const { MockRelayWsClient, connect, close, on, off, send, replace, authState } =
     const off = vi.fn();
     const send = vi.fn();
     const replace = vi.fn();
-    const authState = { deviceId: "test-device-id" };
+    const authState = { deviceId: "test-device-id", status: "authenticated" };
 
     class MockRelayWsClient {
       static instances: MockRelayWsClient[] = [];
@@ -57,6 +57,7 @@ vi.mock("../auth-provider", () => ({
   useAuth: () => ({
     // Single stable identity; the provider derives its peerId from this.
     device: { device_id: authState.deviceId },
+    status: authState.status,
   }),
 }));
 
@@ -73,6 +74,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   MockRelayWsClient.instances = [];
   authState.deviceId = "test-device-id";
+  authState.status = "authenticated";
 });
 
 describe("WsProvider", () => {
@@ -190,6 +192,20 @@ describe("WsProvider", () => {
       "unauthorized",
     );
     expect(replace).toHaveBeenCalledWith("/auth");
+  });
+
+  it("connects after authentication and closes when the session ends", async () => {
+    authState.status = "unauthenticated";
+    const view = renderWithProvider();
+    expect(connect).not.toHaveBeenCalled();
+
+    authState.status = "authenticated";
+    await act(async () => view.rerender(<StatusProbe />));
+    expect(connect).toHaveBeenCalledTimes(1);
+
+    authState.status = "unauthenticated";
+    await act(async () => view.rerender(<StatusProbe />));
+    expect(close).toHaveBeenCalledTimes(1);
   });
 });
 

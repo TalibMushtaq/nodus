@@ -14,6 +14,7 @@ import (
 	"github.com/TalibMushtaq/nodus/services/relay/internal/hub"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/rdb"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 type NodeAuthChallengePayload struct {
@@ -420,6 +421,26 @@ func applySingleEvent(
 	accountID string,
 	item SyncEventItem,
 ) bool {
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		log.Printf("[sync] begin event transaction %s: %v", item.EventID, err)
+		return false
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+
+	// Validate file ownership before recording the event. Otherwise a rejected
+	// foreign-file event would be journaled and every retry would be treated as
+	// already applied even though its projection was never made.
+	foreign, err := eventReferencesForeignFile(ctx, tx, accountID, item)
+	if err != nil {
+		log.Printf("[sync] checking file ownership for event %s: %v", item.EventID, err)
+		return false
+	}
+	if foreign {
+		log.Printf("[sync] rejecting %s for a foreign file from account %s", item.Type, accountID)
+		return false
+	}
+
 	// 1. Idempotency check by account-scoped (origin_id, origin_sequence) or
 	// event_id. Phase 14a audit (V3): the check used to be global, letting one
 	// account pre-insert a poison row on another account's origin/sequence and
@@ -432,7 +453,10 @@ func applySingleEvent(
 			WHERE account_id = $4 AND ((origin_id = $1 AND origin_sequence = $2) OR event_id = $3)
 		)
 	`
-	_ = pool.QueryRow(ctx, checkQuery, item.OriginID, item.OriginSequence, item.EventID, accountID).Scan(&exists)
+	if err := tx.QueryRow(ctx, checkQuery, item.OriginID, item.OriginSequence, item.EventID, accountID).Scan(&exists); err != nil {
+		log.Printf("[sync] idempotency check for event %s: %v", item.EventID, err)
+		return false
+	}
 	if exists {
 		// Already applied: return true so it's included in BATCH_ACK
 		return true
@@ -450,10 +474,15 @@ func applySingleEvent(
 		VALUES ($1, $2, $3, $4, $5, $6, $7)
 		ON CONFLICT (account_id, origin_id, origin_sequence) DO NOTHING
 	`
-	_, err = pool.Exec(ctx, insertQuery, item.EventID, accountID, item.OriginID, item.OriginSequence, item.Type, item.Payload, t)
+	result, err := tx.Exec(ctx, insertQuery, item.EventID, accountID, item.OriginID, item.OriginSequence, item.Type, item.Payload, t)
 	if err != nil {
 		log.Printf("[sync] error inserting sync_event %s: %v", item.EventID, err)
 		return false
+	}
+	// Another connection may have inserted the same account/origin/sequence
+	// after our read. Its event owns the projection; never apply this payload.
+	if result.RowsAffected() == 0 {
+		return true
 	}
 
 	// 4. Domain entity projections
@@ -474,25 +503,30 @@ func applySingleEvent(
 					updated_at = EXCLUDED.updated_at
 				WHERE files.account_id = EXCLUDED.account_id
 			`
-			_, _ = pool.Exec(ctx, upsertFile, data.FileID, accountID, data.ParentFolderID, data.EncryptedName, t)
+			result, err := tx.Exec(ctx, upsertFile, data.FileID, accountID, data.ParentFolderID, data.EncryptedName, t)
+			if err != nil || result.RowsAffected() == 0 {
+				return false
+			}
 		}
 
 	case "FILE_VERSION_ADDED", "FILE_MODIFIED":
 		var data FileVersionEventData
 		if err := json.Unmarshal(item.Payload, &data); err == nil && data.FileID != "" {
 			// Ensure parent file record exists
-			_, _ = pool.Exec(ctx, `
+			if _, err := tx.Exec(ctx, `
 				INSERT INTO files (file_id, account_id, created_at, updated_at)
 				VALUES ($1, $2, $3, $3)
 				ON CONFLICT (file_id) DO NOTHING
-			`, data.FileID, accountID, t)
+			`, data.FileID, accountID, t); err != nil {
+				return false
+			}
 
 			// Phase 14a audit (V3): file_versions has no account column, so
 			// before writing versions/conflict flags for this file do an explicit
 			// ownership check. A foreign file (created here takes DO NOTHING
 			// if the id is taken) must not be touched by another account.
 			var owner string
-			if err := pool.QueryRow(ctx,
+			if err := tx.QueryRow(ctx,
 				`SELECT account_id FROM files WHERE file_id = $1`, data.FileID).Scan(&owner); err != nil || owner != accountID {
 				log.Printf("[sync] rejecting %s for foreign file %s from account %s", item.Type, data.FileID, accountID)
 				return false
@@ -513,16 +547,20 @@ func applySingleEvent(
 						WHERE file_id = $1 AND parent_version_id = $2 AND version_number != $3
 					)
 				`
-				_ = pool.QueryRow(ctx, conflictCheck, data.FileID, *data.ParentVersionID, data.VersionNumber).Scan(&conflictFound)
+				if err := tx.QueryRow(ctx, conflictCheck, data.FileID, *data.ParentVersionID, data.VersionNumber).Scan(&conflictFound); err != nil {
+					return false
+				}
 
 				if conflictFound {
 					conflictStatus = "flagged"
 					// Symmetrically mark BOTH conflicting versions as flagged
-					_, _ = pool.Exec(ctx, `
+					if _, err := tx.Exec(ctx, `
 						UPDATE file_versions
 						SET conflict_status = 'flagged'
 						WHERE file_id = $1 AND parent_version_id = $2
-					`, data.FileID, *data.ParentVersionID)
+					`, data.FileID, *data.ParentVersionID); err != nil {
+						return false
+					}
 				}
 			}
 
@@ -535,7 +573,9 @@ func applySingleEvent(
 					version_hash = EXCLUDED.version_hash,
 					shard_count = EXCLUDED.shard_count
 			`
-			_, _ = pool.Exec(ctx, insertVersion, data.FileID, data.VersionNumber, data.ParentVersionID, conflictStatus, data.VersionHash, data.ShardCount, t)
+			if _, err := tx.Exec(ctx, insertVersion, data.FileID, data.VersionNumber, data.ParentVersionID, conflictStatus, data.VersionHash, data.ShardCount, t); err != nil {
+				return false
+			}
 		}
 
 	case "FILE_DELETED", "TOMBSTONE_CREATED":
@@ -547,22 +587,58 @@ func applySingleEvent(
 			if tData.EntityType == "" {
 				tData.EntityType = "file"
 			}
-			_, _ = pool.Exec(ctx, `
+			if _, err := tx.Exec(ctx, `
 				INSERT INTO tombstones (account_id, entity_type, entity_id, deleted_at)
 				VALUES ($1, $2, $3, $4)
 				ON CONFLICT (account_id, entity_type, entity_id) DO NOTHING
-			`, accountID, tData.EntityType, tData.EntityID, t)
+			`, accountID, tData.EntityType, tData.EntityID, t); err != nil {
+				return false
+			}
 		}
 	}
 
 	// 5. Update cursor
-	_, _ = pool.Exec(ctx, `
+	if _, err := tx.Exec(ctx, `
 		INSERT INTO sync_cursors (account_id, peer_id, last_sequence, updated_at)
 		VALUES ($1, $2, $3, NOW())
 		ON CONFLICT (account_id, peer_id) DO UPDATE SET
 			last_sequence = GREATEST(sync_cursors.last_sequence, EXCLUDED.last_sequence),
 			updated_at = NOW()
-	`, accountID, item.OriginID, item.OriginSequence)
+	`, accountID, item.OriginID, item.OriginSequence); err != nil {
+		return false
+	}
 
+	if err := tx.Commit(ctx); err != nil {
+		log.Printf("[sync] commit event %s: %v", item.EventID, err)
+		return false
+	}
 	return true
+}
+
+// eventReferencesForeignFile checks the global file identifier only for event
+// types that project into files/file_versions. File IDs are globally unique in
+// the live schema, so accepting another account's ID would either mutate its
+// projection or leave an acknowledged event with no projection at all.
+func eventReferencesForeignFile(ctx context.Context, tx pgx.Tx, accountID string, item SyncEventItem) (bool, error) {
+	var fileID string
+	switch item.Type {
+	case "FILE_CREATED":
+		var data FileCreatedEventData
+		if err := json.Unmarshal(item.Payload, &data); err != nil || data.FileID == "" {
+			return false, nil
+		}
+		fileID = data.FileID
+	case "FILE_VERSION_ADDED", "FILE_MODIFIED":
+		var data FileVersionEventData
+		if err := json.Unmarshal(item.Payload, &data); err != nil || data.FileID == "" {
+			return false, nil
+		}
+		fileID = data.FileID
+	default:
+		return false, nil
+	}
+
+	var foreign bool
+	err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM files WHERE file_id = $1 AND account_id <> $2)`, fileID, accountID).Scan(&foreign)
+	return foreign, err
 }

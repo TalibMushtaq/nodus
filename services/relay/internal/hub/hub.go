@@ -142,15 +142,22 @@ func (h *Hub) Run(ctx context.Context) {
 				}
 
 				if client.NodeID != "" {
-					delete(h.byNode, client.NodeID)
-					if h.rdb != nil {
+					// A reconnect may already have replaced this route. Do not
+					// remove the newer connection or clear its presence when the
+					// old socket finally closes.
+					if h.byNode[client.NodeID] == client {
+						delete(h.byNode, client.NodeID)
+					}
+					if h.rdb != nil && h.byNode[client.NodeID] == nil {
 						_ = h.rdb.ClearPresence(ctx, client.NodeID)
 					}
 				}
 
 				if client.DeviceID != "" {
-					delete(h.byDevice, client.DeviceID)
-					if h.rdb != nil {
+					if h.byDevice[client.DeviceID] == client {
+						delete(h.byDevice, client.DeviceID)
+					}
+					if h.rdb != nil && h.byDevice[client.DeviceID] == nil {
 						_ = h.rdb.ClearPresence(ctx, client.DeviceID)
 					}
 				}

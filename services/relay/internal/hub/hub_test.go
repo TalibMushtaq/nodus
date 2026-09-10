@@ -68,3 +68,25 @@ func TestClientRateLimitAllowed(t *testing.T) {
 		t.Fatal("refilled token was not accepted")
 	}
 }
+
+func TestUnregisterOldConnectionKeepsNewPeerRoute(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	h := hub.New(nil)
+	go h.Run(ctx)
+
+	oldClient := &hub.Client{Hub: h, ConnID: "old", NodeID: "node-1", Send: make(chan []byte, 1)}
+	newClient := &hub.Client{Hub: h, ConnID: "new", NodeID: "node-1", Send: make(chan []byte, 1)}
+	h.Register(oldClient)
+	h.Register(newClient)
+	h.Unregister(oldClient)
+
+	if !h.SendToNode("node-1", []byte("still connected")) {
+		t.Fatal("old disconnect removed the newer node route")
+	}
+	select {
+	case <-newClient.Send:
+	case <-time.After(time.Second):
+		t.Fatal("message was not routed to newer connection")
+	}
+}

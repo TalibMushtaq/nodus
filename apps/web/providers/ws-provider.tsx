@@ -39,7 +39,7 @@ function relayWsUrl(): string {
 
 export function WsProvider({ children }: { children: ReactNode }) {
   // The device identity is this client's peer identity for heartbeats/presence.
-  const { device } = useAuth();
+  const { device, status: authStatus } = useAuth();
   const router = useRouter();
   const [status, setStatus] = useState<ConnectionState>("disconnected");
   const clientRef = useRef<RelayWsClient | null>(null);
@@ -55,7 +55,7 @@ export function WsProvider({ children }: { children: ReactNode }) {
     // Device identity arrives asynchronously (localStorage read in AuthProvider's
     // effect) — delay construction until we have a peerId rather than creating a
     // partially-configured client.
-    if (!peerId) {
+    if (!peerId || authStatus !== "authenticated") {
       return;
     }
 
@@ -77,7 +77,7 @@ export function WsProvider({ children }: { children: ReactNode }) {
       client.close();
       clientRef.current = null;
     };
-  }, [peerId, router]);
+  }, [peerId, authStatus, router]);
 
   const send = useCallback((msg: WsOutgoing) => {
     // No-op before the client exists or its socket has opened.
