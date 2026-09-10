@@ -34,12 +34,14 @@ export async function relayFetch<T>(path: string, init?: RequestInit): Promise<R
     headers.set("cookie", `${RELAY_SESSION_COOKIE}=${sessionCookie}`);
   }
 
-  const res = await fetch(`${relayUrl()}${path}`, { ...init, headers });
-  const setCookie = res.headers.get("set-cookie");
-
-  const json = (await res.json().catch(() => null)) as T | null;
-
-  return { status: res.status, json, setCookie };
+  try {
+    const res = await fetch(`${relayUrl()}${path}`, { ...init, headers });
+    const setCookie = res.headers.get("set-cookie");
+    const json = (await res.json().catch(() => null)) as T | null;
+    return { status: res.status, json, setCookie };
+  } catch {
+    return { status: 503, json: null, setCookie: null };
+  }
 }
 
 /** Error body shape returned by the Relay on non-2xx auth responses. */

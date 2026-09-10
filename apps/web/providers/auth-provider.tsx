@@ -24,6 +24,7 @@ interface AuthContextValue {
   status: AuthStatus;
   session: SessionInfo | null;
   device: StoredDeviceIdentity | null;
+  serverReachable: boolean;
   login: (email: string, password: string) => Promise<AuthResult>;
   register: (email: string, password: string) => Promise<AuthResult>;
   logout: () => Promise<void>;
@@ -36,6 +37,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<AuthStatus>("loading");
   const [session, setSession] = useState<SessionInfo | null>(null);
   const [device, setDevice] = useState<StoredDeviceIdentity | null>(null);
+  const [serverReachable, setServerReachable] = useState(true);
 
   // Device identity is generated lazily in the browser only (localStorage).
   // Same hydration justification as the theme provider: browser-only state
@@ -58,6 +60,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setSession(sess);
       setStatus(sess ? "authenticated" : "unauthenticated");
     });
+    fetch("/api/health")
+      .then((r) => r.json())
+      .then((d: { ok: boolean }) => {
+        if (!cancelled) setServerReachable(d.ok);
+      })
+      .catch(() => {
+        if (!cancelled) setServerReachable(false);
+      });
     return () => {
       cancelled = true;
     };
@@ -96,12 +106,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       status,
       session,
       device,
+      serverReachable,
       login: handleLogin,
       register: handleRegister,
       logout: handleLogout,
       refresh,
     }),
-    [status, session, device, handleLogin, handleRegister, handleLogout, refresh],
+    [status, session, device, serverReachable, handleLogin, handleRegister, handleLogout, refresh],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

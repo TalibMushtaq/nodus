@@ -17,7 +17,7 @@ type AuthMode = "signin" | "register";
 
 export default function AuthPage() {
   const router = useRouter();
-  const { login, register, status } = useAuth();
+  const { login, register, status, serverReachable } = useAuth();
 
   const [step, setStep] = useState<AuthStep>("email");
   const [mode, setMode] = useState<AuthMode>("signin");
@@ -73,6 +73,12 @@ export default function AuthPage() {
           <span className="text-accent"><Icon name="logo" size={22} /></span>
           <span className="text-lg font-semibold tracking-tight text-foreground">Nodus</span>
         </div>
+
+        {!serverReachable && (
+          <div className="mb-4 px-4 py-2.5 text-xs text-center rounded-lg" style={{ color: "var(--status-offline)", backgroundColor: "var(--status-offline-bg)", border: "1px solid var(--status-offline)30" }}>
+            Server unreachable — sign-in won&#39;t work until the relay is back online.
+          </div>
+        )}
 
         <div className="bg-card border border-border p-6 space-y-5">
           {/* Header */}

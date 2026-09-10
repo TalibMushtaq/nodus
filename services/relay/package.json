@@ -1,0 +1,7 @@
+{
+  "name": "relay",
+  "private": true,
+  "scripts": {
+    "dev": "docker compose up -d && go run ."
+  }
+}

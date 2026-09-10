@@ -3,7 +3,7 @@
   "private": true,
   "scripts": {
     "build": "turbo run build",
-    "dev": "turbo run dev",
+    "dev": "concurrently -n relay,web -c blue,green \"pnpm --filter relay dev\" \"turbo dev --filter web\"",
     "lint": "turbo run lint",
     "format": "prettier --write \"**/*.{ts,tsx,md}\"",
     "check-types": "turbo run check-types",
@@ -13,6 +13,7 @@
     "test:rust": "cargo test --manifest-path services/storage-node/Cargo.toml"
   },
   "devDependencies": {
+    "concurrently": "^10.0.5",
     "prettier": "3.9.6",
     "turbo": "^2.10.12",
     "typescript": "7.0.2"
