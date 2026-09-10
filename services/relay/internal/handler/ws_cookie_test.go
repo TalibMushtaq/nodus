@@ -62,3 +62,35 @@ func TestWebSocketCookieHandshakeAuthenticatesSession(t *testing.T) {
 	require.NoError(t, err)
 	require.Contains(t, string(payload), "session_cookie_verified")
 }
+
+func TestWebSocketRejectsUnauthenticatedBrowser(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	h := hub.New(nil)
+	go h.Run(ctx)
+
+	cfg := &config.Config{
+		SessionCookieName: "nodus_session",
+		AllowedOrigins:    []string{"http://localhost"},
+	}
+	server := httptest.NewServer(WebSocket(h, nil, nil, nil, wsCookieSessionStore{}, cfg))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+
+	// Simulate a browser: an Origin header (native nodes omit it) but no
+	// session cookie. The Relay must reject the handshake with the Phase 14a
+	// close code so the web client can distinguish auth failure from a
+	// transient network error.
+	header := http.Header{"Origin": {"http://localhost"}}
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, header)
+	require.NoError(t, err)
+	defer conn.Close()
+
+	_, _, err = conn.ReadMessage()
+	require.Error(t, err)
+	var closeErr *websocket.CloseError
+	require.ErrorAs(t, err, &closeErr)
+	require.Equal(t, hub.CloseCodeUnauthorized, closeErr.Code)
+}

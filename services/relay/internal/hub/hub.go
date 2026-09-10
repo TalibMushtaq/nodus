@@ -17,6 +17,10 @@ const (
 	maxMessageSize = 10 * 1024 * 1024 // 10MB (supports 8MB shard binary messages)
 )
 
+// Custom WebSocket close codes (RFC 6455 §7.4.1: 4000–4999 are
+// application-defined).
+const CloseCodeUnauthorized = 4001
+
 // Client represents a connected WebSocket client.
 type Client struct {
 	Hub             *Hub
@@ -269,7 +273,7 @@ func (c *Client) ReadPump(handleMessage func(client *Client, msgType int, payloa
 	for {
 		msgType, message, err := c.Conn.ReadMessage()
 		if err != nil {
-			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
+			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure, CloseCodeUnauthorized) {
 				log.Printf("[ws] unexpected close error: %v", err)
 			}
 			break

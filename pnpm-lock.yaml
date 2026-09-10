@@ -244,6 +244,9 @@ importers:
       '@noble/curves':
         specifier: ^1.9.7
         version: 1.9.7
+      '@repo/core':
+        specifier: workspace:*
+        version: link:../core
       '@repo/protocol':
         specifier: workspace:*
         version: link:../protocol

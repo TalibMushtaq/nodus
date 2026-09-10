@@ -4,6 +4,7 @@ import { Inter, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 import { ThemeProvider } from "../providers/theme-provider";
 import { AuthProvider } from "../providers/auth-provider";
+import { WsProvider } from "../providers/ws-provider";
 
 const inter = Inter({
   subsets: ["latin"],
@@ -45,7 +46,9 @@ export default function RootLayout({
       </head>
       <body>
         <AuthProvider>
-          <ThemeProvider>{children}</ThemeProvider>
+          <WsProvider>
+            <ThemeProvider>{children}</ThemeProvider>
+          </WsProvider>
         </AuthProvider>
       </body>
     </html>

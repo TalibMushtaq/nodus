@@ -282,9 +282,16 @@ layer only* — device identity (asymmetric key), Storage Node identity
         browser harness (bench.html); results → `docs/architecture/webrtc-benchmark-results.md`
 
 ## Phase 14 — Next.js Web Client
- 
-- [ ] Scaffold Next.js application structure
-- [ ] `packages/relay-client`: WebSocket connection, reconnection, heartbeats, message routing, presence
+
+- [x] Scaffold Next.js application structure
+- [x] `packages/relay-client`: WebSocket connection, reconnection, heartbeats, message routing, presence
+  - [x] Shared backoff util (`packages/core/src/backoff.ts`)
+  - [x] Connection state machine incl. `disconnected_max_retries`
+  - [x] Auth-rejection close handling (Relay `4001` code + `onAuthError`)
+  - [x] Heartbeat loop (`peerId` required at construction)
+  - [x] Presence (send on connect, expose incoming via `on()`)
+  - [x] Message subscription layer (`on`/`off`)
+  - [x] React provider (`apps/web/providers/ws-provider.tsx`), StrictMode-safe
 - [ ] Client-side uploader integration (Path C): shard the encrypted stream, emit sync events, and POST shards
 - [ ] Wire-level e2e: real Rust `run_sync_session` against a live Relay + Next.js client uploader
 - [ ] First-time pairing flow (Web UI): establish identities, render QR-based pairing UI

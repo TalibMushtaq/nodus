@@ -21,5 +21,14 @@ export {
 } from "./device-identity.js";
 export type { StoredDeviceIdentity } from "./device-identity.js";
 
-export { RelayWsClient, relayWsEndpoint } from "./ws-client.js";
-export type { RelayWsHandlers, WsOutgoing } from "./ws-client.js";
+export {
+  RelayWsClient,
+  relayWsEndpoint,
+  CLOSE_CODE_UNAUTHORIZED,
+} from "./ws-client.js";
+export type {
+  RelayWsHandlers,
+  RelayWsClientOptions,
+  WsOutgoing,
+  ConnectionState,
+} from "./ws-client.js";

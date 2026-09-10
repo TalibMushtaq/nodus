@@ -20,3 +20,8 @@ export {
   openFekEnvelope,
 } from "./crypto.js";
 export { shardMetadataFromEncryptedShard } from "./metadata.js";
+export {
+  backoffDelay,
+  backoffDelayWithRandom,
+  sleepBackoff,
+} from "./backoff.js";

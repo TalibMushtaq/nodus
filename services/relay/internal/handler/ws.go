@@ -98,6 +98,21 @@ func WebSocket(h *hub.Hub, pool *db.Pool, rClient *rdb.Client, buf *buffer.Buffe
 			}
 		}
 
+		// Phase 14a: a browser (the client sends an Origin header; native
+		// storage nodes deliberately do not) that ended up unauthenticated —
+		// no session cookie, or a cookie that failed the session lookup — is
+		// rejected immediately with a custom close code instead of being left
+		// half-open. This lets the web client distinguish auth rejection from
+		// a transient network error and skip the reconnect backoff loop.
+		// Storage nodes stay open to complete the challenge-response below.
+		if r.Header.Get("Origin") != "" && !client.IsAuthenticated {
+			_ = conn.WriteMessage(websocket.CloseMessage,
+				websocket.FormatCloseMessage(hub.CloseCodeUnauthorized, "unauthorized"))
+			h.Unregister(client)
+			_ = conn.Close()
+			return
+		}
+
 		// Register client with hub
 		h.Register(client)
 
