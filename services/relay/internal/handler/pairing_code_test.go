@@ -32,16 +32,29 @@ func TestGeneratePairingCodeShape(t *testing.T) {
 }
 
 func TestGeneratePairingCodeAlphabet(t *testing.T) {
-	forbidden := strings.Split("IO01", "")
-	for i := 0; i < 1000; i++ {
+	// The alphabet must be exactly A-Z minus I and O, plus digits 2-9 (32 chars).
+	require.Len(t, pairingCodeAlphabet, 32, "alphabet must be 32 chars")
+	require.Equal(t, "ABCDEFGHJKLMNPQRSTUVWXYZ23456789", pairingCodeAlphabet)
+	for _, ch := range pairingCodeAlphabet {
+		require.Regexp(t, `[A-Z2-9]`, string(ch), "unexpected alphabet char %q", ch)
+	}
+	require.NotContains(t, pairingCodeAlphabet, "I")
+	require.NotContains(t, pairingCodeAlphabet, "O")
+
+	// Every generated symbol must come from the complete alphabet, and a large
+	// sample must cover every character (nothing silently dropped).
+	seen := make(map[byte]struct{})
+	for i := 0; i < 2000; i++ {
 		code, err := generatePairingCode()
 		require.NoError(t, err)
 		symbols := strings.TrimPrefix(code, "NODUS-")
 		symbols = strings.ReplaceAll(symbols, "-", "")
-		for _, ch := range forbidden {
-			require.NotContains(t, symbols, ch, "forbidden char %q found in %q", ch, code)
+		for _, ch := range symbols {
+			require.Contains(t, pairingCodeAlphabet, string(ch), "char %q outside allowed alphabet in %q", ch, code)
+			seen[byte(ch)] = struct{}{}
 		}
 	}
+	require.Len(t, seen, 32, "sample must cover every alphabet char")
 }
 
 func TestGeneratePairingCodeUniqueness(t *testing.T) {

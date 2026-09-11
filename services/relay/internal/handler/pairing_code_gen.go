@@ -8,10 +8,10 @@ import (
 	"strings"
 )
 
-// pairingCodeAlphabet is A-Z minus I/O plus digits 2-9 (32 chars, ~5 bits
+// pairingCodeAlphabet is A-Z minus I and O plus digits 2-9 (32 chars, ~5 bits
 // of entropy per character). Ambiguous glyphs are excluded so codes survive
 // hand-transcription. Format: NODUS-XXXX-XXXX (8 symbols, 32^8 ≈ 2^40).
-const pairingCodeAlphabet = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
+const pairingCodeAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 
 // generatePairingCode returns a plaintext pairing code in NODUS-XXXX-XXXX
 // format. CSPRNG-backed; the collision space is 32^12 ≈ 2^60.
