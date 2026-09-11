@@ -113,6 +113,10 @@ async fn main() -> anyhow::Result<()> {
     let sync_identity_for_loop = Arc::clone(&sync_identity_arc);
     let sync_store = store_arc.clone();
     let _sync_handle = tokio::spawn(async move {
+        // A relay that is down at boot or stays down spams one error line per
+        // 5s retry; log the failure once per state transition and go quiet
+        // until the relay recovers, so a node can run happily offline.
+        let mut relay_down_logged = false;
         loop {
             let client = sync::client::SyncClient::new(
                 sync_relay_url.clone(),
@@ -123,10 +127,14 @@ async fn main() -> anyhow::Result<()> {
             );
             match client.run_sync_session().await {
                 Ok(_) => {
+                    relay_down_logged = false;
                     println!("sync: session ended gracefully");
                 }
                 Err(e) => {
-                    eprintln!("sync: session error: {}", e);
+                    if !relay_down_logged {
+                        eprintln!("sync: relay unreachable: {e}");
+                        relay_down_logged = true;
+                    }
                 }
             }
             tokio::time::sleep(Duration::from_secs(5)).await;
