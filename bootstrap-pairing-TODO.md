@@ -11,9 +11,9 @@ across multiple sessions so any session can be picked up where the last left off
 
 ## Status
 
-- **Current session:** S6 (next)
+- **Current session:** S7 (next)
 - **Blocked on:** nothing
-- **Done sessions:** S1, S2, S3, S4, S5
+- **Done sessions:** S1, S2, S3, S4, S5, S6
 
 Update the marker above and the Session Log at the bottom whenever you finish a
 session. Mark a task `[~]` while in progress, `[x]` when complete.
@@ -186,16 +186,21 @@ Run: `cargo test --manifest-path services/storage-node/Cargo.toml`
 
 Tasks:
 
-- [ ] `apps/web/app/api/pairing/codes/route.ts` (proxies `POST /pairing/codes`,
+- [x] `apps/web/app/api/pairing/codes/route.ts` (proxies `POST /pairing/codes`,
       authenticated via the session cookie).
-- [ ] `apps/web/app/api/pairing/codes/redeem/route.ts` (proxies the open redeem
+- [x] `apps/web/app/api/pairing/codes/redeem/route.ts` (proxies the open redeem
       endpoint only if the UI needs it — otherwise skip and let CLI-only redeem).
-- [ ] `apps/web/lib/pairing.ts`: `createPairingCode()`, node list/polling via the
-      existing `GET /nodes` path, node revocation reuse.
-- [ ] Read `PUBLIC_RELAY_URL` server-side and expose it to the UI; keep internal
+      **Skipped:** S7 drives redeem through the CLI (`nodus node pair`), so no
+      browser redeem proxy is needed.
+- [x] `apps/web/lib/pairing.ts`: `createPairingCode()`, node list/polling via the
+      existing `GET /nodes` path, node revocation reuse. **Node revocation:**
+      the Relay has no `DELETE /nodes/{id}`; only device revocation exists, so
+      there is nothing to reuse — left as a documented gap (not S6 scope).
+- [x] Read `PUBLIC_RELAY_URL` server-side and expose it to the UI; keep internal
       `RELAY_URL` (dev default `http://localhost:8080`) strictly server-side and
-      never rendered to users. Plan §3b.
-- [ ] Web tests: proxy sets the session cookie through, creation returns
+      never rendered to users. Plan §3b. (Server-only `publicRelayUrl()` →
+      server component → `DevicesClient` prop.)
+- [x] Web tests: proxy sets the session cookie through, creation returns
       `{code, expires_at}`, PUBLIC_RELAY_URL rendering, polling states.
 
 **Exit criteria:** `createPairingCode()` returns a real code from the dev Relay;
@@ -324,7 +329,7 @@ Run: `pnpm test && pnpm lint && pnpm check-types`
 | S3 | 2026-09-11 | done | `node_auth_result.reason="node_not_found"` for unpaired nodes; Go suite green |
 | S4 | 2026-09-11 | done | `node` subgroup + global root flags, `relay_url` config key, precedence resolver, ws/wss normalization, no-localhost boot guard, tests |
 | S5 | 2026-09-11 | done | `node pair` (prompts/non-interactive), HTTPS redeem + typed failure reasons, persist-on-success, identity reuse, `node_not_found` unpaired UX, rustls TLS; dev-relay E2E verified |
-| S6 | — | pending | |
+| S6 | 2026-09-11 | done | `/api/pairing/codes` proxy, `createPairingCode`/`findNode`, server-only `publicRelayUrl()` → `DevicesClient`, ws-provider same-origin, `.env.example`; no bundle localhost leak |
 | S7 | — | pending | |
 | S8 | — | pending | |
 | S9 | — | pending | |

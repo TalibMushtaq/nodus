@@ -14,6 +14,18 @@ export function relayUrl(): string {
   return process.env.RELAY_URL ?? "http://localhost:8080";
 }
 
+/**
+ * Operator-configured public origin shown to users for `nodus node pair`
+ * (e.g. `https://nodus.example.com`, plan §3b). Server-only: it is read into a
+ * server component and passed down as a prop, so the internal `RELAY_URL` and
+ * its localhost default never reach a client bundle. Returns null when unset —
+ * never inferred from Host headers or a localhost fallback.
+ */
+export function publicRelayUrl(): string | null {
+  const value = process.env.PUBLIC_RELAY_URL?.trim();
+  return value ? value : null;
+}
+
 export interface RelayResult<T> {
   status: number;
   json: T | null;

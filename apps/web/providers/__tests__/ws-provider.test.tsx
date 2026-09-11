@@ -86,7 +86,8 @@ describe("WsProvider", () => {
     expect(MockRelayWsClient.instances).toHaveLength(1);
     const instance = MockRelayWsClient.instances[0]!;
     expect(instance.options.peerId).toBe("test-device-id");
-    expect(instance.options.endpoint).toBe("http://localhost:8080/ws");
+    // No NEXT_PUBLIC_RELAY_URL and no localhost default: same-origin /ws.
+    expect(instance.options.endpoint).toBe("http://localhost/ws");
     expect(connect).toHaveBeenCalledTimes(1);
 
     // Status follows onStateChange.
@@ -94,6 +95,20 @@ describe("WsProvider", () => {
       instance.options.handlers?.onStateChange?.("connected");
     });
     expect(screen.getByTestId("status")).toHaveTextContent("connected");
+  });
+
+  it("honors an explicit NEXT_PUBLIC_RELAY_URL override", async () => {
+    process.env.NEXT_PUBLIC_RELAY_URL = "http://relay.example:9000";
+    try {
+      await act(async () => {
+        renderWithProvider();
+      });
+      expect(MockRelayWsClient.instances[0]!.options.endpoint).toBe(
+        "http://relay.example:9000/ws",
+      );
+    } finally {
+      delete process.env.NEXT_PUBLIC_RELAY_URL;
+    }
   });
 
   it("closes the socket on unmount", async () => {

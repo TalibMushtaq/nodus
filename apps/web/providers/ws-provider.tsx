@@ -30,11 +30,13 @@ interface WsContextValue {
 
 const WsContext = createContext<WsContextValue | null>(null);
 
-/** Relay WS endpoint; mirrors the server-side RELAY_URL default (lib/relay.ts). */
+/** Relay WS endpoint for this browser. An explicit NEXT_PUBLIC_RELAY_URL (dev)
+ *  wins; otherwise the single-origin deploy talks to its own `/ws`. No
+ *  localhost default is ever baked into the client bundle. */
 function relayWsUrl(): string {
-  return relayWsEndpoint(
-    process.env.NEXT_PUBLIC_RELAY_URL ?? "http://localhost:8080",
-  );
+  const configured = process.env.NEXT_PUBLIC_RELAY_URL?.trim();
+  const base = configured && configured !== "" ? configured : window.location.origin;
+  return relayWsEndpoint(base);
 }
 
 export function WsProvider({ children }: { children: ReactNode }) {

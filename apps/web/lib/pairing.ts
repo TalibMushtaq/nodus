@@ -27,6 +27,12 @@ export interface RelayDevice {
   revoked_at?: string | null;
 }
 
+/** Mirrors the Relay's pairing-code creation response (POST /pairing/codes). */
+export interface PairingCode {
+  code: string;
+  expires_at: string;
+}
+
 /** Device catalog from GET /api/devices (session-cookie proxy). */
 export async function listDevices(): Promise<RelayDevice[]> {
   const res = await fetch("/api/devices");
@@ -34,6 +40,22 @@ export async function listDevices(): Promise<RelayDevice[]> {
     throw new Error(`failed to load devices: ${res.status}`);
   }
   return (await res.json()) as RelayDevice[];
+}
+
+/**
+ * Mint a one-time pairing code via POST /api/pairing/codes. The session cookie
+ * authenticates the account; the returned plaintext is the only copy (the
+ * Relay stores just its SHA-256 hash).
+ */
+export async function createPairingCode(): Promise<PairingCode> {
+  const res = await fetch("/api/pairing/codes", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+  });
+  if (!res.ok) {
+    throw new Error(`pairing code creation failed: ${res.status}`);
+  }
+  return (await res.json()) as PairingCode;
 }
 
 /** Revoke a device via DELETE /api/devices/{id}, which also kills its sessions. */
@@ -60,6 +82,15 @@ export async function listNodes(): Promise<RelayNode[]> {
     throw new Error(`failed to load nodes: ${res.status}`);
   }
   return (await res.json()) as RelayNode[];
+}
+
+/**
+ * Locate a node in a catalog snapshot by `node_id`. The pairing flow polls
+ * `listNodes()` and treats `undefined` as "not paired yet" (pending) until the
+ * redeemed node appears.
+ */
+export function findNode(nodes: RelayNode[], nodeId: string): RelayNode | undefined {
+  return nodes.find((n) => n.node_id === nodeId);
 }
 
 /**

@@ -5,7 +5,7 @@ const { mockCookies } = vi.hoisted(() => ({ mockCookies: vi.fn() }));
 vi.mock("server-only", () => ({}));
 vi.mock("next/headers", () => ({ cookies: mockCookies }));
 
-import { relayFetch } from "../relay";
+import { relayFetch, publicRelayUrl } from "../relay";
 
 const ORIGINAL_FETCH = globalThis.fetch;
 
@@ -48,5 +48,26 @@ describe("relayFetch", () => {
     const result = await relayFetch("/auth/login", { method: "POST" });
 
     expect(result.setCookie).toBe("nodus_session=new-session; HttpOnly; Path=/");
+  });
+});
+
+describe("publicRelayUrl", () => {
+  const ORIGINAL = process.env.PUBLIC_RELAY_URL;
+
+  afterEach(() => {
+    if (ORIGINAL === undefined) delete process.env.PUBLIC_RELAY_URL;
+    else process.env.PUBLIC_RELAY_URL = ORIGINAL;
+  });
+
+  it("returns the trimmed operator-configured value", () => {
+    process.env.PUBLIC_RELAY_URL = "  https://nodus.example.com  ";
+    expect(publicRelayUrl()).toBe("https://nodus.example.com");
+  });
+
+  it("returns null when unset or blank (never the internal relayUrl)", () => {
+    delete process.env.PUBLIC_RELAY_URL;
+    expect(publicRelayUrl()).toBeNull();
+    process.env.PUBLIC_RELAY_URL = "   ";
+    expect(publicRelayUrl()).toBeNull();
   });
 });
