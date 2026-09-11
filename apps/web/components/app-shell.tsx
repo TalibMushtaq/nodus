@@ -11,9 +11,7 @@ import { TopBar } from "./topbar";
 
 const pageTitles: Record<string, string> = {
   overview: "Overview",
-  files: "Files",
   devices: "Devices",
-  activity: "Activity",
   security: "Security",
   settings: "Settings",
 };
@@ -28,7 +26,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     <div className="flex h-full overflow-hidden bg-background">
       <Sidebar collapsed={collapsed} onCollapse={() => setCollapsed(!collapsed)} />
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
-        <TopBar title={pageTitles[page] || page} showNew={page === "files" || page === "overview"} />
+        <TopBar title={pageTitles[page] || page} />
         <main className="flex-1 overflow-auto bg-background">{children}</main>
       </div>
     </div>

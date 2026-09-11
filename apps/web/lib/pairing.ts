@@ -16,6 +16,36 @@ export interface RelayNode {
   created_at: string;
 }
 
+/** Mirrors the Relay's DeviceResponse (GET /devices) — the *only* client
+ * identity the Relay catalogs (no display name / model / OS is stored). */
+export interface RelayDevice {
+  device_id: string;
+  account_id: string;
+  public_key: string;
+  status: string;
+  created_at: string;
+  revoked_at?: string | null;
+}
+
+/** Device catalog from GET /api/devices (session-cookie proxy). */
+export async function listDevices(): Promise<RelayDevice[]> {
+  const res = await fetch("/api/devices");
+  if (!res.ok) {
+    throw new Error(`failed to load devices: ${res.status}`);
+  }
+  return (await res.json()) as RelayDevice[];
+}
+
+/** Revoke a device via DELETE /api/devices/{id}, which also kills its sessions. */
+export async function revokeDevice(deviceId: string): Promise<void> {
+  const res = await fetch(`/api/devices/${encodeURIComponent(deviceId)}`, {
+    method: "DELETE",
+  });
+  if (!res.ok) {
+    throw new Error(`device revocation failed: ${res.status}`);
+  }
+}
+
 /** Mirrors the Relay's PairingSessionResponse (POST /pairing/sessions). */
 export interface PairingSession {
   token: string;

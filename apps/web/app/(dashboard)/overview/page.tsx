@@ -1,57 +1,86 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { NetworkTopology } from "@repo/ui/domain/network-topology";
 import { StatCard } from "@repo/ui/primitives/stat-card";
 import { Section } from "@repo/ui/primitives/section";
+import { EmptyState } from "@repo/ui/primitives/empty-state";
+
+import { listNodes, listDevices, type RelayNode, type RelayDevice } from "../../../lib/pairing";
+import { useWs } from "../../../providers/ws-provider";
+
+// Home snapshot. The only figures with a real backend are the Relay's device
+// and storage-node catalogs plus the live WebSocket state; the old file-used /
+// pending / conflict cards and quick-access folders were mock-only and are gone.
 
 export default function OverviewPage() {
   const router = useRouter();
+  const { status: wsStatus } = useWs();
+  const [nodes, setNodes] = useState<RelayNode[]>([]);
+  const [devices, setDevices] = useState<RelayDevice[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    Promise.all([listNodes(), listDevices()])
+      .then(([n, d]) => {
+        if (cancelled) return;
+        setNodes(n);
+        setDevices(d);
+      })
+      .catch((err) => {
+        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const relayOnline = wsStatus === "connected" || wsStatus === "reconnecting";
 
   return (
     <div className="space-y-6 p-6">
-      {/* Stat cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
-        <StatCard label="Files" value="1,847" sub="Local" link="View files \u2192" color="var(--color-accent)" onClick={() => router.push("/files")} />
-        <StatCard label="Used" value="2.3 TB" sub="Home NAS" link="Manage storage \u2192" color="var(--status-synced)" onClick={() => router.push("/devices")} />
-        <StatCard label="Pending" value="3" sub="Syncing" link="View activity \u2192" color="var(--status-pending)" onClick={() => router.push("/activity")} />
-        <StatCard label="Conflicts" value="1" sub="Needs attention" link="Resolve now \u2192" color="var(--status-conflict)" onClick={() => router.push("/files")} />
-      </div>
+      {error && <p className="text-xs text-destructive">{error}</p>}
 
-      {/* Network topology */}
-      <Section title="Network">
-        <NetworkTopology />
-      </Section>
-
-      {/* Quick access */}
-      <Section title="Quick access">
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-          {[
-            { name: "Documents", count: "247 files", color: "var(--color-accent)" },
-            { name: "Photos", count: "1,204 files", color: "var(--status-synced)" },
-            { name: "Projects", count: "89 files", color: "var(--status-pending)" },
-            { name: "Backups", count: "12 files", color: "var(--color-destructive)" },
-          ].map((f) => (
-            <button
-              key={f.name}
-              type="button"
-              onClick={() => router.push("/files")}
-              className="flex items-center gap-3 px-4 py-3 border border-border hover:bg-secondary/40 transition-colors cursor-pointer text-left"
-            >
-              <div className="w-9 h-9 bg-secondary border border-border flex items-center justify-center shrink-0">
-                <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-                  <path d="M1.5 4.5h4l1.5-2h7.5v9h-13V4.5z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" className="text-muted-foreground" />
-                </svg>
-              </div>
-              <div className="flex-1 min-w-0">
-                <div className="text-sm text-foreground font-medium">{f.name}</div>
-                <div className="text-[10px] text-muted-foreground font-mono">{f.count}</div>
-              </div>
-              <div className="w-1 h-9 rounded-full shrink-0" style={{ backgroundColor: f.color }} />
-            </button>
-          ))}
+      {!loading && nodes.length === 0 && devices.length === 0 ? (
+        <Section title="Overview">
+          <EmptyState
+            title="Nothing connected yet"
+            description="Pair a Storage Node to start syncing files across your network."
+          />
+        </Section>
+      ) : (
+        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+          <StatCard
+            label="Storage nodes"
+            value={loading ? "…" : String(nodes.length)}
+            sub={nodes.some((n) => n.is_primary) ? "Primary configured" : "No primary"}
+            link="View nodes \u2192"
+            color="var(--color-accent)"
+            onClick={() => router.push("/devices")}
+          />
+          <StatCard
+            label="Client devices"
+            value={loading ? "…" : String(devices.length)}
+            sub={devices.some((d) => d.status === "REVOKED") ? "One or more revoked" : "All active"}
+            link="View devices \u2192"
+            color="var(--status-synced)"
+            onClick={() => router.push("/devices")}
+          />
+          <StatCard
+            label="Relay"
+            value={relayOnline ? "Connected" : "Offline"}
+            sub={wsStatus}
+            link="Pair a node \u2192"
+            color="var(--status-pending)"
+            onClick={() => router.push("/pair")}
+          />
         </div>
-      </Section>
+      )}
     </div>
   );
 }

@@ -1,5 +1,49 @@
 # Changelog
 
+## [2026-09-11] - Marked first-time pairing (Phase 7b) as complete in Todo.md
+
+**What changed:** In `Todo.md`, checked off all Phase 7b tasks (deployment model, relay migration 009 + code generation/redemption + rate limiter + `node_not_found` reason, Rust `node` CLI + URL precedence + `relay_url` persistence, Next.js proxy routes + `lib/pairing.ts` + Devices "+ Add Storage Node" dialog, and the Go/Rust/Web/E2E security suites) and the Phase 14 web first-time pairing item, on the assumption the first-time connection implementation is done. Phase 15 mobile pairing remains unchecked (Expo client not yet scaffolded). No code changed; this reflects a status assumption in the tracking file.
+
+**Why:** The user is treating the first-time pairing flow as implemented and wants downstream tracking to reflect that.
+
+**Impact:** `Todo.md` checkboxes only.
+
+## [2026-09-11] - Added session-based tracker for the bootstrap pairing migration
+
+**What changed:** Added `bootstrap-pairing-TODO.md` at the repo root — a session-by-session tracker (S1–S10) for the self-hosted Storage Node pairing-code bootstrap migration, mirroring `Todo.md` Phase 7b and plan §3b/§7b/§7c. Each session has a goal, checkbox tasks, exit criteria, and the exact verification commands (`pnpm test`, `go -C services/relay test ./...`, `cargo test --manifest-path services/storage-node/Cargo.toml`); a Status marker + Session Log support resuming across multiple sessions. Includes a Non-negotiables section (hash-only code storage, Ed25519 identity reuse, no localhost default, PUBLIC_RELAY_URL, atomic redemption, QR/central-relay non-goals).
+
+**Why:** The migration spans Relay, Rust node, Next.js, deployment, docs, and E2E — a multi-session effort. Session-sized chunks with per-session exit criteria let each session start and end cleanly without re-reading the whole plan.
+
+**Impact:** Documentation only — new root file; no code behavior changed.
+
+## [2026-09-11] - Canonicalized self-hosted Storage Node pairing flow in the plan
+
+**What changed:** Incorporated the final decision for first-time Storage Node bootstrap into `nodus_implementation_plan.md` and `Todo.md`. Added §3b (Self-Hosted Deployment, single public origin behind TLS, `PUBLIC_RELAY_URL` operator-configured), refined §7 "First-time pairing" into two distinct flows, added §7b (canonical pairing-code bootstrap: `NODUS-XXXX-XXXX` alphabet A-Z minus I/O + 2-9, ~15-min single-use, SHA-256-hashed `pairing_codes` table as migration 009, `POST /pairing/codes` auth + `POST /pairing/codes/redeem` open/atomic/IP rate-limited, reuses first-node `is_primary`) and §7c (`nodus node pair` CLI, URL precedence CLI `--relay` > `config.toml relay_url` > `NODUS_RELAY_URL` > no default). Added the bootstrap-only note to §8, `relay_url` persistence to §11/§11a, `pairing_codes` to §13, stage 7b + dependency note to §28, and marked the §29 "Pairing/QR format" item resolved (QR deferred). In `Todo.md`: inserted Phase 7b (deployment, migration 009, Go/Rust/Next/tests, non-goals), clarified Phase 11 as device↔node local pairing, reworded the Phase 14/15 QR-based pairing items to pairing-code entry (QR deferred), and resolved the "Pairing/QR format spec" open item.
+
+**Why:** The implementation plan previously treated QR-based pairing as the default first-time flow and stored-node setup had no canonical account-association design; this decision set locks self-hosted deployment, pairing-code bootstrap, and the CLI/config precedence as the source of truth for implementation.
+
+**Impact:** Documentation only (`nodus_implementation_plan.md`, `Todo.md`, `CHANGELOG.md`) — no code behavior changed. Existing opaque-session auth, Ed25519 node identity, and device↔node local pairing decisions preserved; QR-based pairing is now explicitly a v1 non-goal.
+
+**Follow-ups:** Implement Phase 7b sub-tasks (relay migration 009 + generation/redemption handlers, Rust `nodus node pair` CLI, web "+ Add Storage Node" dialog, `PUBLIC_RELAY_URL` deployment unit); remove the `NODUS_RELAY_URL` localhost default in `services/storage-node/src/main.rs`; `NodeAuthResultPayload.reason="node_not_found"` for unpaired nodes.
+
+## [2026-09-11] - Web dashboard: removed mock/stale data, real device & node data
+
+**What changed:** In `apps/web`, the dashboard now renders only real backend data. Added `GET /api/devices` and `DELETE /api/devices/[id]` session-cookie proxies for the Relay's `GET /devices` and `DELETE /devices/{id}`; added `listDevices()` / `revokeDevice()` and the `RelayDevice` type to `lib/pairing.ts`; added `shortId` / `timeAgo` formatters in `lib/format.ts`. Rewrote `(dashboard)/devices/page.tsx`, `(dashboard)/security/page.tsx`, and `(dashboard)/overview/page.tsx` to fetch the real node/device catalogs with honest empty states, functional device revocation wired to the Relay, and a live WebSocket-aware relay status. Deleted `(dashboard)/files/page.tsx`, `(dashboard)/activity/page.tsx`, and `lib/mock-data.ts` (the file list, versions, activity feed, key envelopes, and recovery seed had no backend read path anywhere in the monorepo). Removed the fake "Files"/"Activity" nav items, the hard-coded "Alex Kim / alex@selfhost.dev" account, the static "Online · Local P2P" status chip (now real WS state + account_id from `useAuth`/`useWs`), the "+ New" button and dummy notification badge in `sidebar.tsx` / `app-shell.tsx` / `topbar.tsx`, and repointed device/security "Pair" actions to the real `/pair` flow.
+
+**Why:** The dashboard was showing fabricated and stale values (mock node fleet, fake file counts, placeholder recovery seed, fake user identity) while the Relay already exposed the real device and node catalogs. Per ADR, only real-data-backed UI remains; sections whose data has no read path yet are removed rather than faked.
+
+**Impact:** `apps/web` pages/components/libs/API routes; two dashboard routes and `lib/mock-data.ts` removed. `packages/ui` unchanged (unused mock-driven components remain exported but are no longer rendered). `pnpm --filter web` lint, check-types, and all 43 Vitest tests pass.
+
+**Follow-ups:** Backend read paths for files/versions/activity (relay `GET /files`, `GET /files/{id}/versions`, activity feed) and key envelopes would let the Files/Activity/Security sections return; storage usage on nodes is not yet exposed by the Relay.
+
+## [2026-09-11] - Storage node: quiet relay-down sync retries
+
+**What changed:** In `services/storage-node/src/main.rs`, the sync loop now tracks a `relay_down_logged` flag and prints `sync: relay unreachable: <error>` only once per state transition instead of on every 5s retry; a successful session resets the flag so the next drop is logged again.
+
+**Why:** A storage node run without the Relay (the default `ws://127.0.0.1:8080/ws`) previously spammed one `sync: session error` line every 5 seconds indefinitely. Web-side graceful degradation existed, but the Rust node had none.
+
+**Impact:** `services/storage-node/src/main.rs` only; log-message behavior on `Ok` unchanged. No tests affected (log-only edit).
+
 ## [2026-09-10] - WebSocket and sync isolation hardening
 
 **What changed:** Hardened Relay WebSocket identity and ingestion boundaries. WebRTC signaling now requires `from_peer` to match the authenticated node or device. Heartbeats derive presence exclusively from the connection identity, and node `last_seen_at` writes are throttled. Sync-event idempotency and snapshot staging conflict keys are account-scoped (migrations 007 and 008); file projection and snapshot public-key lookups now preserve account ownership. Storage-node-only message types are rejected from browser/device connections, and each Relay connection has a token-bucket message limit.

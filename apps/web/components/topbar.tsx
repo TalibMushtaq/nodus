@@ -9,11 +9,9 @@ import { useTheme } from "../providers/theme-provider";
 
 interface TopBarProps {
   title: string;
-  showNew?: boolean;
-  onNew?: () => void;
 }
 
-export function TopBar({ title, showNew = false, onNew }: TopBarProps) {
+export function TopBar({ title }: TopBarProps) {
   const { theme, setTheme, resolvedDark } = useTheme();
 
   const cycleTheme = () => {
@@ -32,24 +30,15 @@ export function TopBar({ title, showNew = false, onNew }: TopBarProps) {
         <Icon name="search" size={13} className="absolute left-2.5 text-muted-foreground" />
         <input
           type="text"
-          placeholder="Search files, devices\u2026"
-          aria-label="Search files and devices"
+          placeholder="Search devices\u2026"
+          aria-label="Search devices"
           className="pl-8 pr-3 py-1.5 text-xs bg-secondary border border-border rounded-sm text-foreground placeholder-muted-foreground outline-none focus:border-accent w-48"
         />
       </div>
 
-      {/* + New */}
-      {showNew && (
-        <button type="button" onClick={onNew} className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-accent text-accent-foreground rounded-sm hover:opacity-90 transition-opacity">
-          <Icon name="plus" size={12} />
-          New
-        </button>
-      )}
-
       {/* Notifications */}
-      <button type="button" aria-label="Notifications" title="Notifications" className="relative text-muted-foreground hover:text-foreground transition-colors">
+      <button type="button" aria-label="Notifications" title="Notifications" className="text-muted-foreground hover:text-foreground transition-colors">
         <Icon name="bell" size={16} />
-        <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 bg-accent rounded-full" />
       </button>
 
       {/* Theme toggle */}

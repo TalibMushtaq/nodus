@@ -4,39 +4,38 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Icon } from "@repo/ui/primitives/icons";
 import { StatusBadge } from "@repo/ui/primitives/badge";
-import { Logo, Avatar } from "@repo/ui/primitives/brand";
+import { Logo } from "@repo/ui/primitives/brand";
 import type { IconName } from "@repo/ui/primitives/icons";
+
+import { useAuth } from "../providers/auth-provider";
+import { useWs } from "../providers/ws-provider";
 
 // Persistent sidebar. Navigation is driven by the URL path via next/link +
 // usePathname rather than client-side state, so the browser's back button
 // works and deep-linking is preserved.
 
-type NavPage = "overview" | "files" | "devices" | "activity" | "security" | "settings";
+type NavPage = "overview" | "devices" | "security" | "settings";
 
 const navItems: { id: NavPage; label: string; icon: IconName }[] = [
   { id: "overview", label: "Overview", icon: "overview" },
-  { id: "files", label: "Files", icon: "files" },
   { id: "devices", label: "Devices", icon: "devices" },
-  { id: "activity", label: "Activity", icon: "activity" },
   { id: "security", label: "Security", icon: "security" },
   { id: "settings", label: "Settings", icon: "settings" },
 ];
 
-const nodeStatusMap: Record<"local" | "relay" | "offline", { status: "synced" | "pending" | "offline"; label: string }> = {
-  local: { status: "synced", label: "Online \u00B7 Local P2P" },
-  relay: { status: "pending", label: "Online \u00B7 Relay" },
-  offline: { status: "offline", label: "Offline" },
-};
-
 interface SidebarProps {
   collapsed: boolean;
   onCollapse: () => void;
-  nodeStatus?: "local" | "relay" | "offline";
 }
 
-export function Sidebar({ collapsed, onCollapse, nodeStatus = "local" }: SidebarProps) {
+export function Sidebar({ collapsed, onCollapse }: SidebarProps) {
   const pathname = usePathname();
-  const ns = nodeStatusMap[nodeStatus];
+  const { session } = useAuth();
+  const { status: wsStatus } = useWs();
+
+  // Live relay connectivity instead of a hard-coded "Online · Local P2P".
+  const relayOnline = wsStatus === "connected" || wsStatus === "reconnecting";
+  const accountId = session?.account_id ?? "";
 
   return (
     <aside
@@ -52,12 +51,14 @@ export function Sidebar({ collapsed, onCollapse, nodeStatus = "local" }: Sidebar
         {!collapsed && <span className="text-sm font-semibold tracking-tight text-foreground">Nodus</span>}
       </div>
 
-      {/* Node status */}
+      {/* Relay status */}
       {!collapsed && (
         <div className="px-4 pt-3 pb-2">
-          <div className="flex items-center gap-2 px-2.5 py-2 rounded-sm bg-secondary cursor-pointer hover:bg-muted transition-colors">
-            <StatusBadge status={ns.status} variant="dot" />
-            <span className="text-xs text-muted-foreground font-mono truncate">{ns.label}</span>
+          <div className="flex items-center gap-2 px-2.5 py-2 rounded-sm bg-secondary">
+            <StatusBadge status={relayOnline ? "synced" : "offline"} variant="dot" />
+            <span className="text-xs text-muted-foreground font-mono truncate">
+              {relayOnline ? `Relay · ${wsStatus}` : "Relay · Offline"}
+            </span>
           </div>
         </div>
       )}
@@ -83,13 +84,12 @@ export function Sidebar({ collapsed, onCollapse, nodeStatus = "local" }: Sidebar
       </nav>
 
       {/* Account */}
-      {!collapsed && (
+      {!collapsed && accountId && (
         <div className="px-3 py-3 border-t border-border">
-          <div className="flex items-center gap-2.5 px-2 py-1.5 rounded-sm hover:bg-secondary cursor-pointer transition-colors">
-            <Avatar initials="AK" />
+          <div className="flex items-center gap-2.5 px-2 py-1.5 rounded-sm">
             <div className="flex-1 min-w-0">
-              <div className="text-xs font-medium text-foreground truncate">Alex Kim</div>
-              <div className="text-[10px] text-muted-foreground truncate">alex@selfhost.dev</div>
+              <div className="text-xs font-medium text-foreground truncate">Account</div>
+              <div className="text-[10px] text-muted-foreground font-mono truncate">{accountId.slice(0, 12)}…</div>
             </div>
           </div>
         </div>
