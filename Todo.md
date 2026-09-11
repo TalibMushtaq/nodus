@@ -230,13 +230,17 @@ identity and the existing WebSocket challenge-response auth (§8) is unchanged.
 This is distinct from the Phase 11 device↔node *local* pairing. Mirrors new plan
 stage 7b in §28 (inserted between 7a and 8).
 
+> Session-level progress for this phase lives in `bootstrap-pairing-TODO.md`
+> (S1–S10). The `— Sn` suffixes below are the sessions owning each item; keep
+> this list consistent with that tracker.
+
 ### Deployment model
 
-- [x] Single-origin self-hosted unit (Next.js + Go Relay + PostgreSQL + Redis)
+- [ ] Single-origin self-hosted unit (Next.js + Go Relay + PostgreSQL + Redis)
       behind TLS/reverse proxy; `/api/*` and `/ws` → Relay, rest → Next.js
-      (plan §3b)
-- [x] `PUBLIC_RELAY_URL` operator-configured (never inferred from Host headers /
-      Docker names / localhost); `ALLOWED_ORIGINS` aligned
+      (plan §3b) — S8
+- [ ] `PUBLIC_RELAY_URL` operator-configured (never inferred from Host headers /
+      Docker names / localhost); `ALLOWED_ORIGINS` aligned — S8
 
 ### Relay backend (migration 009)
 
@@ -262,28 +266,31 @@ stage 7b in §28 (inserted between 7a and 8).
 
 ### Rust Storage Node (CLI + config)
 
-- [x] Add `node` CLI subgroup: `nodus node pair` (interactive `dialoguer` prompts)
-      and `nodus node start`; existing root flags keep booting the daemon as-is
-- [x] `nodus node pair --relay <url> --code <code>` for scripted runs; URL
-      precedence: CLI `--relay` > `config.toml` `relay_url` > `NODUS_RELAY_URL` >
-      **no default** (first-run pairing never targets localhost/127.0.0.1)
-- [x] Pair using the persistent Ed25519 identity (§5/§11) — never regenerate per
-      attempt; redeem over HTTPS (plan §7c)
-- [x] Persist `relay_url` in `~/.nodus/config.toml` **only after successful
-      pairing**; remove the `NODUS_RELAY_URL` localhost default and switch
-      `nodus node start` onto config-precedence resolution (plan §11/§11a)
-- [x] Normal reconnect after pairing = existing WS challenge-response; the pairing
-      code is never required again
+- [x] Add `node` CLI subgroup with `nodus node start`; existing root flags keep
+      booting the daemon as-is — S4
+- [ ] `nodus node pair` interactive (`dialoguer`) prompt for relay URL then code — S5
+- [x] URL precedence: CLI `--relay` > `config.toml` `relay_url` >
+      `NODUS_RELAY_URL` > **no default** (first-run never targets
+      localhost/127.0.0.1) — S4
+- [ ] `nodus node pair --relay <url> --code <code>` scripted redeem over HTTPS — S5
+- [ ] Pair using the persistent Ed25519 identity (§5/§11) — never regenerate per
+      attempt (plan §7c) — S5
+- [x] Remove the `NODUS_RELAY_URL` localhost default; `nodus node start` uses
+      config-precedence resolution (plan §11/§11a) — S4
+- [ ] Persist `relay_url` in `~/.nodus/config.toml` **only after successful
+      pairing** — S5
+- [ ] Normal reconnect after pairing = existing WS challenge-response; the pairing
+      code is never required again — S5/S10
 
 ### Next.js web client
 
-- [x] Route handlers `app/api/pairing/codes/route.ts` and
-      `app/api/pairing/codes/redeem/route.ts` proxying the Relay
-- [x] `lib/pairing.ts`: `createPairingCode()`, node list/polling, revoke
-- [x] Devices page "+ Add Storage Node" dialog: relay URL (`PUBLIC_RELAY_URL`) +
+- [ ] Route handlers `app/api/pairing/codes/route.ts` and
+      `app/api/pairing/codes/redeem/route.ts` proxying the Relay — S6
+- [ ] `lib/pairing.ts`: `createPairingCode()`, node list/polling, revoke — S6
+- [ ] Devices page "+ Add Storage Node" dialog: relay URL (`PUBLIC_RELAY_URL`) +
       code + expiry countdown + CLI instructions + node-status polling
-      (connected/paired/expired/error states)
-- [x] Keep internal `RELAY_URL` and user-facing `PUBLIC_RELAY_URL` distinct
+      (connected/paired/expired/error states) — S7
+- [ ] Keep internal `RELAY_URL` and user-facing `PUBLIC_RELAY_URL` distinct — S6
 
 ### Security tests
 
@@ -291,13 +298,13 @@ stage 7b in §28 (inserted between 7a and 8).
       revoked (`code_revoked`), single-use (concurrent redemption → no
       double-claim; rejected registration leaves the code PENDING), unknown/
       consumed codes, node owned by another account (409), first-node
-      `is_primary`, rate limiting, hash-only storage (no plaintext in DB/logs)
-- [x] Rust: URL precedence, `relay_url` persistence on success-only, identity
+      `is_primary`, rate limiting, hash-only storage (no plaintext in DB/logs) — S1–S2
+- [ ] Rust: URL precedence, `relay_url` persistence on success-only, identity
       reuse across attempts, interactive + non-interactive pair, failure paths
-      rendered as machine-readable reasons
-- [x] Web: code creation, URL+code render, polling success/expiry, unpaired error
-- [x] E2E: create code in UI → `nodus node pair` on a fresh node → node appears
-      paired → WS challenge-response sync session succeeds
+      rendered as machine-readable reasons — S5
+- [ ] Web: code creation, URL+code render, polling success/expiry, unpaired error — S7
+- [ ] E2E: create code in UI → `nodus node pair` on a fresh node → node appears
+      paired → WS challenge-response sync session succeeds — S10
 
 ### Non-goals (explicit)
 

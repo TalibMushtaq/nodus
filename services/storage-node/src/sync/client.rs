@@ -49,6 +49,47 @@ pub fn relay_http_fetch_url(relay_url: &str) -> String {
     url.to_string()
 }
 
+/// Normalize a configured relay URL into the WebSocket URL the sync client
+/// dials. `config.toml`/the pairing prompt hold the operator-facing public
+/// origin (`https://nodus.example.com`), so https/http are upgraded to
+/// wss/ws and the `/ws` gateway path is appended (preserving any base path as
+/// a prefix, e.g. `https://host/proxy` → `/proxy/ws`). Explicit `ws://`/`wss://`
+/// values (the legacy `NODUS_RELAY_URL` form) are used verbatim so an
+/// already-correct endpoint is never double-suffixed. Unparseable values are
+/// returned unchanged so a malformed config surfaces as a connection error
+/// rather than a panic.
+pub fn relay_ws_url(raw: &str) -> String {
+    let Ok(mut url) = Url::parse(raw) else {
+        return raw.to_string();
+    };
+
+    match url.scheme() {
+        "https" => {
+            let _ = url.set_scheme("wss");
+            append_ws_path(&mut url);
+        }
+        "http" => {
+            let _ = url.set_scheme("ws");
+            append_ws_path(&mut url);
+        }
+        // Already a WebSocket URL: the caller is responsible for its path.
+        _ => {}
+    }
+
+    url.to_string()
+}
+
+/// Append `/ws` to a public-origin URL unless the path already names the
+/// gateway. Keeping any base path as a prefix means a proxied deployment's WS
+/// endpoint (`/proxy/ws`) lines up with the HTTP fetch derivation
+/// (`/proxy/buffer/fetch`), instead of both halves disagreeing about the root.
+fn append_ws_path(url: &mut Url) {
+    let path = url.path().trim_end_matches('/');
+    if !path.ends_with("/ws") {
+        url.set_path(&format!("{path}/ws"));
+    }
+}
+
 pub struct SyncClient {
     pub relay_url: String,
     pub identity: Arc<NodeIdentity>,
@@ -540,6 +581,42 @@ mod tests {
             relay_http_fetch_url("wss://relay.example.com/proxy/ws"),
             "https://relay.example.com/proxy/buffer/fetch"
         );
+    }
+
+    #[test]
+    fn test_relay_ws_url_normalization() {
+        // Public HTTPS origin gains the /ws gateway path and wss scheme.
+        assert_eq!(
+            relay_ws_url("https://nodus.example.com"),
+            "wss://nodus.example.com/ws"
+        );
+        // Public HTTP origin (dev relay) maps to ws.
+        assert_eq!(
+            relay_ws_url("http://localhost:8080"),
+            "ws://localhost:8080/ws"
+        );
+        // Explicit WebSocket URLs (legacy NODUS_RELAY_URL) are used verbatim.
+        assert_eq!(
+            relay_ws_url("ws://127.0.0.1:8080/ws"),
+            "ws://127.0.0.1:8080/ws"
+        );
+        assert_eq!(
+            relay_ws_url("wss://relay.example.com/ws"),
+            "wss://relay.example.com/ws"
+        );
+        // A base path is preserved as a prefix and still gains /ws, matching
+        // the HTTP fetch derivation (/proxy/buffer/fetch).
+        assert_eq!(
+            relay_ws_url("https://relay.example.com/proxy"),
+            "wss://relay.example.com/proxy/ws"
+        );
+        // An already-gateway-suffixed WS path is never double-suffixed.
+        assert_eq!(
+            relay_ws_url("https://relay.example.com/proxy/ws"),
+            "wss://relay.example.com/proxy/ws"
+        );
+        // Malformed input passes through so it fails as a connection error.
+        assert_eq!(relay_ws_url("not a url"), "not a url");
     }
 
     #[tokio::test]

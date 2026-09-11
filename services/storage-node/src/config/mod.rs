@@ -14,12 +14,14 @@ pub const CONFIG_FILE: &str = "config.toml";
 #[allow(dead_code)]
 pub const IDENTITY_DIR: &str = "identity";
 
-/// Bootstrap config file contents. Holds exactly one key today (`data_dir`);
-/// adding more keys here is backward-compatible because `data_dir` has no
-/// serde default that would make it optional.
+/// Bootstrap config file contents. `relay_url` is optional so existing
+/// `config.toml` files without the key keep parsing; it is written only after
+/// successful pairing (§11a), not during first-run data-dir setup.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodusConfigFile {
     pub data_dir: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relay_url: Option<String>,
 }
 
 /// Resolved runtime configuration for the node.
@@ -29,13 +31,19 @@ pub struct Config {
     pub data_dir: PathBuf,
     /// Fixed OS-standard config dir (`~/.nodus`) holding identity + config.
     pub nodus_dir: PathBuf,
+    /// Relay endpoint resolved for this run via CLI `--relay` >
+    /// `config.toml relay_url` > `NODUS_RELAY_URL` > none. This is the public
+    /// base origin (or a legacy explicit ws/wss URL); callers normalize it to
+    /// a WS URL with `sync::client::relay_ws_url` before dialing.
+    pub relay_url: Option<String>,
 }
 
 impl Config {
-    fn from_path(nodus_dir: PathBuf, data_dir: PathBuf) -> Self {
+    fn from_path(nodus_dir: PathBuf, data_dir: PathBuf, relay_url: Option<String>) -> Self {
         Config {
             data_dir,
             nodus_dir,
+            relay_url,
         }
     }
 }
@@ -126,8 +134,13 @@ pub fn default_data_dir_hint() -> PathBuf {
 /// 1. existing `config.toml` (unattended restart path, never prompts);
 /// 2. explicit `--data-dir` CLI flag or `NODUS_DATA_DIR` env var;
 /// 3. interactive prompt (only when the process has an interactive stdin).
+///
+/// The relay URL is resolved independently via `resolve_relay_url` on every
+/// path (see its docs for the locked precedence) and is never persisted here —
+/// only `nodus node pair` writes it to `config.toml` after a successful redeem.
 pub fn load_or_setup(
     cli_data_dir: Option<PathBuf>,
+    cli_relay: Option<String>,
     interactive: bool,
     force_adopt: bool,
 ) -> Result<Config, ConfigError> {
@@ -138,7 +151,8 @@ pub fn load_or_setup(
     // from it without prompting — required so an unattended daemon restart
     // never blocks on input.
     if let Some(cfg) = read_config_file(&config_path)? {
-        return Ok(Config::from_path(nodus_dir, cfg.data_dir));
+        let relay_url = resolve_relay_url(cli_relay, cfg.relay_url, relay_from_env());
+        return Ok(Config::from_path(nodus_dir, cfg.data_dir, relay_url));
     }
 
     // Unattended install: CLI flag takes precedence over env var; both are
@@ -150,7 +164,8 @@ pub fn load_or_setup(
     if let Some(raw_dir) = cli_data_dir.map(expand_tilde).or(from_env) {
         let data_dir = adopt_and_save(&nodus_dir, &config_path, raw_dir, force_adopt)?;
         emit_nonblocking_warnings(&data_dir);
-        return Ok(Config::from_path(nodus_dir, data_dir));
+        let relay_url = resolve_relay_url(cli_relay, None, relay_from_env());
+        return Ok(Config::from_path(nodus_dir, data_dir, relay_url));
     }
 
     // Interactive first-run setup.
@@ -160,10 +175,78 @@ pub fn load_or_setup(
         // redundant check on the already-confirmed path.
         let data_dir = prompt::interactive_data_dir(default_data_dir_hint())?;
         let data_dir = adopt_and_save(&nodus_dir, &config_path, data_dir, true)?;
-        return Ok(Config::from_path(nodus_dir, data_dir));
+        let relay_url = resolve_relay_url(cli_relay, None, relay_from_env());
+        return Ok(Config::from_path(nodus_dir, data_dir, relay_url));
     }
 
     Err(ConfigError::NoDataDir)
+}
+
+/// Read `NODUS_RELAY_URL` as the last-resort relay source. Kept separate from
+/// `resolve_relay_url` so the precedence function stays pure and testable.
+fn relay_from_env() -> Option<String> {
+    std::env::var("NODUS_RELAY_URL").ok()
+}
+
+/// Apply the locked relay-URL precedence: CLI `--relay` > `config.toml`
+/// `relay_url` > `NODUS_RELAY_URL` > none. Blank/whitespace sources are treated
+/// as absent so an empty env var cannot mask a lower-precedence value. Returns
+/// `None` when nothing is configured — callers must fail loudly rather than
+/// defaulting to localhost (first-run pairing must never dial 127.0.0.1).
+pub fn resolve_relay_url(
+    cli: Option<String>,
+    file: Option<String>,
+    env: Option<String>,
+) -> Option<String> {
+    [cli, file, env]
+        .into_iter()
+        .flatten()
+        .map(|s| s.trim().to_string())
+        .find(|s| !s.is_empty())
+}
+
+/// Persist `relay_url` into `config.toml`, preserving every existing key (in
+/// particular `data_dir` and any field a future version adds). Called by
+/// `nodus node pair` **only after a successful redemption** (§11a); an unpaired
+/// node therefore never records a relay it has not proven.
+///
+/// Writes through a sibling temp file + rename so a crash mid-write cannot
+/// truncate the config into an unparseable state. Deliberately edits a
+/// `toml::Table` rather than re-serializing `NodusConfigFile`: a typed
+/// round-trip would silently drop keys the struct does not yet model.
+// Consumed by the S5 pair flow; allow until that lands so `-D warnings` is clean.
+#[allow(dead_code)]
+pub fn persist_relay_url(
+    nodus_dir: &Path,
+    data_dir: &Path,
+    relay_url: &str,
+) -> Result<(), ConfigError> {
+    fs::create_dir_all(nodus_dir)?;
+    let path = nodus_dir.join(CONFIG_FILE);
+
+    // Start from the on-disk document when present so unknown keys survive;
+    // fall back to a minimal document seeded with the caller's data_dir.
+    let mut doc: toml::Table = match fs::read_to_string(&path) {
+        Ok(text) => toml::from_str(&text)?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => toml::Table::new(),
+        Err(e) => return Err(e.into()),
+    };
+    if !doc.contains_key("data_dir") {
+        doc.insert(
+            "data_dir".to_string(),
+            toml::Value::String(data_dir.display().to_string()),
+        );
+    }
+    doc.insert(
+        "relay_url".to_string(),
+        toml::Value::String(relay_url.trim().to_string()),
+    );
+
+    let serialized = toml::to_string(&doc).map_err(|e| ConfigError::Parse(e.to_string()))?;
+    let tmp = nodus_dir.join(format!("{CONFIG_FILE}.tmp"));
+    fs::write(&tmp, serialized)?;
+    fs::rename(&tmp, &path)?;
+    Ok(())
 }
 
 /// Read the config file if it exists; returns `None` when the file is absent.
@@ -172,10 +255,12 @@ fn read_config_file(path: &Path) -> Result<Option<NodusConfigFile>, ConfigError>
         return Ok(None);
     }
     let text = fs::read_to_string(path)?;
-    let cfg: NodusConfigFile = toml::from_str(&text)?;
+    let mut cfg: NodusConfigFile = toml::from_str(&text)?;
     if cfg.data_dir.as_os_str().is_empty() {
         return Err(ConfigError::MissingField("data_dir"));
     }
+    // Normalize a blank relay_url to `None` so it is not treated as configured.
+    cfg.relay_url = cfg.relay_url.filter(|s| !s.trim().is_empty());
     Ok(Some(cfg))
 }
 
@@ -203,7 +288,12 @@ fn adopt_and_save(
         return Err(ConfigError::PriorInstall(data_dir));
     }
     fs::create_dir_all(nodus_dir)?;
-    let cfg = NodusConfigFile { data_dir };
+    // `relay_url` is intentionally left unset on first-run setup; it is only
+    // recorded by `nodus node pair` after a successful redeem (§11a).
+    let cfg = NodusConfigFile {
+        data_dir,
+        relay_url: None,
+    };
     let toml = toml::to_string(&cfg).map_err(|e| ConfigError::Parse(e.to_string()))?;
     fs::write(config_path, toml)?;
     Ok(cfg.data_dir)
@@ -264,11 +354,118 @@ mod tests {
 
         let cfg = NodusConfigFile {
             data_dir: data_dir.clone(),
+            relay_url: Some("https://nodus.example.com".to_string()),
         };
         std::fs::write(&config_path, toml::to_string(&cfg).unwrap()).unwrap();
 
         let read = read_config_file(&config_path).unwrap().unwrap();
         assert_eq!(read.data_dir, data_dir);
+        assert_eq!(read.relay_url.as_deref(), Some("https://nodus.example.com"));
+    }
+
+    #[test]
+    fn config_without_relay_url_parses_none() {
+        // Backward compatibility: config.toml files written before relay_url
+        // existed must still parse, with relay_url defaulting to None.
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, r#"data_dir = "/tmp/data""#).unwrap();
+
+        let read = read_config_file(&path).unwrap().unwrap();
+        assert_eq!(read.relay_url, None);
+    }
+
+    #[test]
+    fn config_blank_relay_url_normalizes_to_none() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "data_dir = \"/tmp/data\"\nrelay_url = \"   \"").unwrap();
+
+        let read = read_config_file(&path).unwrap().unwrap();
+        assert_eq!(read.relay_url, None);
+    }
+
+    // --- resolve_relay_url ---
+
+    #[test]
+    fn relay_precedence_cli_wins() {
+        assert_eq!(
+            resolve_relay_url(Some("cli".into()), Some("file".into()), Some("env".into()))
+                .as_deref(),
+            Some("cli")
+        );
+    }
+
+    #[test]
+    fn relay_precedence_file_over_env() {
+        assert_eq!(
+            resolve_relay_url(None, Some("file".into()), Some("env".into())).as_deref(),
+            Some("file")
+        );
+    }
+
+    #[test]
+    fn relay_precedence_env_when_alone() {
+        assert_eq!(
+            resolve_relay_url(None, None, Some("env".into())).as_deref(),
+            Some("env")
+        );
+    }
+
+    #[test]
+    fn relay_none_when_all_absent() {
+        // Empty config must not fall back to localhost; the caller fails loudly.
+        assert_eq!(resolve_relay_url(None, None, None), None);
+    }
+
+    #[test]
+    fn relay_blank_sources_are_ignored() {
+        // A blank/whitespace higher-precedence source must not mask a real one.
+        assert_eq!(
+            resolve_relay_url(Some("   ".into()), Some("".into()), Some(" env ".into())).as_deref(),
+            Some("env")
+        );
+    }
+
+    // --- persist_relay_url ---
+
+    #[test]
+    fn persist_relay_url_preserves_data_dir() {
+        let dir = tempdir().unwrap();
+        let data_dir = dir.path().join("data");
+        persist_relay_url(dir.path(), &data_dir, "https://nodus.example.com").unwrap();
+
+        let cfg = read_config_file(&dir.path().join(CONFIG_FILE))
+            .unwrap()
+            .unwrap();
+        assert_eq!(cfg.data_dir, data_dir);
+        assert_eq!(cfg.relay_url.as_deref(), Some("https://nodus.example.com"));
+    }
+
+    #[test]
+    fn persist_relay_url_preserves_unknown_keys() {
+        // A future-or-foreign config key must survive a relay_url write;
+        // re-serializing the typed struct would silently drop it.
+        let dir = tempdir().unwrap();
+        let data_dir = dir.path().join("data");
+        let path = dir.path().join(CONFIG_FILE);
+        std::fs::write(
+            &path,
+            format!(
+                "data_dir = {:?}\nfuture_key = \"keep-me\"\n",
+                data_dir.display().to_string()
+            ),
+        )
+        .unwrap();
+
+        persist_relay_url(dir.path(), &data_dir, "https://nodus.example.com").unwrap();
+
+        let doc: toml::Table = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(doc.get("future_key").and_then(|v| v.as_str()), Some("keep-me"));
+        assert_eq!(
+            doc.get("relay_url").and_then(|v| v.as_str()),
+            Some("https://nodus.example.com")
+        );
     }
 
     #[test]

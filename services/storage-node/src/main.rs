@@ -12,28 +12,85 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
-use clap::Parser;
+use clap::{Parser, Subcommand};
+use url::Url;
 
 /// Nodus Storage Node — local durable storage for the Nodus sync system.
 #[derive(Parser)]
 #[command(version, about)]
 struct Cli {
+    #[command(subcommand)]
+    command: Option<Command>,
+
     /// Directory for node data (objects + database). Overrides NODUS_DATA_DIR.
-    #[arg(long, value_name = "PATH")]
+    #[arg(long, global = true, value_name = "PATH")]
     data_dir: Option<PathBuf>,
     /// Adopt an existing data directory without prompting, even if it already
     /// contains node data from a previous install. Has no effect once
     /// `~/.nodus/config.toml` exists (the node is already configured).
-    #[arg(long)]
+    #[arg(long, global = true)]
     force_adopt: bool,
+    /// Relay endpoint. Public base origin (`https://nodus.example.com`) or an
+    /// explicit legacy ws/wss URL. Precedence: this flag > config.toml
+    /// `relay_url` > `NODUS_RELAY_URL` > none (first-run never defaults to
+    /// localhost).
+    #[arg(long, global = true, value_name = "URL")]
+    relay: Option<String>,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// Storage node lifecycle commands.
+    Node {
+        #[command(subcommand)]
+        action: NodeAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum NodeAction {
+    /// Boot the storage node daemon (same behavior as a bare `nodus`).
+    Start,
+    /// Pair this node with an account using a one-time pairing code.
+    Pair {
+        /// Pairing code (`NODUS-XXXX-XXXX`); omit to be prompted (S5).
+        #[arg(long, value_name = "CODE")]
+        code: Option<String>,
+    },
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+
+    // Bare invocation and `node start` both boot the daemon, so existing
+    // flag-only invocations (`nodus --data-dir … --force-adopt`) keep working.
+    match &cli.command {
+        None
+        | Some(Command::Node {
+            action: NodeAction::Start,
+        }) => run_daemon(&cli).await,
+        Some(Command::Node {
+            action: NodeAction::Pair { .. },
+        }) => {
+            anyhow::bail!(
+                "`nodus node pair` is not implemented yet; \
+                 the pairing flow lands in session S5"
+            )
+        }
+    }
+}
+
+async fn run_daemon(cli: &Cli) -> anyhow::Result<()> {
     let interactive = std::io::IsTerminal::is_terminal(&std::io::stdin());
 
-    let cfg = config::load_or_setup(cli.data_dir, interactive, cli.force_adopt).map_err(|e| {
+    let cfg = config::load_or_setup(
+        cli.data_dir.clone(),
+        cli.relay.clone(),
+        interactive,
+        cli.force_adopt,
+    )
+    .map_err(|e| {
         eprintln!("configuration error: {e}");
         eprintln!(
             "provide a data directory via --data-dir or NODUS_DATA_DIR, or run interactively"
@@ -43,6 +100,11 @@ async fn main() -> anyhow::Result<()> {
 
     println!("node data dir: {}", cfg.data_dir.display());
     println!("config dir:    {}", cfg.nodus_dir.display());
+
+    // Phase 7b: the daemon only communicates over WSS through the public
+    // origin, so a missing relay is a hard failure. Never fall back to
+    // localhost — that would silently pair/boot a node against the wrong host.
+    let relay_url = resolve_daemon_relay(cfg.relay_url.as_deref())?;
 
     // Phase 5: Node identity
     let node_id_info =
@@ -104,8 +166,6 @@ async fn main() -> anyhow::Result<()> {
 
     // Phase 8: Start WebSocket sync loop
     let sync_db = db.clone();
-    let relay_url =
-        std::env::var("NODUS_RELAY_URL").unwrap_or_else(|_| "ws://127.0.0.1:8080/ws".to_string());
 
     // The sync loop owns its own copy of the relay URL; the original is kept
     // for the local-discovery verify-fallback derivation below.
@@ -170,4 +230,138 @@ async fn main() -> anyhow::Result<()> {
     println!("storage node shutting down.");
 
     Ok(())
+}
+
+/// Resolve the daemon's WebSocket relay endpoint from the configured value.
+///
+/// Extracted from `run_daemon` so the "fail loudly, never localhost" rule is
+/// unit-testable without booting the node. A missing relay is a hard error
+/// (first-run must never silently target 127.0.0.1), and a value that does not
+/// normalize to a `ws(s)://` URL is rejected up front so an operator typo
+/// surfaces at boot instead of spinning in the reconnect loop forever.
+fn resolve_daemon_relay(configured: Option<&str>) -> anyhow::Result<String> {
+    let Some(raw) = configured else {
+        anyhow::bail!(
+            "no relay configured; run `nodus node pair` or set \
+             NODUS_RELAY_URL / --relay (refusing to default to localhost)"
+        );
+    };
+    let ws_url = sync::client::relay_ws_url(raw);
+    match Url::parse(&ws_url) {
+        Ok(url) if matches!(url.scheme(), "ws" | "wss") => Ok(ws_url),
+        _ => anyhow::bail!(
+            "invalid relay URL {raw:?}: expected an https:// public origin \
+             or an explicit ws(s):// endpoint"
+        ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolve_daemon_relay_rejects_missing() {
+        // Empty config must fail loudly rather than defaulting to localhost.
+        let err = resolve_daemon_relay(None).unwrap_err().to_string();
+        assert!(err.contains("no relay configured"), "unexpected: {err}");
+    }
+
+    #[test]
+    fn resolve_daemon_relay_normalizes_public_origin() {
+        assert_eq!(
+            resolve_daemon_relay(Some("https://nodus.example.com")).unwrap(),
+            "wss://nodus.example.com/ws"
+        );
+        // Legacy explicit WS endpoints are accepted verbatim.
+        assert_eq!(
+            resolve_daemon_relay(Some("ws://127.0.0.1:8080/ws")).unwrap(),
+            "ws://127.0.0.1:8080/ws"
+        );
+    }
+
+    #[test]
+    fn resolve_daemon_relay_rejects_malformed_and_bad_scheme() {
+        assert!(resolve_daemon_relay(Some("not-a-url")).is_err());
+        assert!(resolve_daemon_relay(Some("nodus.example.com")).is_err());
+        assert!(resolve_daemon_relay(Some("ftp://nodus.example.com")).is_err());
+    }
+
+    #[test]
+    fn bare_invocation_has_no_subcommand_and_boots_legacy() {
+        let cli = Cli::try_parse_from(["nodus"]).unwrap();
+        assert!(cli.command.is_none());
+        assert!(cli.data_dir.is_none());
+        assert!(!cli.force_adopt);
+        assert!(cli.relay.is_none());
+    }
+
+    #[test]
+    fn root_flags_still_parse_without_subcommand() {
+        let cli = Cli::try_parse_from([
+            "nodus",
+            "--data-dir",
+            "/tmp/data",
+            "--force-adopt",
+            "--relay",
+            "https://nodus.example.com",
+        ])
+        .unwrap();
+        assert!(cli.command.is_none());
+        assert_eq!(cli.data_dir.unwrap(), PathBuf::from("/tmp/data"));
+        assert!(cli.force_adopt);
+        assert_eq!(cli.relay.as_deref(), Some("https://nodus.example.com"));
+    }
+
+    #[test]
+    fn node_start_parses() {
+        let cli = Cli::try_parse_from(["nodus", "node", "start"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Node {
+                action: NodeAction::Start
+            })
+        ));
+    }
+
+    #[test]
+    fn global_flags_work_after_subcommand() {
+        // `--data-dir`/`--relay` are global so they are accepted after the
+        // subcommand, not only before it.
+        let cli = Cli::try_parse_from([
+            "nodus",
+            "node",
+            "start",
+            "--data-dir",
+            "/tmp/data",
+            "--relay",
+            "https://nodus.example.com",
+        ])
+        .unwrap();
+        assert_eq!(cli.data_dir.unwrap(), PathBuf::from("/tmp/data"));
+        assert_eq!(cli.relay.as_deref(), Some("https://nodus.example.com"));
+    }
+
+    #[test]
+    fn node_pair_parses_code() {
+        let cli =
+            Cli::try_parse_from(["nodus", "node", "pair", "--code", "NODUS-ABCD-2345"]).unwrap();
+        match cli.command {
+            Some(Command::Node {
+                action: NodeAction::Pair { code },
+            }) => assert_eq!(code.as_deref(), Some("NODUS-ABCD-2345")),
+            _ => panic!("expected node pair"),
+        }
+    }
+
+    #[test]
+    fn node_pair_without_code_parses_for_interactive_prompt() {
+        let cli = Cli::try_parse_from(["nodus", "node", "pair"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Node {
+                action: NodeAction::Pair { code: None }
+            })
+        ));
+    }
 }

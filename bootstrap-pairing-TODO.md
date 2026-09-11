@@ -11,9 +11,9 @@ across multiple sessions so any session can be picked up where the last left off
 
 ## Status
 
-- **Current session:** S3 (next)
+- **Current session:** S5 (next)
 - **Blocked on:** nothing
-- **Done sessions:** S1, S2
+- **Done sessions:** S1, S2, S3, S4
 
 Update the marker above and the Session Log at the bottom whenever you finish a
 session. Mark a task `[~]` while in progress, `[x]` when complete.
@@ -135,17 +135,17 @@ precedence; no more localhost default.
 
 Tasks:
 
-- [ ] Add `node` CLI subgroup in `services/storage-node/src/main.rs`
+- [x] Add `node` CLI subgroup in `services/storage-node/src/main.rs`
       (`node start`, `node pair`); existing root flags (`--data-dir`,
       `--force-adopt`) still boot the daemon as-is.
-- [ ] `relay_url` key added to `NodusConfigFile`; write/read in
+- [x] `relay_url` key added to `NodusConfigFile`; write/read in
       `src/config/mod.rs` (config.toml gains `relay_url` alongside `data_dir`).
-- [ ] URL resolution precedence: CLI `--relay` > `config.toml` `relay_url` >
+- [x] URL resolution precedence: CLI `--relay` > `config.toml` `relay_url` >
       `NODUS_RELAY_URL` > **no default** (never localhost/127.0.0.1 for
       first-run pairing). Plan §7c.
-- [ ] Remove the `NODUS_RELAY_URL` → `ws://127.0.0.1:8080/ws` fallback in main.rs
+- [x] Remove the `NODUS_RELAY_URL` → `ws://127.0.0.1:8080/ws` fallback in main.rs
       (the boot path must use the same precedence).
-- [ ] Rust tests: precedence order, empty-everything ⇒ error (not localhost),
+- [x] Rust tests: precedence order, empty-everything ⇒ error (not localhost),
       persistence read-back.
 
 **Exit criteria:** bare `nodus node start` with no relay config fails loudly
@@ -314,8 +314,8 @@ Run: `pnpm test && pnpm lint && pnpm check-types`
 |---|---|---|---|
 | S1 | 2026-09-11 | done | migration, handler, code gen, route, unit tests |
 | S2 | 2026-09-11 | done | redeem handler (transactional consume+register), proxy-aware rate limiter, route, integration tests |
-| S3 | — | pending | |
-| S4 | — | pending | |
+| S3 | 2026-09-11 | done | `node_auth_result.reason="node_not_found"` for unpaired nodes; Go suite green |
+| S4 | 2026-09-11 | done | `node` subgroup + global root flags, `relay_url` config key, precedence resolver, ws/wss normalization, no-localhost boot guard, tests |
 | S5 | — | pending | |
 | S6 | — | pending | |
 | S7 | — | pending | |
