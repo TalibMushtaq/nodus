@@ -85,4 +85,15 @@ describe("DevicesClient", () => {
     const button = screen.getByRole("button", { name: "+ Add Storage Node" });
     expect(button).toBeDisabled();
   });
+
+  it("disables adding a node until the node catalog has loaded", () => {
+    // The dialog snapshots existing ids as its baseline, so opening while the
+    // catalog is still loading could misread an existing node as newly paired.
+    mockListNodes.mockReturnValue(new Promise<RelayNode[]>(() => {}));
+    mockListDevices.mockReturnValue(new Promise<never>(() => {}));
+
+    render(<DevicesClient publicRelayUrl="https://nodus.example.com" />);
+
+    expect(screen.getByRole("button", { name: "+ Add Storage Node" })).toBeDisabled();
+  });
 });

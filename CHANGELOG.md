@@ -1,5 +1,15 @@
 # Changelog
 
+## [2026-09-11] - Pairing S7 audit fixes (baseline race, copy feedback, tracker, newline)
+
+**What changed:** Follow-up to the S7 entry below. `apps/web/app/(dashboard)/devices/devices-client.tsx`: the "+ Add Storage Node" action is now disabled while the node catalog is still loading, because the dialog snapshots `existingNodeIds` at mount and an empty/stale baseline would let `findNewNode` misread an existing node as a freshly paired one. `apps/web/components/add-storage-node-dialog.tsx`: `copyCommand` now returns early when `navigator.clipboard` is unavailable and only flips the check icon after a successful write, so the UI no longer claims a copy that did not happen. `Todo.md`: checked the S7 dialog/web-test items and recorded the issuance-vs-redeem divergence. `bootstrap-pairing-TODO.md`: restored the trailing newline lost in the S7 commit.
+
+**Why:** The audit found a real (if narrow) race that could report a false "paired" success on open, plus a copy-feedback lie and two documentation/formatting nits.
+
+**Impact:** `apps/web/{app/(dashboard)/devices/devices-client.tsx,app/(dashboard)/devices/__tests__/devices-client.test.tsx,components/add-storage-node-dialog.tsx}`, `Todo.md`, `bootstrap-pairing-TODO.md`. Test added: the Add button is disabled until the catalog resolves. `pnpm --filter web test` 71 passed (was 70); `check-types`, `lint`, `pnpm test:ts` green.
+
+**Follow-ups:** Cross-session false positives remain inherent to the browser-only-issue design (the browser never learns the node id) and are documented; S10's live E2E will exercise the happy path.
+
 ## [2026-09-11] - Web: "+ Add Storage Node" pairing-code dialog (S7)
 
 **What changed:** The Devices page can now bootstrap a Storage Node end-to-end. Added `apps/web/components/add-storage-node-dialog.tsx` (client): on open it mints a code via `createPairingCode()`, shows the relay URL (`PUBLIC_RELAY_URL`), the code, and the exact `nodus node pair --relay <url> --code <code>` command with a copy button, plus a live `MM:SS` expiry countdown. It polls `GET /nodes` every 3s and detects success by diffing against the node ids present when the dialog opened (the browser never learns the node's id ahead of time; `findNewNode` in `lib/pairing.ts` does the diff). State machine `creating → waiting → paired / expired / poll-error`; on paired it reports the node and `DevicesClient` re-syncs the catalog without a reload; expiry offers "Generate new code". The Storage Nodes section action is now "+ Add Storage Node" (opening the dialog) instead of routing to `/pair`; it is disabled with the existing warning when `PUBLIC_RELAY_URL` is unset. Built from `packages/ui` primitives (`Modal`/`ModalHeader`, `Input`, `Button`, `StatusBadge`, `Icon`) per the design-port conventions. Added `formatCountdown` to `lib/format.ts`.

@@ -165,7 +165,10 @@ export function DevicesClient({ publicRelayUrl }: DevicesClientProps) {
             variant="secondary"
             size="sm"
             onClick={() => setDialogOpen(true)}
-            disabled={publicRelayUrl === null}
+            // Also block while the catalog loads: the dialog snapshots the
+            // current node ids as its pairing baseline, so opening with an
+            // empty/stale catalog would misread an existing node as "new".
+            disabled={publicRelayUrl === null || loading}
             title={publicRelayUrl === null ? "Set PUBLIC_RELAY_URL to pair a node" : undefined}
           >
             + Add Storage Node

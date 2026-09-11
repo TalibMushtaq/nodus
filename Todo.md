@@ -291,9 +291,12 @@ stage 7b in §28 (inserted between 7a and 8).
 - [x] `lib/pairing.ts`: `createPairingCode()`, node list/polling, revoke — S6
       (node revocation has no Relay endpoint; only device revocation exists, so
       there is nothing to reuse — documented gap, not in scope)
-- [ ] Devices page "+ Add Storage Node" dialog: relay URL (`PUBLIC_RELAY_URL`) +
+- [x] Devices page "+ Add Storage Node" dialog: relay URL (`PUBLIC_RELAY_URL`) +
       code + expiry countdown + CLI instructions + node-status polling
-      (connected/paired/expired/error states) — S7
+      (connected/paired/expired/error states) — S7. (The browser only *issues*
+      the code; redeem errors such as `code_expired`/`node_owned_elsewhere` are
+      surfaced by `nodus node pair`, so the dialog covers issuance-side states
+      and detects success via a new node in `GET /nodes`.)
 - [x] Keep internal `RELAY_URL` and user-facing `PUBLIC_RELAY_URL` distinct — S6
 
 ### Security tests
@@ -306,9 +309,9 @@ stage 7b in §28 (inserted between 7a and 8).
 - [x] Rust: URL precedence, `relay_url` persistence on success-only, identity
       reuse across attempts, interactive + non-interactive pair, failure paths
       rendered as machine-readable reasons — S5
-- [ ] Web: code creation, URL+code render, polling success/expiry, unpaired error — S7
-      (code creation + polling unit tests already landed in S6; the dialog
-      render/expiry/error UI tests remain)
+- [x] Web: code creation, URL+code render, polling success/expiry, unpaired error — S7
+      (arrived across S6–S7: code creation/polling helpers plus the dialog
+      render/countdown/expiry/poll/error tests)
 - [ ] E2E: create code in UI → `nodus node pair` on a fresh node → node appears
       paired → WS challenge-response sync session succeeds — S10
 

@@ -130,9 +130,14 @@ export function AddStorageNodeDialog({
   const command = code ? `nodus node pair --relay ${relayUrl} --code ${code}` : "";
 
   const copyCommand = useCallback(async () => {
-    if (!command) return;
-    await navigator.clipboard?.writeText(command);
-    setCopied(true);
+    if (!command || !navigator.clipboard) return;
+    try {
+      await navigator.clipboard.writeText(command);
+      setCopied(true);
+    } catch {
+      // Clipboard denied/unavailable (e.g. insecure context): leave the icon
+      // unchanged rather than claiming a copy that did not happen.
+    }
   }, [command]);
 
   return (
