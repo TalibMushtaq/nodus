@@ -7,8 +7,12 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/lib/pq"
 
 	"github.com/TalibMushtaq/nodus/services/relay/internal/auth"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/buffer"
@@ -19,6 +23,68 @@ import (
 	"github.com/TalibMushtaq/nodus/services/relay/internal/rdb"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/tombstone"
 )
+
+// permanentDBError reports database errors that retrying cannot fix:
+// authentication/authorization failures (SQLSTATE class 28) and a missing
+// database (3D000). Anything unclassified is treated as transient — the
+// fresh-deploy race (connection refused, or "starting up" 57P03) must keep its
+// retry budget, so only positively-identified permanent errors skip it.
+func permanentDBError(err error) bool {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && permanentSQLState(pgErr.Code) {
+		return true
+	}
+	// Migrations run through golang-migrate's lib/pq driver, whose errors are
+	// not pgx types; check both so a bad password fails fast regardless of
+	// which stage reported it.
+	var pqErr *pq.Error
+	if errors.As(err, &pqErr) && permanentSQLState(string(pqErr.Code)) {
+		return true
+	}
+	return false
+}
+
+func permanentSQLState(code string) bool {
+	return strings.HasPrefix(code, "28") || code == "3D000"
+}
+
+// openDatabaseWithRetry opens PostgreSQL and runs migrations, retrying on a
+// bounded backoff. It returns nil only after the budget is exhausted (or on a
+// permanent misconfiguration), which preserves the Relay's optional-DB mode for
+// local/dev runs. The retry exists so a fresh deployment cannot come up in
+// degraded mode just because Postgres was still initializing when the Relay
+// started.
+func openDatabaseWithRetry(ctx context.Context, cfg *config.Config) *db.Pool {
+	const attempts = 12
+	const delay = 5 * time.Second
+	for i := 1; i <= attempts; i++ {
+		pool, err := db.Open(ctx, cfg)
+		if err == nil {
+			return pool
+		}
+		if permanentDBError(err) {
+			log.Printf(
+				"[relay] postgresql misconfigured (%v); not retrying. Starting with limited functionality.",
+				err,
+			)
+			return nil
+		}
+		if i == attempts {
+			log.Printf(
+				"[relay] warning: postgresql unavailable after %d attempts (%v). Starting with limited functionality.",
+				i, err,
+			)
+			return nil
+		}
+		log.Printf("[relay] postgresql not ready (attempt %d/%d): %v; retrying in %s", i, attempts, err, delay)
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(delay):
+		}
+	}
+	return nil
+}
 
 func main() {
 	log.Println("[relay] starting Nodus Relay control-plane server...")
@@ -32,12 +98,14 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// 2. PostgreSQL initialization & migrations
+	// 2. PostgreSQL initialization & migrations. A fresh deploy can race
+	// PostgreSQL's entrypoint: during initdb it briefly serves a temporary,
+	// socket-only server before the real one listens, so a one-shot connect can
+	// fail and leave the Relay degraded (auth/pairing routes unregistered).
+	// Retry within a bounded window before falling back to the optional-DB mode.
 	var pool *db.Pool
-	pool, err = db.Open(ctx, cfg)
-	if err != nil {
-		log.Printf("[relay] warning: postgresql connection failed (%v). Starting with limited functionality.", err)
-	} else {
+	if p := openDatabaseWithRetry(ctx, cfg); p != nil {
+		pool = p
 		log.Println("[relay] postgresql: ready (migrations applied)")
 		defer pool.Close()
 	}

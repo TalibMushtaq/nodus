@@ -11,9 +11,9 @@ across multiple sessions so any session can be picked up where the last left off
 
 ## Status
 
-- **Current session:** S10 (next)
+- **Current session:** — (all sessions complete)
 - **Blocked on:** nothing
-- **Done sessions:** S1, S2, S3, S4, S5, S6, S7, S8, S9
+- **Done sessions:** S1, S2, S3, S4, S5, S6, S7, S8, S9, S10
 
 Update the marker above and the Session Log at the bottom whenever you finish a
 session. Mark a task `[~]` while in progress, `[x]` when complete.
@@ -307,18 +307,45 @@ Run: proofread pass (`rg -n "pairing_codes|node_not_found|PUBLIC_RELAY_URL" docs
 
 Tasks:
 
-- [ ] E2E: create code in UI → `nodus node pair` on a fresh node → node appears
-      paired → WS challenge-response sync session authenticates.
-- [ ] Negative E2E: second redemption of the same code fails; expired code fails;
+- [x] E2E: create code in UI → `nodus node pair` on a fresh node → node appears
+      paired → WS challenge-response sync session authenticates. (Live over the
+      Caddy origin; `scripts/e2e-bootstrap-pairing.sh` scenario 1. The script
+      mints through the same `/api/pairing/codes` proxy the dialog calls rather
+      than driving the browser; the dialog UI itself is covered by the web unit
+      tests.)
+- [x] Negative E2E: second redemption of the same code fails; expired code fails;
       node already owned elsewhere ⇒ no account change (`node_owned_elsewhere`).
-- [ ] Concurrency: rapid parallel redeems ⇒ single winner (covered in S2 but
-      re-verified live).
-- [ ] Restart resilience: Relay restart mid-pairing, then retry; consumed code
+      (Scenarios 2–4.)
+- [x] Concurrency: rapid parallel redeems ⇒ single winner (covered in S2 but
+      re-verified live). Exactly one `200`, seven rejected (`409`/`429`), exactly
+      one `storage_nodes` row, code `CONSUMED` once. (Scenario 5.)
+- [x] Restart resilience: Relay restart mid-pairing, then retry; consumed code
       still fails; node reconnect after relay restart uses WS auth only (code
-      never needed again).
-- [ ] Rapid re-pairing attempt with a *different* relay URL on an already-paired
-      node ⇒ rejected or consistently documented behavior (v1 non-goal: re-pairing).
-- [ ] Run full suite: `pnpm test`, `pnpm lint`, `pnpm check-types`.
+      never needed again). (Scenario 6.)
+- [x] Rapid re-pairing attempt with a *different* relay URL on an already-paired
+      node ⇒ rejected or consistently documented behavior (v1 non-goal:
+      re-pairing). Same-account re-pair is idempotent and updates `relay_url`;
+      another account's code is rejected (`node_owned_elsewhere`). (Scenario 7
+      + scenario 4.)
+- [x] Run full suite: `pnpm test`, `pnpm lint`, `pnpm check-types`.
+
+**Hardening found during S10 (fixed):**
+- The Relay opened Postgres once at boot; on a fresh volume Postgres' initdb
+  briefly serves a socket-only temporary server, so the socket-based compose
+  healthcheck could pass and the Relay would then fail to connect and silently
+  start **degraded** (auth/pairing routes unregistered → 404). Fixed by (a) a
+  bounded DB-connect retry in `main.go`, (b) a TCP Postgres healthcheck
+  (`pg_isready -h 127.0.0.1`), and (c) a Relay healthcheck that requires
+  the overall `"status":"ok"` (a bare `/health` 200, or a Postgres-only grep,
+  would mark a partially degraded Relay healthy).
+- `TestRedeemConcurrentDoubleRedeem` was flaky under the full integration suite:
+  the process-global redeem rate limiter plus a 250-address fake-IP space let a
+  draining test leak a depleted bucket. Fixed by resetting the limiter per
+  integration test and reporting the offending status on failure.
+- Audit follow-ups: `openDatabaseWithRetry` now fast-fails on positively
+  permanent DB errors (SQLSTATE class 28 / `3D000`) instead of retrying a bad
+  password for the full minute; the E2E script runs SQL through the Postgres
+  container so `POSTGRES_USER`/`POSTGRES_DB` come from the compose env.
 
 **Exit criteria:** S1–S9 artifacts hold together under the scenarios above; full
 test suite green.
@@ -359,4 +386,4 @@ Run: `pnpm test && pnpm lint && pnpm check-types`
 | S7 | 2026-09-11 | done | `AddStorageNodeDialog` (code/command/copy/countdown), `GET /nodes` new-node poll, paired refresh, `findNewNode`+`formatCountdown`; primitives only; 70 web tests green |
 | S8 | 2026-09-11 | done | `deploy/` single-origin unit (web+relay+pg+redis+caddy), corrected routing (`/api/*`→Next, relay-owned paths proxied), `PUBLIC_RELAY_URL` wired, Next standalone; live E2E: host node paired + WS-authed via Caddy |
 | S9 | 2026-09-11 | done | ADR-0006; `docs/security/bootstrap-pairing.md` + local-endpoints cross-ref + security index; message-catalog node-auth + pairing HTTP API; §7b drift reconciled |
-| S10 | — | pending | |
+| S10 | 2026-09-11 | done | live E2E matrix (happy/negatives/concurrency/restart/re-pair) 26 checks green via `scripts/e2e-bootstrap-pairing.sh`; fixed fresh-deploy Relay degraded-start race + flaky concurrency test |

@@ -1,5 +1,25 @@
 # Changelog
 
+## [2026-09-11] - S10 audit fixes (DB fast-fail, healthcheck, E2E robustness)
+
+**What changed:** Follow-up to the S10 entry below. `services/relay/main.go`: `openDatabaseWithRetry` now fast-fails (`permanentDBError`) on positively permanent database errors — authentication/authorization (SQLSTATE class 28) and a missing database (`3D000`) — for both the pgx (`*pgconn.PgError`) and golang-migrate/lib/pq (`*pq.Error`) paths, instead of retrying a bad password for the full 60s; unclassified errors still retry so the fresh-deploy race keeps its budget (`lib/pq` promoted from indirect to direct). `deploy/docker-compose.yml`: the Relay healthcheck now requires the overall `"status":"ok"` rather than just `"postgres":"healthy"`, so a Redis outage no longer leaves the container marked healthy. `scripts/e2e-bootstrap-pairing.sh`: `psqlq` runs SQL through the Postgres container (`$POSTGRES_USER`/`$POSTGRES_DB`) instead of hardcoding `nodus`/`nodus_relay`, and the header states that minting goes through the same `/api/pairing/codes` proxy the browser dialog calls (the dialog itself is unit-tested). `bootstrap-pairing-TODO.md`: S10 wording/hardening notes updated.
+
+**Why:** The S10 audit found the retry loop delayed a misconfigured deploy by a minute, the healthcheck ignored Redis, the E2E script broke under a custom `deploy/.env`, and the tracker/changelog overstated the browser UI coverage.
+
+**Impact:** `services/relay/{main.go,go.mod}`, `deploy/docker-compose.yml`, `scripts/e2e-bootstrap-pairing.sh`, `bootstrap-pairing-TODO.md`. Verified: `gofmt`/`go vet` clean; rebuilt the relay image and re-ran the stack — `/health` healthy, and `scripts/e2e-bootstrap-pairing.sh` still **26 passed / 0 failed**; `pnpm test`/`lint`/`check-types` green.
+
+**Follow-ups:** None.
+
+## [2026-09-11] - S10: live E2E matrix + fresh-deploy/DB hardening
+
+**What changed:** Ran the full bootstrap-pairing lifecycle against the live single-origin deploy unit and fixed two real issues it surfaced. (1) **Fresh-deploy Relay degraded-start race:** the Relay attempted Postgres once at boot; on a fresh volume Postgres' initdb briefly serves a *socket-only* temporary server, so the socket-based compose healthcheck could pass, the Relay would connect during the teardown gap, fail, and silently start in degraded mode with its auth/pairing routes unregistered (every `/api/auth/*`, `/api/pairing/*` → 404). Fixed with a bounded DB-connect retry in `services/relay/main.go` (`openDatabaseWithRetry`, 12×5s before falling back), a TCP Postgres healthcheck in `deploy/docker-compose.yml` (`pg_isready -h 127.0.0.1`), and a Relay healthcheck that requires `"postgres":"healthy"` (the bare `/health` 200 was returned even when degraded). (2) **Flaky concurrency test:** `TestRedeemConcurrentDoubleRedeem` could fail under the full integration suite because the process-global redeem rate limiter and a 250-address fake-IP helper let the draining rate-limit test leak a depleted bucket; fixed by resetting the limiter per integration test and reporting the offending status. Added `scripts/e2e-bootstrap-pairing.sh`, the reusable 26-check live matrix.
+
+**Why:** S10 is the integration/E2E/hardening gate; the deploy race would break every fresh production install, and the flaky test would undermine CI trust.
+
+**Impact:** `services/relay/main.go`, `deploy/docker-compose.yml`, `services/relay/internal/handler/pairing_code_test.go`, `scripts/e2e-bootstrap-pairing.sh` (new), `bootstrap-pairing-TODO.md`. Verified live from a wiped volume: Relay logs `postgresql: ready (migrations applied)`, and `scripts/e2e-bootstrap-pairing.sh` reports **26 passed / 0 failed** — happy path (mint → `node pair` → listed → WS auth → reconnect), consumed/expired/`node_owned_elsewhere` negatives, concurrent single-winner (one `200`, one `storage_nodes` row, code `CONSUMED` once), Relay-restart resilience, and re-pairing behavior. Full suite green: `pnpm test` (TS + Go + Rust), `pnpm lint`, `pnpm check-types`; Go integration tests green with `TEST_DATABASE_URL`/`TEST_REDIS_URL`.
+
+**Follow-ups:** Migration complete (S1–S10). QR pairing remains a deferred v1 non-goal.
+
 ## [2026-09-11] - Docs S9 audit fixes (ADR citation, code comment, doc coverage)
 
 **What changed:** Follow-up to the S9 entry below. `docs/decisions/0006-self-hosted-node-bootstrap-pairing.md`: the Context no longer claims ADR-0004 assumed QR-based LAN pairing (ADR-0004 is the mobile mDNS/WebRTC discovery decision and never discussed QR or node pairing); it now cites plan §7b "Non-goals" for the deferred QR option. `services/relay/internal/handler/pairing_code_gen.go`: corrected the stale comment that said the code space was `32^12 ≈ 2^60` — the generator emits 8 symbols, so it is `32^8 ≈ 2^40`, matching `docs/security/bootstrap-pairing.md`. `docs/security/bootstrap-pairing.md`: names the `pairing_codes` table and the operator-configured `PUBLIC_RELAY_URL` so the S9 proofread grep actually exercises all three terms.

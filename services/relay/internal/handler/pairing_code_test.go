@@ -97,6 +97,10 @@ func createPairingCodeHarness(t *testing.T) (*db.Pool, string) {
 	if url == "" {
 		t.Skip("TEST_DATABASE_URL not set; skipping integration test")
 	}
+	// The redeem rate limiter is a process-global (no Redis). Reset it so a
+	// draining test (TestRedeemPairingCodeRateLimit) or an IP-seed collision
+	// cannot leak a depleted bucket into an unrelated test.
+	resetRedeemLimiter()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	require.NoError(t, db.RunMigrations(url), "run migrations")
@@ -203,6 +207,15 @@ func testRemoteAddr(seed string) string {
 	h := fnv.New32a()
 	_, _ = h.Write([]byte(seed))
 	return fmt.Sprintf("192.0.2.%d:12345", h.Sum32()%250+2)
+}
+
+// resetRedeemLimiter clears the process-global redeem rate limiter's buckets so
+// each integration test starts with a full burst. Belt-and-braces with
+// testRemoteAddr's per-account seeding, since that helper only spans 250 IPs.
+func resetRedeemLimiter() {
+	redeemLimiter.mu.Lock()
+	redeemLimiter.buckets = make(map[string]*ipBucket)
+	redeemLimiter.mu.Unlock()
 }
 
 func TestRedeemPairingCodeSuccess(t *testing.T) {
@@ -453,14 +466,18 @@ func TestRedeemConcurrentDoubleRedeem(t *testing.T) {
 	}
 
 	wins, losses := 0, 0
+	codes := make([]int, 0, goroutines)
 	for i := 0; i < goroutines; i++ {
-		switch <-results {
+		codes = append(codes, <-results)
+	}
+	for _, code := range codes {
+		switch code {
 		case http.StatusOK:
 			wins++
 		case http.StatusConflict:
 			losses++
 		default:
-			t.Fatalf("unexpected status code from goroutine")
+			t.Fatalf("unexpected status code %d from goroutine; codes=%v", code, codes)
 		}
 	}
 	require.Equal(t, 1, wins, "exactly one goroutine must win the race")
