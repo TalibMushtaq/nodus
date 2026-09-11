@@ -117,6 +117,9 @@ func main() {
 		mux.HandleFunc("POST /pairing/sessions/verify", handler.VerifyPairingSession(pool))
 		mux.HandleFunc("GET /nodes/verify", handler.VerifyNodeURL(pool))
 
+		// Phase 7b: self-hosted node bootstrap pairing codes
+		mux.Handle("POST /pairing/codes", auth.RequireAuth(sessionStore, cfg)(handler.CreatePairingCode(pool)))
+
 		// Phase 9: trigger a full snapshot / Relay rebuild from the primary node
 		mux.Handle("POST /rebuild", auth.RequireAuth(sessionStore, cfg)(handler.RequestRebuild(pool, wsHub)))
 
