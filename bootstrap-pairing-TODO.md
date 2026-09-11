@@ -11,9 +11,9 @@ across multiple sessions so any session can be picked up where the last left off
 
 ## Status
 
-- **Current session:** S2 (next)
+- **Current session:** S3 (next)
 - **Blocked on:** nothing
-- **Done sessions:** S1
+- **Done sessions:** S1, S2
 
 Update the marker above and the Session Log at the bottom whenever you finish a
 session. Mark a task `[~]` while in progress, `[x]` when complete.
@@ -78,21 +78,21 @@ consumes a code and registers the node under the issuing account.
 
 Tasks:
 
-- [ ] Normalize+hash inbound code; look up `PENDING` row.
-- [ ] Failure responses (machine-readable body + sensible HTTP status): `code_unknown`
+- [x] Normalize+hash inbound code; look up `PENDING` row.
+- [x] Failure responses (machine-readable body + sensible HTTP status): `code_unknown`
       / `code_expired` / `code_consumed` / `node_claimed` / `node_owned_elsewhere` (409).
       Plan §7b "API".
-- [ ] Validate `node_id` + `public_key` shape (Ed25519 public key).
-- [ ] Atomic single-use consume: conditional `UPDATE ... SET status='CONSUMED',
+- [x] Validate `node_id` + `public_key` shape (Ed25519 public key).
+- [x] Atomic single-use consume: conditional `UPDATE ... SET status='CONSUMED',
       consumed_at=NOW() WHERE code_hash=$1 AND status='PENDING' AND
       expires_at > NOW()`; rowcount 0 ⇒ re-read to distinguish expired vs consumed.
-- [ ] Upsert into `storage_nodes` bound to the issuing account, **reusing the
+- [x] Upsert into `storage_nodes` bound to the issuing account, **reusing the
       existing first-node/`is_primary` logic** in `internal/handler/node.go`.
       Node owned by another account ⇒ `node_owned_elsewhere` (never move accounts).
-- [ ] Per-IP rate limiter (in-process, mirroring the Rust NonceStore/RateLimiter
+- [x] Per-IP rate limiter (in-process, mirroring the Rust NonceStore/RateLimiter
       pattern) on the redeem endpoint.
-- [ ] Register route in `main.go`.
-- [ ] Go unit tests: happy path returns `{status:"ok", account_id}`; concurrent
+- [x] Register route in `main.go`.
+- [x] Go unit tests: happy path returns `{status:"ok", account_id}`; concurrent
       double-redeem ⇒ exactly one winner; expired/unknown/consumed/claimed cases;
       `is_primary` on first node and NOT set on second; rate-limit trigger.
 
@@ -305,7 +305,7 @@ Run: `pnpm test && pnpm lint && pnpm check-types`
 | Session | Date | Status | Notes |
 |---|---|---|---|
 | S1 | 2026-09-11 | done | migration, handler, code gen, route, unit tests |
-| S2 | — | pending | |
+| S2 | 2026-09-11 | done | redeem handler, rate limiter, route, integration tests |
 | S3 | — | pending | |
 | S4 | — | pending | |
 | S5 | — | pending | |

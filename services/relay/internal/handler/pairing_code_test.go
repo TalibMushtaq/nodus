@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"hash/fnv"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 
 	"github.com/TalibMushtaq/nodus/services/relay/internal/auth"
@@ -88,7 +91,7 @@ func TestHashCodeDiffersForDifferentInputs(t *testing.T) {
 
 // ---------- Integration tests (live Postgres) ----------
 
-func createPairingCodeHarness(t *testing.T) *db.Pool {
+func createPairingCodeHarness(t *testing.T) (*db.Pool, string) {
 	t.Helper()
 	url := os.Getenv("TEST_DATABASE_URL")
 	if url == "" {
@@ -101,20 +104,23 @@ func createPairingCodeHarness(t *testing.T) *db.Pool {
 	require.NoError(t, err, "open pool")
 	t.Cleanup(pool.Close)
 
+	// Fresh account per test so is_primary/first-node logic is deterministic
+	// regardless of test order or leftover rows in a reused test database.
+	accountID := "acct-" + uuid.NewString()
 	_, err = pool.Exec(ctx,
 		`INSERT INTO accounts (account_id, email, password_hash)
-		 VALUES ('acct-pcode', 'pcode@test.local', 'x')
-		 ON CONFLICT DO NOTHING`)
+		 VALUES ($1, $2, 'x')
+		 ON CONFLICT DO NOTHING`, accountID, accountID+"@test.local")
 	require.NoError(t, err)
-	return pool
+	return pool, accountID
 }
 
 func TestCreatePairingCodeIntegration(t *testing.T) {
-	pool := createPairingCodeHarness(t)
+	pool, accountID := createPairingCodeHarness(t)
 
 	body := bytes.NewReader([]byte(`{}`))
 	req := httptest.NewRequest("POST", "/pairing/codes", body)
-	req = req.WithContext(context.WithValue(req.Context(), auth.AccountIDKey, "acct-pcode"))
+	req = req.WithContext(context.WithValue(req.Context(), auth.AccountIDKey, accountID))
 	rr := httptest.NewRecorder()
 
 	CreatePairingCode(pool)(rr, req)
@@ -146,7 +152,7 @@ func TestCreatePairingCodeIntegration(t *testing.T) {
 	// Second call returns a different code.
 	body2 := bytes.NewReader([]byte(`{}`))
 	req2 := httptest.NewRequest("POST", "/pairing/codes", body2)
-	req2 = req2.WithContext(context.WithValue(req2.Context(), auth.AccountIDKey, "acct-pcode"))
+	req2 = req2.WithContext(context.WithValue(req2.Context(), auth.AccountIDKey, accountID))
 	rr2 := httptest.NewRecorder()
 	CreatePairingCode(pool)(rr2, req2)
 	require.Equal(t, http.StatusCreated, rr2.Code)
@@ -159,10 +165,304 @@ func TestCreatePairingCodeIntegration(t *testing.T) {
 }
 
 func TestCreatePairingCodeUnauthorized(t *testing.T) {
-	pool := createPairingCodeHarness(t)
+	pool, _ := createPairingCodeHarness(t)
 
 	req := httptest.NewRequest("POST", "/pairing/codes", bytes.NewReader([]byte(`{}`)))
 	rr := httptest.NewRecorder()
 	CreatePairingCode(pool)(rr, req)
 	require.Equal(t, http.StatusUnauthorized, rr.Code)
+}
+
+// ---------- S2: RedeemPairingCode integration tests ----------
+
+// mintCodeHelper creates a pairing code via the handler and returns the plaintext.
+func mintCodeHelper(t *testing.T, pool *db.Pool, accountID string) string {
+	t.Helper()
+	req := httptest.NewRequest("POST", "/pairing/codes", bytes.NewReader([]byte(`{}`)))
+	req = req.WithContext(context.WithValue(req.Context(), auth.AccountIDKey, accountID))
+	rr := httptest.NewRecorder()
+	CreatePairingCode(pool)(rr, req)
+	require.Equal(t, http.StatusCreated, rr.Code)
+	var resp struct {
+		Code string `json:"code"`
+	}
+	require.NoError(t, json.NewDecoder(rr.Body).Decode(&resp))
+	return resp.Code
+}
+
+func redeemBody(code, nodeID, publicKey string) *bytes.Reader {
+	b, _ := json.Marshal(RedeemRequest{Code: code, NodeID: nodeID, PublicKey: publicKey})
+	return bytes.NewReader(b)
+}
+
+// testRemoteAddr derives a stable fake client IP from a seed. Each test seeds
+// with its unique accountID (FNV-1a fills the 32-bit IP space), so repeated
+// runs (-count=N) or tests in the same package never collide in the shared
+// global rate limiter's buckets.
+func testRemoteAddr(seed string) string {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(seed))
+	return fmt.Sprintf("192.0.2.%d:12345", h.Sum32()%250+2)
+}
+
+func TestRedeemPairingCodeSuccess(t *testing.T) {
+	pool, accountID := createPairingCodeHarness(t)
+	code := mintCodeHelper(t, pool, accountID)
+	nodeID := "n-" + accountID
+
+	pubKey := "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899"
+	req := httptest.NewRequest("POST", "/pairing/codes/redeem", redeemBody(code, nodeID, pubKey))
+	req.RemoteAddr = testRemoteAddr(accountID)
+	rr := httptest.NewRecorder()
+	RedeemPairingCode(pool)(rr, req)
+
+	require.Equal(t, http.StatusOK, rr.Code)
+	var resp struct {
+		Status    string `json:"status"`
+		AccountID string `json:"account_id"`
+	}
+	require.NoError(t, json.NewDecoder(rr.Body).Decode(&resp))
+	require.Equal(t, "ok", resp.Status)
+	require.Equal(t, accountID, resp.AccountID)
+
+	// DB: code is CONSUMED.
+	var status string
+	err := pool.QueryRow(context.Background(),
+		`SELECT status FROM pairing_codes WHERE code_hash = $1`, hashCode(normalizeCode(code)),
+	).Scan(&status)
+	require.NoError(t, err)
+	require.Equal(t, "CONSUMED", status)
+
+	// DB: node exists under the account.
+	var nodeAccount string
+	err = pool.QueryRow(context.Background(),
+		`SELECT account_id FROM storage_nodes WHERE node_id = $1`, nodeID,
+	).Scan(&nodeAccount)
+	require.NoError(t, err)
+	require.Equal(t, accountID, nodeAccount)
+}
+
+func TestRedeemPairingCodeFirstNodeIsPrimary(t *testing.T) {
+	pool, accountID := createPairingCodeHarness(t)
+	code := mintCodeHelper(t, pool, accountID)
+	nodeID := "n-" + accountID
+
+	pubKey := "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899"
+	req := httptest.NewRequest("POST", "/pairing/codes/redeem", redeemBody(code, nodeID, pubKey))
+	req.RemoteAddr = testRemoteAddr(accountID)
+	rr := httptest.NewRecorder()
+	RedeemPairingCode(pool)(rr, req)
+	require.Equal(t, http.StatusOK, rr.Code)
+
+	var isPrimary bool
+	err := pool.QueryRow(context.Background(),
+		`SELECT is_primary FROM storage_nodes WHERE node_id = $1`, nodeID,
+	).Scan(&isPrimary)
+	require.NoError(t, err)
+	require.True(t, isPrimary, "first node must be is_primary")
+}
+
+func TestRedeemPairingCodeSecondNodeNotPrimary(t *testing.T) {
+	pool, accountID := createPairingCodeHarness(t)
+	node1 := "n1-" + accountID
+	node2 := "n2-" + accountID
+
+	// First node.
+	code1 := mintCodeHelper(t, pool, accountID)
+	pubKey := "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899"
+	req1 := httptest.NewRequest("POST", "/pairing/codes/redeem", redeemBody(code1, node1, pubKey))
+	req1.RemoteAddr = testRemoteAddr(accountID)
+	rr1 := httptest.NewRecorder()
+	RedeemPairingCode(pool)(rr1, req1)
+	require.Equal(t, http.StatusOK, rr1.Code)
+
+	// Second node.
+	code2 := mintCodeHelper(t, pool, accountID)
+	req2 := httptest.NewRequest("POST", "/pairing/codes/redeem", redeemBody(code2, node2, pubKey))
+	req2.RemoteAddr = testRemoteAddr(accountID)
+	rr2 := httptest.NewRecorder()
+	RedeemPairingCode(pool)(rr2, req2)
+	require.Equal(t, http.StatusOK, rr2.Code)
+
+	var isPrimary bool
+	err := pool.QueryRow(context.Background(),
+		`SELECT is_primary FROM storage_nodes WHERE node_id = $1`, node2,
+	).Scan(&isPrimary)
+	require.NoError(t, err)
+	require.False(t, isPrimary, "second node must not be is_primary")
+}
+
+func TestRedeemPairingCodeExpired(t *testing.T) {
+	pool, accountID := createPairingCodeHarness(t)
+
+	// Seed an expired PENDING code directly. The code is a fresh UUID so the
+	// row never collides with a leftover from a previous test run.
+	code := uuid.NewString()
+	hash := hashCode(normalizeCode(code))
+	_, err := pool.Exec(context.Background(),
+		`INSERT INTO pairing_codes (code_hash, account_id, status, expires_at)
+		 VALUES ($1, $2, 'PENDING', NOW() - interval '1 minute')`, hash, accountID)
+	require.NoError(t, err)
+
+	pubKey := "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899"
+	req := httptest.NewRequest("POST", "/pairing/codes/redeem", redeemBody(code, "node-exp", pubKey))
+	req.RemoteAddr = testRemoteAddr(accountID)
+	rr := httptest.NewRecorder()
+	RedeemPairingCode(pool)(rr, req)
+	require.Equal(t, http.StatusGone, rr.Code)
+
+	var errResp struct {
+		Error string `json:"error"`
+	}
+	require.NoError(t, json.NewDecoder(rr.Body).Decode(&errResp))
+	require.Equal(t, "code_expired", errResp.Error)
+}
+
+func TestRedeemPairingCodeConsumed(t *testing.T) {
+	pool, accountID := createPairingCodeHarness(t)
+	code := mintCodeHelper(t, pool, accountID)
+	nodeID := "n-" + accountID
+
+	pubKey := "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899"
+
+	// First redeem — succeeds.
+	req1 := httptest.NewRequest("POST", "/pairing/codes/redeem", redeemBody(code, nodeID, pubKey))
+	req1.RemoteAddr = testRemoteAddr(accountID)
+	rr1 := httptest.NewRecorder()
+	RedeemPairingCode(pool)(rr1, req1)
+	require.Equal(t, http.StatusOK, rr1.Code)
+
+	// Second redeem — consumed.
+	req2 := httptest.NewRequest("POST", "/pairing/codes/redeem", redeemBody(code, nodeID, pubKey))
+	req2.RemoteAddr = testRemoteAddr(accountID)
+	rr2 := httptest.NewRecorder()
+	RedeemPairingCode(pool)(rr2, req2)
+	require.Equal(t, http.StatusConflict, rr2.Code)
+
+	var errResp struct {
+		Error string `json:"error"`
+	}
+	require.NoError(t, json.NewDecoder(rr2.Body).Decode(&errResp))
+	require.Equal(t, "code_consumed", errResp.Error)
+}
+
+func TestRedeemPairingCodeUnknown(t *testing.T) {
+	pool, accountID := createPairingCodeHarness(t)
+
+	pubKey := "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899"
+	req := httptest.NewRequest("POST", "/pairing/codes/redeem",
+		redeemBody("NODUS-XXXX-XXXX", "node-unk", pubKey))
+	req.RemoteAddr = testRemoteAddr(accountID)
+	rr := httptest.NewRecorder()
+	RedeemPairingCode(pool)(rr, req)
+	require.Equal(t, http.StatusNotFound, rr.Code)
+
+	var errResp struct {
+		Error string `json:"error"`
+	}
+	require.NoError(t, json.NewDecoder(rr.Body).Decode(&errResp))
+	require.Equal(t, "code_unknown", errResp.Error)
+}
+
+func TestRedeemPairingCodeNodeOwnedElsewhere(t *testing.T) {
+	pool, accountID := createPairingCodeHarness(t)
+
+	// Register node under a different account.
+	_, err := pool.Exec(context.Background(),
+		`INSERT INTO accounts (account_id, email, password_hash)
+		 VALUES ('acct-other', 'other@test.local', 'x')
+		 ON CONFLICT DO NOTHING`)
+	require.NoError(t, err)
+	_, err = pool.Exec(context.Background(),
+		`INSERT INTO storage_nodes (node_id, account_id, public_key)
+		 VALUES ('node-owned', 'acct-other', 'deadbeef')
+		 ON CONFLICT DO NOTHING`)
+	require.NoError(t, err)
+
+	code := mintCodeHelper(t, pool, accountID)
+	pubKey := "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899"
+	req := httptest.NewRequest("POST", "/pairing/codes/redeem",
+		redeemBody(code, "node-owned", pubKey))
+	req.RemoteAddr = testRemoteAddr(accountID)
+	rr := httptest.NewRecorder()
+	RedeemPairingCode(pool)(rr, req)
+	require.Equal(t, http.StatusConflict, rr.Code)
+
+	var errResp struct {
+		Error string `json:"error"`
+	}
+	require.NoError(t, json.NewDecoder(rr.Body).Decode(&errResp))
+	require.Equal(t, "node_owned_elsewhere", errResp.Error)
+}
+
+func TestRedeemPairingCodeInvalidPublicKey(t *testing.T) {
+	pool, accountID := createPairingCodeHarness(t)
+	code := mintCodeHelper(t, pool, accountID)
+
+	// Too short.
+	req := httptest.NewRequest("POST", "/pairing/codes/redeem",
+		redeemBody(code, "node-bad", "aabb"))
+	req.RemoteAddr = testRemoteAddr(accountID)
+	rr := httptest.NewRecorder()
+	RedeemPairingCode(pool)(rr, req)
+	require.Equal(t, http.StatusBadRequest, rr.Code)
+
+	var errResp struct {
+		Error string `json:"error"`
+	}
+	require.NoError(t, json.NewDecoder(rr.Body).Decode(&errResp))
+	require.Equal(t, "invalid public_key format", errResp.Error)
+}
+
+func TestRedeemPairingCodeRateLimit(t *testing.T) {
+	pool, accountID := createPairingCodeHarness(t)
+
+	// Drain the limiter by firing from the same IP with unknown codes.
+	pubKey := "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899"
+	for i := 0; i < 12; i++ {
+		req := httptest.NewRequest("POST", "/pairing/codes/redeem",
+			redeemBody("NODUS-XXXX-XXXX", "node-rl", pubKey))
+		req.RemoteAddr = testRemoteAddr(accountID)
+		rr := httptest.NewRecorder()
+		RedeemPairingCode(pool)(rr, req)
+		// After burst (10) is exhausted, expect 429.
+		if i >= 10 {
+			require.Equal(t, http.StatusTooManyRequests, rr.Code)
+		}
+	}
+}
+
+func TestRedeemConcurrentDoubleRedeem(t *testing.T) {
+	pool, accountID := createPairingCodeHarness(t)
+	code := mintCodeHelper(t, pool, accountID)
+	nodeID := "n-" + accountID
+
+	pubKey := "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899"
+	const goroutines = 5
+	results := make(chan int, goroutines)
+
+	for i := 0; i < goroutines; i++ {
+		go func(idx int) {
+			body := redeemBody(code, nodeID, pubKey)
+			req := httptest.NewRequest("POST", "/pairing/codes/redeem", body)
+			req.RemoteAddr = testRemoteAddr(accountID)
+			rr := httptest.NewRecorder()
+			RedeemPairingCode(pool)(rr, req)
+			results <- rr.Code
+		}(i)
+	}
+
+	wins, losses := 0, 0
+	for i := 0; i < goroutines; i++ {
+		switch <-results {
+		case http.StatusOK:
+			wins++
+		case http.StatusConflict:
+			losses++
+		default:
+			t.Fatalf("unexpected status code from goroutine")
+		}
+	}
+	require.Equal(t, 1, wins, "exactly one goroutine must win the race")
+	require.Equal(t, goroutines-1, losses, "all other goroutines must get code_consumed")
 }
