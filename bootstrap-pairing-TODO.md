@@ -107,14 +107,14 @@ Go suite stays green.
 
 Tasks:
 
-- [ ] Add optional machine-readable `reason` (e.g. `"node_not_found"`) to
+- [x] Add optional machine-readable `reason` (e.g. `"node_not_found"`) to
       `NodeAuthResultPayload` in `packages/protocol` (and its Go + TS consumers)
       when the node is unknown/inactive. Plan §7b "Unpaired-node UX".
-- [ ] Set it in the node-auth handler (`internal/handler/sync.go` / wherever
+- [x] Set it in the node-auth handler (`internal/handler/sync.go` / wherever
       `node_auth_result` is produced); keep the retry behavior for paired nodes
       unchanged.
-- [ ] Verify Rust challenge-response auth is untouched by the new endpoints.
-- [ ] Full Go + TS protocol suite green after the `NodeAuthResultPayload` change.
+- [x] Verify Rust challenge-response auth is untouched by the new endpoints.
+- [x] Full Go + TS protocol suite green after the `NodeAuthResultPayload` change.
 
 **Exit criteria:** an unregistered node hitting `/ws` receives a machine-readable
 `node_not_found` reason; existing node auth tests pass.

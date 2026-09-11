@@ -29,6 +29,7 @@ type NodeAuthResponsePayload struct {
 type NodeAuthResultPayload struct {
 	Status  string `json:"status"` // "ok" | "fail"
 	Message string `json:"message,omitempty"`
+	Reason  string `json:"reason,omitempty"`
 }
 
 type SyncCursor struct {
@@ -216,6 +217,7 @@ func HandleNodeAuthResponse(
 		_ = sendEnvelope(c, "node_auth_result", NodeAuthResultPayload{
 			Status:  "fail",
 			Message: "storage node not found or inactive",
+			Reason:  "node_not_found",
 		})
 		return
 	}

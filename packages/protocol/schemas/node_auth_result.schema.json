@@ -11,6 +11,12 @@
     },
     "message": {
       "type": "string"
+    },
+    "reason": {
+      "type": "string",
+      "enum": [
+        "node_not_found"
+      ]
     }
   },
   "required": [

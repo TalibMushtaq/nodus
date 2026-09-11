@@ -66,11 +66,14 @@ export const NodeAuthResponsePayloadSchema = z.object({
 export type NodeAuthResponsePayload = z.infer<typeof NodeAuthResponsePayloadSchema>;
 
 /**
- * Result of the authentication handshake.
+ * Result of the authentication handshake. `message` is a human-readable
+ * string; `reason` is a machine-readable code the Storage Node can act on
+ * (e.g. surfaces "not paired, run `nodus node pair`" instead of retrying).
  */
 export const NodeAuthResultPayloadSchema = z.object({
   status: z.enum(["ok", "fail"]),
   message: z.string().optional(),
+  reason: z.enum(["node_not_found"]).optional(),
 });
 
 export type NodeAuthResultPayload = z.infer<typeof NodeAuthResultPayloadSchema>;
