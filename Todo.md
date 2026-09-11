@@ -284,13 +284,17 @@ stage 7b in §28 (inserted between 7a and 8).
 
 ### Next.js web client
 
-- [ ] Route handlers `app/api/pairing/codes/route.ts` and
-      `app/api/pairing/codes/redeem/route.ts` proxying the Relay — S6
-- [ ] `lib/pairing.ts`: `createPairingCode()`, node list/polling, revoke — S6
+- [x] Route handler `app/api/pairing/codes/route.ts` proxying the Relay,
+      authenticated via the session cookie — S6. (The `codes/redeem` proxy is
+      intentionally **not** built: S7 drives redeem through the CLI
+      `nodus node pair`, so there is no browser redeem path to proxy.)
+- [x] `lib/pairing.ts`: `createPairingCode()`, node list/polling, revoke — S6
+      (node revocation has no Relay endpoint; only device revocation exists, so
+      there is nothing to reuse — documented gap, not in scope)
 - [ ] Devices page "+ Add Storage Node" dialog: relay URL (`PUBLIC_RELAY_URL`) +
       code + expiry countdown + CLI instructions + node-status polling
       (connected/paired/expired/error states) — S7
-- [ ] Keep internal `RELAY_URL` and user-facing `PUBLIC_RELAY_URL` distinct — S6
+- [x] Keep internal `RELAY_URL` and user-facing `PUBLIC_RELAY_URL` distinct — S6
 
 ### Security tests
 
@@ -303,6 +307,8 @@ stage 7b in §28 (inserted between 7a and 8).
       reuse across attempts, interactive + non-interactive pair, failure paths
       rendered as machine-readable reasons — S5
 - [ ] Web: code creation, URL+code render, polling success/expiry, unpaired error — S7
+      (code creation + polling unit tests already landed in S6; the dialog
+      render/expiry/error UI tests remain)
 - [ ] E2E: create code in UI → `nodus node pair` on a fresh node → node appears
       paired → WS challenge-response sync session succeeds — S10
 

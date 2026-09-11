@@ -49,4 +49,15 @@ describe("POST /api/pairing/codes", () => {
     expect(response.status).toBe(401);
     expect(await response.json()).toEqual({ error: "unauthorized" });
   });
+
+  it("treats any 2xx as a successful mint", async () => {
+    mockRelayFetch.mockResolvedValue({ status: 200, json: created, setCookie: null });
+
+    const response = await POST(
+      new Request("http://localhost/api/pairing/codes", { method: "POST" }) as never,
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual(created);
+  });
 });

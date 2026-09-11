@@ -15,8 +15,11 @@ export async function POST(request: Request) {
     body,
   });
 
+  // Pass a successful mint through as-is; the Relay currently returns 201, but
+  // accept any 2xx so a status tweak does not turn a valid code into an error.
+  const ok = status >= 200 && status < 300;
   return NextResponse.json(
-    status === 201 ? json : { error: relayErrorMessage({ status, json: json as RelayError | null }) },
+    ok ? json : { error: relayErrorMessage({ status, json: json as RelayError | null }) },
     { status },
   );
 }

@@ -45,6 +45,13 @@ describe("createPairingCode", () => {
     globalThis.fetch = vi.fn().mockResolvedValue(new Response("{}", { status: 401 }));
     await expect(createPairingCode()).rejects.toThrow("pairing code creation failed: 401");
   });
+
+  it("surfaces the Relay's machine-readable error reason", async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ error: "rate_limit_exceeded" }), { status: 429 }),
+    );
+    await expect(createPairingCode()).rejects.toThrow("rate_limit_exceeded");
+  });
 });
 
 describe("listNodes / findNode", () => {

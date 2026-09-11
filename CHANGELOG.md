@@ -1,5 +1,15 @@
 # Changelog
 
+## [2026-09-11] - Pairing S6 audit fixes (proxy error surface, 2xx handling, env example, tracker)
+
+**What changed:** Follow-up to the S6 entry below. `apps/web/lib/pairing.ts`: `createPairingCode()` now parses the Relay's `{"error": ...}` body on non-2xx and throws that machine-readable reason (falling back to the HTTP status), so S7 can render rate-limit/unauthorized states. `apps/web/app/api/pairing/codes/route.ts`: accepts any `2xx` as a successful mint instead of only `201`. `apps/web/.env.example`: commented out `NEXT_PUBLIC_RELAY_URL` and documented that it is a dev-only, bundle-inlined override — the same-origin `/ws` default is the production path. `Todo.md`: checked the S6 Next.js items, annotated the intentionally-skipped `codes/redeem` proxy and the node-revocation gap, and noted which web tests already landed in S6.
+
+**Why:** The audit found the pairing proxy collapsed every failure to a bare status (hampering S7's error UI), treated a hypothetical `200` mint as failure, shipped an active client-visible `localhost` value in the env example, and left `Todo.md` out of sync with the session tracker again.
+
+**Impact:** `apps/web/{lib/pairing.ts,app/api/pairing/codes/route.ts,.env.example}`, `Todo.md`. Tests updated/added: Relay error reason surfacing and a `200` mint case. `pnpm --filter web test` 58 passed (was 56); `check-types` and `lint` green.
+
+**Follow-ups:** S7 renders the dialog on `createPairingCode()`/`findNode()`/`publicRelayUrl`; `PUBLIC_RELAY_URL` remains unvalidated (operator responsibility per §3b).
+
 ## [2026-09-11] - Web: pairing-code proxy + public relay URL plumbing (S6)
 
 **What changed:** `apps/web` can now mint pairing codes and expose the operator's public relay URL without leaking internal config. Added `app/api/pairing/codes/route.ts` — a session-cookie-authenticated `POST` proxy for the Relay's `POST /pairing/codes` (relayFetch forwards `nodus_session`; 201 `{code, expires_at}` passes through, non-201 maps `{error}`; mirrors the existing `/api/pairing/sessions` route). Added `publicRelayUrl()` to the server-only `lib/relay.ts` (reads `PUBLIC_RELAY_URL`, trimmed; `null` when unset — never falls back to the internal `RELAY_URL`/localhost). The Devices page is now a server component that resolves `publicRelayUrl()` and passes it as a prop to a new client component `devices-client.tsx` (renders an "Pairing URL not configured" note when null; the S7 dialog will render the value). `lib/pairing.ts` gains `PairingCode`, `createPairingCode()` (posts to the new proxy), and the pure polling helper `findNode()`; `listNodes()` remains the poll primitive. `providers/ws-provider.tsx` no longer bakes `http://localhost:8080` into the client bundle: an explicit `NEXT_PUBLIC_RELAY_URL` still wins, otherwise the browser uses its own origin's `/ws`. `turbo.json` tracks `PUBLIC_RELAY_URL` and `NEXT_PUBLIC_RELAY_URL` in `globalEnv`, and `apps/web/.env.example` documents `RELAY_URL` (server-only), `PUBLIC_RELAY_URL` (user-facing, no default), and `NEXT_PUBLIC_RELAY_URL` (dev-only browser override), with a `.gitignore` opt-in for the example.

@@ -53,7 +53,10 @@ export async function createPairingCode(): Promise<PairingCode> {
     headers: { "content-type": "application/json" },
   });
   if (!res.ok) {
-    throw new Error(`pairing code creation failed: ${res.status}`);
+    // Surface the Relay's machine-readable reason (e.g. rate_limit_exceeded,
+    // unauthorized) so callers can render it; fall back to the HTTP status.
+    const body = (await res.json().catch(() => null)) as { error?: string } | null;
+    throw new Error(body?.error ?? `pairing code creation failed: ${res.status}`);
   }
   return (await res.json()) as PairingCode;
 }
