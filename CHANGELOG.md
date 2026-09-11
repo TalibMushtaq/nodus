@@ -1,5 +1,15 @@
 # Changelog
 
+## [2026-09-11] - Tracker consistency: mark Phase 7b E2E complete
+
+**What changed:** `Todo.md` Phase 7b now marks the S10 E2E item (`create code in UI → nodus node pair → node appears paired → WS challenge-response sync session succeeds`) as complete, matching `bootstrap-pairing-TODO.md` S10, which already recorded it done. Re-ran the full verification suite while auditing the tracker: `go -C services/relay test ./...`, `cargo test --manifest-path services/storage-node/Cargo.toml`, `pnpm test:ts`, `pnpm lint`, and `pnpm check-types` — all green.
+
+**Why:** The two trackers disagreed on the final Phase 7b item; `bootstrap-pairing-TODO.md` explicitly requires the two lists to stay consistent. No code drift was found.
+
+**Impact:** `Todo.md` (checkbox only). No code changed. `deploy/.env` confirmed untracked (only `deploy/.env.example` is committed), so no secret-hygiene action was needed.
+
+**Follow-ups:** None.
+
 ## [2026-09-11] - S10 audit fixes (DB fast-fail, healthcheck, E2E robustness)
 
 **What changed:** Follow-up to the S10 entry below. `services/relay/main.go`: `openDatabaseWithRetry` now fast-fails (`permanentDBError`) on positively permanent database errors — authentication/authorization (SQLSTATE class 28) and a missing database (`3D000`) — for both the pgx (`*pgconn.PgError`) and golang-migrate/lib/pq (`*pq.Error`) paths, instead of retrying a bad password for the full 60s; unclassified errors still retry so the fresh-deploy race keeps its budget (`lib/pq` promoted from indirect to direct). `deploy/docker-compose.yml`: the Relay healthcheck now requires the overall `"status":"ok"` rather than just `"postgres":"healthy"`, so a Redis outage no longer leaves the container marked healthy. `scripts/e2e-bootstrap-pairing.sh`: `psqlq` runs SQL through the Postgres container (`$POSTGRES_USER`/`$POSTGRES_DB`) instead of hardcoding `nodus`/`nodus_relay`, and the header states that minting goes through the same `/api/pairing/codes` proxy the browser dialog calls (the dialog itself is unit-tested). `bootstrap-pairing-TODO.md`: S10 wording/hardening notes updated.

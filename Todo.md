@@ -313,7 +313,7 @@ stage 7b in §28 (inserted between 7a and 8).
 - [x] Web: code creation, URL+code render, polling success/expiry, unpaired error — S7
       (arrived across S6–S7: code creation/polling helpers plus the dialog
       render/countdown/expiry/poll/error tests)
-- [ ] E2E: create code in UI → `nodus node pair` on a fresh node → node appears
+- [x] E2E: create code in UI → `nodus node pair` on a fresh node → node appears
       paired → WS challenge-response sync session succeeds — S10
 
 ### Non-goals (explicit)

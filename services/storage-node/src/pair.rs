@@ -23,8 +23,7 @@ pub const NOT_PAIRED_GUIDANCE: &str = "Storage Node is not paired. Run: `nodus n
 /// Shown when the redeem succeeded but the local config write did not: the relay
 /// has already consumed the code, so re-running pairing would only report
 /// `code_consumed`. Recover by fixing the config and booting with `--relay`.
-const PERSIST_FAILED_GUIDANCE: &str =
-    "The node was registered, but its relay URL could not be saved. Do not re-run \
+const PERSIST_FAILED_GUIDANCE: &str = "The node was registered, but its relay URL could not be saved. Do not re-run \
      pairing (the code is now used); fix ~/.nodus/config.toml and run \
      `nodus node start --relay <url>`.";
 
