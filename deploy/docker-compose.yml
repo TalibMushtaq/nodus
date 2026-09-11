@@ -1,0 +1,121 @@
+name: nodus
+
+# Combined single-origin server unit: Caddy (TLS + routing) in front of the
+# Next.js web app and the Go Relay, backed by PostgreSQL and Redis. Bring it up
+# with:
+#
+#   cp deploy/.env.example deploy/.env
+#   docker compose -f deploy/docker-compose.yml --env-file deploy/.env up --build -d
+#
+# Storage Nodes run on separate machines and connect through the public origin.
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-nodus}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-nodus_password}
+      POSTGRES_DB: ${POSTGRES_DB:-nodus_relay}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-nodus} -d ${POSTGRES_DB:-nodus_relay}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  relay:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.relay
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      PORT: "8080"
+      DATABASE_URL: postgres://${POSTGRES_USER:-nodus}:${POSTGRES_PASSWORD:-nodus_password}@postgres:5432/${POSTGRES_DB:-nodus_relay}?sslmode=disable
+      REDIS_URL: redis://redis:6379/0
+      # Browser WS origin(s) allowed to authenticate; must equal the public origin.
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost}
+      # false only when the public origin is plain HTTP (local). true in prod.
+      SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-false}
+      # Caddy is the immediate peer, so the rate limiter may trust X-Forwarded-For.
+      TRUST_PROXY: "true"
+      BUFFER_DIR: /var/lib/nodus/buffer
+      BUFFER_TTL_HOURS: ${BUFFER_TTL_HOURS:-72}
+    volumes:
+      - buffer_data:/var/lib/nodus/buffer
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  web:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.web
+    restart: unless-stopped
+    depends_on:
+      relay:
+        condition: service_healthy
+    environment:
+      # Internal, server-only Relay base used by Next route handlers.
+      RELAY_URL: http://relay:8080
+      # User-facing origin shown in the "+ Add Storage Node" dialog.
+      PUBLIC_RELAY_URL: ${PUBLIC_RELAY_URL:-http://localhost}
+      # NEXT_PUBLIC_RELAY_URL is intentionally unset: the browser talks to this
+      # origin's /ws (single-origin deploy).
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://localhost:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      web:
+        condition: service_healthy
+      relay:
+        condition: service_healthy
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:-:80}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  postgres_data:
+  redis_data:
+  buffer_data:
+  caddy_data:
+  caddy_config:

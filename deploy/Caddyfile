@@ -1,0 +1,24 @@
+# Single-origin reverse proxy for the combined Nodus server unit.
+#
+# SITE_ADDRESS is the one public origin. A bare ":80" serves plain HTTP (local
+# runs or an upstream TLS terminator); a domain such as "nodus.example.com"
+# makes Caddy provision and renew HTTPS automatically.
+#
+# Routing: the Relay owns the non-browser paths it must serve directly — the
+# WebSocket gateway, the shard buffer, the open bootstrap-pairing redeem, and
+# the open verify/health endpoints. Everything else (including /api/* and every
+# page) is served by Next.js; Next's route handlers reach the Relay internally
+# over RELAY_URL.
+
+{$SITE_ADDRESS} {
+	encode gzip
+
+	@relay path /ws /buffer/* /pairing/codes/redeem /pairing/sessions/verify /nodes/verify /health
+	handle @relay {
+		reverse_proxy relay:8080
+	}
+
+	handle {
+		reverse_proxy web:3000
+	}
+}

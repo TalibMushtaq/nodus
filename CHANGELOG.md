@@ -1,5 +1,15 @@
 # Changelog
 
+## [2026-09-11] - Deploy: single-origin server unit + reverse proxy (S8)
+
+**What changed:** Added the self-hosted deployment unit under `deploy/`: `Dockerfile.relay` (static Go build, migrations embedded), `Dockerfile.web` (monorepo install → `turbo run build --filter=web` → Next `standalone` runtime), a `docker-compose.yml` (postgres, redis, relay, web, caddy with healthchecks and volumes), `Caddyfile`, `.env.example`, and `README.md`; plus a root `.dockerignore`. `apps/web/next.config.js` now emits `output: "standalone"` with `outputFileTracingRoot` at the repo root so pnpm workspace packages are traced into the bundle.
+
+**Why:** The stack must deploy as one public origin behind TLS with a real Storage Node pairing over the network. The S8 tracker text (`/api/*` → Relay) was stale: the web owns `/api/*` (session-cookie route handlers the browser calls) and proxies to the Relay internally, so forwarding `/api/*` to the Relay would break auth/pairing. Caddy now routes only the Relay-owned non-browser paths (`/ws`, `/buffer/*`, `/pairing/codes/redeem`, `/pairing/sessions/verify`, `/nodes/verify`, `/health`) to the Relay and everything else to Next — which also resolves the S5 seam (the node's `/pairing/codes/redeem` + `/buffer/fetch`).
+
+**Impact:** `deploy/{Dockerfile.relay,Dockerfile.web,Caddyfile,docker-compose.yml,.env.example,README.md}` (new), root `.dockerignore` (new), `apps/web/next.config.js`, `README.md`, `nodus_implementation_plan.md` §3b. Verified live: `docker compose up --build` → `/health` and `/api/health` return ok, `/devices` redirects (Next), `POST /pairing/codes/redeem` reaches the Relay, a host Rust node paired via `--relay http://localhost` (redeem through Caddy) and WS-authenticated, and `GET /api/nodes` listed it. TLS is config-validated only (sandbox has no public domain); production sets `SITE_ADDRESS=<domain>` + `SESSION_COOKIE_SECURE=true`.
+
+**Follow-ups:** S9 docs/ADR; S10 full lifecycle/negative/concurrency E2E. Redis is deployed but not strictly required by the Relay yet (keep for parity); `NEXT_PUBLIC_RELAY_URL` stays unset for the same-origin browser `/ws`.
+
 ## [2026-09-11] - Pairing S7 audit fixes (baseline race, copy feedback, tracker, newline)
 
 **What changed:** Follow-up to the S7 entry below. `apps/web/app/(dashboard)/devices/devices-client.tsx`: the "+ Add Storage Node" action is now disabled while the node catalog is still loading, because the dialog snapshots `existingNodeIds` at mount and an empty/stale baseline would let `findNewNode` misread an existing node as a freshly paired one. `apps/web/components/add-storage-node-dialog.tsx`: `copyCommand` now returns early when `navigator.clipboard` is unavailable and only flips the check icon after a successful write, so the UI no longer claims a copy that did not happen. `Todo.md`: checked the S7 dialog/web-test items and recorded the issuance-vs-redeem divergence. `bootstrap-pairing-TODO.md`: restored the trailing newline lost in the S7 commit.

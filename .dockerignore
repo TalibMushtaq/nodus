@@ -1,0 +1,32 @@
+# Keep the Docker build context small and reproducible.
+
+# VCS / CI
+.git
+.github
+
+# Dependencies + build outputs (reinstalled/rebuilt inside the image)
+node_modules
+**/node_modules
+.next
+**/.next
+.turbo
+**/.turbo
+out
+**/out
+dist
+**/dist
+target
+**/target
+coverage
+**/coverage
+
+# Local config + secrets (never baked into images)
+.env
+**/.env
+.env.local
+**/.env.*.local
+
+# Design assets / editors
+nodus-design
+.DS_Store
+*.log

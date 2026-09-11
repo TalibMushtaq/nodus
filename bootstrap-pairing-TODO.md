@@ -11,9 +11,9 @@ across multiple sessions so any session can be picked up where the last left off
 
 ## Status
 
-- **Current session:** S8 (next)
+- **Current session:** S9 (next)
 - **Blocked on:** nothing
-- **Done sessions:** S1, S2, S3, S4, S5, S6, S7
+- **Done sessions:** S1, S2, S3, S4, S5, S6, S7, S8
 
 Update the marker above and the Session Log at the bottom whenever you finish a
 session. Mark a task `[~]` while in progress, `[x]` when complete.
@@ -241,20 +241,26 @@ Run: `pnpm test:ts` and `pnpm lint`
 
 Tasks:
 
-- [ ] Build/deploy definition for the combined unit (Next.js standalone + Go
-      Relay binary + PostgreSQL + Redis) — e.g. a root `Dockerfile` +
-      compose, or your chosen hosting path (plan §3b).
-- [ ] Reverse-proxy/TLS sample: `/api/*` and `/ws` (WSS) → Go Relay; everything
-      else → Next.js; proper Host/Origin handling; `AllowedOrigins` set to the
-      real origin (see `services/relay/internal/config/config.go`).
-      **Seam from S5:** the Rust node appends `/pairing/codes/redeem` to its
-      configured relay base, so the proxy must also route `POST /pairing/*` to
-      the Relay (or `PUBLIC_RELAY_URL` must point at a relay-only origin);
-      routing only `/api/*` + `/ws` would send the redeem call to Next.js.
-- [ ] `PUBLIC_RELAY_URL` wired to Next (server env) + documented in the repo's
+- [x] Build/deploy definition for the combined unit (Next.js standalone + Go
+      Relay binary + PostgreSQL + Redis) — `deploy/` with `Dockerfile.web`
+      (Next `standalone`), `Dockerfile.relay` (static Go, embedded migrations),
+      `docker-compose.yml`, `.env.example`, `deploy/README.md`.
+- [x] Reverse-proxy/TLS sample: `/ws`, `/buffer/*`, `/pairing/codes/redeem`,
+      `/pairing/sessions/verify`, `/nodes/verify`, `/health` → Go Relay;
+      everything else (incl. `/api/*` and all pages) → Next.js; proper
+      Host/Origin handling; `AllowedOrigins` = the real origin.
+      **Reconciled:** the plan's `/api/*` → Relay was stale — the web owns
+      `/api/*` (session-cookie route handlers the browser calls) and proxies to
+      the Relay internally via `RELAY_URL`. Plan §3b updated to match.
+      **Seam from S5 resolved:** the node's `/pairing/codes/redeem` and
+      `/buffer/fetch` are routed to the Relay under the single origin.
+- [x] `PUBLIC_RELAY_URL` wired to Next (server env) + documented in the repo's
       env examples; never inferred from Host/Docker names/localhost.
-- [ ] Verify a Storage Node outside the Docker network can reach the public
-      origin end-to-end (S5 happy path against the deployed URL).
+      (`deploy/.env.example`, `deploy/docker-compose.yml`, `deploy/README.md`;
+      `NEXT_PUBLIC_RELAY_URL` intentionally unset ⇒ same-origin `/ws`.)
+- [x] Verify a Storage Node outside the Docker network can reach the public
+      origin end-to-end (S5 happy path against the deployed URL). Verified live
+      over the Caddy origin: host Rust node paired + WS-authenticated.
 
 **Exit criteria:** fresh deploy → web app reachable, `POST /pairing/codes` works
 through `/api`, `/ws` upgrades, and a real Rust node pairs via the public URL.
@@ -336,6 +342,6 @@ Run: `pnpm test && pnpm lint && pnpm check-types`
 | S5 | 2026-09-11 | done | `node pair` (prompts/non-interactive), HTTPS redeem + typed failure reasons, persist-on-success, identity reuse, `node_not_found` unpaired UX, rustls TLS; dev-relay E2E verified |
 | S6 | 2026-09-11 | done | `/api/pairing/codes` proxy, `createPairingCode`/`findNode`, server-only `publicRelayUrl()` → `DevicesClient`, ws-provider same-origin, `.env.example`; no bundle localhost leak |
 | S7 | 2026-09-11 | done | `AddStorageNodeDialog` (code/command/copy/countdown), `GET /nodes` new-node poll, paired refresh, `findNewNode`+`formatCountdown`; primitives only; 70 web tests green |
-| S8 | — | pending | |
+| S8 | 2026-09-11 | done | `deploy/` single-origin unit (web+relay+pg+redis+caddy), corrected routing (`/api/*`→Next, relay-owned paths proxied), `PUBLIC_RELAY_URL` wired, Next standalone; live E2E: host node paired + WS-authed via Caddy |
 | S9 | — | pending | |
 | S10 | — | pending | |

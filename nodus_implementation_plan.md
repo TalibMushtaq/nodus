@@ -212,15 +212,23 @@ Next.js web app + Go Relay/API + PostgreSQL + Redis
         exposed through a single public origin behind reverse proxy/TLS
 
 https://nodus.example.com
-    https://nodus.example.com/*       -> Next.js
-    https://nodus.example.com/api/*   -> Go Relay/API
-    wss://nodus.example.com/ws        -> Go Relay WebSocket
+    https://nodus.example.com/ws                           -> Go Relay (WSS gateway)
+    https://nodus.example.com/buffer/*                     -> Go Relay (shard buffer)
+    https://nodus.example.com/pairing/codes/redeem         -> Go Relay (open redeem)
+    https://nodus.example.com/pairing/sessions/verify      -> Go Relay
+    https://nodus.example.com/nodes/verify                 -> Go Relay
+    https://nodus.example.com/health                       -> Go Relay
+    https://nodus.example.com/*  (incl. /api/*, pages)     -> Next.js
 ```
 
 The Next.js app and the Go Relay ship together in **one deployable server
 unit** (Next.js API routes proxy HTTP to the Relay per §3a/`apps/web/lib/relay.ts`;
-`/ws` remains the Relay WebSocket gateway). Docker-internal hostnames are used
-**only inside the deployment**.
+the browser authenticates through those same-origin `/api/*` handlers, so
+`/api/*` is served by Next.js — not forwarded to the Relay). The Relay owns only
+the non-browser paths it must answer directly: the `/ws` gateway, `/buffer/*`,
+the open `/pairing/codes/redeem` used by `nodus node pair`, and the open
+verify/health endpoints. Docker-internal hostnames are used **only inside the
+deployment**.
 
 Rust Storage Nodes run on separate machines and MUST connect only through the
 externally reachable public origin — never localhost/127.0.0.1, Docker service

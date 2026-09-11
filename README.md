@@ -223,6 +223,21 @@ First run creates the data directory, initializes the SQLite database, and
 generates the node identity. Without `--data-dir` it prompts interactively
 (and picks `~/NodusBackup` by default).
 
+### 5. Deploy the server unit (single origin)
+
+The self-hosted unit packages the Next.js web app, the Go Relay, PostgreSQL,
+Redis, and Caddy (TLS + routing) behind one public origin:
+
+```bash
+cp deploy/.env.example deploy/.env
+docker compose -f deploy/docker-compose.yml --env-file deploy/.env up --build -d
+curl -fsS http://localhost/health
+```
+
+Set `SITE_ADDRESS`/`PUBLIC_RELAY_URL`/`ALLOWED_ORIGINS` to the real origin for
+production. See [`deploy/README.md`](./deploy/README.md) for routing, TLS, and
+operations details.
+
 ### Tests
 
 ```bash
