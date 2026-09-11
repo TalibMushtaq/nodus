@@ -1,5 +1,15 @@
 # Changelog
 
+## [2026-09-11] - Docs: bootstrap-pairing ADR + security + protocol catalog (S9)
+
+**What changed:** Added `docs/decisions/0006-self-hosted-node-bootstrap-pairing.md` (one-time `NODUS-XXXX-XXXX` bootstrap code, hashed at rest, atomic single-use redemption, Ed25519 identity retained; QR deferred) and indexed it in `docs/decisions/README.md`. Added `docs/security/bootstrap-pairing.md` documenting the two Relay endpoints (`POST /pairing/codes` authed mint, `POST /pairing/codes/redeem` open), hashed-only storage, 15-minute TTL, per-IP token-bucket rate limiting (burst 10 / refill 2-per-s, `TRUST_PROXY`-gated `X-Forwarded-For`), the full failure-reason table, and the threat model; `docs/security/README.md` now indexes the security docs and `local-endpoints.md` gained a scoped cross-reference section distinguishing Phase 11 device tokens from Phase 7b node bootstrap codes. Added a Node Authentication section (`node_auth_challenge`/`node_auth_response`/`node_auth_result` incl. the `reason` enum `node_not_found` | `node_inactive`) and an HTTP APIs section (`POST /pairing/codes`, `POST /pairing/codes/redeem` with statuses) to `docs/protocol/message-catalog.md`. Reconciled plan §7b drift: migration FK `ON DELETE` actions, the exact conditional-consume predicate, and both auth reasons.
+
+**Why:** S9 requires the security posture and protocol surface to match the implementation so a first-time node bootstrap is auditable, and the tracker asked for the ADR + endpoint docs.
+
+**Impact:** `docs/decisions/{README.md,0006-...md(new)}`, `docs/security/{README.md,bootstrap-pairing.md(new),local-endpoints.md}`, `docs/protocol/message-catalog.md`, `nodus_implementation_plan.md` §7b, `bootstrap-pairing-TODO.md`. Docs only — no code changed. Proofread pass over `docs/` for `pairing_codes` / `node_not_found` / `PUBLIC_RELAY_URL`; no code drift found (the Relay already emits `node_not_found` vs `node_inactive`; §3b routing was corrected in S8).
+
+**Follow-ups:** S10 full lifecycle/negative/concurrency/restart E2E.
+
 ## [2026-09-11] - Deploy S8 audit fixes (relay routing breadth, origin defaults, tracker)
 
 **What changed:** Follow-up to the S8 entry below. `deploy/Caddyfile`: the `@relay` matcher now covers every path a non-browser client answers directly — `/ws`, `/health`, `/rebuild`, `/auth/*`, `/devices/*`, `/nodes`, `/nodes/*`, `/pairing/*`, `/buffer/*` — instead of only the Storage Node subset, so the mobile client (which calls `/auth/login`, `/nodes`, `/devices/register`, `/pairing/sessions` directly) keeps working through the single origin. Bare `/devices` and `/auth` remain Next.js pages, with the Relay's device list reached via `/api/devices`. `deploy/docker-compose.yml`/`deploy/.env.example`: local `ALLOWED_ORIGINS` default now includes both `http://localhost` and `http://127.0.0.1`. `deploy/README.md`: updated routing diagram, clarified the page exceptions and exact-origin requirement, fixed the "Teardown" typo. `nodus_implementation_plan.md` §3b and `bootstrap-pairing-TODO.md`: route list/reconciliation updated. `Todo.md`: checked the S8 deployment items.

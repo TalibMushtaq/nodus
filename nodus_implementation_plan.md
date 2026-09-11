@@ -654,9 +654,9 @@ and `pairing_sessions`:
 ```text
 pairing_codes (
     code_hash   TEXT PRIMARY KEY,   -- sha256(normalized code)
-    account_id  TEXT NOT NULL REFERENCES accounts,
+    account_id  TEXT NOT NULL REFERENCES accounts(account_id) ON DELETE CASCADE,
     status      TEXT DEFAULT 'PENDING',   -- PENDING | CONSUMED | REVOKED
-    node_id     TEXT REFERENCES storage_nodes,
+    node_id     TEXT REFERENCES storage_nodes(node_id) ON DELETE SET NULL,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     expires_at  TIMESTAMPTZ NOT NULL,
     consumed_at TIMESTAMPTZ
@@ -684,7 +684,8 @@ No second long-term auth protocol. The node connects to `/ws`, the Relay issues
 ### Unpaired-node UX
 
 Extend `NodeAuthResultPayload` with an optional machine-readable reason
-(e.g. `"node_not_found"`) when the node is unknown/inactive, so the node can
+(`node_not_found` when no `storage_nodes` row exists, `node_inactive` when the
+row exists but is not `ACTIVE`), so the node can
 report "Storage Node is not paired. Run: `nodus node pair`" instead of a bare
 "storage node not found or inactive" retry loop. Retry behavior for
 already-paired nodes is unchanged.
@@ -693,8 +694,9 @@ already-paired nodes is unchanged.
 
 - **Code theft:** short TTL + single-use + hashed storage + no logging +
   HTTPS-only + rate limiting.
-- **Replay:** atomic consumption (single conditional UPDATE where
-  `consumed_at IS NULL`).
+- **Replay:** atomic consumption (single conditional UPDATE
+  `SET status='CONSUMED', consumed_at=NOW() WHERE status='PENDING' AND
+  expires_at > NOW()`).
 - **Node impersonation:** permanent trust is bound to the node's Ed25519 private
   key; the code only attaches whatever key the redeemer presents.
 - **MITM:** production pairing requires HTTPS; the node WebSocket uses WSS.

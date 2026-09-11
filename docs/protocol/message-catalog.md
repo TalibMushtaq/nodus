@@ -48,6 +48,38 @@ window.
 | `id` | string | yes | The node or device sending the heartbeat |
 | `timestamp` | ISO 8601 string | yes | When the heartbeat was sent |
 
+### `node_auth_challenge`
+
+Relay → Node, first frame after the node opens `/ws` (§8). The nonce is an
+opaque cryptographically random value with a 30-second TTL.
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `nonce` | string | yes | Challenge to sign; single-use, 30s TTL |
+
+### `node_auth_response`
+
+Node → Relay, answering the challenge. The signature is Ed25519 over the exact
+challenge nonce bytes, made with the node's persistent identity key.
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `node_id` | string | yes | The node's stable id (hex public key) |
+| `signature` | string | yes | Hex-encoded Ed25519 signature over the nonce |
+
+### `node_auth_result`
+
+Relay → Node, the outcome of challenge-response. `message` is human-readable;
+`reason` is a stable machine-readable code the Storage Node acts on (for
+example, it prints "Storage Node is not paired. Run: `nodus node pair`" for
+`node_not_found` instead of retrying a generic failure).
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `status` | enum | yes | `ok` or `fail` |
+| `message` | string | no | Human-readable detail; not for programmatic routing |
+| `reason` | enum | no | `node_not_found` (no `storage_nodes` row) or `node_inactive` (row exists but is not `ACTIVE`, e.g. `REVOKED`). Absent on success. |
+
 ---
 
 ## WebRTC Signaling Messages
@@ -263,3 +295,49 @@ error carrier.
 
 `validation_error`, `unknown_message_type`, `incompatible_version`,
 `auth_failure`, `not_found`, `rate_limited`, `internal_error`.
+
+---
+
+## HTTP APIs (outside the WS envelope)
+
+A few endpoints are plain HTTP and do not use the envelope above. The
+bootstrap-pairing endpoints associate a first-time Storage Node with an account
+(§7b); the code is a one-time credential and never appears on the WebSocket.
+
+### `POST /pairing/codes` (authenticated)
+
+Mints a one-time pairing code for the signed-in account. Takes no body (the
+session cookie is the credential). Only the SHA-256 hash of the normalized code
+is stored; the plaintext is returned exactly once.
+
+`201 Created` response:
+
+| Field | Type | Notes |
+|---|---|---|
+| `code` | string | `NODUS-XXXX-XXXX`; alphabet `A-Z` minus `I`/`O` plus `2-9` |
+| `expires_at` | ISO 8601 string | 15-minute TTL |
+
+### `POST /pairing/codes/redeem` (open)
+
+Consumes a code and registers the presenting node under the issuing account, in
+one transaction (open — the code is the credential). The consume is atomic and
+single-use; a rejected registration rolls back so the code is not burned. IP
+rate-limited.
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `code` | string | yes | The plaintext pairing code |
+| `node_id` | string | yes | Non-empty, ≤128 printable ASCII |
+| `public_key` | string | yes | Hex-encoded Ed25519 public key (32 bytes) |
+
+`200 OK` → `{ "status": "ok", "account_id": "...", "is_primary": bool }`.
+
+Failures use `{"error": "<reason>"}`:
+
+| Status | `error` |
+|---|---|
+| 404 | `code_unknown` |
+| 410 | `code_expired`, `code_revoked` |
+| 409 | `code_consumed`, `node_owned_elsewhere` |
+| 400 | body/`node_id`/`public_key` validation |
+| 429 | `rate_limit_exceeded` |

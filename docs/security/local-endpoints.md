@@ -34,6 +34,16 @@ boundary for *identity* and *pairing* on the LAN.
   Relay (`/pairing/sessions/verify`), whichever path is hit. The Relay row is
   the source of truth for single-use across re-syncs.
 
+### Node bootstrap pairing codes (Relay, Phase 7b)
+
+Separate from the device↔node tokens above: first-time Storage Node association
+uses a one-time `NODUS-XXXX-XXXX` **pairing code** redeemed over the public
+origin via `POST /pairing/codes/redeem`. The code is hashed at rest,
+single-use, TTL-bounded, IP rate-limited, and never substitutes for the node's
+Ed25519 WS challenge-response. See
+[`bootstrap-pairing.md`](./bootstrap-pairing.md) for the endpoints, failure
+reasons, and threat model.
+
 ## Threat model
 
 | Threat | Mitigation |

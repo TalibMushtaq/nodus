@@ -11,9 +11,9 @@ across multiple sessions so any session can be picked up where the last left off
 
 ## Status
 
-- **Current session:** S9 (next)
+- **Current session:** S10 (next)
 - **Blocked on:** nothing
-- **Done sessions:** S1, S2, S3, S4, S5, S6, S7, S8
+- **Done sessions:** S1, S2, S3, S4, S5, S6, S7, S8, S9
 
 Update the marker above and the Session Log at the bottom whenever you finish a
 session. Mark a task `[~]` while in progress, `[x]` when complete.
@@ -277,15 +277,25 @@ Run: manual E2E against the deployed stack.
 
 Tasks:
 
-- [ ] ADR `0006-self-hosted-node-bootstrap-pairing.md` under `docs/decisions/`
+- [x] ADR `0006-self-hosted-node-bootstrap-pairing.md` under `docs/decisions/`
       (decision, context, consequences) — brief, mirroring ADR 0001–0005 tone.
-      Optionally cross-link from `docs/decisions/README.md`.
-- [ ] `docs/security/local-endpoints.md`: document the two new HTTP endpoints,
+      Cross-linked from `docs/decisions/README.md`.
+- [x] `docs/security/local-endpoints.md`: document the two new HTTP endpoints,
       rate limiting, hashed storage, plaintext-never-logged guarantee.
-- [ ] `docs/protocol/message-catalog.md`: add `pairing_codes` API + the
-      `node_auth_result.reason` field if not already catalogued.
-- [ ] Re-check plan/Todo drift: if implementation diverged from §7b/§7c, fix the
-      plan or the code (plan is source of truth for the decision).
+      **Note:** the full pairing-code security posture lives in the new
+      `docs/security/bootstrap-pairing.md` (the endpoints are Relay-origin, not
+      the node's local listener); `local-endpoints.md` gained a scoped
+      cross-reference section and `docs/security/README.md` now indexes both.
+- [x] `docs/protocol/message-catalog.md`: add `pairing_codes` API + the
+      `node_auth_result.reason` field if not already catalogued. (Added a Node
+      Authentication message section with `node_auth_challenge` /
+      `node_auth_response` / `node_auth_result` (incl. `reason`) and an HTTP
+      APIs section for `POST /pairing/codes` + `/pairing/codes/redeem`.)
+- [x] Re-check plan/Todo drift: if implementation diverged from §7b/§7c, fix the
+      plan or the code (plan is source of truth for the decision). Reconciled
+      §7b: FK `ON DELETE` actions, the exact conditional-consume predicate, and
+      both `node_not_found`/`node_inactive` reasons. No code drift (the Relay
+      already distinguishes the two reasons); §3b routing was fixed in S8.
 
 **Exit criteria:** ADR + security + protocol docs up to date and internally
 consistent.
@@ -348,5 +358,5 @@ Run: `pnpm test && pnpm lint && pnpm check-types`
 | S6 | 2026-09-11 | done | `/api/pairing/codes` proxy, `createPairingCode`/`findNode`, server-only `publicRelayUrl()` → `DevicesClient`, ws-provider same-origin, `.env.example`; no bundle localhost leak |
 | S7 | 2026-09-11 | done | `AddStorageNodeDialog` (code/command/copy/countdown), `GET /nodes` new-node poll, paired refresh, `findNewNode`+`formatCountdown`; primitives only; 70 web tests green |
 | S8 | 2026-09-11 | done | `deploy/` single-origin unit (web+relay+pg+redis+caddy), corrected routing (`/api/*`→Next, relay-owned paths proxied), `PUBLIC_RELAY_URL` wired, Next standalone; live E2E: host node paired + WS-authed via Caddy |
-| S9 | — | pending | |
+| S9 | 2026-09-11 | done | ADR-0006; `docs/security/bootstrap-pairing.md` + local-endpoints cross-ref + security index; message-catalog node-auth + pairing HTTP API; §7b drift reconciled |
 | S10 | — | pending | |
