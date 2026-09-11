@@ -11,9 +11,9 @@ across multiple sessions so any session can be picked up where the last left off
 
 ## Status
 
-- **Current session:** S5 (next)
+- **Current session:** S6 (next)
 - **Blocked on:** nothing
-- **Done sessions:** S1, S2, S3, S4
+- **Done sessions:** S1, S2, S3, S4, S5
 
 Update the marker above and the Session Log at the bottom whenever you finish a
 session. Mark a task `[~]` while in progress, `[x]` when complete.
@@ -159,18 +159,21 @@ success, and reports failures readably.
 
 Tasks:
 
-- [ ] `nodus node pair` interactive (`dialoguer`): prompt relay URL (default to
+- [x] `nodus node pair` interactive (`dialoguer`): prompt relay URL (default to
       already-configured/public URL if present) then code.
-- [ ] `nodus node pair --relay <url> --code <code>` non-interactive.
-- [ ] Reuse the persistent Ed25519 identity (§5/§11) — never regenerate per
+- [x] `nodus node pair --relay <url> --code <code>` non-interactive.
+- [x] Reuse the persistent Ed25519 identity (§5/§11) — never regenerate per
       attempt; nothing new written to `~/.nodus/identity/`.
-- [ ] HTTPS POST `/pairing/codes/redeem` with `{code, node_id, public_key}`;
-      parse `{status:"ok", account_id}`.
-- [ ] On success: persist `relay_url` into config.toml (only then), print
-      `node_id` + account_id, then connect via the normal WS challenge-response.
-- [ ] On failure: print the machine-readable reason and
-      "Storage Node is not paired. Run: `nodus node pair`".
-- [ ] Tests: success path persists exactly once; identity unchanged across
+- [x] HTTPS POST `/pairing/codes/redeem` with `{code, node_id, public_key}`;
+      parse `{status:"ok", account_id}`. (`rustls-tls-native-roots` added to
+      `reqwest` + `tokio-tungstenite` so HTTPS/WSS actually connect.)
+- [x] On success: persist `relay_url` into config.toml (only then), print
+      `node_id` + account_id, then connect via the normal WS challenge-response
+      (`boot_daemon`).
+- [x] On failure: print the machine-readable reason and
+      "Storage Node is not paired. Run: `nodus node pair`"; the daemon sync loop
+      also surfaces that guidance on `node_not_found`.
+- [x] Tests: success path persists exactly once; identity unchanged across
       attempts; each failure reason surfaced; interactive prompts accept input.
 
 **Exit criteria:** end-to-end `nodus node pair` against a *dev relay* succeeds and
@@ -234,6 +237,10 @@ Tasks:
 - [ ] Reverse-proxy/TLS sample: `/api/*` and `/ws` (WSS) → Go Relay; everything
       else → Next.js; proper Host/Origin handling; `AllowedOrigins` set to the
       real origin (see `services/relay/internal/config/config.go`).
+      **Seam from S5:** the Rust node appends `/pairing/codes/redeem` to its
+      configured relay base, so the proxy must also route `POST /pairing/*` to
+      the Relay (or `PUBLIC_RELAY_URL` must point at a relay-only origin);
+      routing only `/api/*` + `/ws` would send the redeem call to Next.js.
 - [ ] `PUBLIC_RELAY_URL` wired to Next (server env) + documented in the repo's
       env examples; never inferred from Host/Docker names/localhost.
 - [ ] Verify a Storage Node outside the Docker network can reach the public
@@ -316,7 +323,7 @@ Run: `pnpm test && pnpm lint && pnpm check-types`
 | S2 | 2026-09-11 | done | redeem handler (transactional consume+register), proxy-aware rate limiter, route, integration tests |
 | S3 | 2026-09-11 | done | `node_auth_result.reason="node_not_found"` for unpaired nodes; Go suite green |
 | S4 | 2026-09-11 | done | `node` subgroup + global root flags, `relay_url` config key, precedence resolver, ws/wss normalization, no-localhost boot guard, tests |
-| S5 | — | pending | |
+| S5 | 2026-09-11 | done | `node pair` (prompts/non-interactive), HTTPS redeem + typed failure reasons, persist-on-success, identity reuse, `node_not_found` unpaired UX, rustls TLS; dev-relay E2E verified |
 | S6 | — | pending | |
 | S7 | — | pending | |
 | S8 | — | pending | |

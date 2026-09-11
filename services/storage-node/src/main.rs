@@ -2,6 +2,7 @@ mod config;
 mod db;
 mod identity;
 mod local;
+mod pair;
 mod store;
 pub mod sync;
 mod transfer;
@@ -71,20 +72,15 @@ async fn main() -> anyhow::Result<()> {
             action: NodeAction::Start,
         }) => run_daemon(&cli).await,
         Some(Command::Node {
-            action: NodeAction::Pair { .. },
-        }) => {
-            anyhow::bail!(
-                "`nodus node pair` is not implemented yet; \
-                 the pairing flow lands in session S5"
-            )
-        }
+            action: NodeAction::Pair { code },
+        }) => run_pair(&cli, code.clone()).await,
     }
 }
 
-async fn run_daemon(cli: &Cli) -> anyhow::Result<()> {
+/// Resolve data-dir + relay config, printing an actionable message on failure.
+fn resolve_config(cli: &Cli) -> anyhow::Result<config::Config> {
     let interactive = std::io::IsTerminal::is_terminal(&std::io::stdin());
-
-    let cfg = config::load_or_setup(
+    config::load_or_setup(
         cli.data_dir.clone(),
         cli.relay.clone(),
         interactive,
@@ -96,8 +92,57 @@ async fn run_daemon(cli: &Cli) -> anyhow::Result<()> {
             "provide a data directory via --data-dir or NODUS_DATA_DIR, or run interactively"
         );
         anyhow::anyhow!(e.to_string())
-    })?;
+    })
+}
 
+async fn run_daemon(cli: &Cli) -> anyhow::Result<()> {
+    let cfg = resolve_config(cli)?;
+    boot_daemon(cfg).await
+}
+
+/// Pair this node and, on success, continue into the normal daemon so the WS
+/// challenge-response flow starts immediately (§7c). On failure, print the
+/// machine-readable reason plus recovery guidance and exit non-zero.
+async fn run_pair(cli: &Cli, code: Option<String>) -> anyhow::Result<()> {
+    let interactive = std::io::IsTerminal::is_terminal(&std::io::stdin());
+    let mut cfg = resolve_config(cli)?;
+
+    // Bound the redeem so a black-holed relay fails in seconds, not forever.
+    let http = reqwest::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .build()
+        .context("building HTTP client for pairing")?;
+    let mut prompt = pair::DialoguerPrompt;
+
+    match pair::run(
+        &cfg,
+        cli.relay.clone(),
+        code,
+        interactive,
+        &mut prompt,
+        &http,
+    )
+    .await
+    {
+        Ok(outcome) => {
+            println!("node id:    {}", outcome.node_id);
+            println!("account id: {}", outcome.account_id);
+            if outcome.is_primary {
+                println!("role:       primary node");
+            }
+            // Boot against the freshly-paired relay now persisted in config.toml.
+            cfg.relay_url = Some(outcome.relay_base);
+            boot_daemon(cfg).await
+        }
+        Err(e) => {
+            eprintln!("pairing failed: {e}");
+            eprintln!("{}", e.guidance());
+            std::process::exit(1);
+        }
+    }
+}
+
+async fn boot_daemon(cfg: config::Config) -> anyhow::Result<()> {
     println!("node data dir: {}", cfg.data_dir.display());
     println!("config dir:    {}", cfg.nodus_dir.display());
 
@@ -192,7 +237,20 @@ async fn run_daemon(cli: &Cli) -> anyhow::Result<()> {
                 }
                 Err(e) => {
                     if !relay_down_logged {
-                        eprintln!("sync: relay unreachable: {e}");
+                        if sync::client::is_node_not_paired(&e) {
+                            // Unpaired node: point the operator at the fix
+                            // instead of reporting a phantom relay outage.
+                            eprintln!("{}", pair::NOT_PAIRED_GUIDANCE);
+                        } else if sync::client::is_node_not_active(&e) {
+                            // Registered but disabled/revoked: pairing again is
+                            // the wrong advice.
+                            eprintln!(
+                                "sync: this node is registered but not active; \
+                                 re-enable it in the web UI, or re-pair if it was revoked"
+                            );
+                        } else {
+                            eprintln!("sync: relay unreachable: {e}");
+                        }
                         relay_down_logged = true;
                     }
                 }

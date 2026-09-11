@@ -32,7 +32,6 @@ use sqlx::sqlite::SqlitePool;
 use tower_http::cors::CorsLayer;
 
 use crate::identity::NodeIdentity;
-use crate::sync::client::relay_http_fetch_url;
 
 use super::auth::{NonceStore, RateLimiter, verify_signature};
 
@@ -166,12 +165,10 @@ pub async fn spawn(
     store: Arc<crate::store::ObjectStore>,
     relay_url: Option<&str>,
 ) -> anyhow::Result<tokio::task::JoinHandle<()>> {
-    let relay_http_base = relay_url.map(|u| {
+    let relay_http = relay_url.map(|u| {
         // Same ws→http derivation the sync client already uses for
         // /buffer/fetch; reuse it to stay consistent about base-path handling.
-        relay_http_fetch_url(u)
-            .trim_end_matches("/buffer/fetch")
-            .to_string()
+        crate::sync::client::relay_http_base(u)
     });
 
     let webrtc_manager = Arc::new(crate::webrtc::WebRtcManager::new(
@@ -190,7 +187,7 @@ pub async fn spawn(
             super::auth::CHALLENGE_RATE_WINDOW,
             super::auth::CHALLENGE_RATE_LIMIT,
         )),
-        relay_http_base,
+        relay_http_base: relay_http,
         http: reqwest::Client::new(),
     };
 

@@ -28,7 +28,6 @@ pub struct NodeIdentity {
     /// Hex-encoded public key, used as the stable Node ID on the wire.
     pub node_id: String,
     /// Ed25519 public key (32 bytes). Exposed for pairing / trust verification.
-    #[allow(dead_code)]
     pub public_key: VerifyingKey,
     /// Full signing key, kept in memory for signing snapshots and challenges.
     /// Zeroized on drop.

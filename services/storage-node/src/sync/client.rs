@@ -16,21 +16,18 @@ use super::types::{
 use crate::identity::NodeIdentity;
 use crate::store::ObjectStore;
 
-/// Derive the Relay's HTTP fetch endpoint from its WebSocket URL. The scheme
-/// flips ws→http (wss→https) and the trailing /ws path segment is replaced by
-/// /buffer/fetch (a plain host/port keeps the endpoint). Parsed once at
-/// construction so the fetch URL is stable for the lifetime of the client
-/// rather than string-mangled per request. URL parsing (rather than raw string
-/// surgery) also drops stray query strings / trailing slashes that would
-/// otherwise corrupt the endpoint.
-pub fn relay_http_fetch_url(relay_url: &str) -> String {
-    let mut url = match Url::parse(relay_url) {
-        Ok(u) => u,
-        // Degenerate config: keep the raw value so the node still attempts a
-        // fetch instead of failing to boot over a malformed URL.
-        Err(_) => return relay_url.to_string(),
+/// Derive the Relay's plain-HTTP base from any configured relay URL. Accepts
+/// the operator-facing public origin (`https://host`, `http://host`) as well as
+/// the legacy explicit WebSocket form (`ws(s)://…/ws`): the scheme flips to
+/// http(s) and a trailing `/ws` gateway segment is dropped. Query strings and
+/// fragments are discarded (they are per-connection, never base-affecting), and
+/// a non-`/ws` base path is preserved for proxied deployments. Unparseable
+/// values are returned unchanged so a malformed config fails on connection.
+pub fn relay_http_base(raw: &str) -> String {
+    let Ok(mut url) = Url::parse(raw) else {
+        return raw.to_string();
     };
-    let _ = url.set_scheme(if url.scheme() == "wss" {
+    let _ = url.set_scheme(if url.scheme() == "wss" || url.scheme() == "https" {
         "https"
     } else {
         "http"
@@ -38,15 +35,65 @@ pub fn relay_http_fetch_url(relay_url: &str) -> String {
     url.set_query(None);
     url.set_fragment(None);
 
-    // Preserve any non-/ws base path (e.g. a proxied deployment) and only swap
-    // the trailing ws segment for the fetch endpoint.
-    let trimmed = url.path().trim_end_matches('/');
+    let trimmed = url.path().trim_end_matches('/').to_string();
     let base = match trimmed.strip_suffix("/ws") {
-        Some(dir) => dir.trim_end_matches('/'),
+        Some(dir) => dir.trim_end_matches('/').to_string(),
         None => trimmed,
     };
-    url.set_path(&format!("{base}/buffer/fetch"));
-    url.to_string()
+    url.set_path(&base);
+    url.to_string().trim_end_matches('/').to_string()
+}
+
+/// Derive the Relay's HTTP fetch endpoint from its WebSocket URL. Builds on
+/// `relay_http_base` and appends the fixed `/buffer/fetch` path; parsed once at
+/// construction so the fetch URL is stable for the lifetime of the client.
+pub fn relay_http_fetch_url(relay_url: &str) -> String {
+    // Degenerate config: keep the raw value so the node still attempts a
+    // fetch instead of failing to boot over a malformed URL.
+    if Url::parse(relay_url).is_err() {
+        return relay_url.to_string();
+    }
+    format!("{}/buffer/fetch", relay_http_base(relay_url))
+}
+
+/// Marker error returned by `run_sync_session` when the Relay rejects the node
+/// with the machine-readable `node_not_found` reason (§7b "Unpaired-node UX").
+/// Callers can `downcast_ref` it to print pairing guidance instead of treating
+/// an unpaired node as a generic relay outage.
+#[derive(Debug)]
+pub struct NodeNotPaired;
+
+impl std::fmt::Display for NodeNotPaired {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "storage node is not paired")
+    }
+}
+
+impl std::error::Error for NodeNotPaired {}
+
+/// True when `e` (or any source in its chain) is the `NodeNotPaired` marker.
+pub fn is_node_not_paired(e: &anyhow::Error) -> bool {
+    e.chain().any(|c| c.is::<NodeNotPaired>())
+}
+
+/// Marker error returned when the Relay reports `node_inactive`: the node is
+/// registered but its status is not ACTIVE (e.g. REVOKED). Kept distinct from
+/// `NodeNotPaired` so the caller does not tell an operator to re-pair a node
+/// that is already bound to an account.
+#[derive(Debug)]
+pub struct NodeNotActive;
+
+impl std::fmt::Display for NodeNotActive {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "storage node is registered but not active")
+    }
+}
+
+impl std::error::Error for NodeNotActive {}
+
+/// True when `e` (or any source in its chain) is the `NodeNotActive` marker.
+pub fn is_node_not_active(e: &anyhow::Error) -> bool {
+    e.chain().any(|c| c.is::<NodeNotActive>())
 }
 
 /// Normalize a configured relay URL into the WebSocket URL the sync client
@@ -185,6 +232,14 @@ impl SyncClient {
                     if result.status == "ok" {
                         authenticated = true;
                         break;
+                    } else if result.reason.as_deref() == Some("node_not_found") {
+                        // Unpaired node: surface a typed marker so the caller can
+                        // print pairing guidance instead of a relay-outage line.
+                        return Err(anyhow::Error::new(NodeNotPaired));
+                    } else if result.reason.as_deref() == Some("node_inactive") {
+                        // Registered but disabled/revoked: do not tell the
+                        // operator to pair again.
+                        return Err(anyhow::Error::new(NodeNotActive));
                     } else {
                         anyhow::bail!("authentication failed: {:?}", result.message);
                     }
@@ -581,6 +636,53 @@ mod tests {
             relay_http_fetch_url("wss://relay.example.com/proxy/ws"),
             "https://relay.example.com/proxy/buffer/fetch"
         );
+    }
+
+    #[test]
+    fn test_relay_http_base_accepts_public_origins() {
+        // Operator-facing public origins pass through unchanged.
+        assert_eq!(
+            relay_http_base("https://nodus.example.com"),
+            "https://nodus.example.com"
+        );
+        assert_eq!(
+            relay_http_base("http://localhost:8080"),
+            "http://localhost:8080"
+        );
+        // Legacy WS forms flip scheme and drop the /ws gateway segment.
+        assert_eq!(
+            relay_http_base("ws://127.0.0.1:8080/ws"),
+            "http://127.0.0.1:8080"
+        );
+        assert_eq!(
+            relay_http_base("wss://relay.example.com/ws"),
+            "https://relay.example.com"
+        );
+        // A proxied base path is preserved; query/fragment are discarded.
+        assert_eq!(
+            relay_http_base("wss://relay.example.com/proxy/ws?token=abc"),
+            "https://relay.example.com/proxy"
+        );
+        // Malformed input passes through.
+        assert_eq!(relay_http_base("not a url"), "not a url");
+    }
+
+    #[test]
+    fn test_is_node_not_paired_only_matches_marker() {
+        assert!(is_node_not_paired(&anyhow::Error::new(NodeNotPaired)));
+        assert!(!is_node_not_paired(&anyhow::anyhow!("relay unreachable")));
+        // Wrapping in context preserves the marker through the chain.
+        let wrapped = anyhow::Error::new(NodeNotPaired).context("session failed");
+        assert!(is_node_not_paired(&wrapped));
+    }
+
+    #[test]
+    fn test_is_node_not_active_only_matches_marker() {
+        assert!(is_node_not_active(&anyhow::Error::new(NodeNotActive)));
+        // The two markers are not interchangeable.
+        assert!(!is_node_not_active(&anyhow::Error::new(NodeNotPaired)));
+        assert!(!is_node_not_paired(&anyhow::Error::new(NodeNotActive)));
+        assert!(!is_node_not_active(&anyhow::anyhow!("relay unreachable")));
     }
 
     #[test]

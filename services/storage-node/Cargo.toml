@@ -21,11 +21,15 @@ walkdir = "2"
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 serde_json = "1"
 futures-util = "0.3"
-tokio-tungstenite = "0.26"
+# TLS is required for production pairing: the redeem call is HTTPS (§7b) and
+# the node syncs over WSS through the public origin (§3b). Native roots so a
+# real (e.g. Let's Encrypt) certificate validates without bundling roots.
+tokio-tungstenite = { version = "0.26", features = ["rustls-tls-native-roots"] }
 # HTTP client for the Phase 10 buffer-fetch flow (Relay serves shard bytes
 # over plain HTTP; no TLS needed for the default local deployment). `json`
-# enables the Phase 11 pairing-verify fallback request body.
-reqwest = { version = "0.12", default-features = false, features = ["json"] }
+# enables the Phase 11 pairing-verify fallback request body. `rustls-tls-native-roots`
+# enables the S5 HTTPS pairing-code redeem.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-native-roots"] }
 # URL parsing for deriving the Relay's HTTP fetch endpoint from its WS URL.
 url = "2"
 axum = "0.8"

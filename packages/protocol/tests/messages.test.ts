@@ -358,6 +358,17 @@ describe("message catalog round-trips", () => {
     expect(r.ok).toBe(true);
   });
 
+  it("node_auth_result with node_inactive reason", () => {
+    const r = parseMessage(
+      msg(MessageTypes.NODE_AUTH_RESULT, {
+        status: "fail",
+        message: "storage node is not active",
+        reason: "node_inactive",
+      }),
+    );
+    expect(r.ok).toBe(true);
+  });
+
   it("batch_ack", () => {
     const r = parseMessage(
       msg(MessageTypes.BATCH_ACK, {

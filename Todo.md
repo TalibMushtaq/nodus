@@ -268,19 +268,19 @@ stage 7b in §28 (inserted between 7a and 8).
 
 - [x] Add `node` CLI subgroup with `nodus node start`; existing root flags keep
       booting the daemon as-is — S4
-- [ ] `nodus node pair` interactive (`dialoguer`) prompt for relay URL then code — S5
+- [x] `nodus node pair` interactive (`dialoguer`) prompt for relay URL then code — S5
 - [x] URL precedence: CLI `--relay` > `config.toml` `relay_url` >
       `NODUS_RELAY_URL` > **no default** (first-run never targets
       localhost/127.0.0.1) — S4
-- [ ] `nodus node pair --relay <url> --code <code>` scripted redeem over HTTPS — S5
-- [ ] Pair using the persistent Ed25519 identity (§5/§11) — never regenerate per
+- [x] `nodus node pair --relay <url> --code <code>` scripted redeem over HTTPS — S5
+- [x] Pair using the persistent Ed25519 identity (§5/§11) — never regenerate per
       attempt (plan §7c) — S5
 - [x] Remove the `NODUS_RELAY_URL` localhost default; `nodus node start` uses
       config-precedence resolution (plan §11/§11a) — S4
-- [ ] Persist `relay_url` in `~/.nodus/config.toml` **only after successful
+- [x] Persist `relay_url` in `~/.nodus/config.toml` **only after successful
       pairing** — S5
-- [ ] Normal reconnect after pairing = existing WS challenge-response; the pairing
-      code is never required again — S5/S10
+- [x] Normal reconnect after pairing = existing WS challenge-response; the pairing
+      code is never required again — S5 (live re-check in S10)
 
 ### Next.js web client
 
@@ -299,7 +299,7 @@ stage 7b in §28 (inserted between 7a and 8).
       double-claim; rejected registration leaves the code PENDING), unknown/
       consumed codes, node owned by another account (409), first-node
       `is_primary`, rate limiting, hash-only storage (no plaintext in DB/logs) — S1–S2
-- [ ] Rust: URL precedence, `relay_url` persistence on success-only, identity
+- [x] Rust: URL precedence, `relay_url` persistence on success-only, identity
       reuse across attempts, interactive + non-interactive pair, failure paths
       rendered as machine-readable reasons — S5
 - [ ] Web: code creation, URL+code render, polling success/expiry, unpaired error — S7

@@ -84,7 +84,25 @@ func TestNodeAuthUnpairedNodeReason(t *testing.T) {
 	require.Equal(t, "node_auth_result", envType)
 	require.Equal(t, "fail", result.Status)
 	require.Equal(t, "node_not_found", result.Reason, "unpaired node must get a machine-readable reason")
-	require.Contains(t, result.Message, "not found or inactive")
+	require.Contains(t, result.Message, "not found")
+}
+
+func TestNodeAuthInactiveNodeReason(t *testing.T) {
+	ctx, pool, h, acctID := setupNodeAuthHarness(t)
+
+	// A storage_nodes row exists but is not ACTIVE (e.g. REVOKED). The node is
+	// registered, so it must NOT be told to pair again; it gets a distinct
+	// machine-readable reason instead.
+	nodeID := "node-" + acctID
+	_, err := pool.Exec(ctx, `INSERT INTO storage_nodes (node_id, account_id, public_key, status) VALUES ($1, $2, 'ab', 'REVOKED')`,
+		nodeID, acctID)
+	require.NoError(t, err)
+
+	envType, result := runNodeAuth(t, ctx, pool, h, nodeID, func(nonce []byte) string { return "sig" })
+	require.Equal(t, "node_auth_result", envType)
+	require.Equal(t, "fail", result.Status)
+	require.Equal(t, "node_inactive", result.Reason, "inactive node must be distinguishable from unknown")
+	require.Contains(t, result.Message, "not active")
 }
 
 func TestNodeAuthPairedNodeSuccessNoReason(t *testing.T) {

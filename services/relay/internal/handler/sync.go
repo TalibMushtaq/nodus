@@ -29,7 +29,9 @@ type NodeAuthResponsePayload struct {
 type NodeAuthResultPayload struct {
 	Status  string `json:"status"` // "ok" | "fail"
 	Message string `json:"message,omitempty"`
-	Reason  string `json:"reason,omitempty"`
+	// Machine-readable failure reason: "node_not_found" (no row) or
+	// "node_inactive" (row exists but status != ACTIVE).
+	Reason string `json:"reason,omitempty"`
 }
 
 type SyncCursor struct {
@@ -213,11 +215,22 @@ func HandleNodeAuthResponse(
 	)
 	query := `SELECT account_id, public_key, status FROM storage_nodes WHERE node_id = $1`
 	err := pool.QueryRow(ctx, query, resp.NodeID).Scan(&accountID, &pubKeyHex, &status)
-	if err != nil || status != "ACTIVE" {
+	if err != nil {
+		// Unknown node: no row at all, so pairing is the recovery.
 		_ = sendEnvelope(c, "node_auth_result", NodeAuthResultPayload{
 			Status:  "fail",
-			Message: "storage node not found or inactive",
+			Message: "storage node not found",
 			Reason:  "node_not_found",
+		})
+		return
+	}
+	if status != "ACTIVE" {
+		// Row exists but is unusable (e.g. REVOKED). Distinct from unknown so
+		// the node does not tell the operator to re-pair a registered node.
+		_ = sendEnvelope(c, "node_auth_result", NodeAuthResultPayload{
+			Status:  "fail",
+			Message: "storage node is not active",
+			Reason:  "node_inactive",
 		})
 		return
 	}

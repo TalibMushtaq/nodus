@@ -15,7 +15,8 @@
     "reason": {
       "type": "string",
       "enum": [
-        "node_not_found"
+        "node_not_found",
+        "node_inactive"
       ]
     }
   },

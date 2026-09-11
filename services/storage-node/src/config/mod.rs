@@ -214,8 +214,6 @@ pub fn resolve_relay_url(
 /// truncate the config into an unparseable state. Deliberately edits a
 /// `toml::Table` rather than re-serializing `NodusConfigFile`: a typed
 /// round-trip would silently drop keys the struct does not yet model.
-// Consumed by the S5 pair flow; allow until that lands so `-D warnings` is clean.
-#[allow(dead_code)]
 pub fn persist_relay_url(
     nodus_dir: &Path,
     data_dir: &Path,
@@ -461,7 +459,10 @@ mod tests {
         persist_relay_url(dir.path(), &data_dir, "https://nodus.example.com").unwrap();
 
         let doc: toml::Table = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(doc.get("future_key").and_then(|v| v.as_str()), Some("keep-me"));
+        assert_eq!(
+            doc.get("future_key").and_then(|v| v.as_str()),
+            Some("keep-me")
+        );
         assert_eq!(
             doc.get("relay_url").and_then(|v| v.as_str()),
             Some("https://nodus.example.com")

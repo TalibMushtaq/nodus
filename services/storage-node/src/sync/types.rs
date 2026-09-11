@@ -39,6 +39,11 @@ pub struct NodeAuthResultPayload {
     pub status: String, // "ok" | "fail"
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
+    /// Machine-readable failure reason (`node_not_found` | `node_inactive`),
+    /// mirroring the relay's `NodeAuthResultPayload.reason` (§7b
+    /// "Unpaired-node UX"). Absent on success and on legacy relays.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 /// Phase 11: Relay → Node delivery of a freshly issued pairing token. The

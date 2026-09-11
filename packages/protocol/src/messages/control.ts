@@ -73,7 +73,7 @@ export type NodeAuthResponsePayload = z.infer<typeof NodeAuthResponsePayloadSche
 export const NodeAuthResultPayloadSchema = z.object({
   status: z.enum(["ok", "fail"]),
   message: z.string().optional(),
-  reason: z.enum(["node_not_found"]).optional(),
+  reason: z.enum(["node_not_found", "node_inactive"]).optional(),
 });
 
 export type NodeAuthResultPayload = z.infer<typeof NodeAuthResultPayloadSchema>;
