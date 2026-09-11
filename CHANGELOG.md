@@ -1,5 +1,15 @@
 # Changelog
 
+## [2026-09-11] - Web: "+ Add Storage Node" pairing-code dialog (S7)
+
+**What changed:** The Devices page can now bootstrap a Storage Node end-to-end. Added `apps/web/components/add-storage-node-dialog.tsx` (client): on open it mints a code via `createPairingCode()`, shows the relay URL (`PUBLIC_RELAY_URL`), the code, and the exact `nodus node pair --relay <url> --code <code>` command with a copy button, plus a live `MM:SS` expiry countdown. It polls `GET /nodes` every 3s and detects success by diffing against the node ids present when the dialog opened (the browser never learns the node's id ahead of time; `findNewNode` in `lib/pairing.ts` does the diff). State machine `creating → waiting → paired / expired / poll-error`; on paired it reports the node and `DevicesClient` re-syncs the catalog without a reload; expiry offers "Generate new code". The Storage Nodes section action is now "+ Add Storage Node" (opening the dialog) instead of routing to `/pair`; it is disabled with the existing warning when `PUBLIC_RELAY_URL` is unset. Built from `packages/ui` primitives (`Modal`/`ModalHeader`, `Input`, `Button`, `StatusBadge`, `Icon`) per the design-port conventions. Added `formatCountdown` to `lib/format.ts`.
+
+**Why:** First-time pairing needs a guided path that hands the operator a code and the precise CLI command, then confirms the node actually registered — replacing the legacy `/pair` route for this bootstrap flow.
+
+**Impact:** `apps/web/{components/add-storage-node-dialog.tsx(new),app/(dashboard)/devices/devices-client.tsx,lib/pairing.ts,lib/format.ts}`. Tests: new dialog suite (render/copy/countdown-expiry/poll success/poll failure/create failure/close), `findNewNode`, `formatCountdown`, and `DevicesClient` open/disabled cases — 70 web tests green; `pnpm --filter web test`, `check-types`, and `lint` clean.
+
+**Follow-ups:** Redeem-time errors (`code_expired`, `node already paired`, `node_owned_elsewhere`) are CLI-only — the browser only issues the code, so the dialog surfaces issuance-side states; S9/S10 should reconcile that divergence. Manual browser E2E (open dialog → run CLI → watch flip to paired) remains for S10.
+
 ## [2026-09-11] - Pairing S6 audit fixes (proxy error surface, 2xx handling, env example, tracker)
 
 **What changed:** Follow-up to the S6 entry below. `apps/web/lib/pairing.ts`: `createPairingCode()` now parses the Relay's `{"error": ...}` body on non-2xx and throws that machine-readable reason (falling back to the HTTP status), so S7 can render rate-limit/unauthorized states. `apps/web/app/api/pairing/codes/route.ts`: accepts any `2xx` as a successful mint instead of only `201`. `apps/web/.env.example`: commented out `NEXT_PUBLIC_RELAY_URL` and documented that it is a dev-only, bundle-inlined override — the same-origin `/ws` default is the production path. `Todo.md`: checked the S6 Next.js items, annotated the intentionally-skipped `codes/redeem` proxy and the node-revocation gap, and noted which web tests already landed in S6.

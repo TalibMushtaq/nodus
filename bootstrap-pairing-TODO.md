@@ -11,9 +11,9 @@ across multiple sessions so any session can be picked up where the last left off
 
 ## Status
 
-- **Current session:** S7 (next)
+- **Current session:** S8 (next)
 - **Blocked on:** nothing
-- **Done sessions:** S1, S2, S3, S4, S5, S6
+- **Done sessions:** S1, S2, S3, S4, S5, S6, S7
 
 Update the marker above and the Session Log at the bottom whenever you finish a
 session. Mark a task `[~]` while in progress, `[x]` when complete.
@@ -213,16 +213,21 @@ Run: `pnpm test:ts` and `pnpm check-types`
 
 Tasks:
 
-- [ ] Devices page "+ Add Storage Node" dialog: show relay URL
+- [x] Devices page "+ Add Storage Node" dialog: show relay URL
       (`PUBLIC_RELAY_URL`) + code + expiry countdown + CLI instructions
       (`nodus node pair --relay <url> --code <code>`).
-- [ ] Poll node status (pending → paired/offline/error) and reflect transitions;
+- [x] Poll node status (pending → paired/offline/error) and reflect transitions;
       expiry/error states (code_expired, node already paired, owned elsewhere).
-- [ ] Empty state when no nodes; disabled/warned UI when `PUBLIC_RELAY_URL` is
+      **Divergence:** the browser only *issues* the code (the node redeems via
+      the CLI), so the dialog surfaces issuance-side states — pending, paired,
+      offline, expired, poll-error — and the redeem errors are surfaced by
+      `nodus node pair` itself. Success is a new node in `GET /nodes` vs the
+      baseline captured at open.
+- [x] Empty state when no nodes; disabled/warned UI when `PUBLIC_RELAY_URL` is
       unset.
-- [ ] Reuse `packages/ui` primitives (e.g. `overlay`, `input`, `badge`) per the
+- [x] Reuse `packages/ui` primitives (e.g. `overlay`, `input`, `badge`) per the
       design-port conventions — no new bespoke styling.
-- [ ] Web tests: dialog render, countdown/expiry, poll success + failure
+- [x] Web tests: dialog render, countdown/expiry, poll success + failure
       transitions, unpaired error copy.
 
 **Exit criteria:** a user can create a code, run the command, and watch the node
@@ -330,7 +335,7 @@ Run: `pnpm test && pnpm lint && pnpm check-types`
 | S4 | 2026-09-11 | done | `node` subgroup + global root flags, `relay_url` config key, precedence resolver, ws/wss normalization, no-localhost boot guard, tests |
 | S5 | 2026-09-11 | done | `node pair` (prompts/non-interactive), HTTPS redeem + typed failure reasons, persist-on-success, identity reuse, `node_not_found` unpaired UX, rustls TLS; dev-relay E2E verified |
 | S6 | 2026-09-11 | done | `/api/pairing/codes` proxy, `createPairingCode`/`findNode`, server-only `publicRelayUrl()` → `DevicesClient`, ws-provider same-origin, `.env.example`; no bundle localhost leak |
-| S7 | — | pending | |
+| S7 | 2026-09-11 | done | `AddStorageNodeDialog` (code/command/copy/countdown), `GET /nodes` new-node poll, paired refresh, `findNewNode`+`formatCountdown`; primitives only; 70 web tests green |
 | S8 | — | pending | |
 | S9 | — | pending | |
 | S10 | — | pending | |

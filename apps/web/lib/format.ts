@@ -5,6 +5,14 @@ export function shortId(id: string, length = 8): string {
   return id.length <= length ? id : `${id.slice(0, length)}…`;
 }
 
+/** `MM:SS` from a non-negative second count (used by the pairing-code countdown). */
+export function formatCountdown(totalSeconds: number): string {
+  const s = Math.max(0, Math.floor(totalSeconds));
+  const minutes = Math.floor(s / 60);
+  const seconds = s % 60;
+  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+}
+
 /**
  * Rough human-relative time from an ISO string ("just now", "3h ago").
  * The Relay only stores registration/revocation timestamps — there is no

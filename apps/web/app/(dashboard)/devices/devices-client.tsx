@@ -9,6 +9,7 @@ import { StatusBadge } from "@repo/ui/primitives/badge";
 
 import { listNodes, listDevices, revokeDevice, type RelayNode, type RelayDevice } from "../../../lib/pairing";
 import { shortId, timeAgo } from "../../../lib/format";
+import { AddStorageNodeDialog } from "../../../components/add-storage-node-dialog";
 
 // Real-device readout: storage nodes and client devices come from the Relay
 // (GET /nodes, GET /devices) via the session-cookie API proxies. There is no
@@ -99,6 +100,7 @@ export function DevicesClient({ publicRelayUrl }: DevicesClientProps) {
   const [devices, setDevices] = useState<RelayDevice[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [dialogOpen, setDialogOpen] = useState(false);
 
   // Loaded once on mount; loading starts true so the effect only fires
   // setState from async callbacks (react-hooks/set-state-in-effect). The +Pair
@@ -133,6 +135,15 @@ export function DevicesClient({ publicRelayUrl }: DevicesClientProps) {
     }
   }, []);
 
+  // Re-sync the node catalog so a freshly paired node appears without a reload.
+  const refreshNodes = useCallback(async () => {
+    try {
+      setNodes(await listNodes());
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }, []);
+
   return (
     <div className="space-y-6 p-6">
       {error && (
@@ -147,14 +158,36 @@ export function DevicesClient({ publicRelayUrl }: DevicesClientProps) {
       )}
 
       {/* Storage Nodes */}
-      <Section title="Storage nodes" action={<Button variant="secondary" size="sm" onClick={() => router.push("/pair")}>+ Pair a node</Button>}>
+      <Section
+        title="Storage nodes"
+        action={
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => setDialogOpen(true)}
+            disabled={publicRelayUrl === null}
+            title={publicRelayUrl === null ? "Set PUBLIC_RELAY_URL to pair a node" : undefined}
+          >
+            + Add Storage Node
+          </Button>
+        }
+      >
         {loading ? (
           <p className="text-xs text-muted-foreground px-1">Loading nodes…</p>
         ) : nodes.length === 0 ? (
           <EmptyState
             title="No storage nodes yet"
             description="Pair a Storage Node to start syncing files across your network."
-            action={<Button variant="primary" size="sm" onClick={() => router.push("/pair")}>Pair a node</Button>}
+            action={
+              <Button
+                variant="primary"
+                size="sm"
+                onClick={() => setDialogOpen(true)}
+                disabled={publicRelayUrl === null}
+              >
+                Add Storage Node
+              </Button>
+            }
           />
         ) : (
           <div className="border border-border rounded-xl overflow-hidden bg-card">
@@ -185,6 +218,15 @@ export function DevicesClient({ publicRelayUrl }: DevicesClientProps) {
           </div>
         )}
       </Section>
+
+      {dialogOpen && publicRelayUrl !== null && (
+        <AddStorageNodeDialog
+          relayUrl={publicRelayUrl}
+          existingNodeIds={nodes.map((n) => n.node_id)}
+          onClose={() => setDialogOpen(false)}
+          onPaired={() => void refreshNodes()}
+        />
+      )}
     </div>
   );
 }

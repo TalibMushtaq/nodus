@@ -97,6 +97,22 @@ export function findNode(nodes: RelayNode[], nodeId: string): RelayNode | undefi
 }
 
 /**
+ * First node in `nodes` whose id is not already present in `existingIds`.
+ *
+ * The browser only mints the pairing code, so it never learns the node's
+ * `node_id` ahead of time; success is detected by diffing the catalog against
+ * a baseline snapshotted when the dialog opened. Returns `undefined` while the
+ * node is still pending (not yet registered).
+ */
+export function findNewNode(
+  existingIds: string[],
+  nodes: RelayNode[],
+): RelayNode | undefined {
+  const known = new Set(existingIds);
+  return nodes.find((n) => !known.has(n.node_id));
+}
+
+/**
  * Registers the browser device against the Relay (idempotent ownership-safe
  * upsert) so a pairing token can be bound to it.
  */

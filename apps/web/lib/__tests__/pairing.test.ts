@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { createPairingCode, findNode, listNodes, type RelayNode } from "../pairing";
+import { createPairingCode, findNewNode, findNode, listNodes, type RelayNode } from "../pairing";
 
 const ORIGINAL_FETCH = globalThis.fetch;
 
@@ -74,5 +74,19 @@ describe("listNodes / findNode", () => {
     const catalog = [node({ node_id: "node-1" })];
     expect(findNode(catalog, "node-1")?.node_id).toBe("node-1");
     expect(findNode(catalog, "node-2")).toBeUndefined();
+  });
+
+  it("findNewNode detects a node absent from the baseline", () => {
+    const baseline = ["node-1"];
+    // Only pre-existing nodes: still pending.
+    expect(findNewNode(baseline, [node({ node_id: "node-1" })])).toBeUndefined();
+    // A new id appears: that is the freshly paired node.
+    const found = findNewNode(baseline, [
+      node({ node_id: "node-1" }),
+      node({ node_id: "node-2" }),
+    ]);
+    expect(found?.node_id).toBe("node-2");
+    // Empty baseline vs empty catalog stays pending.
+    expect(findNewNode([], [])).toBeUndefined();
   });
 });
