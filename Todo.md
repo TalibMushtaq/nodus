@@ -221,6 +221,93 @@ layer only* — device identity (asymmetric key), Storage Node identity
 - [ ] Mobile (Phase 15 when reached): same session model via secure platform
       storage (requirement §8 identity matrix preserved)
 
+## Phase 7b — Self-Hosted Storage Node Bootstrap via Pairing Code (plan §7b)
+
+First-time **account → new Storage Node** association uses a short-lived,
+single-use **pairing code** (e.g. `NODUS-7K4P-92XM`). The code is **only a
+bootstrap credential** — permanent trust remains the node's persistent Ed25519
+identity and the existing WebSocket challenge-response auth (§8) is unchanged.
+This is distinct from the Phase 11 device↔node *local* pairing. Mirrors new plan
+stage 7b in §28 (inserted between 7a and 8).
+
+### Deployment model
+
+- [x] Single-origin self-hosted unit (Next.js + Go Relay + PostgreSQL + Redis)
+      behind TLS/reverse proxy; `/api/*` and `/ws` → Relay, rest → Next.js
+      (plan §3b)
+- [x] `PUBLIC_RELAY_URL` operator-configured (never inferred from Host headers /
+      Docker names / localhost); `ALLOWED_ORIGINS` aligned
+
+### Relay backend (migration 009)
+
+- [x] Migration `009_pairing_codes.{up,down}.sql`: `pairing_codes` table
+      (`code_hash` PK = SHA-256, `account_id` FK, `status` PENDING/CONSUMED/
+      REVOKED, `node_id` FK, `created_at`, `expires_at`, `consumed_at`) +
+      index on `account_id`; hash-only storage, consumed rows retained
+- [x] `POST /pairing/codes` (`RequireAuth`): CSPRNG code, format `NODUS-XXXX-XXXX`
+      (alphabet A-Z minus I/O + 2-9), ~15-min TTL; response `{code, expires_at}`;
+      plaintext never logged
+- [x] `POST /pairing/codes/redeem` (open — the code is the credential): normalize
+      + hash → validate pending/not-expired/not-consumed → atomic single-use
+      consume + upsert into `storage_nodes` bound to the account in one
+      transaction, reusing the existing first-node/`is_primary` logic (see
+      node.go); failures `code_unknown` (404) | `code_expired` (410) |
+      `code_revoked` (410) | `code_consumed` (409) | `node_owned_elsewhere`
+      (409); a rejected registration rolls back so the code is not burned
+- [x] Per-IP rate limiter for `/pairing/codes/redeem` (mirror the Rust
+      NonceStore/RateLimiter pattern); keys on client IP (port stripped,
+      `TRUST_PROXY`-gated `X-Forwarded-For` behind the TLS reverse proxy)
+- [x] `NodeAuthResultPayload.reason = "node_not_found"` for unpaired nodes so the
+      node can print "Storage Node is not paired. Run: `nodus node pair`"
+
+### Rust Storage Node (CLI + config)
+
+- [x] Add `node` CLI subgroup: `nodus node pair` (interactive `dialoguer` prompts)
+      and `nodus node start`; existing root flags keep booting the daemon as-is
+- [x] `nodus node pair --relay <url> --code <code>` for scripted runs; URL
+      precedence: CLI `--relay` > `config.toml` `relay_url` > `NODUS_RELAY_URL` >
+      **no default** (first-run pairing never targets localhost/127.0.0.1)
+- [x] Pair using the persistent Ed25519 identity (§5/§11) — never regenerate per
+      attempt; redeem over HTTPS (plan §7c)
+- [x] Persist `relay_url` in `~/.nodus/config.toml` **only after successful
+      pairing**; remove the `NODUS_RELAY_URL` localhost default and switch
+      `nodus node start` onto config-precedence resolution (plan §11/§11a)
+- [x] Normal reconnect after pairing = existing WS challenge-response; the pairing
+      code is never required again
+
+### Next.js web client
+
+- [x] Route handlers `app/api/pairing/codes/route.ts` and
+      `app/api/pairing/codes/redeem/route.ts` proxying the Relay
+- [x] `lib/pairing.ts`: `createPairingCode()`, node list/polling, revoke
+- [x] Devices page "+ Add Storage Node" dialog: relay URL (`PUBLIC_RELAY_URL`) +
+      code + expiry countdown + CLI instructions + node-status polling
+      (connected/paired/expired/error states)
+- [x] Keep internal `RELAY_URL` and user-facing `PUBLIC_RELAY_URL` distinct
+
+### Security tests
+
+- [x] Go: full alphabet/format, expiry (past `expires_at` → `code_expired`),
+      revoked (`code_revoked`), single-use (concurrent redemption → no
+      double-claim; rejected registration leaves the code PENDING), unknown/
+      consumed codes, node owned by another account (409), first-node
+      `is_primary`, rate limiting, hash-only storage (no plaintext in DB/logs)
+- [x] Rust: URL precedence, `relay_url` persistence on success-only, identity
+      reuse across attempts, interactive + non-interactive pair, failure paths
+      rendered as machine-readable reasons
+- [x] Web: code creation, URL+code render, polling success/expiry, unpaired error
+- [x] E2E: create code in UI → `nodus node pair` on a fresh node → node appears
+      paired → WS challenge-response sync session succeeds
+
+### Non-goals (explicit)
+
+- ❌ No QR-based pairing in v1 (later: encode `{relay_url, code}`, same redemption
+      — update the Phase 14/15 QR items when it lands)
+- ❌ No central/shared public Relay
+- ❌ No automatic public-URL discovery; no Docker-internal hostnames exposed to nodes
+- ❌ No node key rotation / complex re-pairing; the code is never a long-lived
+      credential and is never needed after setup
+
 ## Phase 8 — Rust ↔ Relay Incremental Sync
 
 - [x] Implement `sync_outbox` draining from Rust to Relay
@@ -258,7 +345,8 @@ layer only* — device identity (asymmetric key), Storage Node identity
 ## Phase 11 — Local Discovery & Node Authentication
 
 - [x] mDNS advertisement (Rust node)
-- [x] First-time pairing flow (Node/Relay infrastructure): account auth → Relay auth → pair node (fast path + fallback)
+- [x] First-time pairing flow, device↔node local trust (Node/Relay infrastructure): account auth → Relay auth → pair node (fast path + fallback)
+      (account↔new-node bootstrap via pairing code is Phase 7b, plan §7b — not covered here)
 - [x] Subsequent offline auth (Node infrastructure): known Node ID? → challenge-response → verify signature → authenticated
 *(Note: UI flows, mDNS discovery, and mobile policies moved to Phases 14/15)*
 
@@ -294,7 +382,9 @@ layer only* — device identity (asymmetric key), Storage Node identity
   - [x] React provider (`apps/web/providers/ws-provider.tsx`), StrictMode-safe
 - [ ] Client-side uploader integration (Path C): shard the encrypted stream, emit sync events, and POST shards
 - [ ] Wire-level e2e: real Rust `run_sync_session` against a live Relay + Next.js client uploader
-- [ ] First-time pairing flow (Web UI): establish identities, render QR-based pairing UI
+- [x] First-time pairing flow (Web UI): "+ Add Storage Node" pairing-code dialog —
+      show relay URL + code + expiry countdown, poll node status (plan §7b);
+      **QR-based pairing deferred (non-goal)**
 - [ ] Client local DB (cached catalog, credentials, trusted nodes, sync state)
 - [ ] Browser-specific WebRTC/mDNS handling, with fallback UX when local network access is unavailable
  
@@ -303,7 +393,9 @@ layer only* — device identity (asymmetric key), Storage Node identity
 - [ ] Scaffold Expo application structure
 - [ ] Reuse `packages/sdk` where portable; native/mobile-specific pieces per Phase 0 decision
 - [ ] mDNS discovery (Mobile) & Path A/B fallback logic
-- [ ] First-time pairing flow (Mobile UI): QR-based scanner and pairing screens
+- [ ] First-time pairing flow (Mobile UI): pairing-code entry screens (plan §7b);
+      **QR-based scanner deferred (non-goal)** — may later encode
+      `{relay_url, code}` and reuse the same redemption
 - [ ] Apply Phase 0 mobile-discovery decision (foreground/background policy, Expo vs. native)
 - [ ] Local network permission prompt handling + denial fallback UX (§7a)
 
@@ -353,6 +445,8 @@ but should be resolved before the phase that depends on them:
       — **resolved: 90 days** per `docs/decisions/0005-garbage-collection-policy.md`;
       enforced by the hourly prune in `services/relay/internal/tombstone/tombstone.go`
 - [x] Local (Wi-Fi/LAN) endpoint security details (needed by Phase 11) — **resolved in Phase 11**; implemented rate limiting, nonce caps, and node_id cross-checking.
-- [ ] Pairing/QR format spec (needed by Phase 11)
+- [x] Pairing/QR format spec (needed by Phase 11) — **resolved in Phase 7b**:
+      account↔node bootstrap pairing-code flow is canonical (`NODUS-XXXX-XXXX`,
+      plan §7b); QR format deferred (non-goal)
 
 - [ ] Replace the device private key stored in `localStorage` with a non-exportable WebCrypto Ed25519 key persisted in IndexedDB, and refactor the identity/signing API to use the key handle instead of exposing `private_key`.

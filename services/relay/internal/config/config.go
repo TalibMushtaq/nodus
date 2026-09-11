@@ -28,6 +28,12 @@ type Config struct {
 	SessionCookieSecure bool
 	AllowedOrigins      []string
 
+	// TrustProxy marks the immediate peer as the operator's TLS reverse proxy
+	// (single public origin, plan §3b). When true, the rate limiter trusts the
+	// first X-Forwarded-For value; it must be false when the Relay is directly
+	// reachable, or anyone can spoof their X-Forwarded-For.
+	TrustProxy bool
+
 	// Relay Shard Buffer
 	BufferDir string
 	BufferTTL time.Duration
@@ -66,6 +72,11 @@ func Load() (*Config, error) {
 
 	bufferTTLHours, _ := strconv.Atoi(getEnv("BUFFER_TTL_HOURS", "72"))
 
+	trustProxy := false
+	if v := getEnv("TRUST_PROXY", "false"); strings.EqualFold(v, "true") || v == "1" {
+		trustProxy = true
+	}
+
 	cfg := &Config{
 		ListenAddr:           listenAddr,
 		DatabaseURL:          dbURL,
@@ -75,6 +86,7 @@ func Load() (*Config, error) {
 		SessionTouchInterval: time.Duration(sessionTouchIntervalMins) * time.Minute,
 		SessionCookieSecure:  sessionCookieSecure,
 		AllowedOrigins:       origins,
+		TrustProxy:           trustProxy,
 		BufferDir:            bufferDir,
 		BufferTTL:            time.Duration(bufferTTLHours) * time.Hour,
 	}

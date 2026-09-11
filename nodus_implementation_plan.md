@@ -202,6 +202,43 @@ Go and Rust remain in the same Git repository but are not forced into the pnpm w
 
 ---
 
+## 3b. Self-Hosted Deployment
+
+Every Nodus server is **self-hosted**. There is no central/shared public Relay
+operated by the project. Each operator deploys and owns the whole server unit:
+
+```text
+Next.js web app + Go Relay/API + PostgreSQL + Redis
+        exposed through a single public origin behind reverse proxy/TLS
+
+https://nodus.example.com
+    https://nodus.example.com/*       -> Next.js
+    https://nodus.example.com/api/*   -> Go Relay/API
+    wss://nodus.example.com/ws        -> Go Relay WebSocket
+```
+
+The Next.js app and the Go Relay ship together in **one deployable server
+unit** (Next.js API routes proxy HTTP to the Relay per §3a/`apps/web/lib/relay.ts`;
+`/ws` remains the Relay WebSocket gateway). Docker-internal hostnames are used
+**only inside the deployment**.
+
+Rust Storage Nodes run on separate machines and MUST connect only through the
+externally reachable public origin — never localhost/127.0.0.1, Docker service
+names, or container addresses.
+
+The public URL is operator-configured **explicitly**:
+
+```text
+PUBLIC_RELAY_URL=https://nodus.example.com
+```
+
+It is **never inferred** from Host headers, Docker names, or internal addresses.
+The web UI reads `PUBLIC_RELAY_URL` to display the exact URL a user types into a
+`nodus node pair` prompt (see §7b/§7c). WS-Server/origin and CORS settings come
+from `AllowedOrigins` (see `services/relay/internal/config/config.go`).
+
+---
+
 ## 4. Shared TypeScript Packages
 
 ### `packages/core`
@@ -452,7 +489,21 @@ Pair Rust Storage Node
 Establish cryptographic identities
 ```
 
-Use QR-based pairing where possible.
+Two distinct pairing flows exist and **must not be conflated**:
+
+1. **Account → new Storage Node bootstrap (§7b, canonical).** A node that has
+   never been associated with an account is bound to it using a short-lived,
+   single-use **pairing code** (e.g. `NODUS-7K4P-92XM`) issued by the account's
+   own self-hosted Relay. Requires Internet/Relay reachability; this is the
+   flow implemented by `nodus node pair` and described in §7c.
+2. **Device ↔ node local trust (Phase 11).** A client device already tied to the
+   account becomes locally trusted by a node via relay-issued pairing tokens
+   (`/nodus/pair`). This is a separate flow with its own endpoints and is not
+   used to bootstrap a never-registered node.
+
+QR-based pairing is **not a v1 path** for node bootstrap. If added later it must
+**encode `{relay_url, code}` and reuse the exact same redemption mechanism** —
+never introduce a second pairing protocol (see §7b and §29).
 
 The client stores the trusted Storage Node public key locally.
 
@@ -523,6 +574,163 @@ Decide explicitly, before building the Transfer Manager:
 
 ---
 
+## 7b. First-Time Node Pairing via Relay (Pairing Code)
+
+### Model
+
+The pairing code is **only a bootstrap credential**. Permanent trust remains the
+node's persistent Ed25519 identity; after pairing, authentication is the existing
+WebSocket challenge-response (§8). The code is **never** a long-lived credential
+and never replaces node challenge-response.
+
+```text
+Pairing code
+    |
+    v  (one-time authorization to associate node with account)
+account_id <-> node_id <-> Ed25519 public key
+    |
+    v  (permanent mechanism)
+node <-> Relay WebSocket + Ed25519 challenge-response
+```
+
+Identity separation is preserved (§8): account identity, device identity, node
+identity, and file-encryption identity remain distinct. The pairing code
+introduces **no new identity layer**.
+
+### Properties (locked)
+
+- Format: `NODUS-XXXX-XXXX` (e.g. `NODUS-7K4P-92XM`); unambiguous alphabet
+  (A-Z minus I and O, plus 2-9) so no code can be misread or mistyped.
+- CSPRNG generated; **~15-minute lifetime**; **single-use**.
+- **Atomically consumed** on successful redemption — concurrent redemption cannot
+  double-claim a code. Consumption and `storage_nodes` registration share one
+  transaction, so a rejected registration never burns the code.
+- Stored in PostgreSQL **only as the SHA-256 hash** of the normalized code;
+  plaintext is never stored or logged. Consumed rows are retained for auditability
+  (do not delete).
+- Redemption over **HTTPS only**; the redeem endpoint is **IP rate-limited**.
+
+### API
+
+```text
+POST /pairing/codes              (authenticated — requires account session)
+    -> { code: "NODUS-7K4P-92XM", expires_at }
+
+POST /pairing/codes/redeem       (open — the code IS the credential)
+    { code, node_id, public_key }
+    -> { status: "ok", account_id }
+```
+
+Machine-readable failures: `code_unknown` (404) | `code_expired` (410) |
+`code_revoked` (410) | `code_consumed` (409) | `node_owned_elsewhere` (409),
+with HTTP statuses consistent with existing relay conventions (400/404/409/410;
+the endpoint also returns 429 while IP rate-limited).
+
+Redemption steps (Relay): normalize + hash the code → look up the pending record
+→ validate not expired and not consumed → validate the node identity/public key
+format → **atomically consume and upsert** the `storage_nodes` row bound to the
+account in one transaction, **reusing the existing first-node/`is_primary` rule**
+(see `services/relay/internal/handler/node.go`) → return success. A node already
+registered to another account is rejected and must never move accounts; the
+rejection rolls back the transaction so the code is **not** burned. Re-registering
+a node the account already owns is idempotent.
+
+### Database (Relay PostgreSQL)
+
+New table in the next migration (009, after 008). Kept separate from `sessions`
+and `pairing_sessions`:
+
+```text
+pairing_codes (
+    code_hash   TEXT PRIMARY KEY,   -- sha256(normalized code)
+    account_id  TEXT NOT NULL REFERENCES accounts,
+    status      TEXT DEFAULT 'PENDING',   -- PENDING | CONSUMED | REVOKED
+    node_id     TEXT REFERENCES storage_nodes,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    expires_at  TIMESTAMPTZ NOT NULL,
+    consumed_at TIMESTAMPTZ
+);
+CREATE INDEX idx_pairing_codes_account ON pairing_codes(account_id);
+```
+
+### Rust Storage Node
+
+- Reuse the persistent Ed25519 identity (§11). **Never generate a new identity
+  per pairing attempt.**
+- See §7c for the full CLI UX.
+- Steps: resolve relay URL → prompt for URL/code if absent → load the persistent
+  identity → redeem over HTTPS → on success **persist `relay_url`** → report
+  `node_id` + account_id → proceed to the normal connection flow.
+- `account_id` is informational on the node; the Relay remains authoritative for
+  account ownership.
+
+### Reconnect after pairing
+
+No second long-term auth protocol. The node connects to `/ws`, the Relay issues
+`node_auth_challenge`, the node signs with Ed25519, the Relay verifies against
+`storage_nodes`. The pairing code is **never required again** after setup.
+
+### Unpaired-node UX
+
+Extend `NodeAuthResultPayload` with an optional machine-readable reason
+(e.g. `"node_not_found"`) when the node is unknown/inactive, so the node can
+report "Storage Node is not paired. Run: `nodus node pair`" instead of a bare
+"storage node not found or inactive" retry loop. Retry behavior for
+already-paired nodes is unchanged.
+
+### Security model
+
+- **Code theft:** short TTL + single-use + hashed storage + no logging +
+  HTTPS-only + rate limiting.
+- **Replay:** atomic consumption (single conditional UPDATE where
+  `consumed_at IS NULL`).
+- **Node impersonation:** permanent trust is bound to the node's Ed25519 private
+  key; the code only attaches whatever key the redeemer presents.
+- **MITM:** production pairing requires HTTPS; the node WebSocket uses WSS.
+- **Revocation:** existing node revocation invalidates future node auth; complex
+  key rotation/re-pairing is a **v1 non-goal**.
+
+### V1 non-goals
+
+QR pairing (deferred — may later encode `{relay_url, code}` using the **same**
+redemption), complex re-pairing, automatic key rotation, central shared Relay,
+automatic public-URL discovery, requiring the code after setup, Docker-internal
+URLs exposed to nodes, and any second long-term auth protocol.
+
+### Tests
+
+Covered in §28 stage 7b and `Todo.md` Phase 7b: Go (generation/alphabet/hash/
+expiry/single-use/concurrent/expired/consumed/owned-elsewhere/`is_primary`/rate
+limit), Rust (URL precedence, config persistence, pairing success/failure,
+identity persistence, interactive + non-interactive CLI), Next (creation,
+URL+code render, expiry, polling, failure states), E2E (register → node appears
+→ paired → sync session authenticates).
+
+---
+
+## 7c. Node CLI: `nodus node pair`
+
+UX for first-time node bootstrap (implemented in `services/storage-node`):
+
+```text
+nodus node pair                                   interactive default
+nodus node pair --relay https://... --code NODUS-7K4P-92XM    scripted
+nodus node start                                  normal boot after pairing
+```
+
+- `nodus node pair` with no flags prompts (via `dialoguer`) for the relay URL
+  (defaulting to the configured/public URL if present) and then the code.
+- URL precedence: **CLI `--relay` > `config.toml` `relay_url` > `NODUS_RELAY_URL`
+  > no default** — a first-run pairing never silently targets localhost.
+- On success the node persists `relay_url` into `~/.nodus/config.toml`, reports
+  `node_id` + account_id, and proceeds to the normal /ws challenge-response flow.
+- On failure it prints the machine-readable reason (`code_expired`, etc.) plus
+  the "not paired — Run `nodus node pair`" guidance.
+- The existing root flags (`--data-dir`, `--force-adopt`) still boot the daemon;
+  the `node` subgroup is added on top, not a breaking CLI migration.
+
+---
+
 ## 8. Account, Device, and Node Identity
 
 Keep these identities separate:
@@ -560,6 +768,10 @@ The four identity concerns are distinct and never substitute for one another:
 | File encryption | per-file encryption keys wrapped in key envelopes | cryptographic; Relay never sees plaintext |
 
 Account authentication is **not** a JWT, access token, or refresh token — it is a server-side opaque session. Device and Node identity are already asymmetric-key based and are unchanged; only account authentication moves off JWT. See §13 (sessions table) and the auth-migration checklist in `Todo.md`.
+
+The pairing code in §7b is a **bootstrap credential only** — it binds a new
+Storage Node to an account and introduces **no** new identity layer. It never
+substitutes for the node's Ed25519 identity, a device identity, or a session.
 
 ---
 
@@ -636,7 +848,7 @@ and object store (see §11a for the first-run setup flow that decides
 |   +-- node_private_key
 |   +-- node_id
 |
-+-- config.toml                   (one key: data_dir)
++-- config.toml                   (data_dir; relay_url added on pairing — §7b)
 
 <data_dir>/                       (user-chosen, e.g. ~/NodusBackup)
 |
@@ -714,6 +926,11 @@ On first run the node must determine `<data_dir>`. The flow is:
      Do not silently overwrite or adopt existing data.
 5. **Write `config.toml`** — once a path is accepted, persist `data_dir` to
    `~/.nodus/config.toml`.
+6. **Pairing (first time only, separate from setup)** — run `nodus node pair`
+   (§7b/§7c). `relay_url` is written to `config.toml` **only on successful
+   pairing**; `nodus node start` afterwards resolves it via
+   CLI `--relay` > `config.toml` `relay_url` > `NODUS_RELAY_URL` > **no
+   default**. Remove the current first-run localhost default.
 
 ### v1 scope boundary
 
@@ -758,6 +975,7 @@ Use PostgreSQL for durable control-plane metadata:
 accounts
 devices
 storage_nodes
+pairing_codes             <- account->node bootstrap pairing (§7b); code stored hashed, single-use
 
 sessions                  <- replaces refresh_tokens; opaque server-side sessions
 
@@ -797,6 +1015,27 @@ Session lifecycle decisions (locked):
 - **Maximum 10 active sessions per account**; issuing an 11th revokes the oldest active session.
 - Logout or revocation invalidates the session **immediately** (revoke row + clear cookie).
 - On a privilege/credential change (password change, device revocation), the affected sessions are rotated: new session ID issued, old row revoked — preventing session fixation.
+
+### Pairing codes (node bootstrap)
+
+The `pairing_codes` table stores **only the SHA-256 hash** of a pairing code. The
+plaintext code is shown to the user exactly once (in the web UI), is **never
+logged or persisted**, and is consumed atomically on first successful redemption.
+Kept separate from `sessions` and `pairing_sessions` (device↔node local pairing).
+
+| Column | Notes |
+|---|---|
+| `code_hash` | PK — SHA-256 of the normalized code (`NODUS-7K4P-92XM`) |
+| `account_id` | FK → `accounts`; the account that issued the code |
+| `status` | `PENDING` / `CONSUMED` / `REVOKED` |
+| `node_id` | FK → `storage_nodes`; set on successful redemption |
+| `created_at` | set on issue |
+| `expires_at` | ~15-minute lifetime |
+| `consumed_at` | set atomically on redemption; retained for auditability |
+
+The code is a **bootstrap credential only** — permanent node trust remains the
+node's Ed25519 challenge-response (§8). Full flow: §7b; API: §7b;
+migration: `009_pairing_codes`.
 
 ### Redis
 
@@ -1440,10 +1679,16 @@ Build the system incrementally.
           |
 7. Go Relay + PostgreSQL + Redis
           |
- 7a. Opaque server-side session auth (see auth-migration checklist in `Todo.md`):
+7a. Opaque server-side session auth (see auth-migration checklist in `Todo.md`):
      replace JWT/refresh-token auth in the Relay backend and auth API, then
      Next.js integration, then pairing/device auto-registration, then Rust
      Storage Node verification, then security + client tests
+          |
+ 7b. Self-hosted Storage Node bootstrap pairing (§7b/§7c): pairing_codes
+     migration (009) + generation + atomic redemption in the Relay reusing
+     the first-node/`is_primary` rule, Rust `nodus node pair` CLI + relay_url
+     config precedence, Devices-page "+ Add Storage Node" dialog + polling,
+     PUBLIC_RELAY_URL deployment unit, then Go/Rust/Web/E2E tests
           |
  8. Rust <-> Relay incremental sync
           |
@@ -1469,6 +1714,10 @@ Build the system incrementally.
 ```
 
 Do not start with the UI. The distributed storage, synchronization, identity, and transport layers are the difficult parts.
+
+Dependency note for stage 7b: it depends on 7a (opaque sessions) and the
+`storage_nodes` registration semantics; it precedes stage 8 (incremental sync)
+and stage 11 (local discovery). QR-based pairing stays deferred (v1 non-goal).
 
 ---
 
@@ -1513,7 +1762,9 @@ Before implementation, finalize these:
 - Local signaling authentication
 - WebRTC authentication binding
 - mDNS service format
-- Pairing/QR format
+- Pairing/QR format — **resolved**: account↔node bootstrap is the pairing-code
+  flow (§7b, `NODUS-XXXX-XXXX`); QR-based pairing is a **v1 non-goal** and, if
+  added later, must encode `{relay_url, code}` and reuse the same redemption
 - Local (Wi-Fi/LAN) endpoint security
 
 ### Mobile

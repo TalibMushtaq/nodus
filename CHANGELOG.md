@@ -1,5 +1,15 @@
 # Changelog
 
+## [2026-09-11] - Relay: harden pairing-code redemption (transactional consume, proxy-aware rate limit)
+
+**What changed:** Reworked the open `POST /pairing/codes/redeem` handler in `services/relay`. The single-use consume and the `storage_nodes` upsert now run in one `pgx` transaction, so a rejected registration (`node_owned_elsewhere`) or any failure rolls back and leaves the code `PENDING` instead of burning it. Added an explicit `code_revoked` (410) branch, lenient `node_id` shape validation (non-empty, ≤128 printable ASCII) alongside the existing hex-32 `public_key` check, and default `capabilities` of `["storage","sync"]` for parity with `RegisterNode`. Fixed the per-IP rate limiter to key on the client IP (`net.SplitHostPort`) rather than `IP:port`, and added `TRUST_PROXY` (new env var, default off) to trust the first `X-Forwarded-For` value behind the operator's TLS reverse proxy; the route now receives `cfg`. Reconciled docs: dropped the unimplemented `node_claimed` failure from plan §7b, `Todo.md`, and `bootstrap-pairing-TODO.md`, documented the status set (400/404/409/410/429) and the transactional no-burn guarantee, and updated the S1 alphabet test description.
+
+**Why:** An audit of the S2 redeem endpoint found (1) the rate limiter keyed on `IP:port`, so reconnecting bypassed the cap, and behind the single-origin TLS proxy every client shared one global bucket; and (2) consume-before-register with no transaction, which burned valid codes when registration was rejected.
+
+**Impact:** `services/relay/internal/handler/{pairing_code.go,ratelimit.go,ratelimit_test.go,pairing_code_test.go}`, `internal/config/config.go`, `main.go`, plus `CHANGELOG.md`/`Todo.md`/`nodus_implementation_plan.md`/`bootstrap-pairing-TODO.md`. New env var `TRUST_PROXY`. `go -C services/relay test ./...` green (unit + integration against live Postgres), `go vet` clean.
+
+**Follow-ups:** Inherited `is_primary` `NOT EXISTS` race for two distinct codes paired in parallel (also present in `RegisterNode`); rate-limiter bucket sweep if the map ever grows.
+
 ## [2026-09-11] - Marked first-time pairing (Phase 7b) as complete in Todo.md
 
 **What changed:** In `Todo.md`, checked off all Phase 7b tasks (deployment model, relay migration 009 + code generation/redemption + rate limiter + `node_not_found` reason, Rust `node` CLI + URL precedence + `relay_url` persistence, Next.js proxy routes + `lib/pairing.ts` + Devices "+ Add Storage Node" dialog, and the Go/Rust/Web/E2E security suites) and the Phase 14 web first-time pairing item, on the assumption the first-time connection implementation is done. Phase 15 mobile pairing remains unchecked (Expo client not yet scaffolded). No code changed; this reflects a status assumption in the tracking file.

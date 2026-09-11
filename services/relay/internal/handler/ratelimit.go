@@ -1,8 +1,13 @@
 package handler
 
 import (
+	"net"
+	"net/http"
+	"strings"
 	"sync"
 	"time"
+
+	"github.com/TalibMushtaq/nodus/services/relay/internal/config"
 )
 
 // ipRateLimiter is a minimal per-IP token-bucket rate limiter for the pairing
@@ -54,6 +59,26 @@ func (rl *ipRateLimiter) Allow(ip string) bool {
 	}
 	b.tokens--
 	return true
+}
+
+// clientIP resolves the peer IP for rate limiting. The socket's RemoteAddr is
+// "IP:port"; when the Relay sits behind the operator's TLS reverse proxy (plan
+// §3b) RemoteAddr is the proxy itself, so with cfg.TrustProxy set the first
+// X-Forwarded-For value is used. Unparseable X-Forwarded-For falls back to the
+// socket IP rather than being trusted blindly.
+func clientIP(r *http.Request, cfg *config.Config) string {
+	host := r.RemoteAddr
+	if h, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		host = h
+	}
+	if cfg != nil && cfg.TrustProxy {
+		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+			if first := strings.TrimSpace(strings.Split(xff, ",")[0]); net.ParseIP(first) != nil {
+				return first
+			}
+		}
+	}
+	return host
 }
 
 // ponytail: no sweep goroutine. Map stays tiny (one entry per unique IP that

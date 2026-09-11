@@ -63,7 +63,7 @@ Tasks:
       `RequireAuth`: mint code, hash, insert `PENDING` row (15-min `expires_at`),
       return `{ code, expires_at }`. Plaintext never logged.
 - [x] Register the route in `services/relay/main.go`.
-- [x] Go unit tests: alphabet correctness, no I/O/0/1 chars, shape
+- [x] Go unit tests: full 32-char alphabet (A-Z minus I/O + 2-9), shape
       `NODUS-XXXX-XXXX`, header format validation, expiry column set, hash-only
       storage (assert DB row never equals the plaintext).
 
@@ -80,24 +80,32 @@ Tasks:
 
 - [x] Normalize+hash inbound code; look up `PENDING` row.
 - [x] Failure responses (machine-readable body + sensible HTTP status): `code_unknown`
-      / `code_expired` / `code_consumed` / `node_claimed` / `node_owned_elsewhere` (409).
-      Plan §7b "API".
-- [x] Validate `node_id` + `public_key` shape (Ed25519 public key).
+      (404) / `code_expired` (410) / `code_revoked` (410) / `code_consumed` (409) /
+      `node_owned_elsewhere` (409); 429 while rate-limited. Plan §7b "API".
+      (`node_claimed` de-scoped: same-account re-registration is idempotent.)
+- [x] Validate `node_id` (lenient bounds: non-empty, ≤128 printable ASCII) +
+      `public_key` shape (hex-encoded Ed25519, 32 bytes).
 - [x] Atomic single-use consume: conditional `UPDATE ... SET status='CONSUMED',
       consumed_at=NOW() WHERE code_hash=$1 AND status='PENDING' AND
       expires_at > NOW()`; rowcount 0 ⇒ re-read to distinguish expired vs consumed.
 - [x] Upsert into `storage_nodes` bound to the issuing account, **reusing the
       existing first-node/`is_primary` logic** in `internal/handler/node.go`.
-      Node owned by another account ⇒ `node_owned_elsewhere` (never move accounts).
+      Consume + upsert share **one transaction**, so a node owned by another
+      account ⇒ `node_owned_elsewhere` rolls back and never burns the code
+      (accounts never move).
 - [x] Per-IP rate limiter (in-process, mirroring the Rust NonceStore/RateLimiter
-      pattern) on the redeem endpoint.
+      pattern) on the redeem endpoint; keys on the client IP (port stripped,
+      `TRUST_PROXY`-gated `X-Forwarded-For` behind the TLS reverse proxy).
 - [x] Register route in `main.go`.
 - [x] Go unit tests: happy path returns `{status:"ok", account_id}`; concurrent
-      double-redeem ⇒ exactly one winner; expired/unknown/consumed/claimed cases;
-      `is_primary` on first node and NOT set on second; rate-limit trigger.
+      double-redeem ⇒ exactly one winner; expired/unknown/revoked/consumed/
+      owned-elsewhere cases; rejected registration leaves the code `PENDING`;
+      `is_primary` on first node and NOT set on second; rate-limit trigger;
+      client-IP resolution.
 
-**Exit criteria:** redemption is atomic (no double-claim under concurrency), all
-five failure modes return the documented reasons, first-node `is_primary` reused.
+**Exit criteria:** redemption is atomic (no double-claim under concurrency; a
+rejected registration does not consume the code), all failure modes return the
+documented reasons, first-node `is_primary` reused.
 Run: `go -C services/relay test ./...`
 
 ### S3 — Relay: unpaired-node auth reason + integration verification
@@ -305,7 +313,7 @@ Run: `pnpm test && pnpm lint && pnpm check-types`
 | Session | Date | Status | Notes |
 |---|---|---|---|
 | S1 | 2026-09-11 | done | migration, handler, code gen, route, unit tests |
-| S2 | 2026-09-11 | done | redeem handler, rate limiter, route, integration tests |
+| S2 | 2026-09-11 | done | redeem handler (transactional consume+register), proxy-aware rate limiter, route, integration tests |
 | S3 | — | pending | |
 | S4 | — | pending | |
 | S5 | — | pending | |

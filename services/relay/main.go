@@ -119,7 +119,7 @@ func main() {
 
 		// Phase 7b: self-hosted node bootstrap pairing codes
 		mux.Handle("POST /pairing/codes", auth.RequireAuth(sessionStore, cfg)(handler.CreatePairingCode(pool)))
-		mux.HandleFunc("POST /pairing/codes/redeem", handler.RedeemPairingCode(pool))
+		mux.HandleFunc("POST /pairing/codes/redeem", handler.RedeemPairingCode(pool, cfg))
 
 		// Phase 9: trigger a full snapshot / Relay rebuild from the primary node
 		mux.Handle("POST /rebuild", auth.RequireAuth(sessionStore, cfg)(handler.RequestRebuild(pool, wsHub)))
