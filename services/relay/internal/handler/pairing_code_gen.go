@@ -14,7 +14,7 @@ import (
 const pairingCodeAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 
 // generatePairingCode returns a plaintext pairing code in NODUS-XXXX-XXXX
-// format. CSPRNG-backed; the collision space is 32^12 ≈ 2^60.
+// format. CSPRNG-backed; the code space is 32^8 ≈ 2^40.
 func generatePairingCode() (string, error) {
 	symbols := make([]byte, 8)
 	for i := range symbols {

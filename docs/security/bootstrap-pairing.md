@@ -61,16 +61,18 @@ Re-registering a node the account already owns is idempotent.
 
 ## Guarantees
 
-- **Hash-only storage.** The database never contains the plaintext code; only
-  its SHA-256 hash is persisted, and consumed rows are retained for audit.
+- **Hash-only storage.** The `pairing_codes` table never contains the plaintext
+  code; only its SHA-256 hash is persisted, and consumed rows are retained for
+  audit.
 - **Never logged.** The plaintext is not written to logs, the database, or any
   response after issuance.
 - **Single-use and atomic.** Consumption is a conditional update inside the
   same transaction as registration; concurrent redeems cannot double-claim and a
   rejected registration cannot consume the code.
 - **Short-lived.** 15-minute TTL plus rate limiting bound the exposure window.
-- **Transport is HTTPS/WSS only** in production (plan §3b); the node persists
-  the relay URL only after a successful redeem.
+- **Transport is HTTPS/WSS only** in production (plan §3b); the node dials the
+  operator-configured `PUBLIC_RELAY_URL` and persists the relay URL only after a
+  successful redeem.
 - **No new identity layer.** The code only attaches the node's existing Ed25519
   key; account, device, node, and file-encryption identities stay separate
   (plan §8).

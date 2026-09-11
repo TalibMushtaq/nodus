@@ -1,5 +1,15 @@
 # Changelog
 
+## [2026-09-11] - Docs S9 audit fixes (ADR citation, code comment, doc coverage)
+
+**What changed:** Follow-up to the S9 entry below. `docs/decisions/0006-self-hosted-node-bootstrap-pairing.md`: the Context no longer claims ADR-0004 assumed QR-based LAN pairing (ADR-0004 is the mobile mDNS/WebRTC discovery decision and never discussed QR or node pairing); it now cites plan §7b "Non-goals" for the deferred QR option. `services/relay/internal/handler/pairing_code_gen.go`: corrected the stale comment that said the code space was `32^12 ≈ 2^60` — the generator emits 8 symbols, so it is `32^8 ≈ 2^40`, matching `docs/security/bootstrap-pairing.md`. `docs/security/bootstrap-pairing.md`: names the `pairing_codes` table and the operator-configured `PUBLIC_RELAY_URL` so the S9 proofread grep actually exercises all three terms.
+
+**Why:** The audit found one incorrect ADR cross-reference, a code comment contradicting the new security doc, and an exit-criteria grep that matched only `node_not_found`.
+
+**Impact:** `docs/decisions/0006-...md`, `docs/security/bootstrap-pairing.md`, `services/relay/internal/handler/pairing_code_gen.go` (comment only). `rg -n "pairing_codes|node_not_found|PUBLIC_RELAY_URL" docs/` now returns hits for all three; `gofmt` clean and `go -C services/relay build ./...` passes.
+
+**Follow-ups:** None.
+
 ## [2026-09-11] - Docs: bootstrap-pairing ADR + security + protocol catalog (S9)
 
 **What changed:** Added `docs/decisions/0006-self-hosted-node-bootstrap-pairing.md` (one-time `NODUS-XXXX-XXXX` bootstrap code, hashed at rest, atomic single-use redemption, Ed25519 identity retained; QR deferred) and indexed it in `docs/decisions/README.md`. Added `docs/security/bootstrap-pairing.md` documenting the two Relay endpoints (`POST /pairing/codes` authed mint, `POST /pairing/codes/redeem` open), hashed-only storage, 15-minute TTL, per-IP token-bucket rate limiting (burst 10 / refill 2-per-s, `TRUST_PROXY`-gated `X-Forwarded-For`), the full failure-reason table, and the threat model; `docs/security/README.md` now indexes the security docs and `local-endpoints.md` gained a scoped cross-reference section distinguishing Phase 11 device tokens from Phase 7b node bootstrap codes. Added a Node Authentication section (`node_auth_challenge`/`node_auth_response`/`node_auth_result` incl. the `reason` enum `node_not_found` | `node_inactive`) and an HTTP APIs section (`POST /pairing/codes`, `POST /pairing/codes/redeem` with statuses) to `docs/protocol/message-catalog.md`. Reconciled plan §7b drift: migration FK `ON DELETE` actions, the exact conditional-consume predicate, and both auth reasons.

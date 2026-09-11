@@ -5,12 +5,12 @@ Accepted
 
 ## Context
 Storage Nodes are separate machines (plan §11) that must be associated with an
-account before they can sync. The earlier design (ADR-0004) assumed QR-based
-LAN pairing, which requires the phone/device and the node to be co-located and
-reachable on the same network. The server unit is self-hosted and exposed at a
-single public origin (plan §3b), and nodes connect outbound over WSS, so
-first-time association needs a credential that crosses the public internet
-without a shared LAN — and that never becomes a long-lived secret.
+account before they can sync. An earlier option was QR-based LAN node bootstrap
+(plan §7b "Non-goals"), which requires the phone/device and the node to be
+co-located and reachable on the same network. The server unit is self-hosted and
+exposed at a single public origin (plan §3b), and nodes connect outbound over
+WSS, so first-time association needs a credential that crosses the public
+internet without a shared LAN — and that never becomes a long-lived secret.
 
 ## Decision
 First-time node bootstrap uses a one-time **pairing code** (`NODUS-XXXX-XXXX`),
