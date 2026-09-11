@@ -13,7 +13,7 @@ across multiple sessions so any session can be picked up where the last left off
 
 - **Current session:** — (all sessions complete)
 - **Blocked on:** nothing
-- **Done sessions:** S1, S2, S3, S4, S5, S6, S7, S8, S9, S10
+- **Done sessions:** S1, S2, S3, S4, S5, S6, S7, S8, S9, S10, S11
 
 Update the marker above and the Session Log at the bottom whenever you finish a
 session. Mark a task `[~]` while in progress, `[x]` when complete.
@@ -81,21 +81,28 @@ Tasks:
 - [x] Normalize+hash inbound code; look up `PENDING` row.
 - [x] Failure responses (machine-readable body + sensible HTTP status): `code_unknown`
       (404) / `code_expired` (410) / `code_revoked` (410) / `code_consumed` (409) /
-      `node_owned_elsewhere` (409); 429 while rate-limited. Plan §7b "API".
-      (`node_claimed` de-scoped: same-account re-registration is idempotent.)
+      `node_owned_elsewhere` (409) / `node_key_mismatch` (409); 429 while
+      rate-limited. Plan §7b "API". (Same-key re-registration is idempotent;
+      `node_claimed` de-scoped.)
 - [x] Validate `node_id` (lenient bounds: non-empty, ≤128 printable ASCII) +
       `public_key` shape (hex-encoded Ed25519, 32 bytes).
 - [x] Atomic single-use consume: conditional `UPDATE ... SET status='CONSUMED',
       consumed_at=NOW() WHERE code_hash=$1 AND status='PENDING' AND
       expires_at > NOW()`; rowcount 0 ⇒ re-read to distinguish expired vs consumed.
-- [x] Upsert into `storage_nodes` bound to the issuing account, **reusing the
-      existing first-node/`is_primary` logic** in `internal/handler/node.go`.
-      Consume + upsert share **one transaction**, so a node owned by another
-      account ⇒ `node_owned_elsewhere` rolls back and never burns the code
-      (accounts never move).
+- [x] Upsert into `storage_nodes` via the shared registration helper (also used
+      by `POST /nodes/register`), **reusing the existing first-node/`is_primary`
+      logic** in `internal/handler/node.go`. Consume + registration share **one
+      transaction**, so a node owned by another account ⇒ `node_owned_elsewhere`
+      rolls back and never burns the code (accounts never move).
+- [x] Node-key immutability on every registration path: same `node_id` + same
+      key is an idempotent no-op (key/status/`is_primary` preserved), a changed
+      key ⇒ `node_key_mismatch` (409), and a non-`ACTIVE` node is never
+      reactivated. The consumed `pairing_codes` row records the redeeming
+      `node_id` for audit.
 - [x] Per-IP rate limiter (in-process, mirroring the Rust NonceStore/RateLimiter
       pattern) on the redeem endpoint; keys on the client IP (port stripped,
-      `TRUST_PROXY`-gated `X-Forwarded-For` behind the TLS reverse proxy).
+      `TRUST_PROXY`-gated `X-Forwarded-For` behind the TLS reverse proxy, using
+      the **rightmost** trusted hop), with a bounded/swept bucket map.
 - [x] Register route in `main.go`.
 - [x] Go unit tests: happy path returns `{status:"ok", account_id}`; concurrent
       double-redeem ⇒ exactly one winner; expired/unknown/revoked/consumed/
@@ -351,6 +358,53 @@ Tasks:
 test suite green.
 Run: `pnpm test && pnpm lint && pnpm check-types`
 
+### S11 — Post-audit hardening of the Phase 7b redeem path
+
+**Goal:** Close correctness/security defects found in the deep re-audit of the
+redeem path: request-body exhaustion, node-key replacement/reactivation,
+missing primary uniqueness, spoofable proxy IP trust, unbounded limiter memory,
+and the unrecorded redeeming `node_id`.
+
+Tasks:
+
+- [x] H1: cap the open redeem body at 16 KiB (`http.MaxBytesReader`), matching
+      the other JSON handlers; test an oversized body is rejected.
+- [x] H2: enforce node-key immutability on **every** registration path via a
+      shared helper (`registerStorageNode`): same key → idempotent no-op
+      (key/status/`is_primary` preserved); changed key → `node_key_mismatch`
+      (409); non-`ACTIVE` node never reactivated; ownership conflict preserved.
+      `/nodes/register` now uses the same helper.
+- [x] H3: persist the redeeming `node_id` on the consumed `pairing_codes` row.
+- [x] H4: migration `010_storage_nodes_one_primary` (partial unique index,
+      portable SQL) + savepoint-based conflict handling so concurrent first-node
+      registrations cannot both become primary; concurrent test proves one.
+- [x] H5: resolve the client IP from the **rightmost** trusted `X-Forwarded-For`
+      hop and bound/sweep the limiter bucket map; tests for spoofing + bounding.
+- [x] L4: opportunistically prune this account's expired `PENDING` codes on mint
+      (no background infrastructure); consumed rows retained for audit.
+- [x] L5: widen the Caddy relay matchers (`/pairing/codes/*`,
+      `/pairing/sessions/*`).
+- [x] L1/L2/L3/L6 documented below as accepted residual risk / follow-up.
+- [x] Rust `nodus node pair` maps `node_key_mismatch` to a readable reason.
+- [x] Docs/plan/ADR/security/protocol updated to the immutable-key,
+      DB-enforced-primary behavior.
+
+**Accepted residual risk / follow-up (not fixed in Phase 7b):**
+- L1: the code hash is unsalted SHA-256 over a 2^40 space; a DB dump permits
+  feasible offline brute force of still-valid codes. Mitigated by the 15-minute
+  TTL + single-use. A pepper/longer code is a future change.
+- L2: no Ed25519 low-order/identity public-key rejection. Only reachable by a
+  code holder (account-scoped), so low risk; fixing needs an edwards25519 check.
+- L3: the Relay does not enforce `node_id == hex(public_key)`; kept lenient for
+  legacy node ids. The node itself always derives the id from the key.
+- L6: `code_revoked` is a reserved status with no revoke endpoint.
+
+**Exit criteria:** all S1–S10 artifacts still hold; new tests green; no
+registration path can replace an existing node key or create two primaries.
+
+Run: `go -C services/relay test ./...` and
+`cargo test --manifest-path services/storage-node/Cargo.toml`
+
 ---
 
 ## Non-negotiables (do not violate to "save time")
@@ -387,3 +441,4 @@ Run: `pnpm test && pnpm lint && pnpm check-types`
 | S8 | 2026-09-11 | done | `deploy/` single-origin unit (web+relay+pg+redis+caddy), corrected routing (`/api/*`→Next, relay-owned paths proxied), `PUBLIC_RELAY_URL` wired, Next standalone; live E2E: host node paired + WS-authed via Caddy |
 | S9 | 2026-09-11 | done | ADR-0006; `docs/security/bootstrap-pairing.md` + local-endpoints cross-ref + security index; message-catalog node-auth + pairing HTTP API; §7b drift reconciled |
 | S10 | 2026-09-11 | done | live E2E matrix (happy/negatives/concurrency/restart/re-pair) 26 checks green via `scripts/e2e-bootstrap-pairing.sh`; fixed fresh-deploy Relay degraded-start race + flaky concurrency test |
+| S11 | 2026-09-11 | done | post-audit hardening: shared node-registration helper (key immutability on all paths, `node_key_mismatch`), migration 010 one-primary partial unique index, 16 KiB redeem body cap, consumed-row `node_id`, rightmost-XFF + bounded limiter, expired-code prune, Caddy matchers; new Go/Rust tests + E2E scenarios 7–9 |

@@ -11,7 +11,8 @@
 #
 # Covers: happy path (mint -> node pair -> listed -> WS auth -> reconnect),
 # consumed/expired/owned-elsewhere negatives, concurrent single-winner,
-# Relay-restart resilience, and re-pairing behavior.
+# Relay-restart resilience, same-key re-pairing, and changed-key rejection
+# (node_key_mismatch).
 #
 # Minting uses the same `/api/pairing/codes` proxy the browser dialog calls, but
 # this script does not drive the browser itself; the dialog UI (render, countdown,
@@ -31,9 +32,11 @@ acct() { curl -fsS -b "$1" "$BASE/api/auth/session" | python3 -c 'import sys,jso
 mint() { curl -fsS -b "$1" -X POST "$BASE/api/pairing/codes" -H 'content-type: application/json' \
   | python3 -c 'import sys,json;print(json.load(sys.stdin)["code"])'; }
 redeem() { # code nodeid -> HTTP status on stdout
-  local pub; pub=$(printf 'ab%.0s' {1..32})
+  redeem_key "$1" "$2" "$(printf 'ab%.0s' {1..32})"
+}
+redeem_key() { # code nodeid publickey_hex -> HTTP status on stdout
   curl -s -o /tmp/s10-rb -w '%{http_code}' -X POST "$BASE/pairing/codes/redeem" -H 'content-type: application/json' \
-    -d "{\"code\":\"$1\",\"node_id\":\"$2\",\"public_key\":\"$pub\"}"
+    -d "{\"code\":\"$1\",\"node_id\":\"$2\",\"public_key\":\"$3\"}"
 }
 has_node() { curl -fsS -b "$1" "$BASE/api/nodes" | python3 -c 'import sys,json
 nid=sys.argv[1]; ns=json.load(sys.stdin)
@@ -120,6 +123,36 @@ CODE_E=$(mint "$JA")
 env -u NODUS_RELAY_URL HOME="$TMP" timeout 12 "$BIN" node pair --data-dir "$TMP/data" --relay http://127.0.0.1 --code "$CODE_E" >/tmp/s10-repair.log 2>&1
 check "same-account re-pair is idempotent" "$(grep -c "account id: $ACCT_A" /tmp/s10-repair.log)" "1"
 check "relay_url updated to new origin" "$(grep -c 'relay_url = "http://127.0.0.1"' "$TMP/.nodus/config.toml")" "1"
+check "same-key re-pair preserves primary" "$(psqlq "SELECT is_primary FROM storage_nodes WHERE node_id='$NODE_ID'")" "t"
+
+echo "===== Scenario 8: changed-key re-pair rejected (node_key_mismatch) ====="
+# Register a synthetic node with a known key, then attempt to re-register the
+# same node_id with a different key. Key rotation is a v1 non-goal.
+KEY_NODE="node-key-$STAMP"
+CODE_K1=$(mint "$JA")
+st=$(redeem_key "$CODE_K1" "$KEY_NODE" "$(printf 'ab%.0s' {1..32})")
+check "initial key registration succeeds" "$st" "200"
+CODE_K2=$(mint "$JA")
+st=$(redeem_key "$CODE_K2" "$KEY_NODE" "$(printf 'cd%.0s' {1..32})")
+check "changed-key redeem returns 409" "$st" "409"
+check "node_key_mismatch reason" "$(python3 -c 'import json;print(json.load(open("/tmp/s10-rb")).get("error"))')" "node_key_mismatch"
+check "registered key unchanged" "$(psqlq "SELECT public_key FROM storage_nodes WHERE node_id='$KEY_NODE'")" "$(printf 'ab%.0s' {1..32})"
+check "rejected key code not burned" "$(psqlq "SELECT status FROM pairing_codes WHERE code_hash='$(hash_code "$CODE_K2")'")" "PENDING"
+
+echo "===== Scenario 9: concurrent first-node single primary ====="
+# Two simultaneous first-node redeems for a brand-new account must leave
+# exactly one primary (DB-enforced by idx_storage_nodes_one_primary).
+# Wait for the per-IP limiter to refill so both racers are admitted.
+sleep 6
+JC=/tmp/s10-C.jar; reg "$JC" "s10-c-$STAMP@example.com" "s10-dev-c-$STAMP"
+CODE_P1=$(mint "$JC"); CODE_P2=$(mint "$JC")
+for spec in "$CODE_P1 node-p1-$STAMP" "$CODE_P2 node-p2-$STAMP"; do
+  set -- $spec
+  ( curl -s -o /dev/null -X POST "$BASE/pairing/codes/redeem" -H 'content-type: application/json' \
+      -d "{\"code\":\"$1\",\"node_id\":\"$2\",\"public_key\":\"$(printf 'ab%.0s' {1..32})\"}" ) &
+done; wait
+ACCT_C=$(acct "$JC")
+check "exactly one primary for account C" "$(psqlq "SELECT count(*) FROM storage_nodes WHERE account_id='$ACCT_C' AND is_primary")" "1"
 
 echo "===== SUMMARY: $PASS passed, $FAIL failed ====="
 rm -rf "$TMP"

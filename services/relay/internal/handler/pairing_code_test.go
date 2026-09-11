@@ -581,3 +581,153 @@ func TestRedeemPairingCodeInvalidNodeID(t *testing.T) {
 	// The code survives every rejected attempt.
 	require.Equal(t, "PENDING", codeStatus(t, pool, code))
 }
+
+// ---------- Phase 7b hardening: H1/H2/H3/H4 ----------
+
+// H1: the open redeem endpoint must reject an oversized body instead of
+// decoding unbounded input. This runs without a DB because the limit is
+// enforced before any database access.
+func TestRedeemPairingCodeOversizedBody(t *testing.T) {
+	resetRedeemLimiter()
+
+	// A JSON object whose `code` field alone exceeds the 16 KiB cap.
+	body := fmt.Sprintf(`{"code":%q,"node_id":"n","public_key":%q}`,
+		strings.Repeat("A", 20<<10), strings.Repeat("ab", 32))
+	req := httptest.NewRequest("POST", "/pairing/codes/redeem", strings.NewReader(body))
+	req.RemoteAddr = "192.0.2.201:12345"
+	rr := httptest.NewRecorder()
+
+	RedeemPairingCode(nil, &config.Config{})(rr, req)
+
+	require.Equal(t, http.StatusBadRequest, rr.Code,
+		"an oversized body must be rejected safely")
+}
+
+// H3: the consumed row records which node redeemed the code (auditability).
+func TestRedeemPairingCodePersistsNodeID(t *testing.T) {
+	pool, accountID := createPairingCodeHarness(t)
+	code := mintCodeHelper(t, pool, accountID)
+	nodeID := "node-audit-" + accountID
+	pubKey := "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899"
+
+	req := httptest.NewRequest("POST", "/pairing/codes/redeem",
+		redeemBody(code, nodeID, pubKey))
+	req.RemoteAddr = testRemoteAddr(accountID)
+	rr := httptest.NewRecorder()
+	RedeemPairingCode(pool, &config.Config{})(rr, req)
+	require.Equal(t, http.StatusOK, rr.Code)
+
+	var storedNodeID *string
+	err := pool.QueryRow(context.Background(),
+		`SELECT node_id FROM pairing_codes WHERE code_hash = $1`,
+		hashCode(normalizeCode(code)),
+	).Scan(&storedNodeID)
+	require.NoError(t, err)
+	require.NotNil(t, storedNodeID, "consumed row must record the redeeming node")
+	require.Equal(t, nodeID, *storedNodeID)
+}
+
+// H2: a changed key for an existing node_id is rejected and the registered key
+// is never replaced.
+func TestRedeemPairingCodeKeyMismatch(t *testing.T) {
+	pool, accountID := createPairingCodeHarness(t)
+	nodeID := "node-key-" + accountID
+	key1 := "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899"
+	key2 := "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
+
+	// First redemption registers the node with key1.
+	code1 := mintCodeHelper(t, pool, accountID)
+	req1 := httptest.NewRequest("POST", "/pairing/codes/redeem", redeemBody(code1, nodeID, key1))
+	req1.RemoteAddr = testRemoteAddr(accountID)
+	rr1 := httptest.NewRecorder()
+	RedeemPairingCode(pool, &config.Config{})(rr1, req1)
+	require.Equal(t, http.StatusOK, rr1.Code)
+
+	// Second redemption with a different key must be rejected.
+	code2 := mintCodeHelper(t, pool, accountID)
+	req2 := httptest.NewRequest("POST", "/pairing/codes/redeem", redeemBody(code2, nodeID, key2))
+	req2.RemoteAddr = testRemoteAddr(accountID)
+	rr2 := httptest.NewRecorder()
+	RedeemPairingCode(pool, &config.Config{})(rr2, req2)
+	require.Equal(t, http.StatusConflict, rr2.Code)
+
+	var errResp struct {
+		Error string `json:"error"`
+	}
+	require.NoError(t, json.NewDecoder(rr2.Body).Decode(&errResp))
+	require.Equal(t, "node_key_mismatch", errResp.Error)
+
+	// The original key is unchanged and the rejected code is not burned.
+	var storedKey string
+	require.NoError(t, pool.QueryRow(context.Background(),
+		`SELECT public_key FROM storage_nodes WHERE node_id = $1`, nodeID,
+	).Scan(&storedKey))
+	require.Equal(t, key1, storedKey)
+	require.Equal(t, "PENDING", codeStatus(t, pool, code2))
+}
+
+// H2: same node_id + same key is an idempotent no-op — it must not revive a
+// non-ACTIVE node or change is_primary.
+func TestRedeemPairingCodeSameKeyIdempotentPreservesState(t *testing.T) {
+	pool, accountID := createPairingCodeHarness(t)
+	nodeID := "node-idem-" + accountID
+	pubKey := "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899"
+
+	code1 := mintCodeHelper(t, pool, accountID)
+	req1 := httptest.NewRequest("POST", "/pairing/codes/redeem", redeemBody(code1, nodeID, pubKey))
+	req1.RemoteAddr = testRemoteAddr(accountID)
+	rr1 := httptest.NewRecorder()
+	RedeemPairingCode(pool, &config.Config{})(rr1, req1)
+	require.Equal(t, http.StatusOK, rr1.Code)
+
+	// Simulate a revoked (non-ACTIVE) node.
+	_, err := pool.Exec(context.Background(),
+		`UPDATE storage_nodes SET status = 'REVOKED' WHERE node_id = $1`, nodeID)
+	require.NoError(t, err)
+
+	// Re-pair with the same identity.
+	code2 := mintCodeHelper(t, pool, accountID)
+	req2 := httptest.NewRequest("POST", "/pairing/codes/redeem", redeemBody(code2, nodeID, pubKey))
+	req2.RemoteAddr = testRemoteAddr(accountID)
+	rr2 := httptest.NewRecorder()
+	RedeemPairingCode(pool, &config.Config{})(rr2, req2)
+	require.Equal(t, http.StatusOK, rr2.Code)
+
+	var status string
+	var isPrimary bool
+	require.NoError(t, pool.QueryRow(context.Background(),
+		`SELECT status, is_primary FROM storage_nodes WHERE node_id = $1`, nodeID,
+	).Scan(&status, &isPrimary))
+	require.Equal(t, "REVOKED", status, "idempotent re-pair must not revive the node")
+	require.True(t, isPrimary, "is_primary must be preserved")
+}
+
+// H4: two simultaneous first-node redemptions for one account must not both
+// become primary (enforced by idx_storage_nodes_one_primary + savepoint retry).
+func TestRedeemConcurrentFirstNodeSinglePrimary(t *testing.T) {
+	pool, accountID := createPairingCodeHarness(t)
+	codeA := mintCodeHelper(t, pool, accountID)
+	codeB := mintCodeHelper(t, pool, accountID)
+	pubKey := "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899"
+	nodeA := "prim-a-" + accountID
+	nodeB := "prim-b-" + accountID
+
+	statuses := make(chan int, 2)
+	for _, pair := range []struct{ code, node string }{{codeA, nodeA}, {codeB, nodeB}} {
+		go func(code, node string) {
+			req := httptest.NewRequest("POST", "/pairing/codes/redeem", redeemBody(code, node, pubKey))
+			req.RemoteAddr = testRemoteAddr(accountID)
+			rr := httptest.NewRecorder()
+			RedeemPairingCode(pool, &config.Config{})(rr, req)
+			statuses <- rr.Code
+		}(pair.code, pair.node)
+	}
+	require.Equal(t, http.StatusOK, <-statuses)
+	require.Equal(t, http.StatusOK, <-statuses)
+
+	var primaries int
+	require.NoError(t, pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM storage_nodes WHERE account_id = $1 AND is_primary`, accountID,
+	).Scan(&primaries))
+	require.Equal(t, 1, primaries, "an account must never have two primary nodes")
+}

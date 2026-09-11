@@ -24,7 +24,11 @@ not a QR code:
   upserts the `storage_nodes` row bound to the issuing account in one
   transaction (reusing the first-node `is_primary` rule). A rejected
   registration (e.g. a node owned by another account) rolls the transaction
-  back, so the code is not burned and ownership never moves accounts.
+  back, so the code is not burned and ownership never moves accounts. The
+  node's Ed25519 key is **immutable per `node_id`**: a changed key is rejected
+  with `node_key_mismatch`, same-key re-registration is an idempotent no-op,
+  and a non-`ACTIVE` node is never silently revived. At most one `is_primary`
+  node per account is enforced by a partial unique index.
 - The code is a **bootstrap credential only**. It attaches the node's
   persistent Ed25519 identity to an account and is never used again; permanent
   authentication remains the existing `/ws` challenge-response (§8). No new
@@ -40,7 +44,8 @@ not a QR code:
   mitigate code theft and replay; node identity and the existing auth path are
   reused unchanged; deployment is self-hosted with no project-operated relay.
 - **Negative:** a human transfers the code and URL to the node (a command
-  rather than a scan); re-pairing and key rotation are v1 non-goals.
+  rather than a scan); re-pairing and key rotation are v1 non-goals, so an
+  intentional key rotation must be a separate explicit flow.
 - **Deferred, not precluded:** QR pairing can later encode `{relay_url, code}`
   and reuse the exact same redemption mechanism, so this decision does not
   block the QR UX if it is revisited.

@@ -633,9 +633,10 @@ POST /pairing/codes/redeem       (open — the code IS the credential)
 ```
 
 Machine-readable failures: `code_unknown` (404) | `code_expired` (410) |
-`code_revoked` (410) | `code_consumed` (409) | `node_owned_elsewhere` (409),
-with HTTP statuses consistent with existing relay conventions (400/404/409/410;
-the endpoint also returns 429 while IP rate-limited).
+`code_revoked` (410) | `code_consumed` (409) | `node_owned_elsewhere` (409) |
+`node_key_mismatch` (409), with HTTP statuses consistent with existing relay
+conventions (400/404/409/410; the endpoint also returns 429 while IP
+rate-limited).
 
 Redemption steps (Relay): normalize + hash the code → look up the pending record
 → validate not expired and not consumed → validate the node identity/public key
@@ -643,8 +644,18 @@ format → **atomically consume and upsert** the `storage_nodes` row bound to th
 account in one transaction, **reusing the existing first-node/`is_primary` rule**
 (see `services/relay/internal/handler/node.go`) → return success. A node already
 registered to another account is rejected and must never move accounts; the
-rejection rolls back the transaction so the code is **not** burned. Re-registering
-a node the account already owns is idempotent.
+rejection rolls back the transaction so the code is **not** burned. The
+`storage_nodes` Ed25519 public key is **immutable for a given `node_id`**:
+re-registering an existing node with the same key is an idempotent success that
+preserves the node's key, status and `is_primary`; re-registering it with a
+different key is rejected with `node_key_mismatch` (key rotation/re-pairing is a
+v1 non-goal). A non-`ACTIVE` (e.g. `REVOKED`) node is never silently
+reactivated by pairing. Redemption records the consuming `node_id` on the
+consumed `pairing_codes` row. An account has **at most one `is_primary` node**;
+the invariant is enforced by the partial unique index
+`idx_storage_nodes_one_primary` (migration 010), not by application logic alone.
+The same key-immutability invariant is enforced on every registration path,
+including `POST /nodes/register`.
 
 ### Database (Relay PostgreSQL)
 

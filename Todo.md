@@ -243,25 +243,33 @@ stage 7b in §28 (inserted between 7a and 8).
 - [x] `PUBLIC_RELAY_URL` operator-configured (never inferred from Host headers /
       Docker names / localhost); `ALLOWED_ORIGINS` aligned — S8
 
-### Relay backend (migration 009)
+### Relay backend (migrations 009–010)
 
 - [x] Migration `009_pairing_codes.{up,down}.sql`: `pairing_codes` table
       (`code_hash` PK = SHA-256, `account_id` FK, `status` PENDING/CONSUMED/
       REVOKED, `node_id` FK, `created_at`, `expires_at`, `consumed_at`) +
-      index on `account_id`; hash-only storage, consumed rows retained
+      index on `account_id`; hash-only storage, consumed rows retained, and the
+      redeeming `node_id` recorded on consumption
+- [x] Migration `010_storage_nodes_one_primary.{up,down}.sql`: partial unique
+      index enforcing at most one `is_primary` node per account (portable SQL),
+      with savepoint-safe conflict handling in the registration helper
 - [x] `POST /pairing/codes` (`RequireAuth`): CSPRNG code, format `NODUS-XXXX-XXXX`
       (alphabet A-Z minus I/O + 2-9), ~15-min TTL; response `{code, expires_at}`;
       plaintext never logged
 - [x] `POST /pairing/codes/redeem` (open — the code is the credential): normalize
       + hash → validate pending/not-expired/not-consumed → atomic single-use
-      consume + upsert into `storage_nodes` bound to the account in one
+      consume + register into `storage_nodes` bound to the account in one
       transaction, reusing the existing first-node/`is_primary` logic (see
       node.go); failures `code_unknown` (404) | `code_expired` (410) |
       `code_revoked` (410) | `code_consumed` (409) | `node_owned_elsewhere`
-      (409); a rejected registration rolls back so the code is not burned
+      (409) | `node_key_mismatch` (409); a rejected registration rolls back so
+      the code is not burned. The node's Ed25519 key is immutable per `node_id`
+      (same-key idempotent, no reactivation); the invariant is shared with
+      `POST /nodes/register`
 - [x] Per-IP rate limiter for `/pairing/codes/redeem` (mirror the Rust
       NonceStore/RateLimiter pattern); keys on client IP (port stripped,
-      `TRUST_PROXY`-gated `X-Forwarded-For` behind the TLS reverse proxy)
+      `TRUST_PROXY`-gated rightmost `X-Forwarded-For` hop behind the TLS reverse
+      proxy), with a bounded/swept bucket map and a 16 KiB redeem body cap
 - [x] `NodeAuthResultPayload.reason = "node_not_found"` for unpaired nodes so the
       node can print "Storage Node is not paired. Run: `nodus node pair`"
 

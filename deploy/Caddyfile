@@ -22,8 +22,8 @@
  /auth/register /auth/login /auth/session /auth/logout \
  /devices/register /devices/* \
  /nodes /nodes/register /nodes/verify \
- /pairing/sessions /pairing/sessions/verify \
- /pairing/codes /pairing/codes/redeem \
+ /pairing/sessions /pairing/sessions/* \
+ /pairing/codes /pairing/codes/* \
  /buffer/upload /buffer/fetch
 	handle @relay {
 		reverse_proxy relay:8080

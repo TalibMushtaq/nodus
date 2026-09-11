@@ -61,6 +61,10 @@ pub enum PairError {
     CodeRevoked,
     CodeConsumed,
     NodeOwnedElsewhere,
+    /// The node_id is already registered under this account with a different
+    /// Ed25519 key. Key rotation/re-pairing is a v1 non-goal, so the Relay
+    /// rejects the registration instead of replacing the key.
+    NodeKeyMismatch,
     RateLimited,
     BadRequest(String),
     Server(String),
@@ -87,6 +91,11 @@ impl std::fmt::Display for PairError {
             PairError::NodeOwnedElsewhere => {
                 write!(f, "this node is already registered to another account")
             }
+            PairError::NodeKeyMismatch => write!(
+                f,
+                "this node id is already registered with a different key; \
+                 key rotation is not supported in v1"
+            ),
             PairError::RateLimited => {
                 write!(f, "too many pairing attempts; wait and try again")
             }
@@ -242,6 +251,7 @@ pub async fn redeem(
         (410, "code_revoked") => PairError::CodeRevoked,
         (409, "code_consumed") => PairError::CodeConsumed,
         (409, "node_owned_elsewhere") => PairError::NodeOwnedElsewhere,
+        (409, "node_key_mismatch") => PairError::NodeKeyMismatch,
         (429, _) => PairError::RateLimited,
         (400, _) => PairError::BadRequest(reason),
         (s, _) if s >= 500 => PairError::Server(reason),
@@ -402,6 +412,9 @@ mod tests {
             }),
             (409, r#"{"error":"node_owned_elsewhere"}"#, |e| {
                 e == PairError::NodeOwnedElsewhere
+            }),
+            (409, r#"{"error":"node_key_mismatch"}"#, |e| {
+                e == PairError::NodeKeyMismatch
             }),
             (429, r#"{"error":"rate_limit_exceeded"}"#, |e| {
                 e == PairError::RateLimited

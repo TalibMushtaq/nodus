@@ -322,7 +322,10 @@ is stored; the plaintext is returned exactly once.
 Consumes a code and registers the presenting node under the issuing account, in
 one transaction (open — the code is the credential). The consume is atomic and
 single-use; a rejected registration rolls back so the code is not burned. IP
-rate-limited.
+rate-limited. The body is capped at 16 KiB. The registered Ed25519 key is
+immutable per `node_id`: re-registering with the same key is idempotent (key,
+status and `is_primary` preserved); a different key yields `node_key_mismatch`.
+The consumed row records the redeeming `node_id`.
 
 | Field | Type | Required | Notes |
 |---|---|---|---|
@@ -338,6 +341,6 @@ Failures use `{"error": "<reason>"}`:
 |---|---|
 | 404 | `code_unknown` |
 | 410 | `code_expired`, `code_revoked` |
-| 409 | `code_consumed`, `node_owned_elsewhere` |
+| 409 | `code_consumed`, `node_owned_elsewhere`, `node_key_mismatch` |
 | 400 | body/`node_id`/`public_key` validation |
 | 429 | `rate_limit_exceeded` |

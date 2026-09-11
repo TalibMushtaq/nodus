@@ -39,6 +39,15 @@ func CreatePairingCode(pool *db.Pool) http.HandlerFunc {
 		hash := hashCode(normalizeCode(code))
 		expiresAt := time.Now().UTC().Add(pairingCodeTTL)
 
+		// Opportunistic cleanup of this account's expired PENDING codes so the
+		// table cannot grow without bound. Best-effort: a cleanup failure must
+		// not block minting. Consumed rows are retained for auditability.
+		_, _ = pool.Exec(r.Context(),
+			`DELETE FROM pairing_codes
+			 WHERE account_id = $1 AND status = 'PENDING' AND expires_at < NOW()`,
+			accountID,
+		)
+
 		_, err = pool.Exec(r.Context(),
 			`INSERT INTO pairing_codes (code_hash, account_id, expires_at)
 			 VALUES ($1, $2, $3)`,
@@ -94,6 +103,11 @@ func RedeemPairingCode(pool *db.Pool, cfg *config.Config) http.HandlerFunc {
 			respondError(w, http.StatusTooManyRequests, "rate_limit_exceeded")
 			return
 		}
+
+		// Bound the body: this endpoint is open, so an unbounded decode would let
+		// an unauthenticated caller allocate arbitrary memory. 16 KiB matches the
+		// other JSON handlers (see auth.go).
+		r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
 
 		var req RedeemRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -174,31 +188,34 @@ func RedeemPairingCode(pool *db.Pool, cfg *config.Config) http.HandlerFunc {
 			return
 		}
 
-		// Upsert the node under the code's issuing account. The is_primary
-		// rule: first node for an account gets is_primary = true;
-		// re-registration leaves it untouched. A node belonging to another
-		// account is rejected (no row updated → ErrNoRows → rollback), so the
-		// code stays PENDING for retry with a different node_id.
-		var isPrimary bool
-		err = tx.QueryRow(r.Context(),
-			`INSERT INTO storage_nodes (node_id, account_id, public_key, capabilities, status, is_primary)
-			 VALUES ($1, $2, $3, $4::jsonb, 'ACTIVE',
-			         NOT EXISTS (SELECT 1 FROM storage_nodes WHERE account_id = $2))
-			 ON CONFLICT (node_id) DO UPDATE SET
-			     public_key = excluded.public_key,
-			     capabilities = excluded.capabilities,
-			     status = 'ACTIVE'
-			     WHERE storage_nodes.account_id = excluded.account_id
-			 RETURNING is_primary`,
-			req.NodeID, accountID, req.PublicKey, defaultNodeCapabilities,
-		).Scan(&isPrimary)
-
-		if errors.Is(err, pgx.ErrNoRows) {
-			respondError(w, http.StatusConflict, "node_owned_elsewhere")
+		// Register the node under the code's issuing account through the shared
+		// helper so this path and /nodes/register enforce the same identity
+		// invariant: same node_id + same key is idempotent (no key replacement,
+		// no reactivation), a changed key is rejected with node_key_mismatch, a
+		// node owned by another account with node_owned_elsewhere (which rolls
+		// back the consume, leaving the code PENDING so it is never burned), and
+		// the account's first node becomes primary (DB-enforced by
+		// idx_storage_nodes_one_primary).
+		node, outcome, err := registerStorageNode(
+			r.Context(), tx, accountID, req.NodeID, req.PublicKey, defaultNodeCapabilities,
+		)
+		if err != nil {
+			log.Printf("[pairing-codes] node registration failed for node %s: %v", req.NodeID, err)
+			respondError(w, http.StatusInternalServerError, "failed to register node")
 			return
 		}
-		if err != nil {
-			log.Printf("[pairing-codes] node upsert failed for node %s: %v", req.NodeID, err)
+		if outcome != nodeRegistrationOK {
+			respondError(w, http.StatusConflict, outcome.errorReason())
+			return
+		}
+
+		// Persist which node consumed the code (auditability). Done after the
+		// node row exists so the FK is satisfied; the consumed row is retained.
+		if _, err := tx.Exec(r.Context(),
+			`UPDATE pairing_codes SET node_id = $2 WHERE code_hash = $1`,
+			codeHash, req.NodeID,
+		); err != nil {
+			log.Printf("[pairing-codes] failed to record consuming node %s: %v", req.NodeID, err)
 			respondError(w, http.StatusInternalServerError, "failed to register node")
 			return
 		}
@@ -212,7 +229,7 @@ func RedeemPairingCode(pool *db.Pool, cfg *config.Config) http.HandlerFunc {
 		respondJSON(w, http.StatusOK, map[string]interface{}{
 			"status":     "ok",
 			"account_id": accountID,
-			"is_primary": isPrimary,
+			"is_primary": node.IsPrimary,
 		})
 	}
 }

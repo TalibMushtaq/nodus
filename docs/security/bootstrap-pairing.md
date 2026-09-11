@@ -31,15 +31,24 @@ existing `/ws` challenge-response (ADR-0006, plan §7b/§8).
 - The code **is** the credential; no session is required.
 - Body: `{ code, node_id, public_key }` — `public_key` is the node's
   hex-encoded Ed25519 public key (32 bytes); `node_id` is non-empty, ≤128
-  printable ASCII.
+  printable ASCII. The request body is capped at 16 KiB.
 - Per-IP token-bucket rate limiting (burst 10, refill 2/s) → `429
   rate_limit_exceeded`. The client IP is the socket peer; `X-Forwarded-For` is
   trusted only when `TRUST_PROXY=true` (the Relay sits behind the operator's
-  TLS reverse proxy) and only for a parseable first value.
-- Atomically consumes the code and upserts the `storage_nodes` row bound to the
-  issuing account **in one transaction**, reusing the first-node `is_primary`
-  rule. A rejected registration rolls back, so the code is not burned and a
-  node's ownership never moves accounts.
+  TLS reverse proxy), and only the **rightmost** parseable entry is used — the
+  value appended by the trusted proxy. Leftmost entries are client-controlled
+  and are never trusted, so a client cannot rotate the header to bypass the
+  limit. The bucket map is bounded (idle buckets swept, oldest evicted) so
+  attacker-controlled keys cannot exhaust memory.
+- Atomically consumes the code and registers the `storage_nodes` row bound to
+  the issuing account **in one transaction**, reusing the first-node
+  `is_primary` rule (whose uniqueness is DB-enforced by
+  `idx_storage_nodes_one_primary`). A rejected registration rolls back, so the
+  code is not burned and a node's ownership never moves accounts.
+- The node's Ed25519 public key is **immutable per `node_id`**: same key is an
+  idempotent success, a different key is rejected with `node_key_mismatch`, and
+  a non-`ACTIVE` node is never revived. The consumed row records the redeeming
+  `node_id`.
 - Returns `200 { status: "ok", account_id, is_primary }`.
 
 ## Failure reasons
@@ -54,10 +63,13 @@ Relay's conventions:
 | 410 | `code_revoked` | Row status `REVOKED` (reserved; nothing revokes yet) |
 | 409 | `code_consumed` | Code was already redeemed |
 | 409 | `node_owned_elsewhere` | Node id is registered to a different account |
+| 409 | `node_key_mismatch` | Node id exists under this account with a different Ed25519 key (key rotation is a v1 non-goal) |
 | 400 | `invalid node_id format` / `invalid public_key format` / body errors | Malformed request |
 | 429 | `rate_limit_exceeded` | Per-IP limiter tripped |
 
-Re-registering a node the account already owns is idempotent.
+Re-registering a node the account already owns **with the same key** is an
+idempotent no-op; it never replaces the stored key, changes status, or revives a
+`REVOKED` node. `POST /nodes/register` enforces the same invariant.
 
 ## Guarantees
 
@@ -70,6 +82,12 @@ Re-registering a node the account already owns is idempotent.
   same transaction as registration; concurrent redeems cannot double-claim and a
   rejected registration cannot consume the code.
 - **Short-lived.** 15-minute TTL plus rate limiting bound the exposure window.
+  Expired `PENDING` codes are opportunistically pruned when the account mints a
+  new code; consumed rows are retained for audit and record the redeeming
+  `node_id`.
+- **Identity-immutable.** A `node_id`'s registered Ed25519 key cannot be
+  replaced through pairing, and a non-`ACTIVE` node cannot be reactivated by
+  re-pairing. One `is_primary` node per account is enforced in the database.
 - **Transport is HTTPS/WSS only** in production (plan §3b); the node dials the
   operator-configured `PUBLIC_RELAY_URL` and persists the relay URL only after a
   successful redeem.
@@ -86,6 +104,7 @@ Re-registering a node the account already owns is idempotent.
 | Replay of a redeemed code | Atomic single-use consume; consumed rows kept |
 | Brute force / spraying | 2^40 code space + per-IP rate limiting |
 | Node takeover by a different account | Ownership-safe upsert → `node_owned_elsewhere`; accounts never move |
+| Node key replacement / silent reactivation via re-pairing | Same-key re-pair is an idempotent no-op; a changed key → `node_key_mismatch`; non-`ACTIVE` status is preserved |
 | Device impersonating a node after setup | Permanent trust is the node's Ed25519 key via WS challenge-response; the code is never reused |
 | Operating a central relay to harvest codes | Self-hosted, operator-owned unit; no project-operated relay |
 

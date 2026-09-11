@@ -2,11 +2,8 @@ package handler
 
 import (
 	"encoding/json"
-	"errors"
 	"net/http"
 	"time"
-
-	"github.com/jackc/pgx/v5"
 
 	"github.com/TalibMushtaq/nodus/services/relay/internal/auth"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/db"
@@ -59,49 +56,40 @@ func RegisterNode(pool *db.Pool) http.HandlerFunc {
 			return
 		}
 
-		// v1 primary designation: the first Storage Node paired to an account is
-		// primary automatically; every subsequent node defaults to is_primary = false.
-		// On upsert (re-registration) is_primary is left untouched.
-		query := `
-			INSERT INTO storage_nodes (node_id, account_id, public_key, capabilities, status, is_primary)
-			VALUES ($1, $2, $3, $4, 'ACTIVE',
-			        NOT EXISTS (SELECT 1 FROM storage_nodes WHERE account_id = $2))
-			ON CONFLICT (node_id) DO UPDATE SET
-				public_key = excluded.public_key,
-				capabilities = excluded.capabilities,
-				status = 'ACTIVE'
-				WHERE storage_nodes.account_id = excluded.account_id
-			RETURNING node_id, account_id, public_key, capabilities, status, last_seen_at, created_at, is_primary
-		`
-
-		var (
-			node      NodeResponse
-			capsRaw   []byte
-			isPrimary bool
-		)
-
-		err = pool.QueryRow(r.Context(), query, req.NodeID, accountID, req.PublicKey, capsJSON).Scan(
-			&node.NodeID,
-			&node.AccountID,
-			&node.PublicKey,
-			&capsRaw,
-			&node.Status,
-			&node.LastSeenAt,
-			&node.CreatedAt,
-			&isPrimary,
-		)
+		// Registration goes through the shared helper so this path and
+		// /pairing/codes/redeem enforce the same node-identity invariant:
+		// same node_id + same key is idempotent (no key replacement, no
+		// reactivation), a changed key is rejected with node_key_mismatch, and
+		// the first node for an account is primary (DB-enforced by
+		// idx_storage_nodes_one_primary).
+		tx, err := pool.Begin(r.Context())
 		if err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
-				respondError(w, http.StatusConflict, "node_id is registered to another account")
-				return
-			}
 			respondError(w, http.StatusInternalServerError, "failed to register storage node")
 			return
 		}
+		defer tx.Rollback(r.Context())
 
-		node.IsPrimary = isPrimary
+		node, outcome, err := registerStorageNode(
+			r.Context(), tx, accountID, req.NodeID, req.PublicKey, string(capsJSON),
+		)
+		if err != nil {
+			respondError(w, http.StatusInternalServerError, "failed to register storage node")
+			return
+		}
+		switch outcome {
+		case nodeRegistrationOwnedElsewhere:
+			// Preserve the historical message for this path.
+			respondError(w, http.StatusConflict, "node_id is registered to another account")
+			return
+		case nodeRegistrationKeyMismatch:
+			respondError(w, http.StatusConflict, outcome.errorReason())
+			return
+		}
 
-		_ = json.Unmarshal(capsRaw, &node.Capabilities)
+		if err := tx.Commit(r.Context()); err != nil {
+			respondError(w, http.StatusInternalServerError, "failed to register storage node")
+			return
+		}
 		respondJSON(w, http.StatusCreated, node)
 	}
 }
