@@ -4,16 +4,27 @@
 # runs or an upstream TLS terminator); a domain such as "nodus.example.com"
 # makes Caddy provision and renew HTTPS automatically.
 #
-# Routing: the Relay owns the non-browser paths it must serve directly — the
-# WebSocket gateway, the shard buffer, the open bootstrap-pairing redeem, and
-# the open verify/health endpoints. Everything else (including /api/* and every
-# page) is served by Next.js; Next's route handlers reach the Relay internally
-# over RELAY_URL.
+# Routing: the Relay owns every path a non-browser client answers directly —
+# the WebSocket gateway, the shard buffer, auth, devices, nodes, the bootstrap
+# pairing endpoints, rebuild, and health. This keeps mobile/CLI clients working
+# against the single origin, not just the browser and the Storage Node.
+#
+# The one deliberate exception is the bare `/devices` path: it is a Next.js
+# *page*, so it stays with Next, and the Relay's device list is reached through
+# Next's `/api/devices` handler. `/auth` (page) similarly stays with Next while
+# `/auth/*` (login/register/session/logout) goes to the Relay. Everything not
+# matched below (all pages and `/api/*`) is served by Next.js.
 
 {$SITE_ADDRESS} {
 	encode gzip
 
-	@relay path /ws /buffer/* /pairing/codes/redeem /pairing/sessions/verify /nodes/verify /health
+	@relay path /ws /health /rebuild \
+ /auth/register /auth/login /auth/session /auth/logout \
+ /devices/register /devices/* \
+ /nodes /nodes/register /nodes/verify \
+ /pairing/sessions /pairing/sessions/verify \
+ /pairing/codes /pairing/codes/redeem \
+ /buffer/upload /buffer/fetch
 	handle @relay {
 		reverse_proxy relay:8080
 	}

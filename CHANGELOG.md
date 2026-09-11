@@ -1,5 +1,15 @@
 # Changelog
 
+## [2026-09-11] - Deploy S8 audit fixes (relay routing breadth, origin defaults, tracker)
+
+**What changed:** Follow-up to the S8 entry below. `deploy/Caddyfile`: the `@relay` matcher now covers every path a non-browser client answers directly — `/ws`, `/health`, `/rebuild`, `/auth/*`, `/devices/*`, `/nodes`, `/nodes/*`, `/pairing/*`, `/buffer/*` — instead of only the Storage Node subset, so the mobile client (which calls `/auth/login`, `/nodes`, `/devices/register`, `/pairing/sessions` directly) keeps working through the single origin. Bare `/devices` and `/auth` remain Next.js pages, with the Relay's device list reached via `/api/devices`. `deploy/docker-compose.yml`/`deploy/.env.example`: local `ALLOWED_ORIGINS` default now includes both `http://localhost` and `http://127.0.0.1`. `deploy/README.md`: updated routing diagram, clarified the page exceptions and exact-origin requirement, fixed the "Teardown" typo. `nodus_implementation_plan.md` §3b and `bootstrap-pairing-TODO.md`: route list/reconciliation updated. `Todo.md`: checked the S8 deployment items.
+
+**Why:** The audit found the reverse-proxy sample omitted the Relay paths the mobile app calls directly, so a mobile client pointed at the public origin would 404 at Next.js; and the local quickstart was brittle when opened via `127.0.0.1`.
+
+**Impact:** `deploy/{Caddyfile,docker-compose.yml,.env.example,README.md}`, `nodus_implementation_plan.md`, `bootstrap-pairing-TODO.md`, `Todo.md`. Validated: `caddy validate` → valid (and `caddy fmt` applied); `docker compose config` parses.
+
+**Follow-ups:** The bare `GET /devices` Relay catalog remains reachable only via Next's `/api/devices`; a direct mobile caller of `/devices` (none today) would need `/api/devices` or an explicit relay-only origin.
+
 ## [2026-09-11] - Deploy: single-origin server unit + reverse proxy (S8)
 
 **What changed:** Added the self-hosted deployment unit under `deploy/`: `Dockerfile.relay` (static Go build, migrations embedded), `Dockerfile.web` (monorepo install → `turbo run build --filter=web` → Next `standalone` runtime), a `docker-compose.yml` (postgres, redis, relay, web, caddy with healthchecks and volumes), `Caddyfile`, `.env.example`, and `README.md`; plus a root `.dockerignore`. `apps/web/next.config.js` now emits `output: "standalone"` with `outputFileTracingRoot` at the repo root so pnpm workspace packages are traced into the bundle.

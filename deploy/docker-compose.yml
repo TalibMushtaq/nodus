@@ -50,8 +50,10 @@ services:
       PORT: "8080"
       DATABASE_URL: postgres://${POSTGRES_USER:-nodus}:${POSTGRES_PASSWORD:-nodus_password}@postgres:5432/${POSTGRES_DB:-nodus_relay}?sslmode=disable
       REDIS_URL: redis://redis:6379/0
-      # Browser WS origin(s) allowed to authenticate; must equal the public origin.
-      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost}
+      # Browser WS origin(s) allowed to authenticate; must equal the public
+      # origin. Defaults to both local spellings so the quickstart works whether
+      # it is opened at localhost or 127.0.0.1.
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost,http://127.0.0.1}
       # false only when the public origin is plain HTTP (local). true in prod.
       SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-false}
       # Caddy is the immediate peer, so the rate limiter may trust X-Forwarded-For.

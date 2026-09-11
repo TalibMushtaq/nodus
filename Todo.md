@@ -236,10 +236,11 @@ stage 7b in §28 (inserted between 7a and 8).
 
 ### Deployment model
 
-- [ ] Single-origin self-hosted unit (Next.js + Go Relay + PostgreSQL + Redis)
-      behind TLS/reverse proxy; `/api/*` and `/ws` → Relay, rest → Next.js
-      (plan §3b) — S8
-- [ ] `PUBLIC_RELAY_URL` operator-configured (never inferred from Host headers /
+- [x] Single-origin self-hosted unit (Next.js + Go Relay + PostgreSQL + Redis)
+      behind TLS/reverse proxy; Relay-owned paths (incl. `/ws`, `/auth/*`,
+      `/devices/*`, `/nodes*`, `/pairing/*`, `/buffer/*`) → Relay, everything
+      else (pages + `/api/*`) → Next.js (plan §3b) — S8
+- [x] `PUBLIC_RELAY_URL` operator-configured (never inferred from Host headers /
       Docker names / localhost); `ALLOWED_ORIGINS` aligned — S8
 
 ### Relay backend (migration 009)

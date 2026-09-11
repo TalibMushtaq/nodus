@@ -245,15 +245,20 @@ Tasks:
       Relay binary + PostgreSQL + Redis) — `deploy/` with `Dockerfile.web`
       (Next `standalone`), `Dockerfile.relay` (static Go, embedded migrations),
       `docker-compose.yml`, `.env.example`, `deploy/README.md`.
-- [x] Reverse-proxy/TLS sample: `/ws`, `/buffer/*`, `/pairing/codes/redeem`,
-      `/pairing/sessions/verify`, `/nodes/verify`, `/health` → Go Relay;
-      everything else (incl. `/api/*` and all pages) → Next.js; proper
-      Host/Origin handling; `AllowedOrigins` = the real origin.
+- [x] Reverse-proxy/TLS sample: `/ws`, `/health`, `/rebuild`, `/auth/*`,
+      `/devices/*`, `/nodes*`, `/pairing/*`, `/buffer/*` → Go Relay; everything
+      else (pages + `/api/*`) → Next.js; proper Host/Origin handling;
+      `AllowedOrigins` = the real origin.
       **Reconciled:** the plan's `/api/*` → Relay was stale — the web owns
       `/api/*` (session-cookie route handlers the browser calls) and proxies to
       the Relay internally via `RELAY_URL`. Plan §3b updated to match.
       **Seam from S5 resolved:** the node's `/pairing/codes/redeem` and
       `/buffer/fetch` are routed to the Relay under the single origin.
+      **Audit widening:** bare `/devices` and `/auth` are Next pages, so only the
+      `/devices/*` and `/auth/*` children go to the Relay; the broader `@relay`
+      list keeps the mobile client (which calls `/auth/login`, `/nodes`,
+      `/devices/register`, `/pairing/sessions` directly) working on the single
+      origin.
 - [x] `PUBLIC_RELAY_URL` wired to Next (server env) + documented in the repo's
       env examples; never inferred from Host/Docker names/localhost.
       (`deploy/.env.example`, `deploy/docker-compose.yml`, `deploy/README.md`;

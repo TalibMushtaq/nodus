@@ -214,9 +214,11 @@ Next.js web app + Go Relay/API + PostgreSQL + Redis
 https://nodus.example.com
     https://nodus.example.com/ws                           -> Go Relay (WSS gateway)
     https://nodus.example.com/buffer/*                     -> Go Relay (shard buffer)
-    https://nodus.example.com/pairing/codes/redeem         -> Go Relay (open redeem)
-    https://nodus.example.com/pairing/sessions/verify      -> Go Relay
-    https://nodus.example.com/nodes/verify                 -> Go Relay
+    https://nodus.example.com/auth/*                       -> Go Relay (login/register/session)
+    https://nodus.example.com/devices/*                    -> Go Relay (register/revoke)
+    https://nodus.example.com/nodes, /nodes/*              -> Go Relay (register/list/verify)
+    https://nodus.example.com/pairing/*                    -> Go Relay (sessions + codes)
+    https://nodus.example.com/rebuild                      -> Go Relay
     https://nodus.example.com/health                       -> Go Relay
     https://nodus.example.com/*  (incl. /api/*, pages)     -> Next.js
 ```
@@ -224,11 +226,12 @@ https://nodus.example.com
 The Next.js app and the Go Relay ship together in **one deployable server
 unit** (Next.js API routes proxy HTTP to the Relay per §3a/`apps/web/lib/relay.ts`;
 the browser authenticates through those same-origin `/api/*` handlers, so
-`/api/*` is served by Next.js — not forwarded to the Relay). The Relay owns only
-the non-browser paths it must answer directly: the `/ws` gateway, `/buffer/*`,
-the open `/pairing/codes/redeem` used by `nodus node pair`, and the open
-verify/health endpoints. Docker-internal hostnames are used **only inside the
-deployment**.
+`/api/*` is served by Next.js — not forwarded to the Relay). The Relay owns every
+path a non-browser client (the `nodus` CLI, the mobile app) answers directly:
+the `/ws` gateway, `/buffer/*`, `/auth/*`, `/devices/*`, `/nodes*`, `/pairing/*`,
+`/rebuild`, and `/health`. Two paths are pages and therefore stay with Next.js:
+bare `/devices` (its Relay catalog is reached via `/api/devices`) and bare
+`/auth`. Docker-internal hostnames are used **only inside the deployment**.
 
 Rust Storage Nodes run on separate machines and MUST connect only through the
 externally reachable public origin — never localhost/127.0.0.1, Docker service
