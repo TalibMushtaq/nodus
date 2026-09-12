@@ -61,6 +61,12 @@ func ListFiles(pool *db.Pool) http.HandlerFunc {
 			SELECT file_id, parent_folder_id, encrypted_name, created_at, updated_at
 			FROM files
 			WHERE account_id = $1
+			  AND NOT EXISTS (
+				SELECT 1 FROM tombstones t
+				WHERE t.account_id = files.account_id
+				  AND t.entity_type = 'file'
+				  AND t.entity_id = files.file_id
+			  )
 			ORDER BY created_at DESC
 		`, accountID)
 		if err != nil {
