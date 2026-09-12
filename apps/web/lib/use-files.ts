@@ -6,6 +6,7 @@ import { identityPrivateKey } from "@repo/relay-client";
 import type { StoredDeviceIdentity } from "@repo/relay-client";
 
 import { getCachedCatalog, type CatalogEntry } from "./catalog";
+import { STORE_CATALOG, idbDelete } from "./db";
 import { refreshCatalog } from "./files";
 import { refreshFolders } from "./folders";
 import { getFileKey } from "./keys";
@@ -97,5 +98,15 @@ export function useFiles() {
     setReloadToken((token) => token + 1);
   }, []);
 
-  return { files, loading, error, refresh };
+  /**
+   * Drop one file from the local cache and list immediately. Used after a
+   * delete is acknowledged so the row disappears even if a stale Relay snapshot
+   * would still include it (the next full refresh reconciles anyway).
+   */
+  const forget = useCallback(async (fileId: string) => {
+    await idbDelete(STORE_CATALOG, fileId);
+    setFiles((previous) => previous.filter((file) => file.fileId !== fileId));
+  }, []);
+
+  return { files, loading, error, refresh, forget };
 }

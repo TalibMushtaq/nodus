@@ -10,16 +10,18 @@ import type { IconName } from "@repo/ui/primitives/icons";
 import { useAuth } from "../providers/auth-provider";
 import { useWs } from "../providers/ws-provider";
 import { isRelayOnline, relayStatusLabel } from "../lib/connectivity";
+import { useNodeStatus } from "../lib/use-node-status";
 
 // Persistent sidebar. Navigation is driven by the URL path via next/link +
 // usePathname rather than client-side state, so the browser's back button
 // works and deep-linking is preserved.
 
-type NavPage = "overview" | "files" | "devices" | "activity" | "security" | "settings";
+type NavPage = "overview" | "files" | "devices" | "activity" | "security" | "settings" | "tombstones";
 
 const navItems: { id: NavPage; label: string; icon: IconName }[] = [
   { id: "overview", label: "Overview", icon: "overview" },
   { id: "files", label: "Files", icon: "files" },
+  { id: "tombstones", label: "Tombstone", icon: "trash" },
   { id: "devices", label: "Devices", icon: "devices" },
   { id: "activity", label: "Activity", icon: "activity" },
   { id: "security", label: "Security", icon: "security" },
@@ -42,6 +44,20 @@ export function Sidebar({ collapsed, onCollapse }: SidebarProps) {
   // traffic cannot flow until it reaches `connected`.
   const relayBadge =
     relayOnline ? "synced" : wsStatus === "connecting" || wsStatus === "reconnecting" ? "pending" : "offline";
+
+  // Aggregated node online/offline count from the Relay catalog.
+  const { total: nodeTotal, online: nodeOnline } = useNodeStatus();
+  const anyNodeOnline = nodeOnline > 0;
+  const nodeBadge: "synced" | "offline" = nodeTotal === 0 || anyNodeOnline ? "synced" : "offline";
+  const nodeLabel =
+    nodeTotal === 0
+      ? "Not paired"
+      : anyNodeOnline
+        ? `Online (${nodeOnline}/${nodeTotal})`
+        : "Offline";
+  // "Not paired" is informational, not a problem state — tone it down.
+  const nodeBadgeOverride = nodeTotal === 0 ? "offline" : nodeBadge;
+
   const accountId = session?.account_id ?? "";
 
   return (
@@ -60,11 +76,17 @@ export function Sidebar({ collapsed, onCollapse }: SidebarProps) {
 
       {/* Relay status */}
       {!collapsed && (
-        <div className="px-4 pt-3 pb-2">
+        <div className="px-4 pt-3 pb-2 space-y-1.5">
           <div className="flex items-center gap-2 px-2.5 py-2 rounded-sm bg-secondary">
             <StatusBadge status={relayBadge} variant="dot" />
             <span className="text-xs text-muted-foreground font-mono truncate">
               Relay · {relayStatusLabel(wsStatus)}
+            </span>
+          </div>
+          <div className="flex items-center gap-2 px-2.5 py-2 rounded-sm bg-secondary">
+            <StatusBadge status={nodeBadgeOverride} variant="dot" />
+            <span className="text-xs text-muted-foreground font-mono truncate">
+              Node · {nodeLabel}
             </span>
           </div>
         </div>

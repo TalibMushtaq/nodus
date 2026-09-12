@@ -10,29 +10,48 @@ import { Icon } from "@repo/ui/primitives/icons";
 import {
   listTransfers,
   clearTransfers,
+  type TransferKind,
   type TransferLogEntry,
   type TransferOutcome,
 } from "../../../lib/transfer-log";
 import { timeAgo } from "../../../lib/format";
+import type { IconName } from "@repo/ui/primitives/icons";
 
 // Activity is scoped to *this device*: the Relay has no historical activity
-// endpoint, so this renders the local transfer log the Files page writes. The
-// copy below makes that scope explicit so it is not mistaken for account-wide
-// history.
+// endpoint, so this renders the local action log the Files/Tombstone pages
+// write. The copy below makes that scope explicit so it is not mistaken for
+// account-wide history.
 
-type ActivityFilter = "all" | "upload" | "download" | "failed";
+type ActivityFilter = "all" | TransferKind | "failed";
 
 const FILTERS: { value: ActivityFilter; label: string }[] = [
   { value: "all", label: "All" },
   { value: "upload", label: "Uploads" },
   { value: "download", label: "Downloads" },
+  { value: "delete", label: "Deletes" },
+  { value: "restore", label: "Restores" },
   { value: "failed", label: "Failed" },
 ];
 
+const LABELS: Record<TransferKind, { complete: string; progress: string; failed: string }> = {
+  upload: { complete: "Uploaded", progress: "Uploading", failed: "Upload failed" },
+  download: { complete: "Downloaded", progress: "Downloading", failed: "Download failed" },
+  delete: { complete: "Deleted", progress: "Deleting", failed: "Delete failed" },
+  restore: { complete: "Restored", progress: "Restoring", failed: "Restore failed" },
+};
+
+const ICONS: Record<TransferKind, IconName> = {
+  upload: "upload",
+  download: "download",
+  delete: "trash",
+  restore: "refresh",
+};
+
 function eventLabel(entry: TransferLogEntry): string {
-  if (entry.outcome === "failed") return entry.kind === "upload" ? "Upload failed" : "Download failed";
-  if (entry.outcome === "in-progress") return entry.kind === "upload" ? "Uploading" : "Downloading";
-  return entry.kind === "upload" ? "Uploaded" : "Downloaded";
+  const labels = LABELS[entry.kind];
+  if (entry.outcome === "failed") return labels.failed;
+  if (entry.outcome === "in-progress") return labels.progress;
+  return labels.complete;
 }
 
 function OutcomeChip({ outcome }: { outcome: TransferOutcome }) {
@@ -123,10 +142,10 @@ export function ActivityClient() {
           <p className="text-xs text-muted-foreground px-1">Loading activity…</p>
         ) : visible.length === 0 ? (
           <EmptyState
-            title={entries.length === 0 ? "No transfers yet" : "Nothing matches this filter"}
+            title={entries.length === 0 ? "No activity yet" : "Nothing matches this filter"}
             description={
               entries.length === 0
-                ? "Uploads and downloads from this browser will show up here."
+                ? "Uploads, downloads, deletes, and restores from this browser will show up here."
                 : "Try a different filter."
             }
           />
@@ -138,7 +157,7 @@ export function ActivityClient() {
                 className="flex items-center gap-3 px-5 py-3.5 border-b border-border last:border-0"
               >
                 <span className="text-muted-foreground shrink-0">
-                  <Icon name={entry.kind === "upload" ? "upload" : "download"} size={14} />
+                  <Icon name={ICONS[entry.kind]} size={14} />
                 </span>
                 <div className="flex-1 min-w-0">
                   <div className="text-sm text-foreground truncate">

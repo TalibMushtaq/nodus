@@ -1,13 +1,14 @@
-// On-device transfer log for the Activity view.
+// On-device activity log for the Activity view.
 //
 // There is no server-side activity/history endpoint (the Relay exposes only the
-// current catalog), so Activity is honestly scoped to "this device": the Files
-// page appends an entry when an upload or download starts and updates it on
-// completion/failure. The list is capped so it cannot grow without bound.
+// current catalog), so Activity is honestly scoped to "this device": it records
+// uploads/downloads (start → complete/failed via startTransfer/finishTransfer)
+// and one-shot delete/restore actions (`logTransferAction`). The list is capped
+// so it cannot grow without bound.
 
 import { STORE_TRANSFER_LOG, idbClear, idbDelete, idbGetAll, idbPut } from "./db";
 
-export type TransferKind = "upload" | "download";
+export type TransferKind = "upload" | "download" | "delete" | "restore";
 export type TransferOutcome = "in-progress" | "complete" | "failed";
 
 export interface TransferLogEntry {
@@ -55,6 +56,29 @@ export async function finishTransfer(
   const existing = rows.find((row) => row.id === id);
   if (!existing) return;
   await idbPut(STORE_TRANSFER_LOG, { ...existing, outcome, detail, at: new Date().toISOString() });
+}
+
+/**
+ * Record a one-shot action (delete/restore) that has no start/finish lifecycle.
+ * Writes a single completed entry so it shows immediately in Activity.
+ */
+export async function logTransferAction(entry: {
+  kind: Extract<TransferKind, "delete" | "restore">;
+  fileId: string;
+  fileName: string;
+  outcome: Exclude<TransferOutcome, "in-progress">;
+  detail?: string;
+}): Promise<void> {
+  await idbPut(STORE_TRANSFER_LOG, {
+    id: crypto.randomUUID(),
+    kind: entry.kind,
+    fileId: entry.fileId,
+    fileName: entry.fileName,
+    outcome: entry.outcome,
+    detail: entry.detail,
+    at: new Date().toISOString(),
+  } satisfies TransferLogEntry);
+  await trim();
 }
 
 /** Newest first. */

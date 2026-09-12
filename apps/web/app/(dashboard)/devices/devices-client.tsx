@@ -132,6 +132,32 @@ export function DevicesClient({ publicRelayUrl }: DevicesClientProps) {
     };
   }, []);
 
+  // The catalog is fetched once on mount, but a node that stops heartbeating
+  // should flip to offline on its own. Re-poll on the sidebar's cadence so the
+  // page body and the collapsed-sidebar count stay in agreement without a
+  // manual reload; this effect only sets state from async callbacks, keeping
+  // the loading spinner tied to the initial mount fetch. The Relay throttles
+  // last_seen_at DB writes to once a minute, so a quit node can still read as
+  // online for up to ~3.5 minutes before it falls out of the heartbeat window.
+  useEffect(() => {
+    let cancelled = false;
+    const timer = setInterval(() => {
+      void Promise.all([listNodes(), listDevices()])
+        .then(([n, d]) => {
+          if (cancelled) return;
+          setNodes(n);
+          setDevices(d);
+        })
+        .catch(() => {
+          // transient network blip; the next tick retries
+        });
+    }, 30_000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, []);
+
   // Runs only after the user confirms in ConfirmDialog. Revocation deletes the
   // device's key envelopes and kills its sessions, so it is gated behind an
   // explicit confirmation instead of firing on a single click.
