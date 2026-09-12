@@ -111,3 +111,17 @@ export function findStoredDuplicate(
 ): FileEntryView | undefined {
   return entries.find((entry) => entry.downloadable && entry.versionHash === versionHash);
 }
+
+/**
+ * Find an incomplete entry (announced but not fully stored) with the same
+ * content hash, so re-selecting the file resumes that upload instead of
+ * creating a duplicate. Only entries with a known version can be resumed.
+ */
+export function findIncompleteByHash(
+  entries: FileEntryView[],
+  versionHash: string,
+): FileEntryView | undefined {
+  return entries.find(
+    (entry) => !entry.downloadable && entry.versionHash === versionHash && entry.latestVersionNumber != null,
+  );
+}

@@ -26,10 +26,10 @@ import {
   ShardUnavailableError,
   ShardIntegrityError,
 } from "../../../lib/download";
-import { startTransfer, finishTransfer } from "../../../lib/transfer-log";
+import { startTransfer, finishTransfer, logTransferAction } from "../../../lib/transfer-log";
 import { formatBytes, timeAgo } from "../../../lib/format";
 import { measurePlaintext, type FileMeasurement } from "../../../lib/uploader";
-import { findStoredDuplicate, type FileStorageState } from "../../../lib/file-view";
+import { findIncompleteByHash, findStoredDuplicate, type FileStorageState } from "../../../lib/file-view";
 
 // Files view: the first UI over the Phase 14 catalog/upload/download backend.
 // Scope is list + upload + download + filter/sort, plus rename and delete, which
@@ -82,19 +82,27 @@ function FileRowView({
   file,
   downloading,
   busy,
+  deleting,
   onDownload,
+  onResync,
   onRename,
   onDelete,
 }: {
   file: FileEntryView;
   downloading: boolean;
   busy: boolean;
+  deleting: boolean;
   onDownload: (file: FileEntryView) => void;
+  onResync: (file: FileEntryView) => void;
   onRename: (file: FileEntryView) => void;
   onDelete: (file: FileEntryView) => void;
 }) {
   return (
-    <div className="flex items-center gap-4 px-5 py-3.5 border-b border-border last:border-0 hover:bg-secondary/40 transition-colors">
+    <div
+      className={`flex items-center gap-4 px-5 py-3.5 border-b border-border last:border-0 hover:bg-secondary/40 transition-colors ${
+        deleting ? "opacity-50" : ""
+      }`}
+    >
       <div
         className="w-1 h-9 rounded-full shrink-0"
         style={{
@@ -104,7 +112,11 @@ function FileRowView({
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2">
           <span className="text-sm font-medium text-foreground truncate">{file.name}</span>
-          <FileStorageBadge state={file.storageState} />
+          {deleting ? (
+            <span className="text-xs font-medium text-muted-foreground shrink-0">Deleting…</span>
+          ) : (
+            <FileStorageBadge state={file.storageState} />
+          )}
         </div>
         <div className="text-[10px] font-mono text-muted-foreground mt-0.5 truncate">
           {formatBytes(file.sizeBytes)} · updated {timeAgo(file.updatedAt)}
@@ -120,6 +132,17 @@ function FileRowView({
       >
         {downloading ? "Downloading…" : "Download"}
       </button>
+      {file.storageState !== "node" && (
+        <button
+          type="button"
+          onClick={() => onResync(file)}
+          disabled={busy}
+          title="Retry backing this file up to a storage node"
+          className="hidden sm:inline-block px-3 py-1.5 text-xs border border-accent/40 text-accent hover:bg-accent/10 transition-colors shrink-0 disabled:opacity-40"
+        >
+          Resync
+        </button>
+      )}
       <button
         type="button"
         onClick={() => onRename(file)}
@@ -142,7 +165,7 @@ function FileRowView({
 
 export function FilesClient() {
   const { device } = useAuth();
-  const { files, loading, error, refresh } = useFiles();
+  const { files, loading, error, refresh, forget } = useFiles();
   // Device identity and the node catalog are client-only, so the SSR pass would
   // otherwise render the Upload control differently from the client's first
   // pass. `useMounted` returns the server snapshot during hydration, keeping both
@@ -168,7 +191,9 @@ export function FilesClient() {
   const [renameValue, setRenameValue] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<FileEntryView | null>(null);
   const [mutating, setMutating] = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   const [mutationError, setMutationError] = useState<string | null>(null);
+  const [resyncHint, setResyncHint] = useState<string | null>(null);
 
   // Load the node catalog once to resolve an upload target (primary preferred).
   useEffect(() => {
@@ -201,7 +226,7 @@ export function FilesClient() {
     });
   }, []);
 
-  const { uploadShard, ready: transferReady } = useTransfer();
+  const { uploadShard, ready: transferReady, queuedCount, hasPending, retryPending } = useTransfer();
 
   // Route each shard through the Transfer Manager's fallback chain so a node on
   // the same LAN receives it directly (Path A) instead of always buffering via
@@ -262,11 +287,22 @@ export function FilesClient() {
           skipped.push(file.name);
           continue;
         }
+        // An announced-but-incomplete file with the same content is resumed
+        // (same fileId/version) rather than creating a duplicate, so re-selecting
+        // a failed upload completes the original entry.
+        const incomplete = findIncompleteByHash(files, measured.versionHash);
         sessionHashes.current.add(measured.versionHash);
 
-        const log = await startTransfer({ kind: "upload", fileId: "", fileName: file.name });
+        const log = await startTransfer({
+          kind: "upload",
+          fileId: incomplete?.fileId ?? "",
+          fileName: file.name,
+        });
         try {
-          const result = await upload(file, targetNode, measured);
+          const target = incomplete
+            ? { fileId: incomplete.fileId, versionNumber: incomplete.latestVersionNumber ?? 1 }
+            : undefined;
+          const result = await upload(file, targetNode, measured, target);
           await finishTransfer(log.id, "complete", `${result.shardCount} shards`);
           refresh();
         } catch (err) {
@@ -362,18 +398,48 @@ export function FilesClient() {
     if (!deleteTarget) return;
     setMutating(true);
     setMutationError(null);
+    setDeletingId(deleteTarget.fileId);
     try {
       await remove(deleteTarget.fileId);
+      // Drop it from the local cache/list immediately. A full refresh is
+      // deliberately not issued here: until the Relay filters tombstones a
+      // snapshot would re-add it, and the next refresh reconciles anyway.
+      await forget(deleteTarget.fileId);
+      await logTransferAction({
+        kind: "delete",
+        fileId: deleteTarget.fileId,
+        fileName: deleteTarget.name,
+        outcome: "complete",
+        detail: "Moved to Tombstone",
+      });
       setDeleteTarget(null);
-      // The tombstone excludes the file from the next catalog snapshot, and the
-      // refresh prunes it from the local cache.
-      refresh();
     } catch (err) {
       setMutationError(err instanceof Error ? err.message : String(err));
     } finally {
+      setDeletingId(null);
       setMutating(false);
     }
-  }, [deleteTarget, remove, refresh]);
+  }, [deleteTarget, remove, forget]);
+
+  const resync = useCallback(
+    (file: FileEntryView) => {
+      setMutationError(null);
+      setResyncHint(null);
+      if (hasPending(file.fileId)) {
+        // Shards are queued locally (Path D): drain now instead of waiting for
+        // the next reconnect, then re-read the catalog.
+        retryPending();
+        window.setTimeout(refresh, 1500);
+        return;
+      }
+      // No retained ciphertext for this file, so it cannot be re-sent without
+      // the original bytes. Ask the user to re-select it; the upload handler
+      // matches by content hash and resumes the existing file.
+      setResyncHint(`Select the original “${file.name}” to resync it.`);
+      fileInputRef.current?.click();
+    },
+    [hasPending, retryPending, refresh],
+  );
 
   const visible = useMemo(() => {
     const filtered = filterBy === "all" ? files : files.filter((file) => file.status === filterBy);
@@ -434,6 +500,11 @@ export function FilesClient() {
             <Button variant="secondary" size="sm" onClick={refresh}>
               Refresh
             </Button>
+            {queuedCount > 0 && (
+              <Button variant="secondary" size="sm" onClick={() => retryPending()}>
+                Retry {queuedCount} pending
+              </Button>
+            )}
             <Button
               variant="primary"
               size="sm"
@@ -481,6 +552,12 @@ export function FilesClient() {
           </p>
         )}
 
+        {resyncHint && (
+          <p className="text-xs text-muted-foreground mb-3" role="status">
+            {resyncHint}
+          </p>
+        )}
+
         {loading ? (
           <p className="text-xs text-muted-foreground px-1">Loading files…</p>
         ) : visible.length === 0 ? (
@@ -500,7 +577,9 @@ export function FilesClient() {
                 file={file}
                 downloading={downloadingId === file.fileId}
                 busy={mutating}
+                deleting={deletingId === file.fileId}
                 onDownload={handleDownload}
+                onResync={resync}
                 onRename={openRename}
                 onDelete={openDelete}
               />

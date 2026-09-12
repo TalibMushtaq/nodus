@@ -54,7 +54,12 @@ export function useUploader(
   );
 
   const upload = useCallback(
-    async (file: File, targetNode: string, measurement?: FileMeasurement): Promise<UploadResult> => {
+    async (
+      file: File,
+      targetNode: string,
+      measurement?: FileMeasurement,
+      target?: { fileId: string; versionNumber: number },
+    ): Promise<UploadResult> => {
       if (!device) {
         throw new Error("no device identity available for upload");
       }
@@ -63,6 +68,10 @@ export function useUploader(
         originId: device.device_id,
         targetNode,
         sourceDevice: device.device_id,
+        // Resuming an existing incomplete file reuses its ids so the uploader
+        // picks up its persisted progress instead of creating a duplicate.
+        fileId: target?.fileId,
+        versionNumber: target?.versionNumber,
         deps: browserUploadDeps({
           sendEventBatch,
           publishEnvelopes,

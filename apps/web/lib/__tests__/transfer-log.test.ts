@@ -7,6 +7,7 @@ import {
   clearTransfers,
   finishTransfer,
   listTransfers,
+  logTransferAction,
   startTransfer,
 } from "../transfer-log";
 
@@ -41,6 +42,19 @@ describe("transfer log", () => {
   it("ignores updates for a missing entry", async () => {
     await finishTransfer("does-not-exist", "failed", "nope");
     expect(await listTransfers()).toEqual([]);
+  });
+
+  it("records one-shot delete/restore actions as completed entries", async () => {
+    await logTransferAction({
+      kind: "delete",
+      fileId: "f1",
+      fileName: "a.txt",
+      outcome: "complete",
+      detail: "Permanently deleted",
+    });
+    const rows = await listTransfers();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ kind: "delete", outcome: "complete", detail: "Permanently deleted" });
   });
 
   it("caps the log and evicts the oldest entries", async () => {

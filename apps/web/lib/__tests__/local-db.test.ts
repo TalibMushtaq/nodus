@@ -157,6 +157,8 @@ describe("web local DB", () => {
     await reloaded.hydrate();
     expect(reloaded.peek()?.transferId).toBe("t1");
     expect(reloaded.size).toBe(2);
+    expect(reloaded.hasFile("f")).toBe(true);
+    expect(reloaded.hasFile("other")).toBe(false);
     reloaded.dequeue();
     await reloaded.whenPersisted();
     expect(reloaded.size).toBe(1);

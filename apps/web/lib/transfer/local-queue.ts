@@ -44,6 +44,11 @@ export class IndexedDBLocalQueue implements LocalQueue {
     if (this.items.length !== before) this.track(idbDelete(STORE_TRANSFER_QUEUE, transferId));
   }
 
+  /** True when this file has shards still waiting for a path (Path D). */
+  hasFile(fileId: string): boolean {
+    return this.items.some((item) => item.fileId === fileId);
+  }
+
   onConnectivityRestored(callback: () => void): void {
     this.listeners.push(callback);
   }

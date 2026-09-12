@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   fileStorageState,
+  findIncompleteByHash,
   findStoredDuplicate,
   isDownloadable,
   latestSize,
@@ -125,5 +126,19 @@ describe("findStoredDuplicate", () => {
 
   it("ignores incomplete entries so a retry is not blocked", () => {
     expect(findStoredDuplicate([view({ downloadable: false })], "hash-1")).toBeUndefined();
+  });
+});
+
+describe("findIncompleteByHash", () => {
+  it("matches an incomplete entry so re-selecting the file resumes it", () => {
+    expect(findIncompleteByHash([view({ downloadable: false })], "hash-1")?.fileId).toBe("f1");
+  });
+
+  it("ignores complete entries, unknown hashes, and version-less entries", () => {
+    expect(findIncompleteByHash([view({ downloadable: true })], "hash-1")).toBeUndefined();
+    expect(findIncompleteByHash([view({ downloadable: false })], "other")).toBeUndefined();
+    expect(
+      findIncompleteByHash([view({ downloadable: false, latestVersionNumber: null })], "hash-1"),
+    ).toBeUndefined();
   });
 });
