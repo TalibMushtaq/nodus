@@ -5,5 +5,6 @@ pub mod local;
 pub mod pair;
 pub mod store;
 pub mod sync;
+pub mod telemetry;
 pub mod transfer;
 pub mod webrtc;

@@ -16,6 +16,28 @@ use super::types::{
 use crate::identity::NodeIdentity;
 use crate::store::ObjectStore;
 
+/// If an event is a tombstone, return `(entity_type, entity_id)` so the client
+/// can ack it to the Relay. `FOLDER_DELETED` carries a `folder_id` instead of
+/// the generic entity fields used by `TOMBSTONE_CREATED`/`FILE_DELETED`.
+fn tombstone_entity(ev: &super::types::SyncEvent) -> Option<(String, String)> {
+    match ev.event_type.as_str() {
+        "TOMBSTONE_CREATED" | "FILE_DELETED" => {
+            let id = ev.payload.get("entity_id").and_then(|v| v.as_str())?;
+            let ty = ev
+                .payload
+                .get("entity_type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("file");
+            Some((ty.to_string(), id.to_string()))
+        }
+        "FOLDER_DELETED" => {
+            let id = ev.payload.get("folder_id").and_then(|v| v.as_str())?;
+            Some(("folder".to_string(), id.to_string()))
+        }
+        _ => None,
+    }
+}
+
 /// Derive the Relay's plain-HTTP base from any configured relay URL. Accepts
 /// the operator-facing public origin (`https://host`, `http://host`) as well as
 /// the legacy explicit WebSocket form (`ws(s)://…/ws`): the scheme flips to
@@ -145,6 +167,10 @@ pub struct SyncClient {
     pub object_store: Arc<ObjectStore>,
     pub http_fetch_url: String,
     pub http_client: reqwest::Client,
+    /// Fired once per successful session immediately after Relay auth, so the
+    /// caller can publish "connected" while the session is *live* (a long
+    /// message loop) rather than only when it later returns.
+    on_connected: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 impl SyncClient {
@@ -154,6 +180,7 @@ impl SyncClient {
         db: SqlitePool,
         object_store: Arc<ObjectStore>,
         batch_size: usize,
+        on_connected: Option<Arc<dyn Fn() + Send + Sync>>,
     ) -> Self {
         Self {
             http_fetch_url: relay_http_fetch_url(&relay_url),
@@ -163,6 +190,7 @@ impl SyncClient {
             object_store,
             batch_size,
             http_client: reqwest::Client::new(),
+            on_connected,
         }
     }
 
@@ -231,6 +259,11 @@ impl SyncClient {
                     let result: NodeAuthResultPayload = serde_json::from_value(env.payload)?;
                     if result.status == "ok" {
                         authenticated = true;
+                        // Relay accepted us: this session is live, so let the
+                        // sync-loop telemetry stop showing "connecting" now.
+                        if let Some(on_connected) = &self.on_connected {
+                            on_connected();
+                        }
                         break;
                     } else if result.reason.as_deref() == Some("node_not_found") {
                         // Unpaired node: surface a typed marker so the caller can
@@ -305,6 +338,20 @@ impl SyncClient {
                         write
                             .send(Message::Text(serde_json::to_string(&ack_env)?.into()))
                             .await?;
+
+                        // Tombstones in this batch are applied but the data is
+                        // retained (so restore works); tell the Relay so the UI
+                        // can show per-node delete progress.
+                        for ev in &batch.events {
+                            if let Some((entity_type, entity_id)) = tombstone_entity(ev) {
+                                let payload = serde_json::json!({
+                                    "entity_type": entity_type,
+                                    "entity_id": entity_id,
+                                    "status": "deleted",
+                                });
+                                Self::send_envelope(&mut write, "tombstone_ack", &payload).await?;
+                            }
+                        }
                     }
                     // Phase 9: Relay asked for a full snapshot/rebuild (§20).
                     "rebuild_required"
@@ -326,6 +373,61 @@ impl SyncClient {
                     "pairing_token_push" => {
                         let push: PairingTokenPushPayload = serde_json::from_value(env.payload)?;
                         store_pairing_token(&self.db, &push).await?;
+                    }
+                    // Relay asked us to permanently remove a tombstoned entity.
+                    // Free the data, then ack so the Relay can finalize the
+                    // purge once every owning node has reported in.
+                    "purge_tombstone" => {
+                        let entity_type = env
+                            .payload
+                            .get("entity_type")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("file")
+                            .to_string();
+                        let entity_id = env
+                            .payload
+                            .get("entity_id")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        if !entity_id.is_empty() {
+                            if entity_type == "file" {
+                                crate::store::gc::purge_file(&self.object_store, &entity_id)
+                                    .await?;
+                            } else {
+                                crate::store::gc::purge_folder(&self.object_store, &entity_id)
+                                    .await?;
+                            }
+                            let payload = serde_json::json!({
+                                "entity_type": entity_type,
+                                "entity_id": entity_id,
+                                "status": "purged",
+                            });
+                            Self::send_envelope(&mut write, "tombstone_ack", &payload).await?;
+                        }
+                    }
+                    // Restore: drop our tombstone so retained data is not purged
+                    // at the original retention deadline.
+                    "restore_tombstone" => {
+                        let entity_type = env
+                            .payload
+                            .get("entity_type")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("file");
+                        let entity_id = env
+                            .payload
+                            .get("entity_id")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        if !entity_id.is_empty() {
+                            sqlx::query(
+                                "DELETE FROM tombstones WHERE entity_type = ? AND entity_id = ?",
+                            )
+                            .bind(entity_type)
+                            .bind(entity_id)
+                            .execute(&self.db)
+                            .await?;
+                        }
                     }
                     _ => {}
                 }
@@ -734,6 +836,7 @@ mod tests {
             pool.clone(),
             Arc::new(store),
             100,
+            None,
         );
 
         let n = PendingNotifyPayload {

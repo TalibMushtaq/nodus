@@ -61,6 +61,9 @@ pub struct LocalState {
     /// `/pairing/sessions/verify` fallback. `None` disables the fallback.
     pub relay_http_base: Option<String>,
     pub http: reqwest::Client,
+    /// Shell telemetry: the auth path and WebRTC manager publish their facts
+    /// here so `status` stays a read-only observer.
+    pub telemetry: crate::telemetry::Telemetry,
 }
 
 // ── Wire shapes (mirror packages/protocol HTTP-only schemas) ──────────────
@@ -164,6 +167,7 @@ pub async fn spawn(
     db: SqlitePool,
     store: Arc<crate::store::ObjectStore>,
     relay_url: Option<&str>,
+    telemetry: crate::telemetry::Telemetry,
 ) -> anyhow::Result<tokio::task::JoinHandle<()>> {
     let relay_http = relay_url.map(|u| {
         // Same ws→http derivation the sync client already uses for
@@ -175,6 +179,7 @@ pub async fn spawn(
         db.clone(),
         store.clone(),
         identity.clone(),
+        telemetry.clone(),
     ));
 
     let state = LocalState {
@@ -189,12 +194,16 @@ pub async fn spawn(
         )),
         relay_http_base: relay_http,
         http: reqwest::Client::new(),
+        telemetry: telemetry.clone(),
     };
 
     let addr: SocketAddr = ([0, 0, 0, 0], LOCAL_PORT).into();
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .with_context(|| format!("binding local listener on {addr}"))?;
+    // Binding succeeded: the LAN listener is live, so `status` can show
+    // "Local: listening" without the shell dialing a check connection.
+    telemetry.set_local_listening(true);
     let app = make_router(state);
 
     let handle = tokio::spawn(async move {
@@ -301,6 +310,10 @@ async fn auth(
             error: "internal".into(),
             message: format!("updating device record failed: {e}"),
         })?;
+
+    // A paired client authenticated over the LAN: record the activity so
+    // `status` can report that local connectivity is being used, lazily.
+    state.telemetry.local_auth();
 
     Ok(Json(AuthResult {
         status: "ok",
@@ -680,6 +693,7 @@ mod tests {
             db.clone(),
             store.clone(),
             identity.clone(),
+            crate::telemetry::Telemetry::new(),
         ));
         let nonces = Arc::new(NonceStore::default());
         let challenge_limiter = Arc::new(RateLimiter::new(
@@ -695,6 +709,7 @@ mod tests {
             challenge_limiter,
             relay_http_base: None,
             http: reqwest::Client::new(),
+            telemetry: crate::telemetry::Telemetry::new(),
         };
         (make_router(state), db, identity, dir)
     }

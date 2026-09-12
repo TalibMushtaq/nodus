@@ -5,8 +5,10 @@ mod local;
 mod menu;
 mod pair;
 mod report;
+mod shell;
 mod store;
 pub mod sync;
+mod telemetry;
 mod transfer;
 mod webrtc;
 
@@ -219,30 +221,49 @@ pub(crate) async fn boot_daemon(cfg: config::Config) -> anyhow::Result<()> {
     // Phase 8: Start WebSocket sync loop
     let sync_db = db.clone();
 
+    // Live link state for the interactive shell: the sync loop below publishes
+    // each connect/session/failure into this shared telemetry, and the shell's
+    // `status` / `test` commands read it back without dialing their own
+    // connections. `new()` stamps `started` here, so uptime covers node boot.
+    let telemetry = telemetry::Telemetry::new();
+
     // The sync loop owns its own copy of the relay URL; the original is kept
     // for the local-discovery verify-fallback derivation below.
     let sync_relay_url = relay_url.clone();
     let sync_identity_for_loop = Arc::clone(&sync_identity_arc);
     let sync_store = store_arc.clone();
+
+    let sync_telemetry = telemetry.clone();
     let _sync_handle = tokio::spawn(async move {
         // A relay that is down at boot or stays down spams one error line per
         // 5s retry; log the failure once per state transition and go quiet
         // until the relay recovers, so a node can run happily offline.
         let mut relay_down_logged = false;
         loop {
+            // The relay is *connected* as soon as auth succeeds, which happens
+            // inside run_sync_session — publish that live state via the hook so
+            // `status` shows "connected" during the session, not only after it
+            // ends. Each successful connection counts as one session.
+            let sync_telemetry_for_hook = sync_telemetry.clone();
             let client = sync::client::SyncClient::new(
                 sync_relay_url.clone(),
                 sync_identity_for_loop.clone(),
                 sync_db.clone(),
                 sync_store.clone(), // Phase 10: buffer-fetch flow writes shards
                 500,                // batch size
+                Some(Arc::new(move || sync_telemetry_for_hook.session_up())),
             );
-            match client.run_sync_session().await {
+            sync_telemetry.set_connecting();
+            let outcome = client.run_sync_session().await;
+            match outcome {
                 Ok(_) => {
+                    // Link stays Up from the connect hook; a graceful end is
+                    // not an error, the next dial returns to Connecting.
                     relay_down_logged = false;
                     println!("sync: session ended gracefully");
                 }
                 Err(e) => {
+                    sync_telemetry.set_down(e.to_string());
                     if !relay_down_logged {
                         if sync::client::is_node_not_paired(&e) {
                             // Unpaired node: point the operator at the fix
@@ -278,6 +299,7 @@ pub(crate) async fn boot_daemon(cfg: config::Config) -> anyhow::Result<()> {
         store_arc.clone(),
         Some(&relay_url),
         local::server::LOCAL_PORT,
+        telemetry.clone(),
     )
     .await
     {
@@ -289,9 +311,34 @@ pub(crate) async fn boot_daemon(cfg: config::Config) -> anyhow::Result<()> {
     };
 
     println!("storage node running. Press Ctrl+C to stop.");
-    tokio::signal::ctrl_c()
-        .await
-        .context("waiting for termination signal")?;
+
+    // On a terminal, hand control to the interactive shell so the operator can
+    // list files/folders, run live diagnostics (relay + local connectivity,
+    // paired devices), and stop the node — all without leaving the process.
+    // Piped/systemd runs keep the legacy "wait for Ctrl+C" behavior.
+    if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+        println!("  type `help` for commands, `quit` or Ctrl+C to stop.");
+        let shell = shell::Shell {
+            cfg,
+            db,
+            telemetry: telemetry.clone(),
+            identity: Arc::clone(&sync_identity_arc),
+            relay_ws_url: relay_url,
+        };
+        tokio::select! {
+            res = shell::run(shell) => {
+                res.context("interactive shell")?;
+            }
+            _ = tokio::signal::ctrl_c() => {
+                println!();
+                println!("interrupt received; shutting down.");
+            }
+        }
+    } else {
+        tokio::signal::ctrl_c()
+            .await
+            .context("waiting for termination signal")?;
+    }
     println!("storage node shutting down.");
 
     Ok(())

@@ -26,10 +26,12 @@ async fn test_webrtc_offer_and_ice_endpoint_roundtrip() {
             .await
             .unwrap(),
     );
+    let telemetry = storage_node::telemetry::Telemetry::new();
     let webrtc_manager = Arc::new(WebRtcManager::new(
         db.clone(),
         store.clone(),
         identity.clone(),
+        telemetry.clone(),
     ));
     let nonces = Arc::new(NonceStore::default());
     let challenge_limiter = Arc::new(RateLimiter::new(Duration::from_secs(10), 100));
@@ -52,6 +54,7 @@ async fn test_webrtc_offer_and_ice_endpoint_roundtrip() {
         challenge_limiter,
         relay_http_base: None,
         http: reqwest::Client::new(),
+        telemetry,
     };
 
     let app = make_router(state);

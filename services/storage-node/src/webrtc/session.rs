@@ -334,25 +334,45 @@ pub struct WebRtcManager {
     db: SqlitePool,
     store: Arc<ObjectStore>,
     identity: Arc<NodeIdentity>,
+    /// Shell telemetry: publishes the live direct-session count so `status`
+    /// reports client↔node direct (internet) connectivity without polling.
+    telemetry: crate::telemetry::Telemetry,
 }
 
 impl WebRtcManager {
-    pub fn new(db: SqlitePool, store: Arc<ObjectStore>, identity: Arc<NodeIdentity>) -> Self {
+    pub fn new(
+        db: SqlitePool,
+        store: Arc<ObjectStore>,
+        identity: Arc<NodeIdentity>,
+        telemetry: crate::telemetry::Telemetry,
+    ) -> Self {
         let manager = Self {
             sessions: Arc::new(RwLock::new(HashMap::new())),
             db,
             store,
             identity,
+            telemetry,
         };
 
         // Spawn reaper task to clean up abandoned sessions after 5 minutes
         let sessions_clone = manager.sessions.clone();
+        let telemetry_clone = manager.telemetry.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(60));
             loop {
                 interval.tick().await;
                 let mut lock = sessions_clone.write().await;
+                let before = lock.len();
                 lock.retain(|_, session| session.created_at.elapsed() < Duration::from_secs(300));
+                // Publishing on every tick also heals a count drift if a
+                // session ever ends without an explicit prune.
+                telemetry_clone.set_direct_active(lock.len() as u32);
+                if lock.len() != before {
+                    eprintln!(
+                        "[webrtc] pruned {} abandoned session(s)",
+                        before - lock.len()
+                    );
+                }
             }
         });
 
@@ -386,7 +406,11 @@ impl WebRtcManager {
         );
 
         let mut lock = self.sessions.write().await;
+        // First client for this session id: record it as a direct (internet)
+        // connection in shell telemetry and refresh the live count.
+        self.telemetry.direct_session_started();
         lock.insert(session_id.to_string(), session.clone());
+        self.telemetry.set_direct_active(lock.len() as u32);
         Ok(session)
     }
 
