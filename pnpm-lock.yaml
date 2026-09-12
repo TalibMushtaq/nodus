@@ -91,12 +91,24 @@ importers:
 
   apps/web:
     dependencies:
+      '@repo/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@repo/protocol':
+        specifier: workspace:*
+        version: link:../../packages/protocol
       '@repo/relay-client':
         specifier: workspace:*
         version: link:../../packages/relay-client
+      '@repo/transfer-manager':
+        specifier: workspace:*
+        version: link:../../packages/transfer-manager
       '@repo/ui':
         specifier: workspace:*
         version: link:../../packages/ui
+      '@repo/webrtc-transport':
+        specifier: workspace:*
+        version: link:../../packages/webrtc-transport
       next:
         specifier: 16.3.2
         version: 16.3.2(@babel/core@7.29.7(supports-color@10.2.2))(@types/node@26.3.0)(babel-plugin-react-compiler@1.0.0)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
@@ -137,6 +149,9 @@ importers:
       eslint:
         specifier: 10.9.1
         version: 10.9.1(jiti@2.7.0)(supports-color@10.2.2)
+      fake-indexeddb:
+        specifier: ^6.2.2
+        version: 6.2.5
       jsdom:
         specifier: ^26.1.0
         version: 26.1.0(supports-color@10.2.2)
@@ -383,6 +398,37 @@ importers:
       '@types/node':
         specifier: 26.3.0
         version: 26.3.0
+      tsx:
+        specifier: ^4.19.0
+        version: 4.23.13
+      typescript:
+        specifier: 7.0.2
+        version: 7.0.2
+
+  scripts/e2e-path-c:
+    dependencies:
+      '@noble/curves':
+        specifier: ^1.9.7
+        version: 1.9.7
+      '@repo/protocol':
+        specifier: workspace:*
+        version: link:../../packages/protocol
+      '@repo/relay-client':
+        specifier: workspace:*
+        version: link:../../packages/relay-client
+      ws:
+        specifier: ^8.18.3
+        version: 8.21.3
+    devDependencies:
+      '@repo/typescript-config':
+        specifier: workspace:*
+        version: link:../../packages/typescript-config
+      '@types/node':
+        specifier: 26.3.0
+        version: 26.3.0
+      '@types/ws':
+        specifier: ^8.5.13
+        version: 8.18.1
       tsx:
         specifier: ^4.19.0
         version: 4.23.13
@@ -1957,6 +2003,9 @@ packages:
   '@types/react@19.2.18':
     resolution: {integrity: sha512-AnzbBERsrLKtk2XSfTbYRLjQPdy116Sty4q+T+Bp3IC4l6jNBvreVPAHmpq9qhXQM7CXZPjLVmGMw9sy+hxQ3w==}
 
+  '@types/ws@8.18.1':
+    resolution: {integrity: sha512-ThVF6DCVhA8kUGy+aazFQ4kXQ7E1Ty7A3ypFOe0IcJV8O/M511G99AW24irKrW56Wt44yG9+ij8FaqoBGkuBXg==}
+
   '@types/yargs-parser@21.0.3':
     resolution: {integrity: sha512-I4q9QU9MQv4oEOz4tAHJtNz1cwuLxn2F3xcc2iV5WdqLPpUnj30aUuxt1mAxYTG+oe8CZMV/+6rU4S4gRDzqtQ==}
 
@@ -2813,6 +2862,10 @@ packages:
 
   exponential-backoff@3.1.3:
     resolution: {integrity: sha512-ZgEeZXj30q+I0EN+CbSSpIyPaJ5HVQD18Z1m+u1FXbAeT94mr1zw50q4q6jiiC447Nl/YTcIYSAftiGqetwXCA==}
+
+  fake-indexeddb@6.2.5:
+    resolution: {integrity: sha512-CGnyrvbhPlWYMngksqrSSUT1BAVP49dZocrHuK0SvtR0D5TMs5wP0o3j7jexDJW01KSadjBp1M/71o/KR3nD1w==}
+    engines: {node: '>=18'}
 
   fast-deep-equal@3.1.3:
     resolution: {integrity: sha512-f3qQ9oQy9j2AhBe/H9VC91wLmKBCCU/gDOnKNAYG5hswO7BLKj09Hc5HYNz9cGI++xlpDCIgDaitVs03ATR84Q==}
@@ -5966,6 +6019,10 @@ snapshots:
     dependencies:
       csstype: 3.2.3
 
+  '@types/ws@8.18.1':
+    dependencies:
+      '@types/node': 26.3.0
+
   '@types/yargs-parser@21.0.3': {}
 
   '@types/yargs@17.0.35':
@@ -6874,6 +6931,8 @@ snapshots:
       - utf-8-validate
 
   exponential-backoff@3.1.3: {}
+
+  fake-indexeddb@6.2.5: {}
 
   fast-deep-equal@3.1.3: {}
 

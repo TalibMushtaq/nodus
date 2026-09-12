@@ -56,6 +56,22 @@ export async function relayFetch<T>(path: string, init?: RequestInit): Promise<R
   }
 }
 
+/**
+ * Like `relayFetch`, but returns the raw `Response` and does not assume a JSON
+ * body — used by the Path C shard proxy so an 8 MB binary upload streams
+ * straight through without a parse/serialize round trip.
+ */
+export async function relayFetchRaw(path: string, init: RequestInit): Promise<Response> {
+  const sessionCookie = (await cookies()).get(RELAY_SESSION_COOKIE)?.value;
+
+  const headers = new Headers(init.headers);
+  if (sessionCookie) {
+    headers.set("cookie", `${RELAY_SESSION_COOKIE}=${sessionCookie}`);
+  }
+
+  return fetch(`${relayUrl()}${path}`, { ...init, headers });
+}
+
 /** Error body shape returned by the Relay on non-2xx auth responses. */
 export interface RelayError {
   error?: string;

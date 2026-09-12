@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { AppShell } from "../../components/app-shell";
+import { TransferProvider } from "../../providers/transfer-provider";
 import { requireAuth } from "../../lib/session";
 
 // Dashboard layout wraps every page under the (dashboard) group in AppShell.
@@ -8,5 +9,9 @@ import { requireAuth } from "../../lib/session";
 
 export default async function DashboardLayout({ children }: { children: ReactNode }) {
   await requireAuth();
-  return <AppShell>{children}</AppShell>;
+  return (
+    <TransferProvider>
+      <AppShell>{children}</AppShell>
+    </TransferProvider>
+  );
 }

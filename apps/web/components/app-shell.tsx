@@ -4,6 +4,7 @@ import { useState } from "react";
 import { usePathname } from "next/navigation";
 import { Sidebar } from "./sidebar";
 import { TopBar } from "./topbar";
+import { TransferPathBanner } from "./transfer-path-banner";
 
 // The complete app shell: sidebar + topbar + main content slot. The shell
 // holds only the sidebar-collapse state; page routing is URL-based (Next.js
@@ -27,6 +28,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <Sidebar collapsed={collapsed} onCollapse={() => setCollapsed(!collapsed)} />
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
         <TopBar title={pageTitles[page] || page} />
+        <TransferPathBanner />
         <main className="flex-1 overflow-auto bg-background">{children}</main>
       </div>
     </div>
