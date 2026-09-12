@@ -2,7 +2,9 @@ mod config;
 mod db;
 mod identity;
 mod local;
+mod menu;
 mod pair;
+mod report;
 mod store;
 pub mod sync;
 mod transfer;
@@ -66,7 +68,12 @@ async fn main() -> anyhow::Result<()> {
 
     // Bare invocation and `node start` both boot the daemon, so existing
     // flag-only invocations (`nodus --data-dir … --force-adopt`) keep working.
+    // A bare `nodus` on a terminal instead opens the interactive CLI; piped or
+    // systemd runs have no TTY and keep the daemon behavior.
     match &cli.command {
+        None if std::io::IsTerminal::is_terminal(&std::io::stdin()) => {
+            menu::run_interactive(&cli).await
+        }
         None
         | Some(Command::Node {
             action: NodeAction::Start,
@@ -78,7 +85,7 @@ async fn main() -> anyhow::Result<()> {
 }
 
 /// Resolve data-dir + relay config, printing an actionable message on failure.
-fn resolve_config(cli: &Cli) -> anyhow::Result<config::Config> {
+pub(crate) fn resolve_config(cli: &Cli) -> anyhow::Result<config::Config> {
     let interactive = std::io::IsTerminal::is_terminal(&std::io::stdin());
     config::load_or_setup(
         cli.data_dir.clone(),
@@ -142,7 +149,7 @@ async fn run_pair(cli: &Cli, code: Option<String>) -> anyhow::Result<()> {
     }
 }
 
-async fn boot_daemon(cfg: config::Config) -> anyhow::Result<()> {
+pub(crate) async fn boot_daemon(cfg: config::Config) -> anyhow::Result<()> {
     println!("node data dir: {}", cfg.data_dir.display());
     println!("config dir:    {}", cfg.nodus_dir.display());
 

@@ -80,6 +80,19 @@ pub fn load_or_generate(nodus_dir: &Path) -> anyhow::Result<NodeIdentity> {
     })
 }
 
+/// Read the persisted node id without generating an identity.
+///
+/// Used by the interactive status view: inspecting a node must not create a
+/// keypair as a side effect. Returns `None` when the node has never generated
+/// its identity.
+pub fn existing_node_id(nodus_dir: &Path) -> Option<String> {
+    let path = nodus_dir.join(IDENTITY_DIR).join(NODE_ID_FILE);
+    fs::read_to_string(path)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
 fn load_key(path: &Path) -> anyhow::Result<SigningKey> {
     let bytes =
         fs::read(path).with_context(|| format!("reading private key {}", path.display()))?;
@@ -165,5 +178,17 @@ mod tests {
         fs::create_dir_all(dir.path().join(IDENTITY_DIR)).unwrap();
         fs::write(&key_path, b"tooshort").unwrap();
         assert!(load_or_generate(dir.path()).is_err());
+    }
+
+    #[test]
+    fn existing_node_id_absent_until_generated() {
+        let dir = tempdir().unwrap();
+        // Inspecting a fresh node must not create identity material.
+        assert_eq!(existing_node_id(dir.path()), None);
+        let generated = load_or_generate(dir.path()).unwrap();
+        assert_eq!(
+            existing_node_id(dir.path()).as_deref(),
+            Some(generated.node_id.as_str())
+        );
     }
 }
