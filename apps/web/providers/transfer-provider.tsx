@@ -6,7 +6,8 @@ import { TransferManager } from "@repo/transfer-manager";
 import type { ShardTransferRequest, TransferResult } from "@repo/transfer-manager";
 
 import { postShard } from "../lib/buffer";
-import { getWebRtcCapabilities } from "../lib/local-network";
+import type { WebRtcCapabilities } from "../lib/local-network";
+import { useWebRtcCapabilities } from "../lib/use-capabilities";
 import { createBrowserAttemptPath } from "../lib/transfer/attempt-path";
 import { IndexedDBLocalQueue } from "../lib/transfer/local-queue";
 import { IndexedDBPathCache } from "../lib/transfer/path-cache";
@@ -16,7 +17,8 @@ interface TransferContextValue {
   /** Undefined until IndexedDB hydration + manager construction complete. */
   uploadShard: (request: ShardTransferRequest) => Promise<TransferResult>;
   queuedCount: number;
-  capabilities: ReturnType<typeof getWebRtcCapabilities>;
+  /** Null until capabilities resolve after mount (SSR-safe). */
+  capabilities: WebRtcCapabilities | null;
 }
 
 const TransferContext = createContext<TransferContextValue | null>(null);
@@ -30,7 +32,7 @@ export function TransferProvider({ children }: { children: ReactNode }) {
   const { device } = useAuth();
   const [manager, setManager] = useState<TransferManager | null>(null);
   const [queuedCount, setQueuedCount] = useState(0);
-  const capabilities = useMemo(() => getWebRtcCapabilities(), []);
+  const capabilities = useWebRtcCapabilities();
 
   useEffect(() => {
     if (!device) return;

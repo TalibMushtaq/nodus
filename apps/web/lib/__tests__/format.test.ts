@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { formatCountdown, shortId } from "../format";
+import { formatBytes, formatCountdown, shortId } from "../format";
 
 describe("formatCountdown", () => {
   it("renders MM:SS and clamps negatives to zero", () => {
@@ -17,5 +17,21 @@ describe("shortId", () => {
   it("truncates with an ellipsis only when longer than the limit", () => {
     expect(shortId("abcdefghij")).toBe("abcdefgh…");
     expect(shortId("abc")).toBe("abc");
+  });
+});
+
+describe("formatBytes", () => {
+  it("renders nullish and negative values as an em dash", () => {
+    expect(formatBytes(null)).toBe("—");
+    expect(formatBytes(undefined)).toBe("—");
+    expect(formatBytes(-1)).toBe("—");
+  });
+
+  it("scales through binary units", () => {
+    expect(formatBytes(0)).toBe("0 B");
+    expect(formatBytes(512)).toBe("512 B");
+    expect(formatBytes(1536)).toBe("1.5 KB");
+    expect(formatBytes(10 * 1024 * 1024)).toBe("10 MB");
+    expect(formatBytes(3 * 1024 * 1024 * 1024)).toBe("3.0 GB");
   });
 });

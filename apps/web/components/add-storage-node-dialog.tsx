@@ -19,6 +19,8 @@ import { formatCountdown, shortId } from "../lib/format";
 
 const TICK_MS = 1000;
 const POLL_MS = 3000;
+/** Consecutive failed polls before showing a transient warning (still waiting). */
+const POLL_FAILURE_THRESHOLD = 5;
 
 type Phase = "creating" | "waiting" | "paired" | "expired" | "error";
 
@@ -48,6 +50,7 @@ export function AddStorageNodeDialog({
   const [node, setNode] = useState<RelayNode | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [pollWarning, setPollWarning] = useState<string | null>(null);
 
   // Captured once at mount: the dialog is remounted per open, and the baseline
   // must stay fixed at "nodes that existed before this pairing attempt".
@@ -61,6 +64,7 @@ export function AddStorageNodeDialog({
     let cancelled = false;
     let tick: ReturnType<typeof setInterval> | undefined;
     let poll: ReturnType<typeof setInterval> | undefined;
+    let failures = 0;
     const stop = () => {
       if (tick !== undefined) clearInterval(tick);
       if (poll !== undefined) clearInterval(poll);
@@ -89,6 +93,8 @@ export function AddStorageNodeDialog({
           void listNodes()
             .then((nodes) => {
               if (cancelled) return;
+              failures = 0;
+              setPollWarning(null);
               const found = findNewNode(baselineRef.current, nodes);
               if (found) {
                 stop();
@@ -99,9 +105,13 @@ export function AddStorageNodeDialog({
             })
             .catch((e: unknown) => {
               if (cancelled) return;
-              stop();
-              setError(e instanceof Error ? e.message : String(e));
-              setPhase("error");
+              // A single failed poll is usually a transient Relay/network blip.
+              // Keep waiting so a still-valid pairing code is not discarded;
+              // only surface a warning after several consecutive failures.
+              failures += 1;
+              if (failures >= POLL_FAILURE_THRESHOLD) {
+                setPollWarning(e instanceof Error ? e.message : String(e));
+              }
             });
         }, POLL_MS);
       })
@@ -123,6 +133,7 @@ export function AddStorageNodeDialog({
     setError(null);
     setSecondsLeft(0);
     setCopied(false);
+    setPollWarning(null);
     setPhase("creating");
     setGeneration((g) => g + 1);
   }, []);
@@ -200,6 +211,11 @@ export function AddStorageNodeDialog({
               <StatusBadge status="pending" variant="inline" />
               <span className="text-xs text-muted-foreground">Waiting for the node to pair…</span>
             </>
+          )}
+          {phase === "waiting" && pollWarning && (
+            <span className="text-xs text-muted-foreground" title={pollWarning}>
+              Check interrupted — retrying…
+            </span>
           )}
           {phase === "paired" && node && (
             <>

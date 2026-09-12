@@ -13,6 +13,20 @@ export function formatCountdown(totalSeconds: number): string {
   return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
 }
 
+/** Human-readable byte size (binary units). Null/negative render as an em dash. */
+export function formatBytes(bytes: number | null | undefined): string {
+  if (bytes == null || bytes < 0) return "—";
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let value = bytes / 1024;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  return `${value < 10 ? value.toFixed(1) : Math.round(value)} ${units[unit]}`;
+}
+
 /**
  * Rough human-relative time from an ISO string ("just now", "3h ago").
  * The Relay only stores registration/revocation timestamps — there is no

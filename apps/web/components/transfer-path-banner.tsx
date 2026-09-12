@@ -3,7 +3,8 @@
 import { PathIndicator } from "@repo/ui/primitives/path-indicator";
 import type { TransferPath } from "@repo/ui/primitives/path-indicator";
 
-import { getWebRtcCapabilities } from "../lib/local-network";
+import { isRelayOnline } from "../lib/connectivity";
+import { useWebRtcCapabilities } from "../lib/use-capabilities";
 import { useWs } from "../providers/ws-provider";
 
 /**
@@ -15,13 +16,18 @@ import { useWs } from "../providers/ws-provider";
  */
 export function TransferPathBanner() {
   const { status } = useWs();
-  const caps = getWebRtcCapabilities();
-  const directUnavailable = !caps.peerConnection || caps.mixedContentBlocksLocalHttp;
+  // Capabilities are browser-only; the hook yields null until mount so the
+  // server and first client render agree (avoids a hydration mismatch).
+  const caps = useWebRtcCapabilities();
 
+  if (!caps) return null;
+
+  const directUnavailable = !caps.peerConnection || caps.mixedContentBlocksLocalHttp;
   if (!directUnavailable) return null;
 
-  const path: TransferPath =
-    status === "connected" || status === "reconnecting" ? "buffered" : "offline";
+  // Reconnecting is not "buffered": the buffer write path is down with the
+  // socket, so only a live connection should claim files are being buffered.
+  const path: TransferPath = isRelayOnline(status) ? "buffered" : "offline";
 
   return (
     <div

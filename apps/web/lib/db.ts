@@ -12,8 +12,9 @@ export const WEB_DB_NAME = "nodus-web";
 /**
  * Bump whenever a store is added/changed. v1 shipped only `trusted_nodes`;
  * v2 adds the catalog, sync-state, path-cache, transfer-queue, and key stores.
+ * v4 adds `transfer_log` for the local Activity view.
  */
-export const WEB_DB_VERSION = 3;
+export const WEB_DB_VERSION = 4;
 
 export const STORE_TRUSTED_NODES = "trusted_nodes";
 export const STORE_CATALOG = "catalog";
@@ -23,6 +24,7 @@ export const STORE_PATH_CACHE = "path_cache";
 export const STORE_TRANSFER_QUEUE = "transfer_queue";
 export const STORE_UPLOAD_PROGRESS = "upload_progress";
 export const STORE_KEYS = "keys";
+export const STORE_TRANSFER_LOG = "transfer_log";
 
 export const WEB_STORES = [
   STORE_TRUSTED_NODES,
@@ -33,6 +35,7 @@ export const WEB_STORES = [
   STORE_TRANSFER_QUEUE,
   STORE_UPLOAD_PROGRESS,
   STORE_KEYS,
+  STORE_TRANSFER_LOG,
 ] as const;
 
 export type WebStore = (typeof WEB_STORES)[number];
@@ -47,6 +50,7 @@ const KEY_PATH: Record<WebStore, string> = {
   [STORE_TRANSFER_QUEUE]: "transferId",
   [STORE_UPLOAD_PROGRESS]: "transferId",
   [STORE_KEYS]: "file_id",
+  [STORE_TRANSFER_LOG]: "id",
 };
 
 /**
@@ -130,3 +134,22 @@ export function idbClear(store: WebStore): Promise<undefined> {
 
 /** Resolve the underlying raw value of an IDBRequest without a wrapper store. */
 export { requestToPromise };
+
+/**
+ * Delete the entire local database (catalog, keys, trusted nodes, transfer
+ * queue, upload progress, folders, sync state, path cache).
+ *
+ * Backs Settings → Reset all data. The device identity and the HttpOnly session
+ * cookie are intentionally left intact: this clears local *content*, not the
+ * account, so the user stays signed in and can re-sync from the Relay.
+ */
+export function clearLocalDatabase(): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.deleteDatabase(WEB_DB_NAME);
+    request.onsuccess = () => resolve();
+    request.onerror = () => reject(request.error);
+    // An open connection in another tab blocks the delete; surface it instead
+    // of hanging the confirm dialog forever.
+    request.onblocked = () => reject(new Error("reset blocked by another open tab"));
+  });
+}

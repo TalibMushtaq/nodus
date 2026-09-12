@@ -5,11 +5,13 @@
 // retained somewhere or the upload is undecryptable after the tab reloads.
 // This store is that "somewhere" for v1.
 //
-// Scope: same-device durability only. There is no cross-device/cross-node key
-// distribution yet — `packages/core` has `sealFekForRecipient`/`openFekEnvelope`
-// and the Relay has a `key_envelopes` table, but no write path wires them
-// together (§25 follow-up, tracked in Todo.md). Until that lands, a file
-// uploaded from this browser profile is readable only from this profile.
+// Scope: this store is the uploading device's local copy of the FEK. Cross-
+// device/cross-node distribution is handled separately by lib/envelopes.ts,
+// which seals the FEK to each recipient's identity and publishes
+// KEY_ENVELOPE_ADDED events (Phase 14 F2). This store remains the fast local
+// path so a reload can decrypt the device's own uploads without a Relay round
+// trip; `fetchAndOpenFileKey` is the fallback for files this device did not
+// upload and only has an envelope for.
 
 import { STORE_KEYS, idbDelete, idbGet, idbPut } from "./db";
 

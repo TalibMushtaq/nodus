@@ -46,8 +46,14 @@ export default function AuthPage() {
       return;
     }
 
-    if (password.length < 8) {
-      setError(mode === "register" ? "Password must be at least 8 characters" : "Enter your password");
+    // Only registration imposes the 8-character policy; sign-in must accept a
+    // pre-existing password of any length or legacy accounts cannot log in.
+    if (mode === "register" && password.length < 8) {
+      setError("Password must be at least 8 characters");
+      return;
+    }
+    if (password.length === 0) {
+      setError("Enter your password");
       return;
     }
 
@@ -104,6 +110,7 @@ export default function AuthPage() {
               <input
                 type="email"
                 placeholder="you@example.com"
+                aria-label="Email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 className={inputCls}
@@ -120,25 +127,41 @@ export default function AuthPage() {
             </>
           )}
           {step === "password" && (
-            <input
-              type="password"
-              placeholder="Password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              className={inputCls}
-              autoFocus
-              onKeyDown={(e) => e.key === "Enter" && handleContinue()}
-            />
+            <>
+              <input
+                type="password"
+                placeholder="Password"
+                aria-label="Password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className={inputCls}
+                autoFocus
+                onKeyDown={(e) => e.key === "Enter" && handleContinue()}
+              />
+              {/* Recover from a typo'd email without reloading the wizard. */}
+              <button
+                type="button"
+                onClick={() => {
+                  setStep("email");
+                  setPassword("");
+                  setError(null);
+                }}
+                className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+              >
+                ← Use a different email
+              </button>
+            </>
           )}
 
           {/* Error */}
-          {error && <p className="text-xs text-destructive">{error}</p>}
+          {error && <p className="text-xs text-destructive" role="alert">{error}</p>}
 
           {/* Continue */}
           <button
             type="button"
             onClick={handleContinue}
-            disabled={loading}
+            disabled={loading || !serverReachable}
+            title={!serverReachable ? "The relay is unreachable" : undefined}
             className="w-full py-2.5 text-sm font-medium bg-accent text-accent-foreground hover:opacity-90 transition-opacity disabled:opacity-50"
           >
             {loading ? "Please wait..." : step === "email" ? "Continue" : mode === "register" ? "Create account" : "Sign in"}

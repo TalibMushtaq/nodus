@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 const { mockPush } = vi.hoisted(() => ({ mockPush: vi.fn() }));
 
@@ -16,11 +16,28 @@ vi.mock("../../../../lib/pairing", async (importOriginal) => {
   };
 });
 
-import { listNodes, listDevices, createPairingCode, type RelayNode } from "../../../../lib/pairing";
+// DevicesClient now reads the signed-in device (to warn before self-revocation),
+// so provide a stable auth context instead of pulling in the real provider's
+// network bootstrapping.
+vi.mock("../../../../providers/auth-provider", () => ({
+  useAuth: () => ({
+    status: "authenticated",
+    session: { account_id: "acct-1", device_id: "test-device", session_expires_at: "" },
+    device: { device_id: "test-device" },
+    serverReachable: true,
+    login: vi.fn(),
+    register: vi.fn(),
+    logout: vi.fn(),
+    refresh: vi.fn(),
+  }),
+}));
+
+import { listNodes, listDevices, revokeDevice, createPairingCode, type RelayNode } from "../../../../lib/pairing";
 import { DevicesClient } from "../devices-client";
 
 const mockListNodes = vi.mocked(listNodes);
 const mockListDevices = vi.mocked(listDevices);
+const mockRevokeDevice = vi.mocked(revokeDevice);
 const mockCreatePairingCode = vi.mocked(createPairingCode);
 
 function node(partial: Partial<RelayNode> = {}): RelayNode {
@@ -95,5 +112,28 @@ describe("DevicesClient", () => {
     render(<DevicesClient publicRelayUrl="https://nodus.example.com" />);
 
     expect(screen.getByRole("button", { name: "+ Add Storage Node" })).toBeDisabled();
+  });
+
+  it("gates revocation behind a confirmation dialog", async () => {
+    mockListDevices.mockResolvedValue([
+      {
+        device_id: "other-device-1234",
+        account_id: "acct-1",
+        public_key: "ab".repeat(32),
+        status: "ACTIVE",
+        created_at: "2026-09-11T00:00:00.000Z",
+        revoked_at: null,
+      },
+    ]);
+
+    render(<DevicesClient publicRelayUrl="https://nodus.example.com" />);
+    await screen.findByText("other-device-1234");
+
+    fireEvent.click(screen.getByRole("button", { name: "Revoke" }));
+    // A single click must only open the dialog, not revoke.
+    expect(mockRevokeDevice).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Revoke device" }));
+    await waitFor(() => expect(mockRevokeDevice).toHaveBeenCalledWith("other-device-1234"));
   });
 });

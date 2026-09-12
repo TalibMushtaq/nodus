@@ -33,6 +33,25 @@ export interface PairingCode {
   expires_at: string;
 }
 
+/**
+ * How long after its last heartbeat a node is still considered online.
+ *
+ * The Relay stores only `last_seen_at` (a timestamp), so staleness must be
+ * derived client-side. Treating the mere presence of `last_seen_at` as "online"
+ * (the previous behavior) left nodes permanently green; this window makes an
+ * unresponsive node fall back to offline. It is intentionally a few heartbeat
+ * intervals wide so a single missed beat does not flap the status.
+ */
+export const NODE_ONLINE_WINDOW_MS = 2 * 60 * 1000;
+
+/** True when the node heartbeated within `NODE_ONLINE_WINDOW_MS`. */
+export function isNodeOnline(node: RelayNode, now: number = Date.now()): boolean {
+  if (!node.last_seen_at) return false;
+  const seen = new Date(node.last_seen_at).getTime();
+  if (Number.isNaN(seen)) return false;
+  return now - seen <= NODE_ONLINE_WINDOW_MS;
+}
+
 /** Device catalog from GET /api/devices (session-cookie proxy). */
 export async function listDevices(): Promise<RelayDevice[]> {
   const res = await fetch("/api/devices");

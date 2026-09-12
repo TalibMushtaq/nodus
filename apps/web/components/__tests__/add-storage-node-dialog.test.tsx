@@ -129,15 +129,29 @@ describe("AddStorageNodeDialog", () => {
     expect(onPaired).toHaveBeenCalledWith(expect.objectContaining({ node_id: "node-2" }));
   });
 
-  it("shows an error when the poll fails", async () => {
+  it("survives a transient poll failure and only warns after repeated failures", async () => {
+    // Long expiry so the countdown cannot flip the phase to expired mid-test.
+    mockCreate.mockResolvedValue({
+      code: "NODUS-ABCD-2345",
+      expires_at: new Date(NOW.getTime() + 600_000).toISOString(),
+    });
     await renderDialog();
     mockListNodes.mockRejectedValue(new Error("relay unavailable"));
+
+    // A single failed poll is transient: the code is still valid, so the flow
+    // must keep waiting instead of discarding it.
     await act(async () => {
       vi.advanceTimersByTime(3000);
     });
+    expect(screen.queryByTestId("pairing-regenerate")).toBeNull();
 
-    expect(screen.getByTestId("pairing-status")).toHaveTextContent("relay unavailable");
-    expect(screen.getByTestId("pairing-regenerate")).toBeInTheDocument();
+    // After the consecutive-failure threshold a non-fatal warning appears, and
+    // polling continues (no regenerate affordance, which would imply failure).
+    await act(async () => {
+      vi.advanceTimersByTime(3000 * 5);
+    });
+    expect(screen.getByTestId("pairing-status")).toHaveTextContent("Check interrupted — retrying…");
+    expect(screen.queryByTestId("pairing-regenerate")).toBeNull();
   });
 
   it("shows an error when code creation fails", async () => {

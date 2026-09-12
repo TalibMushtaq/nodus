@@ -123,3 +123,23 @@ export function StatusBadge({ status, variant = "badge" }: StatusBadgeProps) {
     </span>
   );
 }
+
+interface DeviceStateBadgeProps {
+  revoked: boolean;
+}
+
+/**
+ * Active/revoked marker for client devices, kept separate from StatusBadge's
+ * sync vocabulary: a registered device is "Active", which is a different claim
+ * from "Synced". Using the sync badge for devices previously labeled every
+ * non-revoked device "Synced", overstating what the Relay actually knows.
+ */
+export function DeviceStateBadge({ revoked }: DeviceStateBadgeProps) {
+  const color = revoked ? "var(--status-offline)" : "var(--status-synced)";
+  return (
+    <span className="inline-flex items-center gap-1.5 text-xs font-medium" style={{ color }}>
+      <span className="inline-block w-1.5 h-1.5 rounded-full" style={{ backgroundColor: color }} />
+      {revoked ? "Revoked" : "Active"}
+    </span>
+  );
+}

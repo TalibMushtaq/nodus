@@ -5,11 +5,13 @@ import { useRouter } from "next/navigation";
 import { Button } from "@repo/ui/primitives/button";
 import { Section } from "@repo/ui/primitives/section";
 import { EmptyState } from "@repo/ui/primitives/empty-state";
-import { StatusBadge } from "@repo/ui/primitives/badge";
+import { StatusBadge, DeviceStateBadge } from "@repo/ui/primitives/badge";
+import { ConfirmDialog } from "@repo/ui/primitives/overlay";
 
-import { listNodes, listDevices, revokeDevice, type RelayNode, type RelayDevice } from "../../../lib/pairing";
+import { listNodes, listDevices, revokeDevice, isNodeOnline, type RelayNode, type RelayDevice } from "../../../lib/pairing";
 import { shortId, timeAgo } from "../../../lib/format";
 import { AddStorageNodeDialog } from "../../../components/add-storage-node-dialog";
+import { useAuth } from "../../../providers/auth-provider";
 
 // Real-device readout: storage nodes and client devices come from the Relay
 // (GET /nodes, GET /devices) via the session-cookie API proxies. There is no
@@ -24,7 +26,8 @@ interface DevicesClientProps {
 }
 
 function NodeRowView({ node, onManage }: { node: RelayNode; onManage: () => void }) {
-  const online = Boolean(node.last_seen_at);
+  // Staleness-derived, not "has ever been seen" (see isNodeOnline).
+  const online = isNodeOnline(node);
   return (
     <div className="flex items-center gap-4 px-5 py-3.5 border-b border-border last:border-0 hover:bg-secondary/40 transition-colors">
       <div className="w-9 h-9 border border-border flex items-center justify-center shrink-0 bg-secondary">
@@ -46,7 +49,7 @@ function NodeRowView({ node, onManage }: { node: RelayNode; onManage: () => void
         </div>
       </div>
       <div className="text-[10px] text-muted-foreground hidden sm:block">
-        {online ? `Last seen ${timeAgo(node.last_seen_at)}` : "Never seen"}
+        {node.last_seen_at ? `Last seen ${timeAgo(node.last_seen_at)}` : "Never seen"}
       </div>
       <button
         type="button"
@@ -72,7 +75,7 @@ function DeviceRowView({ device, onRevoke }: { device: RelayDevice; onRevoke: ()
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2">
           <span className="text-sm font-medium text-foreground font-mono">{shortId(device.device_id)}</span>
-          <StatusBadge status={revoked ? "offline" : "synced"} variant="inline" />
+          <DeviceStateBadge revoked={revoked} />
         </div>
         <div className="text-[10px] font-mono text-muted-foreground mt-0.5">{device.device_id}</div>
       </div>
@@ -96,11 +99,16 @@ function DeviceRowView({ device, onRevoke }: { device: RelayDevice; onRevoke: ()
 
 export function DevicesClient({ publicRelayUrl }: DevicesClientProps) {
   const router = useRouter();
+  const { session, logout } = useAuth();
   const [nodes, setNodes] = useState<RelayNode[]>([]);
   const [devices, setDevices] = useState<RelayDevice[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
+  // The device awaiting confirmation. Revocation ends that device's sessions
+  // and envelopes, so it must be an explicit second action, not one click.
+  const [revokeTarget, setRevokeTarget] = useState<RelayDevice | null>(null);
+  const [revoking, setRevoking] = useState(false);
 
   // Loaded once on mount; loading starts true so the effect only fires
   // setState from async callbacks (react-hooks/set-state-in-effect). The +Pair
@@ -124,16 +132,32 @@ export function DevicesClient({ publicRelayUrl }: DevicesClientProps) {
     };
   }, []);
 
-  const revoke = useCallback(async (id: string) => {
+  // Runs only after the user confirms in ConfirmDialog. Revocation deletes the
+  // device's key envelopes and kills its sessions, so it is gated behind an
+  // explicit confirmation instead of firing on a single click.
+  const confirmRevoke = useCallback(async () => {
+    if (!revokeTarget) return;
+    const id = revokeTarget.device_id;
+    setRevoking(true);
     try {
       await revokeDevice(id);
+      // Revoking the device this browser is signed in on ends its own session:
+      // return to the auth wizard rather than leaving the user on a dead page.
+      if (id === session?.device_id) {
+        await logout();
+        router.push("/auth");
+        return;
+      }
       // Re-sync the list so the just-revoked device flips to its revoked state.
       setDevices(await listDevices());
       setError(null);
+      setRevokeTarget(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRevoking(false);
     }
-  }, []);
+  }, [revokeTarget, session, logout, router]);
 
   // Re-sync the node catalog so a freshly paired node appears without a reload.
   const refreshNodes = useCallback(async () => {
@@ -216,7 +240,7 @@ export function DevicesClient({ publicRelayUrl }: DevicesClientProps) {
         ) : (
           <div className="border border-border rounded-xl overflow-hidden bg-card">
             {devices.map((d) => (
-              <DeviceRowView key={d.device_id} device={d} onRevoke={() => void revoke(d.device_id)} />
+              <DeviceRowView key={d.device_id} device={d} onRevoke={() => setRevokeTarget(d)} />
             ))}
           </div>
         )}
@@ -228,6 +252,30 @@ export function DevicesClient({ publicRelayUrl }: DevicesClientProps) {
           existingNodeIds={nodes.map((n) => n.node_id)}
           onClose={() => setDialogOpen(false)}
           onPaired={() => void refreshNodes()}
+        />
+      )}
+
+      {revokeTarget && (
+        <ConfirmDialog
+          title="Revoke device"
+          destructive
+          busy={revoking}
+          confirmLabel="Revoke device"
+          description={
+            revokeTarget.device_id === session?.device_id ? (
+              <>
+                <strong className="text-foreground">This is the device you are signed in on.</strong>{" "}
+                Revoking it signs you out and permanently removes its sessions and key envelopes.
+              </>
+            ) : (
+              <>
+                This permanently removes the device, its sessions, and its key envelopes. It
+                cannot be undone.
+              </>
+            )
+          }
+          onConfirm={() => void confirmRevoke()}
+          onClose={() => setRevokeTarget(null)}
         />
       )}
     </div>

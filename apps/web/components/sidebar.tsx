@@ -9,16 +9,19 @@ import type { IconName } from "@repo/ui/primitives/icons";
 
 import { useAuth } from "../providers/auth-provider";
 import { useWs } from "../providers/ws-provider";
+import { isRelayOnline, relayStatusLabel } from "../lib/connectivity";
 
 // Persistent sidebar. Navigation is driven by the URL path via next/link +
 // usePathname rather than client-side state, so the browser's back button
 // works and deep-linking is preserved.
 
-type NavPage = "overview" | "devices" | "security" | "settings";
+type NavPage = "overview" | "files" | "devices" | "activity" | "security" | "settings";
 
 const navItems: { id: NavPage; label: string; icon: IconName }[] = [
   { id: "overview", label: "Overview", icon: "overview" },
+  { id: "files", label: "Files", icon: "files" },
   { id: "devices", label: "Devices", icon: "devices" },
+  { id: "activity", label: "Activity", icon: "activity" },
   { id: "security", label: "Security", icon: "security" },
   { id: "settings", label: "Settings", icon: "settings" },
 ];
@@ -34,7 +37,11 @@ export function Sidebar({ collapsed, onCollapse }: SidebarProps) {
   const { status: wsStatus } = useWs();
 
   // Live relay connectivity instead of a hard-coded "Online · Local P2P".
-  const relayOnline = wsStatus === "connected" || wsStatus === "reconnecting";
+  const relayOnline = isRelayOnline(wsStatus);
+  // Transitional states read as "pending", not green: the socket exists but
+  // traffic cannot flow until it reaches `connected`.
+  const relayBadge =
+    relayOnline ? "synced" : wsStatus === "connecting" || wsStatus === "reconnecting" ? "pending" : "offline";
   const accountId = session?.account_id ?? "";
 
   return (
@@ -55,9 +62,9 @@ export function Sidebar({ collapsed, onCollapse }: SidebarProps) {
       {!collapsed && (
         <div className="px-4 pt-3 pb-2">
           <div className="flex items-center gap-2 px-2.5 py-2 rounded-sm bg-secondary">
-            <StatusBadge status={relayOnline ? "synced" : "offline"} variant="dot" />
+            <StatusBadge status={relayBadge} variant="dot" />
             <span className="text-xs text-muted-foreground font-mono truncate">
-              {relayOnline ? `Relay · ${wsStatus}` : "Relay · Offline"}
+              Relay · {relayStatusLabel(wsStatus)}
             </span>
           </div>
         </div>
