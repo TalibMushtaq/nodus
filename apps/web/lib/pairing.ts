@@ -131,21 +131,6 @@ export function findNewNode(
   return nodes.find((n) => !known.has(n.node_id));
 }
 
-/**
- * Registers the browser device against the Relay (idempotent ownership-safe
- * upsert) so a pairing token can be bound to it.
- */
-export async function registerDevice(device: StoredDeviceIdentity): Promise<void> {
-  const res = await fetch("/api/devices/register", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ device_id: device.device_id, public_key: device.public_key }),
-  });
-  if (!res.ok) {
-    throw new Error(`device registration failed: ${res.status}`);
-  }
-}
-
 export async function issuePairingToken(nodeId: string, device: StoredDeviceIdentity): Promise<PairingSession> {
   const res = await fetch("/api/pairing/sessions", {
     method: "POST",
