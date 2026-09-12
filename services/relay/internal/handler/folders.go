@@ -41,6 +41,12 @@ func queryFolders(ctx context.Context, pool *db.Pool, accountID string) ([]Folde
 		SELECT folder_id, parent_folder_id, encrypted_name, created_at, updated_at
 		FROM folders
 		WHERE account_id = $1
+		  AND NOT EXISTS (
+			SELECT 1 FROM tombstones t
+			WHERE t.account_id = folders.account_id
+			  AND t.entity_type = 'folder'
+			  AND t.entity_id = folders.folder_id
+		  )
 		ORDER BY created_at ASC
 	`, accountID)
 	if err != nil {

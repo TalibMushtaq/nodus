@@ -73,7 +73,7 @@ type PendingNotifyPayload struct {
 // rows buffer_upload.go requires before it accepts shards.
 func messageRequiresNode(messageType string) bool {
 	switch messageType {
-	case "sync_hello", "snapshot_begin", "snapshot_chunk", "snapshot_end", "shard_ack":
+	case "sync_hello", "snapshot_begin", "snapshot_chunk", "snapshot_end", "shard_ack", "tombstone_ack":
 		return true
 	default:
 		return false
@@ -271,6 +271,22 @@ func handleIncomingEnvelope(
 			handleShardAckVerified(ctx, c, ack, pool, rClient, buf)
 		case "failed":
 			handleShardAckFailed(ctx, c, ack, pool, rClient)
+		}
+
+	case "tombstone_ack":
+		var ack struct {
+			EntityType string `json:"entity_type"`
+			EntityID   string `json:"entity_id"`
+			Status     string `json:"status"`
+		}
+		if err := json.Unmarshal(env.Payload, &ack); err != nil {
+			return
+		}
+		if pool == nil || c.NodeID == "" || c.AccountID == "" {
+			return
+		}
+		if err := ApplyTombstoneAck(ctx, pool, c.AccountID, c.NodeID, ack.EntityType, ack.EntityID, ack.Status); err != nil {
+			log.Printf("[tombstone] failed to apply ack from node=%s: %v", c.NodeID, err)
 		}
 	}
 }

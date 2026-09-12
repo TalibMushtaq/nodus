@@ -183,6 +183,10 @@ func main() {
 		mux.Handle("GET /files", auth.RequireAuth(sessionStore, cfg)(handler.ListFiles(pool)))
 		mux.Handle("GET /folders", auth.RequireAuth(sessionStore, cfg)(handler.ListFolders(pool)))
 		mux.Handle("GET /envelopes", auth.RequireAuth(sessionStore, cfg)(handler.ListEnvelopes(pool)))
+		// Tombstone (soft-delete) view: list, permanent delete, restore.
+		mux.Handle("GET /tombstones", auth.RequireAuth(sessionStore, cfg)(handler.ListTombstones(pool)))
+		mux.Handle("DELETE /tombstones/{entity_type}/{entity_id}", auth.RequireAuth(sessionStore, cfg)(handler.PurgeTombstone(pool, wsHub)))
+		mux.Handle("POST /tombstones/{entity_type}/{entity_id}/restore", auth.RequireAuth(sessionStore, cfg)(handler.RestoreTombstone(pool, wsHub)))
 
 		// Phase 11: pairing session issuance (device-bound tokens pushed to the
 		// node over WS) plus the node's + client's open verification endpoints.

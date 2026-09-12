@@ -88,7 +88,8 @@ type BatchAckPayload struct {
 func deviceAllowedEventType(t string) bool {
 	switch t {
 	case "FILE_CREATED", "FILE_VERSION_ADDED", "FILE_MODIFIED", "FILE_DELETED",
-		"FOLDER_CREATED", "FOLDER_DELETED", "TOMBSTONE_CREATED", "KEY_ENVELOPE_ADDED":
+		"FOLDER_CREATED", "FOLDER_DELETED", "TOMBSTONE_CREATED", "TOMBSTONE_REMOVED",
+		"KEY_ENVELOPE_ADDED":
 		return true
 	default:
 		return false
@@ -658,6 +659,15 @@ func applySingleEventTx(
 	case "FILE_CREATED":
 		var data FileCreatedEventData
 		if err := json.Unmarshal(item.Payload, &data); err == nil && data.FileID != "" {
+			// A tombstoned file must not be resurrected by a late create/rename
+			// from a long-offline device. Restore clears the tombstone first, so
+			// an intentional rename of a live file is unaffected.
+			if tombstoned, err := entityTombstoned(ctx, tx, accountID, "file", data.FileID); err != nil {
+				return false
+			} else if tombstoned {
+				log.Printf("[sync] rejecting %s for tombstoned file %s", item.Type, data.FileID)
+				return false
+			}
 			// Phase 14a audit (V3): file_id is globally unique, so an upsert
 			// could otherwise overwrite another account's file metadata. The
 			// WHERE clause makes the update a no-op for a foreign row while the
@@ -752,6 +762,14 @@ func applySingleEventTx(
 	case "FILE_VERSION_ADDED", "FILE_MODIFIED":
 		var data FileVersionEventData
 		if err := json.Unmarshal(item.Payload, &data); err == nil && data.FileID != "" {
+			// Same anti-resurrection guard as FILE_CREATED: a deleted file must
+			// not gain versions until it is restored.
+			if tombstoned, err := entityTombstoned(ctx, tx, accountID, "file", data.FileID); err != nil {
+				return false
+			} else if tombstoned {
+				log.Printf("[sync] rejecting %s for tombstoned file %s", item.Type, data.FileID)
+				return false
+			}
 			// Ensure parent file record exists
 			if _, err := tx.Exec(ctx, `
 				INSERT INTO files (file_id, account_id, created_at, updated_at)
@@ -827,11 +845,37 @@ func applySingleEventTx(
 			if tData.EntityType == "" {
 				tData.EntityType = "file"
 			}
+			// purge_after bounds the restorable window (ADR-0005: 90 days) and
+			// defaults from the tombstone timestamp; a re-delete keeps the
+			// original deadline so a restore+delete cycle cannot extend it.
 			if _, err := tx.Exec(ctx, `
-				INSERT INTO tombstones (account_id, entity_type, entity_id, deleted_at)
-				VALUES ($1, $2, $3, $4)
+				INSERT INTO tombstones (account_id, entity_type, entity_id, deleted_at, purge_after)
+				VALUES ($1, $2, $3, $4, $4::timestamptz + INTERVAL '90 days')
 				ON CONFLICT (account_id, entity_type, entity_id) DO NOTHING
 			`, accountID, tData.EntityType, tData.EntityID, t); err != nil {
+				return false
+			}
+		}
+
+	case "TOMBSTONE_REMOVED":
+		var tData struct {
+			EntityID   string `json:"entity_id"`
+			EntityType string `json:"entity_type"`
+		}
+		if err := json.Unmarshal(item.Payload, &tData); err == nil && tData.EntityID != "" {
+			if tData.EntityType == "" {
+				tData.EntityType = "file"
+			}
+			if _, err := tx.Exec(ctx, `
+				DELETE FROM tombstones
+				WHERE account_id = $1 AND entity_type = $2 AND entity_id = $3
+			`, accountID, tData.EntityType, tData.EntityID); err != nil {
+				return false
+			}
+			if _, err := tx.Exec(ctx, `
+				DELETE FROM tombstone_node_status
+				WHERE account_id = $1 AND entity_type = $2 AND entity_id = $3
+			`, accountID, tData.EntityType, tData.EntityID); err != nil {
 				return false
 			}
 		}
@@ -849,6 +893,19 @@ func applySingleEventTx(
 	}
 
 	return true
+}
+
+// entityTombstoned reports whether a live tombstone exists for the entity.
+// Used to reject resurrection by a long-offline device until a restore.
+func entityTombstoned(ctx context.Context, tx pgx.Tx, accountID, entityType, entityID string) (bool, error) {
+	var tombstoned bool
+	err := tx.QueryRow(ctx, `
+		SELECT EXISTS(
+			SELECT 1 FROM tombstones
+			WHERE account_id = $1 AND entity_type = $2 AND entity_id = $3
+		)
+	`, accountID, entityType, entityID).Scan(&tombstoned)
+	return tombstoned, err
 }
 
 // eventReferencesForeignFile checks the global file identifier only for event
