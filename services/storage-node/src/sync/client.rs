@@ -317,11 +317,23 @@ impl SyncClient {
         }
 
         // 4. Read loop for incoming batches, SYNC_STATUS, and ACKs
-        while let Some(msg_res) = read.next().await {
-            let msg = msg_res?;
-            if let Message::Text(text) = msg {
-                let env: ProtocolEnvelope = serde_json::from_str(&text)?;
-                match env.msg_type.as_str() {
+        //
+        // The loop is otherwise driven by the Relay pushing messages, but an
+        // idle-but-connected node would still age out of the UI's online window:
+        // `last_seen_at` is only written on auth or a heartbeat. Beat every 30 s
+        // so the Relay's throttled write (once/minute, hub.go) keeps the node
+        // "online" regardless of traffic. The 30 s cadence matches the web
+        // client and the 2-minute online window (NODE_ONLINE_WINDOW_MS).
+        let mut heartbeat = tokio::time::interval(std::time::Duration::from_secs(30));
+        heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            tokio::select! {
+                maybe_msg = read.next() => {
+                    let Some(msg_res) = maybe_msg else { break };
+                    let msg = msg_res?;
+                    if let Message::Text(text) = msg {
+                        let env: ProtocolEnvelope = serde_json::from_str(&text)?;
+                        match env.msg_type.as_str() {
                     "sync_status" => {
                         let _status: SyncStatusPayload = serde_json::from_value(env.payload)?;
                     }
@@ -430,6 +442,19 @@ impl SyncClient {
                         }
                     }
                     _ => {}
+                }
+            }
+                }
+                _ = heartbeat.tick() => {
+                    // Liveness ping (§13): the Relay keys the node's
+                    // online/offline state off this envelope, and it writes
+                    // `last_seen_at` at most once per minute. Payload matches
+                    // the protocol's HeartbeatPayloadSchema (id + RFC3339 ts).
+                    Self::send_envelope(&mut write, "heartbeat", &serde_json::json!({
+                        "id": self.identity.node_id,
+                        "timestamp": chrono::Utc::now().to_rfc3339(),
+                    }))
+                    .await?;
                 }
             }
         }
