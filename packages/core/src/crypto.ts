@@ -1,12 +1,52 @@
 import { gcm } from "@noble/ciphers/aes.js";
-import { x25519 } from "@noble/curves/ed25519.js";
+import {
+  edwardsToMontgomeryPriv,
+  edwardsToMontgomeryPub,
+  x25519,
+} from "@noble/curves/ed25519.js";
 import { blake3 } from "@noble/hashes/blake3.js";
 import { hkdf } from "@noble/hashes/hkdf.js";
 import { sha256 } from "@noble/hashes/sha2.js";
-import { bytesToHex, randomBytes } from "@noble/hashes/utils.js";
-import type { EncryptedShard, KeyEnvelope, Shard } from "./types.js";
+import { bytesToHex, hexToBytes, randomBytes } from "@noble/hashes/utils.js";
+import type { EncryptedShard, FileId, KeyEnvelope, Shard, ShardIndex } from "./types.js";
 
 const HKDF_INFO = new TextEncoder().encode("nodus-fek-envelope-v1");
+
+/** AES-256-GCM nonce size. The nonce is not secret but must be preserved. */
+export const SHARD_NONCE_SIZE = 12;
+
+/**
+ * Serialize an encrypted shard to the bytes that are hashed, uploaded, and
+ * stored: `nonce(12) || ciphertext(+tag)`.
+ *
+ * The separate `EncryptedShard.nonce` field would otherwise be lost the moment
+ * the shard leaves the client, making the ciphertext undecryptable. The Relay,
+ * Storage Node, and content-addressed object store all treat this packed blob
+ * as opaque; only the client splits it again in `unpackEncryptedShard`.
+ */
+export function packEncryptedShard(encrypted: EncryptedShard): Uint8Array {
+  const packed = new Uint8Array(encrypted.nonce.length + encrypted.ciphertext.length);
+  packed.set(encrypted.nonce, 0);
+  packed.set(encrypted.ciphertext, encrypted.nonce.length);
+  return packed;
+}
+
+/** Reverse `packEncryptedShard`. Throws if the blob is too short to hold a nonce. */
+export function unpackEncryptedShard(
+  fileId: FileId,
+  index: ShardIndex,
+  packed: Uint8Array,
+): EncryptedShard {
+  if (packed.length < SHARD_NONCE_SIZE) {
+    throw new Error("unpackEncryptedShard: blob is shorter than a nonce");
+  }
+  return {
+    fileId,
+    index,
+    nonce: packed.slice(0, SHARD_NONCE_SIZE),
+    ciphertext: packed.slice(SHARD_NONCE_SIZE),
+  };
+}
 
 /**
  * Encrypt a single plaintext shard with AES-256-GCM.
@@ -75,6 +115,87 @@ export function hashShard(data: Uint8Array): string {
  */
 export function generateFileEncryptionKey(): Uint8Array {
   return randomBytes(32);
+}
+
+/**
+ * Incremental BLAKE3 hasher for a file's plaintext. A version_hash is a single
+ * hash over the whole file, but the uploader must not hold a large file in
+ * memory to compute it — feed each `file.slice()` chunk to `update` and call
+ * `digest` once at the end.
+ */
+export function createPlaintextHasher(): {
+  update: (chunk: Uint8Array) => void;
+  digest: () => string;
+} {
+  const hasher = blake3.create();
+  return {
+    update(chunk: Uint8Array): void {
+      hasher.update(chunk);
+    },
+    digest(): string {
+      return bytesToHex(hasher.digest());
+    },
+  };
+}
+
+/** Version tag for the encrypted-name envelope, so the format can evolve. */
+const NAME_FORMAT_VERSION = "v1";
+
+/**
+ * Encrypt a filename under its file's FEK (AES-256-GCM, random 12-byte nonce).
+ * The Relay stores the returned opaque string in `files.encrypted_name`; it can
+ * never read the name. Format: `v1.<hex nonce>.<hex ciphertext+tag>`.
+ */
+export function encryptName(name: string, fek: Uint8Array): string {
+  const nonce = randomBytes(12);
+  const ciphertext = gcm(fek, nonce).encrypt(new TextEncoder().encode(name));
+  return `${NAME_FORMAT_VERSION}.${bytesToHex(nonce)}.${bytesToHex(ciphertext)}`;
+}
+
+/** Reverse `encryptName`. Throws on a malformed or tampered envelope. */
+export function decryptName(encoded: string, fek: Uint8Array): string {
+  const parts = encoded.split(".");
+  if (parts.length !== 3 || parts[0] !== NAME_FORMAT_VERSION) {
+    throw new Error("decryptName: unrecognized encrypted-name format");
+  }
+  try {
+    const plaintext = gcm(fek, hexToBytes(parts[1]!)).decrypt(hexToBytes(parts[2]!));
+    return new TextDecoder().decode(plaintext);
+  } catch {
+    throw new Error("decryptName: authentication failed — name may be tampered or key is wrong");
+  }
+}
+
+/**
+ * Convert an Ed25519 public key to its X25519 (Montgomery) equivalent.
+ *
+ * Nodus device/node identity is Ed25519 (signing, challenge-response), but the
+ * FEK envelope primitive is X25519 (ADR-0001). Rather than maintain a second
+ * keypair per device, the encryption key is derived from the identity key. Both
+ * sides can compute the same conversion from public keys alone.
+ */
+export function ed25519PublicToX25519(edPublicKey: Uint8Array): Uint8Array {
+  return edwardsToMontgomeryPub(edPublicKey);
+}
+
+/**
+ * Derive the X25519 private key from an Ed25519 private seed. Callers must
+ * treat the result with the same secrecy as the seed itself.
+ */
+export function ed25519PrivateToX25519(edPrivateSeed: Uint8Array): Uint8Array {
+  return edwardsToMontgomeryPriv(edPrivateSeed);
+}
+
+/**
+ * Derive the device/node encryption keypair (X25519) from an Ed25519 seed.
+ * `publicKey` is what gets published so others can seal a FEK for this device.
+ */
+export function deriveEncryptionKeypair(edPrivateSeed: Uint8Array): {
+  publicKey: Uint8Array;
+  privateKey: Uint8Array;
+} {
+  const privateKey = ed25519PrivateToX25519(edPrivateSeed);
+  return { privateKey, publicKey: x25519.getPublicKey(privateKey) };
 }
 
 /**

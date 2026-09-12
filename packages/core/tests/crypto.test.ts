@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { x25519 } from "@noble/curves/ed25519.js";
+import { ed25519, x25519 } from "@noble/curves/ed25519.js";
 import type { FileId, ShardIndex } from "../src/types.js";
 import {
   encryptShard,
@@ -8,6 +8,13 @@ import {
   generateFileEncryptionKey,
   sealFekForRecipient,
   openFekEnvelope,
+  createPlaintextHasher,
+  encryptName,
+  decryptName,
+  packEncryptedShard,
+  unpackEncryptedShard,
+  ed25519PublicToX25519,
+  deriveEncryptionKeypair,
 } from "../src/crypto.js";
 import { shardMetadataFromEncryptedShard } from "../src/metadata.js";
 import {
@@ -367,5 +374,72 @@ describe("Phase 3 integration", () => {
     // Reconstruct
     const original = reconstructFromShards(decrypted);
     expectBytesEqual(original, plaintext);
+  });
+});
+
+// ── Plaintext hashing + encrypted names (Phase 14 Path C) ───────────
+
+describe("createPlaintextHasher", () => {
+  it("matches a single hash when fed incrementally", () => {
+    const data = new TextEncoder().encode("the quick brown fox");
+    const oneShot = createPlaintextHasher();
+    oneShot.update(data);
+    const expected = oneShot.digest();
+
+    const incremental = createPlaintextHasher();
+    incremental.update(data.slice(0, 4));
+    incremental.update(data.slice(4, 10));
+    incremental.update(data.slice(10));
+    expect(incremental.digest()).toBe(expected);
+  });
+});
+
+describe("packEncryptedShard / unpackEncryptedShard (Phase 14 F2b)", () => {
+  it("preserves the nonce so a packed blob decrypts after a round trip", () => {
+    const fek = generateFileEncryptionKey();
+    const original = bytesOf(1024, 0x5a);
+    const encrypted = encryptShard({ fileId, index, data: original }, fek);
+
+    const packed = packEncryptedShard(encrypted);
+    expect(packed.length).toBe(encrypted.nonce.length + encrypted.ciphertext.length);
+    expect(packed.slice(0, 12)).toEqual(encrypted.nonce);
+
+    const unpacked = unpackEncryptedShard(fileId, index, packed);
+    expectBytesEqual(decryptShard(unpacked, fek).data, original);
+  });
+
+  it("rejects a blob shorter than a nonce", () => {
+    expect(() => unpackEncryptedShard(fileId, index, new Uint8Array(4))).toThrow(/shorter than a nonce/);
+  });
+});
+
+describe("Ed25519 -> X25519 derivation (Phase 14 F2)", () => {
+  it("derives a keypair consistent with the public conversion and round-trips a FEK", () => {
+    const seed = ed25519.utils.randomPrivateKey();
+    const edPub = ed25519.getPublicKey(seed);
+
+    const { publicKey, privateKey } = deriveEncryptionKeypair(seed);
+    expectBytesEqual(publicKey, ed25519PublicToX25519(edPub));
+
+    // A sender who only has the Ed25519 public key can seal a FEK the device opens.
+    const fek = generateFileEncryptionKey();
+    const envelope = sealFekForRecipient(fek, ed25519PublicToX25519(edPub));
+    expectBytesEqual(openFekEnvelope(envelope, privateKey), fek);
+  });
+});
+
+describe("encryptName / decryptName", () => {
+  it("round-trips the filename and never contains the plaintext", () => {
+    const fek = generateFileEncryptionKey();
+    const encoded = encryptName("quarterly report.pdf", fek);
+    expect(encoded).not.toContain("quarterly");
+    expect(decryptName(encoded, fek)).toBe("quarterly report.pdf");
+  });
+
+  it("throws with the wrong key or a malformed envelope", () => {
+    const fek = generateFileEncryptionKey();
+    const encoded = encryptName("secret.txt", fek);
+    expect(() => decryptName(encoded, generateFileEncryptionKey())).toThrow(/authentication failed/);
+    expect(() => decryptName("not-an-envelope", fek)).toThrow(/unrecognized/);
   });
 });
