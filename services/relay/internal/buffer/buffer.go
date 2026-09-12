@@ -33,6 +33,14 @@ func (b *Buffer) Dir() string {
 
 // Store writes data to the buffer atomically using write-temp-then-rename.
 func (b *Buffer) Store(bufferID string, data []byte) error {
+	// The buffer root can vanish while the Relay is running (tmp cleaners, an
+	// operator clearing a volume, a dev `rm -rf`). Re-create it here rather than
+	// relying only on New()'s eager MkdirAll, so a deleted directory surfaces as
+	// a single write error instead of a 500 on every shard upload.
+	if err := os.MkdirAll(b.dir, 0755); err != nil {
+		return fmt.Errorf("ensuring buffer directory %s: %w", b.dir, err)
+	}
+
 	destPath := filepath.Join(b.dir, bufferID)
 	tempPath := filepath.Join(b.dir, fmt.Sprintf(".tmp-%s-%s", bufferID, uuid.NewString()))
 

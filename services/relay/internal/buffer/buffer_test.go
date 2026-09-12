@@ -61,3 +61,34 @@ func TestBufferLifecycle(t *testing.T) {
 		t.Fatalf("expected delete to succeed on non-existent file: %v", err)
 	}
 }
+
+// The buffer root is under os.TempDir() by default and can be cleaned up while
+// the Relay runs; Store must re-create it rather than fail every upload.
+func TestStoreRecreatesMissingDir(t *testing.T) {
+	root, err := os.MkdirTemp("", "nodus-buffer-recreate-*")
+	if err != nil {
+		t.Fatalf("failed to create temp root: %v", err)
+	}
+	defer os.RemoveAll(root)
+
+	dir := root + "/buffer"
+	buf, err := buffer.New(dir)
+	if err != nil {
+		t.Fatalf("failed to initialize buffer: %v", err)
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatalf("failed to remove buffer dir: %v", err)
+	}
+
+	data := []byte("shard bytes after dir removal")
+	if err := buf.Store("id-after-rm", data); err != nil {
+		t.Fatalf("Store should recreate the directory: %v", err)
+	}
+	got, err := buf.Fetch("id-after-rm")
+	if err != nil {
+		t.Fatalf("Fetch after recreated dir: %v", err)
+	}
+	if !bytes.Equal(got, data) {
+		t.Fatalf("round-trip mismatch after dir recreation")
+	}
+}
