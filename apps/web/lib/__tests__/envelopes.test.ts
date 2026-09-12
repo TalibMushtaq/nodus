@@ -1,14 +1,24 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { generateFileEncryptionKey } from "@repo/core";
 import { createDeviceIdentity, identityPrivateKey, identityPublicKey } from "@repo/relay-client";
 
 import {
+  collectRecipients,
   decodeEnvelope,
   envelopeEvent,
   openFekFromEnvelope,
   sealFekForRecipientIdentity,
   sealFekForRecipients,
 } from "../envelopes";
+
+// Exercise collectRecipients without hitting the network: the catalogue
+// encoding differs per recipient kind, which is the bug under test.
+vi.mock("../pairing", () => ({
+  listDevices: vi.fn(),
+  listNodes: vi.fn(),
+}));
+
+import { listDevices, listNodes } from "../pairing";
 
 describe("FEK envelopes", () => {
   it("round-trips a FEK sealed to a device's Ed25519 identity", () => {
@@ -65,5 +75,47 @@ describe("FEK envelopes", () => {
     expect(first).not.toBe(second);
     expect(Array.from(openFekFromEnvelope(first, identityPrivateKey(recipient)))).toEqual(Array.from(fek));
     expect(Array.from(openFekFromEnvelope(second, identityPrivateKey(recipient)))).toEqual(Array.from(fek));
+  });
+});
+
+describe("collectRecipients catalogue decoding", () => {
+  it("decodes base64 device keys and hex node keys to 32 bytes", async () => {
+    const otherDevice = createDeviceIdentity(); // public_key is base64
+    const nodeBytes = new Uint8Array(32).fill(7);
+    const nodeHex = Array.from(nodeBytes, (b) => b.toString(16).padStart(2, "0")).join("");
+
+    vi.mocked(listDevices).mockResolvedValue([
+      {
+        device_id: otherDevice.device_id,
+        account_id: "acct-1",
+        public_key: otherDevice.public_key,
+        status: "ACTIVE",
+        created_at: "2026-09-12T00:00:00Z",
+        revoked_at: null,
+      },
+    ]);
+    vi.mocked(listNodes).mockResolvedValue([
+      {
+        node_id: "node-hex",
+        account_id: "acct-1",
+        public_key: nodeHex,
+        capabilities: ["storage"],
+        status: "ACTIVE",
+        is_primary: true,
+        last_seen_at: null,
+        created_at: "2026-09-12T00:00:00Z",
+      },
+    ]);
+
+    const self = createDeviceIdentity();
+    const recipients = await collectRecipients({ deviceId: self.device_id, edPublicKey: identityPublicKey(self) });
+
+    const node = recipients.find((r) => r.recipientKind === "node");
+    expect(node?.edPublicKey).toHaveLength(32);
+    expect(Array.from(node?.edPublicKey ?? [])).toEqual(Array.from(nodeBytes));
+
+    const device = recipients.find((r) => r.recipientId === otherDevice.device_id);
+    expect(device?.edPublicKey).toHaveLength(32);
+    expect(Array.from(device?.edPublicKey ?? [])).toEqual(Array.from(identityPublicKey(otherDevice)));
   });
 });

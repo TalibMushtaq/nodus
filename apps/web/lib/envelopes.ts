@@ -49,6 +49,33 @@ function fromBase64(value: string): Uint8Array {
   return out;
 }
 
+function fromHex(value: string): Uint8Array {
+  const out = new Uint8Array(value.length / 2);
+  for (let i = 0; i < out.length; i += 1) {
+    out[i] = Number.parseInt(value.slice(i * 2, i * 2 + 2), 16);
+  }
+  return out;
+}
+
+/**
+ * Decode a recipient's Ed25519 public key from its Relay catalogue encoding.
+ *
+ * The two catalogues do NOT share an encoding: devices register their key as
+ * base64 (the client identity format), while Storage Nodes register it as
+ * lowercase hex (the node redeem/enroll wire format, see Relay
+ * `pairing_code.go`). Decoding a 64-char hex node key as base64 yields 48 bytes,
+ * which then makes the Ed25519→X25519 conversion throw the opaque
+ * `"point" expected Uint8Array of length 32, got length=48`. Validate the length
+ * here so a future encoding drift fails with an actionable message.
+ */
+function decodeRecipientPublicKey(encoded: string, kind: RecipientKind): Uint8Array {
+  const bytes = kind === "node" ? fromHex(encoded) : fromBase64(encoded);
+  if (bytes.length !== 32) {
+    throw new Error(`${kind} public key must decode to 32 bytes, got ${bytes.length}`);
+  }
+  return bytes;
+}
+
 export function encodeEnvelope(envelope: {
   ephemeralPublicKey: Uint8Array;
   nonce: Uint8Array;
@@ -137,7 +164,6 @@ export async function collectRecipients(
   baseUrl = "",
 ): Promise<EnvelopeRecipient[]> {
   void baseUrl;
-  const b64 = (value: string): Uint8Array => fromBase64(value);
 
   const recipients: EnvelopeRecipient[] = [
     { recipientId: self.deviceId, recipientKind: "device", edPublicKey: self.edPublicKey },
@@ -146,11 +172,20 @@ export async function collectRecipients(
   const [devices, nodes] = await Promise.all([listDevices(), listNodes()]);
   for (const device of devices) {
     if (device.status !== "ACTIVE" || device.device_id === self.deviceId) continue;
-    recipients.push({ recipientId: device.device_id, recipientKind: "device", edPublicKey: b64(device.public_key) });
+    recipients.push({
+      recipientId: device.device_id,
+      recipientKind: "device",
+      edPublicKey: decodeRecipientPublicKey(device.public_key, "device"),
+    });
   }
   for (const node of nodes) {
     if (node.status !== "ACTIVE") continue;
-    recipients.push({ recipientId: node.node_id, recipientKind: "node", edPublicKey: b64(node.public_key) });
+    recipients.push({
+      recipientId: node.node_id,
+      recipientKind: "node",
+      // Nodes report a hex key, not base64 — see decodeRecipientPublicKey.
+      edPublicKey: decodeRecipientPublicKey(node.public_key, "node"),
+    });
   }
   return recipients;
 }
