@@ -18,6 +18,7 @@ export const EventTypes = {
   TOMBSTONE_CREATED: "TOMBSTONE_CREATED",
   FOLDER_CREATED: "FOLDER_CREATED",
   FOLDER_DELETED: "FOLDER_DELETED",
+  KEY_ENVELOPE_ADDED: "KEY_ENVELOPE_ADDED",
 } as const;
 
 export const EventTypeSchema = z.enum([
@@ -29,6 +30,7 @@ export const EventTypeSchema = z.enum([
   EventTypes.TOMBSTONE_CREATED,
   EventTypes.FOLDER_CREATED,
   EventTypes.FOLDER_DELETED,
+  EventTypes.KEY_ENVELOPE_ADDED,
 ]);
 
 export type EventType = z.infer<typeof EventTypeSchema>;
@@ -98,6 +100,22 @@ export const FolderEventPayloadSchema = z.object({
   encrypted_name: z.string().optional(),
 });
 
+/**
+ * Key envelope event payload (§25, Phase 14 F2). A device that holds a file's
+ * FEK seals it for another recipient and publishes the opaque envelope. The
+ * Relay stores it without ever seeing the FEK or the file key material.
+ *
+ * `encrypted_key` is a self-describing string produced by the client (JSON
+ * envelope fields, base64) so the format can evolve without a schema change.
+ */
+export const KeyEnvelopePayloadSchema = z.object({
+  file_id: z.string(),
+  /** device_id or node_id the FEK is sealed for. */
+  recipient_id: z.string(),
+  recipient_kind: z.enum(["device", "node"]),
+  encrypted_key: z.string(),
+});
+
 // ── Event payload union ────────────────────────────────────────────
 
 /**
@@ -113,6 +131,7 @@ const EventPayloadMap: Record<EventType, z.ZodType> = {
   TOMBSTONE_CREATED: TombstonePayloadSchema,
   FOLDER_CREATED: FolderEventPayloadSchema,
   FOLDER_DELETED: FolderEventPayloadSchema,
+  KEY_ENVELOPE_ADDED: KeyEnvelopePayloadSchema,
 };
 
 /**

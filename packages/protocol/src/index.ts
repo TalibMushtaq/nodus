@@ -125,6 +125,10 @@ export {
   type SnapshotRecordType,
   FileVersionRecordSchema,
   type FileVersionRecord,
+  FolderRecordSchema,
+  type FolderRecord,
+  KeyEnvelopeRecordSchema,
+  type KeyEnvelopeRecord,
   TombstoneRecordSchema,
   type TombstoneRecord,
   SnapshotBeginPayloadSchema,
@@ -188,6 +192,7 @@ export {
   DeviceRevokedPayloadSchema,
   TombstonePayloadSchema,
   FolderEventPayloadSchema,
+  KeyEnvelopePayloadSchema,
   validateEventPayload,
   EventPayloadMap,
 } from "./events/event-types.js";

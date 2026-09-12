@@ -5,7 +5,7 @@ import { z } from "zod";
  * Follows semver: major = breaking, minor = additive-only (new optional fields).
  * Rust and Go implementations must match the major version to interoperate.
  */
-export const CURRENT_SCHEMA_VERSION = "1.0" as const;
+export const CURRENT_SCHEMA_VERSION = "1.4" as const;
 
 /**
  * @deprecated Phase 9 moved snapshot chunking to a record-count model. Chunks

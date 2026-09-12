@@ -23,7 +23,8 @@
         "DEVICE_REVOKED",
         "TOMBSTONE_CREATED",
         "FOLDER_CREATED",
-        "FOLDER_DELETED"
+        "FOLDER_DELETED",
+        "KEY_ENVELOPE_ADDED"
       ]
     },
     "payload": {

@@ -1,5 +1,5 @@
 {
-  "schema_version": "1.0",
+  "schema_version": "1.4",
   "default_snapshot_chunk_size": 262144,
   "messages": {
     "register": "register.schema.json",

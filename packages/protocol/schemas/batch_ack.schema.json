@@ -10,6 +10,17 @@
       "items": {
         "type": "string"
       }
+    },
+    "ok": {
+      "type": "boolean"
+    },
+    "reason": {
+      "type": "string"
+    },
+    "last_origin_sequence": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
     }
   },
   "required": [

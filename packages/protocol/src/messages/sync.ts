@@ -76,6 +76,13 @@ export type EventBatchPayload = z.infer<typeof EventBatchPayloadSchema>;
 export const BatchAckPayloadSchema = z.object({
   batch_id: z.string().optional(),
   applied_event_ids: z.array(z.string()),
+  // Device-originated batch result (Phase 14 Path C). Absent on node batches.
+  // `ok: false` means the batch was rejected wholesale and nothing was applied;
+  // `last_origin_sequence` is the server cursor the client should re-sync its
+  // local counter from (e.g. after a `sequence_regression`).
+  ok: z.boolean().optional(),
+  reason: z.string().optional(),
+  last_origin_sequence: z.number().int().min(0).optional(),
 });
 
 export type BatchAckPayload = z.infer<typeof BatchAckPayloadSchema>;

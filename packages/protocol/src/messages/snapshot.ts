@@ -4,17 +4,16 @@ import { NodeId, SnapshotId } from "../types.js";
 // ── Snapshot records ────────────────────────────────────────────────
 //
 // A snapshot is streamed as typed, homogeneous chunks. Each chunk carries one
-// record type ('file_version' | 'tombstone') and an array of up to
+// record type ('file_version' | 'folder' | 'key_envelope' | 'tombstone') and an array of up to
 // SNAPSHOT_CHUNK_MAX_RECORDS records. Keeping each chunk homogeneous (one
 // record type) rather than interleaving types is simpler to validate and apply,
-// at the cost of slightly more chunks for accounts with both file versions and
-// tombstones.
+// at the cost of slightly more chunks for accounts with multiple record types.
 
 /** Maximum number of records carried in a single snapshot chunk. */
 export const SNAPSHOT_CHUNK_MAX_RECORDS = 1000;
 
 /** Snapshot record type discriminants. */
-export const SnapshotRecordTypeSchema = z.enum(["file_version", "tombstone"]);
+export const SnapshotRecordTypeSchema = z.enum(["file_version", "folder", "key_envelope", "tombstone"]);
 export type SnapshotRecordType = z.infer<typeof SnapshotRecordTypeSchema>;
 
 /**
@@ -34,6 +33,37 @@ export const FileVersionRecordSchema = z.object({
 });
 
 export type FileVersionRecord = z.infer<typeof FileVersionRecordSchema>;
+
+/**
+ * A folder row captured in a snapshot. Folders are currently derived from the
+ * folder events a device emits; without a record type here a Relay rebuild
+ * would silently drop the folder tree (files would keep a dangling
+ * `parent_folder_id`).
+ */
+export const FolderRecordSchema = z.object({
+  folder_id: z.string(),
+  parent_folder_id: z.string().nullable().optional(),
+  encrypted_name: z.string().nullable().optional(),
+  created_at: z.string().datetime().optional(),
+});
+
+export type FolderRecord = z.infer<typeof FolderRecordSchema>;
+
+/**
+ * A key envelope captured in a snapshot (Phase 14 F2c). Envelopes are opaque
+ * ciphertext sealed to a recipient; carrying them lets a full Relay rebuild
+ * from an empty database preserve multi-device readability instead of dropping
+ * every FEK envelope.
+ */
+export const KeyEnvelopeRecordSchema = z.object({
+  file_id: z.string(),
+  recipient_id: z.string(),
+  recipient_kind: z.enum(["device", "node"]),
+  encrypted_key: z.string(),
+  created_at: z.string().datetime().optional(),
+});
+
+export type KeyEnvelopeRecord = z.infer<typeof KeyEnvelopeRecordSchema>;
 
 /**
  * A tombstone row captured in a snapshot. Only tombstones newer than the
@@ -103,7 +133,14 @@ export const SnapshotChunkPayloadSchema = z.object({
   record_type: SnapshotRecordTypeSchema,
   /** Records carried by this chunk (capped at SNAPSHOT_CHUNK_MAX_RECORDS) */
   records: z
-    .array(z.union([FileVersionRecordSchema, TombstoneRecordSchema]))
+    .array(
+      z.union([
+        FileVersionRecordSchema,
+        FolderRecordSchema,
+        KeyEnvelopeRecordSchema,
+        TombstoneRecordSchema,
+      ]),
+    )
     .max(SNAPSHOT_CHUNK_MAX_RECORDS),
 });
 
