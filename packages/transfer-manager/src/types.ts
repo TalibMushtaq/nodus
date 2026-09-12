@@ -67,13 +67,21 @@ export interface QueueItem {
   retryCount: number;
 }
 
-/** Generic local queue interface — swap implementations per platform. */
+/**
+ * Generic local queue interface — swap implementations per platform (Phase 14
+ * provides `IndexedDBLocalQueue` for web, SQLite for mobile). The Transfer
+ * Manager drains the queue on connectivity restoration and reports `size`,
+ * so both are part of the contract.
+ */
 export interface LocalQueue {
   enqueue(item: QueueItem): void;
   dequeue(): QueueItem | undefined;
   peek(): QueueItem | undefined;
   remove(transferId: string): void;
   onConnectivityRestored(callback: () => void): void;
+  /** Fire the registered connectivity-restored callbacks. */
+  notifyConnectivityRestored(): void;
+  readonly size: number;
 }
 
 /** Configuration for the transfer manager. */

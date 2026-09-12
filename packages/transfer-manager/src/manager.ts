@@ -1,5 +1,5 @@
 import type { NodeId } from "@repo/protocol";
-import type { ShardTransferRequest, TransferConfig, TransferResult } from "./types.js";
+import type { LocalQueue, PathCache, ShardTransferRequest, TransferConfig, TransferResult } from "./types.js";
 import { InMemoryPathCache } from "./path-cache.js";
 import { MemoryLocalQueue } from "./local-queue.js";
 import { ConcurrencyPool } from "./pool.js";
@@ -14,16 +14,16 @@ import type { AttemptPathFn } from "./executor.js";
  * the manager itself has no platform dependencies.
  */
 export class TransferManager {
-  private cache: InMemoryPathCache;
-  private queue: MemoryLocalQueue;
+  private cache: PathCache;
+  private queue: LocalQueue;
   private pool: ConcurrencyPool;
   private config: TransferConfig;
 
   constructor(
     attemptPath: AttemptPathFn,
     config?: Partial<TransferConfig>,
-    cache?: InMemoryPathCache,
-    queue?: MemoryLocalQueue,
+    cache?: PathCache,
+    queue?: LocalQueue,
   ) {
     this.config = makeConfig(config);
     this.cache = cache ?? new InMemoryPathCache();
