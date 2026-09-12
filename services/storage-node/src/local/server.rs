@@ -312,22 +312,34 @@ async fn auth(
 
 /// Serve a shard object's bytes to a *trusted node* requesting a repair.
 ///
-/// v1 Path A backhaul: instead of the nonce handshake (which requires two
-/// round-trips and a server-side nonce store shared with device pairing), the
-/// requester signs a stateless message `"{node_id}:{object_id}:{timestamp_ms}"`
-/// and sends it in the `X-Nodus-*` headers. The receiver checks, in order:
-/// the caller is a known `trusted_nodes` entry, the timestamp is within
+/// Stateless read auth, used by both node-to-node backhaul (Path A repair) and
+/// client downloads (Phase 14 F2b). Instead of the nonce handshake (which needs
+/// two round-trips and shared nonce state), the requester signs
+/// `"{caller_id}:{object_id}:{timestamp_ms}"` and sends it in `X-Nodus-*`
+/// headers. The receiver checks, in order: the caller is a known, active
+/// identity (`trusted_nodes` for a node via `X-Nodus-Node-Id`, `devices` for a
+/// paired device via `X-Nodus-Device-Id`), the timestamp is within
 /// [`NODE_AUTH_FRESHNESS_MS`], and the Ed25519 signature verifies against the
-/// caller's stored public key. Only then are the bytes read from disk.
+/// stored public key. Only then are the bytes read from disk.
 async fn handle_shard_fetch(
     State(state): State<LocalState>,
     Path(object_id): Path<String>,
     headers: HeaderMap,
 ) -> Result<(StatusCode, Vec<u8>), LocalError> {
-    let caller = headers
-        .get("x-nodus-node-id")
-        .and_then(|v| v.to_str().ok())
-        .ok_or_else(|| unauthorized("missing X-Nodus-Node-Id header"))?;
+    // Phase 14 F2b: the same endpoint serves two caller kinds. A Storage Node
+    // pulls shards for repair (node-signed), and a paired client device
+    // downloads a stored shard (device-signed). Exactly one identity header.
+    let device_caller = headers.get("x-nodus-device-id").and_then(|v| v.to_str().ok());
+    let node_caller = headers.get("x-nodus-node-id").and_then(|v| v.to_str().ok());
+    let (caller, is_device) = match (device_caller, node_caller) {
+        (Some(device), None) => (device.to_string(), true),
+        (None, Some(node)) => (node.to_string(), false),
+        _ => {
+            return Err(unauthorized(
+                "provide exactly one of X-Nodus-Device-Id or X-Nodus-Node-Id",
+            ))
+        }
+    };
     let timestamp = headers
         .get("x-nodus-timestamp")
         .and_then(|v| v.to_str().ok())
@@ -344,14 +356,27 @@ async fn handle_shard_fetch(
         ));
     }
 
-    let row: Option<(Vec<u8>,)> =
+    let row: Option<(Vec<u8>,)> = if is_device {
+        sqlx::query_as(
+            "SELECT public_key_bytes FROM devices WHERE device_id = ? AND status = 'ACTIVE'",
+        )
+        .bind(&caller)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(internal_err)?
+    } else {
         sqlx::query_as("SELECT public_key_bytes FROM trusted_nodes WHERE node_id = ?")
-            .bind(caller)
+            .bind(&caller)
             .fetch_optional(&state.db)
             .await
-            .map_err(internal_err)?;
+            .map_err(internal_err)?
+    };
     let Some((pubkey,)) = row else {
-        return Err(unauthorized("caller is not a trusted node"));
+        return Err(unauthorized(if is_device {
+            "caller is not an active device"
+        } else {
+            "caller is not a trusted node"
+        }));
     };
 
     // The signed message binds caller, target object, and time together, so a
@@ -1130,5 +1155,96 @@ mod tests {
             StatusCode::NOT_FOUND,
             "missing object returns 404 for authenticated caller"
         );
+    }
+
+    // ── Phase 14 F2b: paired-device download ─────────────────────────────
+
+    #[tokio::test]
+    async fn test_shard_fetch_serves_bytes_to_paired_device() {
+        let (app, db, _identity, dir) = setup_test_server().await;
+
+        let device_key = SigningKey::from_bytes(&[99u8; 32]);
+        let device_pubkey = device_key.verifying_key().to_bytes();
+        let device_id = "device-download-1";
+        let store = crate::store::ObjectStore::new(dir.path().to_path_buf(), db.clone())
+            .await
+            .unwrap();
+        let payload = b"packed nonce+ciphertext";
+        let object_id = store.put(payload).await.unwrap();
+        sqlx::query(
+            "INSERT INTO devices (device_id, public_key_bytes, status, created_at) VALUES (?, ?, 'ACTIVE', 'now')",
+        )
+        .bind(device_id)
+        .bind(&device_pubkey[..])
+        .execute(&db)
+        .await
+        .unwrap();
+
+        let timestamp = chrono::Utc::now().timestamp_millis();
+        let message = format!("{device_id}:{object_id}:{timestamp}");
+        let signature = hex::encode(device_key.sign(message.as_bytes()).to_bytes());
+        let req = Request::builder()
+            .uri(format!("/nodus/shard/{object_id}"))
+            .method("GET")
+            .header("x-nodus-device-id", device_id)
+            .header("x-nodus-timestamp", timestamp.to_string())
+            .header("x-nodus-signature", signature)
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(&bytes[..], payload);
+    }
+
+    #[tokio::test]
+    async fn test_shard_fetch_rejects_revoked_device_and_both_identity_headers() {
+        let (app, db, _identity, dir) = setup_test_server().await;
+
+        let device_key = SigningKey::from_bytes(&[101u8; 32]);
+        let device_pubkey = device_key.verifying_key().to_bytes();
+        let device_id = "device-revoked-1";
+        let store = crate::store::ObjectStore::new(dir.path().to_path_buf(), db.clone())
+            .await
+            .unwrap();
+        let object_id = store.put(b"x").await.unwrap();
+        sqlx::query(
+            "INSERT INTO devices (device_id, public_key_bytes, status, created_at) VALUES (?, ?, 'REVOKED', 'now')",
+        )
+        .bind(device_id)
+        .bind(&device_pubkey[..])
+        .execute(&db)
+        .await
+        .unwrap();
+
+        let timestamp = chrono::Utc::now().timestamp_millis();
+        let message = format!("{device_id}:{object_id}:{timestamp}");
+        let signature = hex::encode(device_key.sign(message.as_bytes()).to_bytes());
+
+        // A revoked device must not read shards even with a valid signature.
+        let revoked = Request::builder()
+            .uri(format!("/nodus/shard/{object_id}"))
+            .method("GET")
+            .header("x-nodus-device-id", device_id)
+            .header("x-nodus-timestamp", timestamp.to_string())
+            .header("x-nodus-signature", signature.clone())
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(revoked).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+        // Supplying both a device and a node identity is ambiguous → 401.
+        let both = Request::builder()
+            .uri(format!("/nodus/shard/{object_id}"))
+            .method("GET")
+            .header("x-nodus-device-id", device_id)
+            .header("x-nodus-node-id", "some-node")
+            .header("x-nodus-timestamp", timestamp.to_string())
+            .header("x-nodus-signature", signature)
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(both).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     }
 }

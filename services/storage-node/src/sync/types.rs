@@ -119,6 +119,14 @@ pub struct BatchAckPayload {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub batch_id: Option<String>,
     pub applied_event_ids: Vec<String>,
+    /// Device-batch result fields (Phase 14 Path C). Absent on node-originated
+    /// batches, so existing node parsing is unaffected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ok: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_origin_sequence: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -202,6 +210,32 @@ pub struct FileVersionRecord {
     pub parent_folder_id: Option<String>,
 }
 
+/// A folder row captured in a snapshot chunk. Folder metadata is otherwise
+/// only reachable by replaying folder events; carrying it explicitly keeps a
+/// Relay rebuild lossless.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FolderRecord {
+    pub folder_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_folder_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub encrypted_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<String>,
+}
+
+/// A key envelope captured in a snapshot chunk (Phase 14 F2c). Opaque
+/// ciphertext: the node stores it only so a Relay rebuild can restore it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KeyEnvelopeRecord {
+    pub file_id: String,
+    pub recipient_id: String,
+    pub recipient_kind: String, // "device" | "node"
+    pub encrypted_key: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<String>,
+}
+
 /// A tombstone row captured in a snapshot chunk.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TombstoneRecord {
@@ -217,7 +251,11 @@ pub struct TombstoneRecord {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum SnapshotRecord {
+    // Untagged matching tries variants in order; folder_id vs file_id keeps the
+    // shapes unambiguous, so ordering is for clarity only.
     FileVersion(FileVersionRecord),
+    Folder(FolderRecord),
+    KeyEnvelope(KeyEnvelopeRecord),
     Tombstone(TombstoneRecord),
 }
 

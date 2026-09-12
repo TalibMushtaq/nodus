@@ -164,6 +164,107 @@ pub async fn apply_remote_event(
             }
         }
 
+        // Folder projection (Phase 14 F1). Mirrors the FILE_* handling: a
+        // create upserts the folder, a delete writes a tombstone. The tombstone
+        // is what stops a long-offline device from resurrecting the folder.
+        "FOLDER_CREATED" => {
+            let folder_id = event
+                .payload
+                .get("folder_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let parent_folder_id = event
+                .payload
+                .get("parent_folder_id")
+                .and_then(|v| v.as_str());
+            let encrypted_name = event.payload.get("encrypted_name").and_then(|v| v.as_str());
+
+            if !folder_id.is_empty() {
+                sqlx::query(
+                    r#"
+                    INSERT INTO folders (folder_id, parent_folder_id, encrypted_name, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(folder_id) DO UPDATE SET
+                        parent_folder_id = excluded.parent_folder_id,
+                        encrypted_name = excluded.encrypted_name,
+                        updated_at = excluded.updated_at
+                    "#,
+                )
+                .bind(folder_id)
+                .bind(parent_folder_id)
+                .bind(encrypted_name)
+                .bind(&event.timestamp)
+                .bind(&event.timestamp)
+                .execute(db)
+                .await?;
+            }
+        }
+
+        "FOLDER_DELETED" => {
+            let folder_id = event
+                .payload
+                .get("folder_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if !folder_id.is_empty() {
+                sqlx::query(
+                    r#"
+                    INSERT INTO tombstones (entity_type, entity_id, deleted_at)
+                    VALUES ('folder', ?, ?)
+                    ON CONFLICT(entity_type, entity_id) DO UPDATE SET deleted_at = excluded.deleted_at
+                    "#,
+                )
+                .bind(folder_id)
+                .bind(&event.timestamp)
+                .execute(db)
+                .await?;
+            }
+        }
+
+        // Key envelopes are stored opaquely for snapshot rebuilds; the node
+        // cannot decrypt them. Upsert mirrors the Relay (a re-seal overwrites).
+        "KEY_ENVELOPE_ADDED" => {
+            let file_id = event.payload.get("file_id").and_then(|v| v.as_str()).unwrap_or("");
+            let recipient_id = event
+                .payload
+                .get("recipient_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let recipient_kind = event
+                .payload
+                .get("recipient_kind")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let encrypted_key = event
+                .payload
+                .get("encrypted_key")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+
+            if !file_id.is_empty()
+                && !recipient_id.is_empty()
+                && !encrypted_key.is_empty()
+                && (recipient_kind == "device" || recipient_kind == "node")
+            {
+                sqlx::query(
+                    r#"
+                    INSERT INTO key_envelopes (file_id, recipient_id, recipient_kind, encrypted_key, created_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(file_id, recipient_id) DO UPDATE SET
+                        recipient_kind = excluded.recipient_kind,
+                        encrypted_key = excluded.encrypted_key
+                    "#,
+                )
+                .bind(file_id)
+                .bind(recipient_id)
+                .bind(recipient_kind)
+                .bind(encrypted_key)
+                .bind(&event.timestamp)
+                .execute(db)
+                .await?;
+            }
+        }
+
         "FILE_DELETED" | "TOMBSTONE_CREATED" => {
             let entity_id = event
                 .payload
@@ -272,6 +373,10 @@ pub async fn apply_incoming_batch(
     Ok(BatchAckPayload {
         batch_id: None,
         applied_event_ids: applied_ids,
+        // Node-originated acks never carry the device-only fields.
+        ok: None,
+        reason: None,
+        last_origin_sequence: None,
     })
 }
 
@@ -318,6 +423,106 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(ack.applied_event_ids, vec!["evt-apply-1"]);
+    }
+
+    #[tokio::test]
+    async fn test_apply_folder_events() {
+        let dir = tempdir().unwrap();
+        let pool = db::open(dir.path()).await.unwrap();
+
+        let created = SyncEvent {
+            event_id: "evt-folder-created".to_string(),
+            origin_id: "device-1".to_string(),
+            origin_sequence: 1,
+            event_type: "FOLDER_CREATED".to_string(),
+            payload: serde_json::json!({
+                "folder_id": "dir-1",
+                "parent_folder_id": null,
+                "encrypted_name": "enc"
+            }),
+            timestamp: "2026-09-12T12:00:00Z".to_string(),
+        };
+        assert_eq!(
+            apply_remote_event(&pool, &created, "node-test").await.unwrap(),
+            ApplyOutcome::Applied
+        );
+
+        let name: String =
+            sqlx::query_scalar("SELECT encrypted_name FROM folders WHERE folder_id = 'dir-1'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(name, "enc");
+
+        let deleted = SyncEvent {
+            event_id: "evt-folder-deleted".to_string(),
+            origin_id: "device-1".to_string(),
+            origin_sequence: 2,
+            event_type: "FOLDER_DELETED".to_string(),
+            payload: serde_json::json!({ "folder_id": "dir-1" }),
+            timestamp: "2026-09-12T12:01:00Z".to_string(),
+        };
+        apply_remote_event(&pool, &deleted, "node-test").await.unwrap();
+
+        let tombstoned: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM tombstones WHERE entity_type = 'folder' AND entity_id = 'dir-1'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(tombstoned, 1);
+    }
+
+    #[tokio::test]
+    async fn test_apply_key_envelope_event() {
+        let dir = tempdir().unwrap();
+        let pool = db::open(dir.path()).await.unwrap();
+
+        let event = SyncEvent {
+            event_id: "evt-env-1".to_string(),
+            origin_id: "device-1".to_string(),
+            origin_sequence: 1,
+            event_type: "KEY_ENVELOPE_ADDED".to_string(),
+            payload: serde_json::json!({
+                "file_id": "file-1",
+                "recipient_id": "device-2",
+                "recipient_kind": "device",
+                "encrypted_key": "opaque"
+            }),
+            timestamp: "2026-09-12T12:00:00Z".to_string(),
+        };
+        apply_remote_event(&pool, &event, "node-test").await.unwrap();
+
+        let stored: String = sqlx::query_scalar(
+            "SELECT encrypted_key FROM key_envelopes WHERE file_id = 'file-1' AND recipient_id = 'device-2'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(stored, "opaque");
+
+        // A re-seal overwrites in place (same PK).
+        let reseal = SyncEvent {
+            event_id: "evt-env-2".to_string(),
+            origin_id: "device-1".to_string(),
+            origin_sequence: 2,
+            event_type: "KEY_ENVELOPE_ADDED".to_string(),
+            payload: serde_json::json!({
+                "file_id": "file-1",
+                "recipient_id": "device-2",
+                "recipient_kind": "device",
+                "encrypted_key": "newer"
+            }),
+            timestamp: "2026-09-12T12:01:00Z".to_string(),
+        };
+        apply_remote_event(&pool, &reseal, "node-test").await.unwrap();
+        let stored: String = sqlx::query_scalar(
+            "SELECT encrypted_key FROM key_envelopes WHERE file_id = 'file-1' AND recipient_id = 'device-2'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(stored, "newer");
     }
 
     #[tokio::test]

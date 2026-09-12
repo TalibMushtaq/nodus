@@ -10,8 +10,9 @@
 use sqlx::{Row, SqlitePool};
 
 use super::types::{
-    FileVersionRecord, RebuildRequiredPayload, SnapshotBeginPayload, SnapshotChunkPayload,
-    SnapshotEndPayload, SnapshotRecord, SyncCursor, TombstoneRecord,
+    FileVersionRecord, FolderRecord, KeyEnvelopeRecord, RebuildRequiredPayload,
+    SnapshotBeginPayload, SnapshotChunkPayload, SnapshotEndPayload, SnapshotRecord, SyncCursor,
+    TombstoneRecord,
 };
 use crate::identity::NodeIdentity;
 
@@ -85,6 +86,60 @@ async fn load_file_version_records(db: &SqlitePool) -> anyhow::Result<Vec<FileVe
                 .try_get::<Option<String>, _>("parent_folder_id")
                 .ok()
                 .flatten(),
+        });
+    }
+
+    Ok(records)
+}
+
+/// Loads every folder row from SQLite, ordered deterministically. Folders are
+/// carried in the snapshot so a Relay rebuild reconstructs the tree instead of
+/// leaving files with dangling `parent_folder_id` values.
+async fn load_folder_records(db: &SqlitePool) -> anyhow::Result<Vec<FolderRecord>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT folder_id, parent_folder_id, encrypted_name, created_at
+        FROM folders
+        ORDER BY folder_id ASC
+        "#,
+    )
+    .fetch_all(db)
+    .await?;
+
+    let mut records = Vec::with_capacity(rows.len());
+    for row in rows {
+        records.push(FolderRecord {
+            folder_id: row.get("folder_id"),
+            parent_folder_id: row.try_get::<Option<String>, _>("parent_folder_id").ok().flatten(),
+            encrypted_name: row.try_get::<Option<String>, _>("encrypted_name").ok().flatten(),
+            created_at: row.try_get::<Option<String>, _>("created_at").ok().flatten(),
+        });
+    }
+
+    Ok(records)
+}
+
+/// Loads every key envelope row. Envelopes are opaque here; carrying them keeps
+/// a Relay rebuild from dropping them (Phase 14 F2c).
+async fn load_key_envelope_records(db: &SqlitePool) -> anyhow::Result<Vec<KeyEnvelopeRecord>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT file_id, recipient_id, recipient_kind, encrypted_key, created_at
+        FROM key_envelopes
+        ORDER BY file_id ASC, recipient_id ASC
+        "#,
+    )
+    .fetch_all(db)
+    .await?;
+
+    let mut records = Vec::with_capacity(rows.len());
+    for row in rows {
+        records.push(KeyEnvelopeRecord {
+            file_id: row.get("file_id"),
+            recipient_id: row.get("recipient_id"),
+            recipient_kind: row.get("recipient_kind"),
+            encrypted_key: row.get("encrypted_key"),
+            created_at: row.try_get::<Option<String>, _>("created_at").ok().flatten(),
         });
     }
 
@@ -190,12 +245,14 @@ pub async fn build_snapshot(
     SnapshotEndPayload,
 )> {
     let file_records = load_file_version_records(db).await?;
+    let folder_records = load_folder_records(db).await?;
+    let envelope_records = load_key_envelope_records(db).await?;
     let tombstone_records = load_tombstone_records(db).await?;
     let cursors = load_cursors(db).await?;
 
-    // Homogeneous chunking: file_versions first, then tombstones, each chunk
-    // capped at SNAPSHOT_CHUNK_MAX_RECORDS. Deterministic split keeps the
-    // content hash stable for identical DB states.
+    // Homogeneous chunking: file_versions, folders, key_envelopes, tombstones;
+    // each chunk capped at SNAPSHOT_CHUNK_MAX_RECORDS. Deterministic split keeps
+    // the content hash stable for identical DB states.
     let mut chunks = Vec::<SnapshotChunkPayload>::new();
     let mut chunk_index: i64 = 0;
 
@@ -211,6 +268,40 @@ pub async fn build_snapshot(
             snapshot_id: String::new(),
             chunk_index,
             record_type: "file_version".to_string(),
+            records: vec![record],
+        });
+        chunk_index += 1;
+    }
+
+    for record in folder_records.into_iter().map(SnapshotRecord::Folder) {
+        if let Some(last) = chunks.last_mut()
+            && last.record_type == "folder"
+            && last.records.len() < SNAPSHOT_CHUNK_MAX_RECORDS
+        {
+            last.records.push(record);
+            continue;
+        }
+        chunks.push(SnapshotChunkPayload {
+            snapshot_id: String::new(),
+            chunk_index,
+            record_type: "folder".to_string(),
+            records: vec![record],
+        });
+        chunk_index += 1;
+    }
+
+    for record in envelope_records.into_iter().map(SnapshotRecord::KeyEnvelope) {
+        if let Some(last) = chunks.last_mut()
+            && last.record_type == "key_envelope"
+            && last.records.len() < SNAPSHOT_CHUNK_MAX_RECORDS
+        {
+            last.records.push(record);
+            continue;
+        }
+        chunks.push(SnapshotChunkPayload {
+            snapshot_id: String::new(),
+            chunk_index,
+            record_type: "key_envelope".to_string(),
             records: vec![record],
         });
         chunk_index += 1;
@@ -339,6 +430,56 @@ mod tests {
         assert_eq!(end.final_hash, begin.content_hash);
         assert_eq!(begin.snapshot_sequence, 1);
         assert_eq!(chunks.iter().map(|c| c.records.len()).sum::<usize>(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_build_snapshot_includes_folders() {
+        let dir = tempdir().unwrap();
+        let pool = db::open(dir.path()).await.unwrap();
+        let identity = crate::identity::load_or_generate(dir.path()).unwrap();
+
+        sqlx::query(
+            "INSERT INTO folders (folder_id, parent_folder_id, encrypted_name, created_at, updated_at) VALUES ('dir-1', NULL, 'enc', 'now', 'now')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let (_begin, chunks, _end) = build_snapshot(&pool, &identity).await.unwrap();
+
+        let folder_chunks: Vec<_> = chunks.iter().filter(|c| c.record_type == "folder").collect();
+        assert_eq!(folder_chunks.len(), 1);
+        assert_eq!(folder_chunks[0].records.len(), 1);
+        match &folder_chunks[0].records[0] {
+            SnapshotRecord::Folder(f) => assert_eq!(f.folder_id, "dir-1"),
+            other => panic!("expected folder record, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_build_snapshot_includes_key_envelopes() {
+        let dir = tempdir().unwrap();
+        let pool = db::open(dir.path()).await.unwrap();
+        let identity = crate::identity::load_or_generate(dir.path()).unwrap();
+
+        sqlx::query(
+            "INSERT INTO key_envelopes (file_id, recipient_id, recipient_kind, encrypted_key, created_at) VALUES ('f1', 'dev-1', 'device', 'opaque', 'now')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let (_begin, chunks, _end) = build_snapshot(&pool, &identity).await.unwrap();
+
+        let envelope_chunks: Vec<_> = chunks.iter().filter(|c| c.record_type == "key_envelope").collect();
+        assert_eq!(envelope_chunks.len(), 1);
+        match &envelope_chunks[0].records[0] {
+            SnapshotRecord::KeyEnvelope(e) => {
+                assert_eq!(e.recipient_id, "dev-1");
+                assert_eq!(e.recipient_kind, "device");
+            }
+            other => panic!("expected key_envelope record, got {other:?}"),
+        }
     }
 
     #[tokio::test]
