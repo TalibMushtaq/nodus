@@ -1,0 +1,25 @@
+{
+  "name": "e2e-path-c",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "uploader": "tsx run-uploader.ts",
+    "downloader": "tsx download-file.ts",
+    "print-identity": "tsx print-identity.ts",
+    "check-types": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@repo/typescript-config": "workspace:*",
+    "@types/node": "26.3.0",
+    "@types/ws": "^8.5.13",
+    "tsx": "^4.19.0",
+    "typescript": "7.0.2"
+  },
+  "dependencies": {
+    "@noble/curves": "^1.9.7",
+    "@repo/protocol": "workspace:*",
+    "@repo/relay-client": "workspace:*",
+    "ws": "^8.18.3"
+  }
+}

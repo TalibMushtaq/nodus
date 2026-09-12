@@ -1,0 +1,103 @@
+name: e2e
+
+# Cross-stack live E2E against the single-origin deploy unit (Next.js + Go Relay
+# + PostgreSQL + Redis behind Caddy) with a real Rust Storage Node. This is
+# deliberately NOT a required PR check: it builds the Rust node and both Docker
+# images, so it is slow and can be flaky on shared runners. Run it nightly, on
+# demand, or on PRs that touch the pieces it exercises.
+
+on:
+  workflow_dispatch:
+  schedule:
+    # 03:17 UTC daily (off the top of the hour to avoid scheduler congestion).
+    - cron: "17 3 * * *"
+  pull_request:
+    paths:
+      - "deploy/**"
+      - "scripts/e2e-*"
+      - "services/**"
+      - "apps/**"
+      - "packages/**"
+      - ".github/workflows/e2e.yml"
+
+concurrency:
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deploy-e2e:
+    name: e2e / deploy-compose
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.20.0"
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: "11.23.0"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.96.1"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: services/storage-node
+
+      - run: pnpm install --frozen-lockfile
+
+      # Build the Rust node (debug binary; the e2e scripts default BIN to it) and
+      # the TS packages the e2e-path-c harness imports from dist.
+      - run: cargo build
+        working-directory: services/storage-node
+
+      - run: pnpm exec turbo build --filter=@repo/relay-client...
+
+      # Local HTTP unit: SITE_ADDRESS=:80 and the insecure-cookie default are
+      # already what deploy/.env.example sets.
+      - run: cp deploy/.env.example deploy/.env
+
+      - name: Start the deploy unit
+        run: docker compose -f deploy/docker-compose.yml --env-file deploy/.env up -d --build
+
+      - name: Wait for Relay health
+        run: |
+          for i in $(seq 1 60); do
+            if curl -fsS http://localhost/health | grep -q '"status":"ok"'; then
+              echo "relay healthy after ${i} attempts"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "relay did not become healthy" >&2
+          exit 1
+
+      - name: Bootstrap-pairing E2E
+        run: bash scripts/e2e-bootstrap-pairing.sh
+
+      - name: Path C wire E2E
+        run: bash scripts/e2e-path-c.sh
+
+      - name: Deploy logs on failure
+        if: failure()
+        run: docker compose -f deploy/docker-compose.yml --env-file deploy/.env logs --no-color
+
+      # The Rust Storage Node runs on the host (not in compose), and both E2E
+      # scripts redirect its output to /tmp. Without this the most useful
+      # failure detail — why the node didn't fetch/verify/ack — is lost.
+      - name: Rust node + harness logs on failure
+        if: failure()
+        run: |
+          for f in /tmp/pathc-*.log /tmp/s10-*.log; do
+            [ -f "$f" ] || continue
+            echo "===== $f ====="
+            cat "$f"
+          done
+
+      - name: Tear down
+        if: always()
+        run: docker compose -f deploy/docker-compose.yml --env-file deploy/.env down -v
