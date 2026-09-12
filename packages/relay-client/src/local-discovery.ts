@@ -163,6 +163,54 @@ export class NodeClient {
     return this.post("/nodus/pair", body, timeoutMs);
   }
 
+  /**
+   * `GET /nodus/shard/{objectId}` — download a stored encrypted shard
+   * (Phase 14 F2b). Uses the same stateless signed request as node-to-node
+   * backhaul, but authenticated as a device: the message
+   * `"{device_id}:{object_id}:{timestamp_ms}"` is signed with the device's
+   * Ed25519 key. The returned bytes are still ciphertext; the caller verifies
+   * the BLAKE3 hash and decrypts.
+   */
+  async fetchShard(
+    deviceId: string,
+    privateKey: Uint8Array,
+    objectId: string,
+    timeoutMs: number = LOCAL_TIMEOUT_MS,
+  ): Promise<Uint8Array> {
+    const timestamp = Date.now();
+    const message = new TextEncoder().encode(`${deviceId}:${objectId}:${timestamp}`);
+    const signature = toHex(ed25519.sign(message, privateKey));
+    let res: Response;
+    try {
+      res = await fetch(`${this.baseUrl}/nodus/shard/${encodeURIComponent(objectId)}`, {
+        headers: {
+          "x-nodus-device-id": deviceId,
+          "x-nodus-timestamp": String(timestamp),
+          "x-nodus-signature": signature,
+        },
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+    } catch (err) {
+      throw new NodeClientError(
+        "network_error",
+        `shard fetch failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    if (!res.ok) {
+      let parsed: NodeErrorBody;
+      try {
+        parsed = (await res.json()) as NodeErrorBody;
+      } catch {
+        parsed = { message: (await res.text().catch(() => "")) || undefined };
+      }
+      throw new NodeClientError(
+        parsed.error ?? "http_error",
+        parsed.message ?? `HTTP ${res.status}`,
+      );
+    }
+    return new Uint8Array(await res.arrayBuffer());
+  }
+
   private async post<T>(
     path: string,
     body: unknown,

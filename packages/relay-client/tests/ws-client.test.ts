@@ -164,6 +164,19 @@ describe("RelayWsClient", () => {
       expect(client.connected).toBe(false); // Not yet open
     });
 
+    it("uses an injected webSocketFactory when provided", () => {
+      const factory = vi.fn((endpoint: string) => new MockWebSocket(endpoint));
+      const client = new RelayWsClient({
+        endpoint: "ws://localhost:8080/ws",
+        peerId: "device-1",
+        webSocketFactory: factory,
+      });
+      client.connect();
+
+      expect(factory).toHaveBeenCalledWith("ws://localhost:8080/ws");
+      expect(lastSocket().url).toBe("ws://localhost:8080/ws");
+    });
+
     it("does NOT include token in URL", () => {
       const client = new RelayWsClient("ws://localhost:8080/ws");
       client.connect();

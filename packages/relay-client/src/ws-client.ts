@@ -85,6 +85,13 @@ export interface RelayWsClientOptions {
   peerId: string;
   reconnect?: { maxRetries: number; baseDelay: number; maxDelay: number };
   heartbeat?: { intervalMs: number };
+  /**
+   * Override socket creation. Defaults to `new WebSocket(url)`; a Node-side
+   * caller (e.g. the wire e2e) can inject the `ws` package to set handshake
+   * headers such as the session cookie, which the browser WebSocket API
+   * cannot. Receives the resolved endpoint.
+   */
+  webSocketFactory?: (endpoint: string) => WebSocket;
 }
 
 const DEFAULT_RECONNECT = { maxRetries: 10, baseDelay: 1000, maxDelay: 30_000 };
@@ -101,6 +108,7 @@ export class RelayWsClient {
     maxDelay: number;
   };
   private readonly heartbeatCfg: { intervalMs: number };
+  private readonly webSocketFactory: (endpoint: string) => WebSocket;
 
   private state: ConnectionState = "disconnected";
   private reconnectAttempt = 0;
@@ -124,6 +132,7 @@ export class RelayWsClient {
       this.peerId = "";
       this.reconnectCfg = DEFAULT_RECONNECT;
       this.heartbeatCfg = DEFAULT_HEARTBEAT;
+      this.webSocketFactory = (endpoint) => new WebSocket(endpoint);
     } else {
       this.endpoint = endpointOrOptions.endpoint;
       this.handlers = endpointOrOptions.handlers ?? {};
@@ -136,6 +145,7 @@ export class RelayWsClient {
         ...DEFAULT_HEARTBEAT,
         ...endpointOrOptions.heartbeat,
       };
+      this.webSocketFactory = endpointOrOptions.webSocketFactory ?? ((endpoint) => new WebSocket(endpoint));
     }
   }
 
@@ -162,7 +172,7 @@ export class RelayWsClient {
     this.explicitClose = false;
 
     this.setState("connecting");
-    const ws = new WebSocket(this.endpoint);
+    const ws = this.webSocketFactory(this.endpoint);
     this.ws = ws;
 
     ws.onopen = () => {
