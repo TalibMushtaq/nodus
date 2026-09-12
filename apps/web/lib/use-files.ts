@@ -63,34 +63,78 @@ async function toView(entry: CatalogEntry, device: StoredDeviceIdentity): Promis
  * Cached file catalog for the Files page. Renders from IndexedDB first and
  * revalidates against the Relay; on a failed refresh the cached copy is kept
  * and the error surfaced inline, matching the app's other data hooks.
+ *
+ * Revalidates on mount, manual refresh, and a silent background poll so that
+ * node-driven changes appear without a reload: a file sitting in the Relay
+ * buffer while the node is down flips to "stored on node" as soon as the node
+ * reconnects and drains the buffer (the Relay promotes RELAY_BUFFERED →
+ * NODE_STORED on the node's `verified` ack).
  */
-export function useFiles() {
+export function useFiles(pollMs = 15_000) {
   const { device } = useAuth();
   const [files, setFiles] = useState<FileEntryView[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [reloadToken, setReloadToken] = useState(0);
 
+  // Pure refresh + view mapping. Returns the rendered rows plus whether the
+  // Relay round-trip failed, and touches no state, so effects can consume it
+  // through .then/.finally callbacks — the app's established pattern for
+  // setting state from async work (see the devices page). On failure the
+  // cached rows are still returned so the list never blanks out.
+  const load = useCallback(async (): Promise<{ views: FileEntryView[]; error: string | null }> => {
+    if (!device) return { views: [], error: null };
+    let error: string | null = null;
+    try {
+      await Promise.all([refreshCatalog(), refreshFolders()]);
+    } catch (err) {
+      // Relay unreachable: keep whatever is cached rather than blanking.
+      error = err instanceof Error ? err.message : String(err);
+    }
+    const cached = await getCachedCatalog();
+    const views = await Promise.all(cached.map((entry) => toView(entry, device)));
+    return { views, error };
+  }, [device]);
+
+  // Loaded on mount, after a manual `refresh`, and when the account device is
+  // resolved. The spinner is owned by `refresh` (which bumps `reloadToken`);
+  // this effect only sets state from the async .then/.finally callbacks, so a
+  // re-run never flashes "Loading files…" over the cached list.
   useEffect(() => {
     if (!device) return;
     let cancelled = false;
-    (async () => {
-      try {
-        await Promise.all([refreshCatalog(), refreshFolders()]);
-      } catch (err) {
-        // Relay unreachable: keep whatever is cached rather than blanking.
-        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
-      }
-      const cached = await getCachedCatalog();
-      const views = await Promise.all(cached.map((entry) => toView(entry, device)));
+    void load().then(({ views, error }) => {
       if (cancelled) return;
+      if (error) setError(error);
       setFiles(views);
       setLoading(false);
-    })();
+    });
     return () => {
       cancelled = true;
     };
-  }, [device, reloadToken]);
+  }, [device, reloadToken, load]);
+
+  // Background poll. Mounted page stays fresh even when the current account's
+  // node was offline at upload time and only just came back: re-read the
+  // catalog on the same cadence as the devices page so the storage badge flips
+  // from "Relay buffer" to "Synced" without a manual Refresh. A poll failure
+  // is ignored (the next tick retries) but a recovered poll clears stale
+  // errors so the row list can heal without touching the Refresh button.
+  useEffect(() => {
+    if (!device) return;
+    let cancelled = false;
+    const timer = setInterval(() => {
+      void load().then(({ views, error }) => {
+        if (cancelled) return;
+        if (!error) setError(null);
+        setFiles(views);
+      });
+    }, pollMs);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [device, pollMs, load]);
 
   const refresh = useCallback(() => {
     setLoading(true);
