@@ -224,7 +224,11 @@ pub async fn apply_remote_event(
         // Key envelopes are stored opaquely for snapshot rebuilds; the node
         // cannot decrypt them. Upsert mirrors the Relay (a re-seal overwrites).
         "KEY_ENVELOPE_ADDED" => {
-            let file_id = event.payload.get("file_id").and_then(|v| v.as_str()).unwrap_or("");
+            let file_id = event
+                .payload
+                .get("file_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             let recipient_id = event
                 .payload
                 .get("recipient_id")
@@ -443,7 +447,9 @@ mod tests {
             timestamp: "2026-09-12T12:00:00Z".to_string(),
         };
         assert_eq!(
-            apply_remote_event(&pool, &created, "node-test").await.unwrap(),
+            apply_remote_event(&pool, &created, "node-test")
+                .await
+                .unwrap(),
             ApplyOutcome::Applied
         );
 
@@ -462,7 +468,9 @@ mod tests {
             payload: serde_json::json!({ "folder_id": "dir-1" }),
             timestamp: "2026-09-12T12:01:00Z".to_string(),
         };
-        apply_remote_event(&pool, &deleted, "node-test").await.unwrap();
+        apply_remote_event(&pool, &deleted, "node-test")
+            .await
+            .unwrap();
 
         let tombstoned: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM tombstones WHERE entity_type = 'folder' AND entity_id = 'dir-1'",
@@ -491,7 +499,9 @@ mod tests {
             }),
             timestamp: "2026-09-12T12:00:00Z".to_string(),
         };
-        apply_remote_event(&pool, &event, "node-test").await.unwrap();
+        apply_remote_event(&pool, &event, "node-test")
+            .await
+            .unwrap();
 
         let stored: String = sqlx::query_scalar(
             "SELECT encrypted_key FROM key_envelopes WHERE file_id = 'file-1' AND recipient_id = 'device-2'",
@@ -515,7 +525,9 @@ mod tests {
             }),
             timestamp: "2026-09-12T12:01:00Z".to_string(),
         };
-        apply_remote_event(&pool, &reseal, "node-test").await.unwrap();
+        apply_remote_event(&pool, &reseal, "node-test")
+            .await
+            .unwrap();
         let stored: String = sqlx::query_scalar(
             "SELECT encrypted_key FROM key_envelopes WHERE file_id = 'file-1' AND recipient_id = 'device-2'",
         )

@@ -110,9 +110,18 @@ async fn load_folder_records(db: &SqlitePool) -> anyhow::Result<Vec<FolderRecord
     for row in rows {
         records.push(FolderRecord {
             folder_id: row.get("folder_id"),
-            parent_folder_id: row.try_get::<Option<String>, _>("parent_folder_id").ok().flatten(),
-            encrypted_name: row.try_get::<Option<String>, _>("encrypted_name").ok().flatten(),
-            created_at: row.try_get::<Option<String>, _>("created_at").ok().flatten(),
+            parent_folder_id: row
+                .try_get::<Option<String>, _>("parent_folder_id")
+                .ok()
+                .flatten(),
+            encrypted_name: row
+                .try_get::<Option<String>, _>("encrypted_name")
+                .ok()
+                .flatten(),
+            created_at: row
+                .try_get::<Option<String>, _>("created_at")
+                .ok()
+                .flatten(),
         });
     }
 
@@ -139,7 +148,10 @@ async fn load_key_envelope_records(db: &SqlitePool) -> anyhow::Result<Vec<KeyEnv
             recipient_id: row.get("recipient_id"),
             recipient_kind: row.get("recipient_kind"),
             encrypted_key: row.get("encrypted_key"),
-            created_at: row.try_get::<Option<String>, _>("created_at").ok().flatten(),
+            created_at: row
+                .try_get::<Option<String>, _>("created_at")
+                .ok()
+                .flatten(),
         });
     }
 
@@ -290,7 +302,10 @@ pub async fn build_snapshot(
         chunk_index += 1;
     }
 
-    for record in envelope_records.into_iter().map(SnapshotRecord::KeyEnvelope) {
+    for record in envelope_records
+        .into_iter()
+        .map(SnapshotRecord::KeyEnvelope)
+    {
         if let Some(last) = chunks.last_mut()
             && last.record_type == "key_envelope"
             && last.records.len() < SNAPSHOT_CHUNK_MAX_RECORDS
@@ -447,7 +462,10 @@ mod tests {
 
         let (_begin, chunks, _end) = build_snapshot(&pool, &identity).await.unwrap();
 
-        let folder_chunks: Vec<_> = chunks.iter().filter(|c| c.record_type == "folder").collect();
+        let folder_chunks: Vec<_> = chunks
+            .iter()
+            .filter(|c| c.record_type == "folder")
+            .collect();
         assert_eq!(folder_chunks.len(), 1);
         assert_eq!(folder_chunks[0].records.len(), 1);
         match &folder_chunks[0].records[0] {
@@ -471,7 +489,10 @@ mod tests {
 
         let (_begin, chunks, _end) = build_snapshot(&pool, &identity).await.unwrap();
 
-        let envelope_chunks: Vec<_> = chunks.iter().filter(|c| c.record_type == "key_envelope").collect();
+        let envelope_chunks: Vec<_> = chunks
+            .iter()
+            .filter(|c| c.record_type == "key_envelope")
+            .collect();
         assert_eq!(envelope_chunks.len(), 1);
         match &envelope_chunks[0].records[0] {
             SnapshotRecord::KeyEnvelope(e) => {

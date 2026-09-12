@@ -329,7 +329,9 @@ async fn handle_shard_fetch(
     // Phase 14 F2b: the same endpoint serves two caller kinds. A Storage Node
     // pulls shards for repair (node-signed), and a paired client device
     // downloads a stored shard (device-signed). Exactly one identity header.
-    let device_caller = headers.get("x-nodus-device-id").and_then(|v| v.to_str().ok());
+    let device_caller = headers
+        .get("x-nodus-device-id")
+        .and_then(|v| v.to_str().ok());
     let node_caller = headers.get("x-nodus-node-id").and_then(|v| v.to_str().ok());
     let (caller, is_device) = match (device_caller, node_caller) {
         (Some(device), None) => (device.to_string(), true),
@@ -337,7 +339,7 @@ async fn handle_shard_fetch(
         _ => {
             return Err(unauthorized(
                 "provide exactly one of X-Nodus-Device-Id or X-Nodus-Node-Id",
-            ))
+            ));
         }
     };
     let timestamp = headers
