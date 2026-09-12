@@ -308,6 +308,55 @@ fn emit_nonblocking_warnings(data_dir: &Path) {
     }
 }
 
+/// Interactively choose a new data directory and persist it to `config.toml`,
+/// preserving every existing key (notably `relay_url`). This is how an operator
+/// changes the backup location from the menu ("Change data location") instead
+/// of hand-editing the file. The prompt reuses the first-run flow, so it
+/// creates missing directories, confirms adopting a prior-install directory,
+/// and warns about cloud-sync/removable drives before anything is written.
+pub fn change_data_dir(current: &Path) -> std::io::Result<PathBuf> {
+    let nodus_dir = nodus_dir_os();
+    let config_path = nodus_dir.join(CONFIG_FILE);
+
+    // Keep the relay pairing intact: first-run setup writes `relay_url: None`
+    // (only `nodus node pair` persists it), so re-reading the file here — not
+    // `adopt_and_save`, which would drop the value — is what preserves the
+    // existing relay when we rewrite `data_dir`.
+    let existing_relay = match read_config_file(&config_path) {
+        Ok(Some(cfg)) => cfg.relay_url,
+        Ok(None) => None,
+        Err(e) => {
+            return Err(std::io::Error::other(format!(
+                "could not read {}: {e}",
+                config_path.display()
+            )));
+        }
+    };
+
+    let chosen = prompt::interactive_data_dir(current.to_path_buf())?;
+    write_config(&nodus_dir, &config_path, chosen.clone(), existing_relay)?;
+    Ok(chosen)
+}
+
+/// Persist a `config.toml` with the given `data_dir` and `relay_url`. Kept
+/// private and separate from the interactive prompt so the persistence logic is
+/// unit-testable without a terminal.
+fn write_config(
+    nodus_dir: &Path,
+    config_path: &Path,
+    data_dir: PathBuf,
+    relay_url: Option<String>,
+) -> std::io::Result<()> {
+    fs::create_dir_all(nodus_dir)?;
+    let cfg = NodusConfigFile {
+        data_dir,
+        relay_url,
+    };
+    let toml = toml::to_string(&cfg)
+        .map_err(|e| std::io::Error::other(format!("serializing config: {e}")))?;
+    fs::write(config_path, toml)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -436,6 +485,37 @@ mod tests {
         let cfg = read_config_file(&dir.path().join(CONFIG_FILE))
             .unwrap()
             .unwrap();
+        assert_eq!(cfg.data_dir, data_dir);
+        assert_eq!(cfg.relay_url.as_deref(), Some("https://nodus.example.com"));
+    }
+
+    // --- write_config (data-location change) ---
+
+    #[test]
+    fn write_config_preserves_relay_url_on_data_dir_change() {
+        let dir = tempdir().unwrap();
+        let data_dir = dir.path().join("new-location");
+        let path = dir.path().join(CONFIG_FILE);
+
+        // Simulate an already-paired node: config.toml has a relay_url.
+        write_config(
+            dir.path(),
+            &path,
+            dir.path().join("old-location"),
+            Some("https://nodus.example.com".into()),
+        )
+        .unwrap();
+
+        // Rewrite with a new data_dir; the relay pairing must survive.
+        write_config(
+            dir.path(),
+            &path,
+            data_dir.clone(),
+            Some("https://nodus.example.com".into()),
+        )
+        .unwrap();
+
+        let cfg = read_config_file(&path).unwrap().unwrap();
         assert_eq!(cfg.data_dir, data_dir);
         assert_eq!(cfg.relay_url.as_deref(), Some("https://nodus.example.com"));
     }

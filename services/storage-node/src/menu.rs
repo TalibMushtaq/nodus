@@ -22,6 +22,7 @@ const MENU_ITEMS: &[&str] = &[
     "List files",
     "List folders",
     "Show status",
+    "Change data location",
     "Pair / re-pair this node",
     "Quit",
 ];
@@ -70,6 +71,24 @@ pub async fn run_interactive(cli: &Cli) -> anyhow::Result<()> {
             3 => report::print_folders(&pool).await?,
             4 => print_status(&cfg),
             5 => {
+                // Change the backup location through the same first-run wizard
+                // the node uses on setup, so the operator never hand-edits
+                // config.toml. The new path is persisted (relay pair preserved)
+                // and this menu's in-memory config tracks it for the next boot.
+                match crate::config::change_data_dir(&cfg.data_dir) {
+                    Ok(new_dir) => {
+                        cfg.data_dir = new_dir;
+                        println!();
+                        println!("Data location updated to {}", cfg.data_dir.display());
+                        println!("Choose \"Run the node\" to boot against the new location.");
+                    }
+                    Err(err) => {
+                        println!();
+                        println!("Data location unchanged: {err}");
+                    }
+                }
+            }
+            6 => {
                 pair_wizard(&mut cfg, cli).await?;
             }
             _ => {
