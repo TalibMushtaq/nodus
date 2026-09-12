@@ -22,6 +22,7 @@
         "FILE_MODIFIED",
         "DEVICE_REVOKED",
         "TOMBSTONE_CREATED",
+        "TOMBSTONE_REMOVED",
         "FOLDER_CREATED",
         "FOLDER_DELETED",
         "KEY_ENVELOPE_ADDED"

@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "entity_type": {
+      "type": "string",
+      "enum": [
+        "file",
+        "folder"
+      ]
+    },
+    "entity_id": {
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "required": [
+    "entity_type",
+    "entity_id"
+  ],
+  "additionalProperties": false
+}

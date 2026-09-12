@@ -1,5 +1,5 @@
 {
-  "schema_version": "1.4",
+  "schema_version": "1.5",
   "default_snapshot_chunk_size": 262144,
   "messages": {
     "register": "register.schema.json",
@@ -24,6 +24,9 @@
     "snapshot_chunk": "snapshot_chunk.schema.json",
     "snapshot_end": "snapshot_end.schema.json",
     "rebuild_required": "rebuild_required.schema.json",
+    "tombstone_ack": "tombstone_ack.schema.json",
+    "purge_tombstone": "purge_tombstone.schema.json",
+    "restore_tombstone": "restore_tombstone.schema.json",
     "pairing_token_push": "pairing_token_push.schema.json",
     "pairing_request": "pairing_request.schema.json",
     "pairing_confirm": "pairing_confirm.schema.json",

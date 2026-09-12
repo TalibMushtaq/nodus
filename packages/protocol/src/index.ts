@@ -99,6 +99,21 @@ export {
   type ShardDeletePayload,
 } from "./messages/transfer.js";
 
+// ── Tombstone control messages (WS: Relay ↔ Node) ───────────────────
+
+export {
+  TombstoneEntityTypeSchema,
+  type TombstoneEntityType,
+  TombstoneAckStatusSchema,
+  type TombstoneAckStatus,
+  TombstoneAckPayloadSchema,
+  type TombstoneAckPayload,
+  PurgeTombstonePayloadSchema,
+  type PurgeTombstonePayload,
+  RestoreTombstonePayloadSchema,
+  type RestoreTombstonePayload,
+} from "./messages/tombstone.js";
+
 // ── Sync messages ──────────────────────────────────────────────────
 
 export {
@@ -191,6 +206,7 @@ export {
   FileVersionPayloadSchema,
   DeviceRevokedPayloadSchema,
   TombstonePayloadSchema,
+  TombstoneRemovedPayloadSchema,
   FolderEventPayloadSchema,
   KeyEnvelopePayloadSchema,
   validateEventPayload,

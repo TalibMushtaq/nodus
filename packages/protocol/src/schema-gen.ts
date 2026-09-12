@@ -25,6 +25,9 @@ import {
   SnapshotEndPayloadSchema,
   RebuildRequiredPayloadSchema,
   PairingTokenPushPayloadSchema,
+  TombstoneAckPayloadSchema,
+  PurgeTombstonePayloadSchema,
+  RestoreTombstonePayloadSchema,
   PairingRequestPayloadSchema,
   PairingConfirmPayloadSchema,
   PairingRejectPayloadSchema,
@@ -74,6 +77,9 @@ const entries: SchemaEntry[] = [
   { name: "snapshot_chunk", schema: SnapshotChunkPayloadSchema.toJSONSchema() },
   { name: "snapshot_end", schema: SnapshotEndPayloadSchema.toJSONSchema() },
   { name: "rebuild_required", schema: RebuildRequiredPayloadSchema.toJSONSchema() },
+  { name: "tombstone_ack", schema: TombstoneAckPayloadSchema.toJSONSchema() },
+  { name: "purge_tombstone", schema: PurgeTombstonePayloadSchema.toJSONSchema() },
+  { name: "restore_tombstone", schema: RestoreTombstonePayloadSchema.toJSONSchema() },
   // Phase 11 — pairing_token_push is a WS message; the other pairing/local
   // payloads are the Storage Node's local-HTTP contract (device ↔ node) and
   // are emitted as reference schemas for Rust/Go mirroring even though they

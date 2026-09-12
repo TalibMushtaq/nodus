@@ -16,6 +16,7 @@ export const EventTypes = {
   FILE_MODIFIED: "FILE_MODIFIED",
   DEVICE_REVOKED: "DEVICE_REVOKED",
   TOMBSTONE_CREATED: "TOMBSTONE_CREATED",
+  TOMBSTONE_REMOVED: "TOMBSTONE_REMOVED",
   FOLDER_CREATED: "FOLDER_CREATED",
   FOLDER_DELETED: "FOLDER_DELETED",
   KEY_ENVELOPE_ADDED: "KEY_ENVELOPE_ADDED",
@@ -28,6 +29,7 @@ export const EventTypeSchema = z.enum([
   EventTypes.FILE_MODIFIED,
   EventTypes.DEVICE_REVOKED,
   EventTypes.TOMBSTONE_CREATED,
+  EventTypes.TOMBSTONE_REMOVED,
   EventTypes.FOLDER_CREATED,
   EventTypes.FOLDER_DELETED,
   EventTypes.KEY_ENVELOPE_ADDED,
@@ -92,6 +94,15 @@ export const TombstonePayloadSchema = z.object({
 });
 
 /**
+ * Removing a tombstone (restore) — device-emitted. The Relay and Storage Node
+ * delete the matching tombstone row so the entity becomes live again.
+ */
+export const TombstoneRemovedPayloadSchema = z.object({
+  entity_type: z.enum(["file", "folder"]),
+  entity_id: z.string(),
+});
+
+/**
  * Folder event payload.
  */
 export const FolderEventPayloadSchema = z.object({
@@ -129,6 +140,7 @@ const EventPayloadMap: Record<EventType, z.ZodType> = {
   FILE_MODIFIED: FileVersionPayloadSchema,
   DEVICE_REVOKED: DeviceRevokedPayloadSchema,
   TOMBSTONE_CREATED: TombstonePayloadSchema,
+  TOMBSTONE_REMOVED: TombstoneRemovedPayloadSchema,
   FOLDER_CREATED: FolderEventPayloadSchema,
   FOLDER_DELETED: FolderEventPayloadSchema,
   KEY_ENVELOPE_ADDED: KeyEnvelopePayloadSchema,
