@@ -334,8 +334,127 @@ pub fn change_data_dir(current: &Path) -> std::io::Result<PathBuf> {
     };
 
     let chosen = prompt::interactive_data_dir(current.to_path_buf())?;
+
+    // Resolving both sides lets "…/data" and "/…/data/." compare equal; the
+    // chosen path itself is still stored exactly as typed in config.toml.
+    let same = match (fs::canonicalize(current), fs::canonicalize(&chosen)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => current == chosen,
+    };
+    if same {
+        println!("Data location is already {}", chosen.display());
+        return Ok(chosen);
+    }
+
+    // A *move* must never merge into a directory that already holds node data:
+    // adopting (the prompt's first-run behaviour) would mix two backups. Refuse
+    // so the operator picks an empty target.
+    ensure_migratable_target(&chosen)?;
+
+    let bytes = migrate_data_dir(current, &chosen)?;
+    if bytes > 0 {
+        println!(
+            "Moved {bytes} bytes of existing data to {}",
+            chosen.display()
+        );
+    }
     write_config(&nodus_dir, &config_path, chosen.clone(), existing_relay)?;
     Ok(chosen)
+}
+
+/// Move the contents of `old` (the node database, `objects/`, and `temp/`) into
+/// `new`, then remove the emptied `old` directory so the operator does not end
+/// up with twin backups. The menu runs before the daemon boots, so there is no
+/// live writer racing the move. Returns the total bytes of file data moved.
+///
+/// `new` must already exist (the prompt creates/validates it); it is created as
+/// a belt-and-braces fallback so the helper stays callable in tests.
+pub fn migrate_data_dir(old: &Path, new: &Path) -> std::io::Result<u64> {
+    if !old.exists() {
+        return Ok(0);
+    }
+    fs::create_dir_all(new)?;
+    let mut bytes = 0u64;
+    for entry in fs::read_dir(old)? {
+        let entry = entry?;
+        bytes += move_entry(&entry.path(), &new.join(entry.file_name()))?;
+    }
+    // Best-effort: if an entry failed to move, `remove_dir` leaves `old` in
+    // place and the error above already aborted the config write, so the node
+    // still boots from the old location next time.
+    let _ = fs::remove_dir(old);
+    Ok(bytes)
+}
+
+/// Move one file or directory tree between data dirs. `rename` is atomic on a
+/// single filesystem; when the target is on a different disk (the common reason
+/// to change the backup location) it fails with `EXDEV` and we fall back to a
+/// recursive copy + delete. Returns the total bytes in moved files.
+fn move_entry(src: &Path, dst: &Path) -> std::io::Result<u64> {
+    match fs::rename(src, dst) {
+        Ok(()) => entry_bytes(dst),
+        Err(e) if e.kind() == std::io::ErrorKind::CrossesDevices => {
+            if fs::metadata(src)?.is_dir() {
+                let bytes = copy_dir_all(src, dst)?;
+                fs::remove_dir_all(src)?;
+                Ok(bytes)
+            } else {
+                fs::copy(src, dst)?;
+                let bytes = fs::metadata(dst)?.len();
+                fs::remove_file(src)?;
+                Ok(bytes)
+            }
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// Recursively copy a directory tree (directories + regular files), skipping
+/// symlinks — object shards and the SQLite database are never symlinks. Uses
+/// `fs::copy` (no external crate). Returns the total bytes copied; exercised
+/// directly by tests since triggering a real `EXDEV` needs a second filesystem.
+fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<u64> {
+    fs::create_dir_all(dst)?;
+    let mut total = 0u64;
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let path = entry.path();
+        let kind = entry.file_type()?;
+        if kind.is_dir() {
+            total += copy_dir_all(&path, &dst.join(entry.file_name()))?;
+        } else if kind.is_file() {
+            total += fs::copy(&path, dst.join(entry.file_name()))?;
+        }
+    }
+    Ok(total)
+}
+
+/// Total size of a (possibly directory) entry, read from metadata only — no
+/// data is touched, so reporting the migration size is cheap.
+fn entry_bytes(path: &Path) -> std::io::Result<u64> {
+    let meta = fs::metadata(path)?;
+    if !meta.is_dir() {
+        return Ok(meta.len());
+    }
+    let mut total = 0u64;
+    for entry in fs::read_dir(path)? {
+        total += entry_bytes(&entry?.path())?;
+    }
+    Ok(total)
+}
+
+/// Refuse a change-of-location target that already contains node data.
+fn ensure_migratable_target(target: &Path) -> std::io::Result<()> {
+    if validation::has_prior_install(target) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!(
+                "{} already contains node data; cannot move into it (choose an empty path)",
+                target.display()
+            ),
+        ));
+    }
+    Ok(())
 }
 
 /// Persist a `config.toml` with the given `data_dir` and `relay_url`. Kept
@@ -518,6 +637,86 @@ mod tests {
         let cfg = read_config_file(&path).unwrap().unwrap();
         assert_eq!(cfg.data_dir, data_dir);
         assert_eq!(cfg.relay_url.as_deref(), Some("https://nodus.example.com"));
+    }
+
+    // --- migrate_data_dir (change-of-location move) ---
+
+    /// Seed a node-shaped data dir: database + object store + in-flight temp.
+    fn seed_data_dir(dir: &Path) {
+        std::fs::create_dir_all(dir.join("objects/ab")).unwrap();
+        std::fs::create_dir_all(dir.join("temp")).unwrap();
+        std::fs::write(dir.join("nodus.db"), b"dbfile").unwrap();
+        std::fs::write(dir.join("objects/ab/abc123"), b"shard").unwrap();
+        std::fs::write(dir.join("temp/inflight"), b"partial").unwrap();
+    }
+
+    #[test]
+    fn migrate_moves_db_and_objects_and_temp() {
+        let dir = tempdir().unwrap();
+        let old = dir.path().join("old");
+        let new = dir.path().join("new");
+        seed_data_dir(&old);
+
+        let bytes = migrate_data_dir(&old, &new).unwrap();
+        assert!(bytes >= 5 + 5 + 7); // dbfile + shard + partial
+
+        assert!(new.join("nodus.db").is_file());
+        assert!(new.join("objects/ab/abc123").is_file());
+        assert!(new.join("temp/inflight").is_file());
+        assert!(
+            !old.exists(),
+            "old data dir should be removed after migration"
+        );
+    }
+
+    #[test]
+    fn migrate_into_existing_empty_dir_moves_contents() {
+        let dir = tempdir().unwrap();
+        let old = dir.path().join("old");
+        let new = dir.path().join("new");
+        seed_data_dir(&old);
+        std::fs::create_dir(&new).unwrap();
+
+        migrate_data_dir(&old, &new).unwrap();
+        assert!(new.join("nodus.db").is_file());
+        assert!(!old.exists());
+    }
+
+    #[test]
+    fn migrate_without_prior_data_is_a_noop() {
+        let dir = tempdir().unwrap();
+        let old = dir.path().join("old");
+        let new = dir.path().join("new");
+        std::fs::create_dir(&old).unwrap();
+
+        migrate_data_dir(&old, &new).unwrap();
+        assert!(new.is_dir());
+        assert!(!old.exists());
+    }
+
+    #[test]
+    fn migrate_refuses_target_with_prior_install() {
+        let dir = tempdir().unwrap();
+        let target = dir.path().join("target");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(target.join("nodus.db"), b"different node").unwrap();
+
+        let err = ensure_migratable_target(&target).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn copy_dir_all_preserves_tree_and_counts_bytes() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("src");
+        let dst = dir.path().join("dst");
+        seed_data_dir(&src);
+
+        let bytes = copy_dir_all(&src, &dst).unwrap();
+        assert!(dst.join("nodus.db").is_file());
+        assert!(dst.join("objects/ab/abc123").is_file());
+        assert!(dst.join("temp/inflight").is_file());
+        assert!(bytes >= 17);
     }
 
     #[test]
