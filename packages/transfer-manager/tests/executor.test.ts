@@ -124,6 +124,31 @@ describe("executeTransfer", () => {
     expect(result.error).toBe("down");
   });
 
+  it("falls through when a path throws rather than aborting the chain", async () => {
+    const seen: TransferPath[] = [];
+    const attemptPath = async (_req: ShardTransferRequest, path: TransferPath) => {
+      seen.push(path);
+      // Direct paths are unavailable in this environment and throw; the chain
+      // must still reach the relay buffer.
+      if (path === "local_signaling" || path === "relay_signaling") {
+        throw new Error(`cannot run ${path}`);
+      }
+      return {
+        success: true,
+        path,
+        transferId: "t1",
+        durationMs: 1,
+        bytesTransferred: 3,
+      };
+    };
+
+    const result = await executeTransfer(makeRequest(), FAST_CONFIG, new FakeCache(), attemptPath);
+
+    expect(result.success).toBe(true);
+    expect(result.path).toBe("buffer_relay");
+    expect(seen).toEqual(["local_signaling", "relay_signaling", "buffer_relay"]);
+  });
+
   it("retries per stage up to maxRetriesPerStage", async () => {
     const attemptPath = vi.fn(async (_req: ShardTransferRequest, path: TransferPath) => ({
       success: false,

@@ -53,7 +53,27 @@ export async function executeTransfer(
         await sleepBackoff(attempt - 1, config.backoffBaseMs, config.backoffJitterMs);
       }
 
-      const result = await attemptPath(request, path);
+      let result: TransferResult;
+      try {
+        result = await attemptPath(request, path);
+      } catch (err) {
+        // A path that cannot run here (missing WebRTC capability, no trusted
+        // LAN host, no signaling channel) throws. That is a stage failure, not
+        // a fatal error: record it and advance to the next path immediately
+        // rather than retrying an attempt that cannot succeed.
+        lastResult = {
+          path,
+          durationMs: 0,
+          transferId: request.transferId,
+          bytesTransferred: 0,
+          success: false,
+          error: err instanceof Error ? err.message : String(err),
+        };
+        if (cached && path === cached.path) {
+          cache.evict(nodeId);
+        }
+        break;
+      }
 
       if (result.success) {
         // Cache successful high-quality paths

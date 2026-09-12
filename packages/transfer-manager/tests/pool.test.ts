@@ -47,16 +47,20 @@ describe("ConcurrencyPool", () => {
     expect(pool.queuedCount).toBe(0);
   });
 
-  it("rejects when the attempt throws", async () => {
+  it("resolves a failed result when every path throws", async () => {
     const pool = new ConcurrencyPool(
-      makeConfig({ maxConcurrency: 1, backoffBaseMs: 0, backoffJitterMs: 0 }),
+      makeConfig({ maxConcurrency: 1, backoffBaseMs: 0, backoffJitterMs: 0, maxRetriesPerStage: 0 }),
       { get: () => undefined, set: () => {}, evict: () => {} },
       async () => {
         throw new Error("boom");
       },
     );
 
-    await expect(pool.submit(makeRequest(1))).rejects.toThrow("boom");
+    // A throwing path advances the chain rather than rejecting the transfer,
+    // so an all-throwing chain resolves to the last failure.
+    const result = await pool.submit(makeRequest(1));
+    expect(result.success).toBe(false);
+    expect(result.error).toBe("boom");
     expect(pool.activeCount).toBe(0);
   });
 });
