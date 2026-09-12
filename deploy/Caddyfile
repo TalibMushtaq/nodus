@@ -18,10 +18,10 @@
 {$SITE_ADDRESS} {
 	encode gzip
 
-	@relay path /ws /health /rebuild \
- /auth/register /auth/login /auth/session /auth/logout \
- /devices/register /devices/* \
- /nodes /nodes/register /nodes/verify \
+	@relay path /ws /health /rebuild /files /folders /envelopes \
+	 /auth/register /auth/login /auth/session /auth/logout \
+	 /devices/register /devices/* \
+	 /nodes /nodes/register /nodes/verify \
  /pairing/sessions /pairing/sessions/* \
  /pairing/codes /pairing/codes/* \
  /buffer/upload /buffer/fetch

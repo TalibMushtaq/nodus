@@ -6,14 +6,16 @@ import (
 	"github.com/TalibMushtaq/nodus/services/relay/internal/hub"
 )
 
-func TestNodeOnlyMessageTypes(t *testing.T) {
-	for _, messageType := range []string{"sync_hello", "event_batch", "snapshot_begin", "snapshot_chunk", "snapshot_end", "shard_ack"} {
-		if !nodeOnlyMessageTypes(messageType) {
+func TestMessageRequiresNode(t *testing.T) {
+	// Phase 14: event_batch is reachable by an authenticated device, so it is
+	// no longer in the node-only set; the rest still are.
+	for _, messageType := range []string{"sync_hello", "snapshot_begin", "snapshot_chunk", "snapshot_end", "shard_ack"} {
+		if !messageRequiresNode(messageType) {
 			t.Errorf("%q should require a node identity", messageType)
 		}
 	}
-	for _, messageType := range []string{"heartbeat", "register", "webrtc_offer", "node_auth_response"} {
-		if nodeOnlyMessageTypes(messageType) {
+	for _, messageType := range []string{"event_batch", "heartbeat", "register", "webrtc_offer", "node_auth_response"} {
+		if messageRequiresNode(messageType) {
 			t.Errorf("%q should not require a node identity", messageType)
 		}
 	}

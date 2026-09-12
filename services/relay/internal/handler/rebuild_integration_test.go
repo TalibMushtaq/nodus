@@ -113,6 +113,11 @@ func TestPromoteRebuildIntegration(t *testing.T) {
 			INSERT INTO rebuild_tombstones (account_id, entity_type, entity_id, deleted_at)
 			VALUES ($1, 'file', 'file-a', NOW())
 		`, accountID)
+		// Envelope staged for the surviving file: promotion must install it.
+		mustExec(t, pool, `
+			INSERT INTO rebuild_key_envelopes (account_id, file_id, recipient_id, recipient_kind, encrypted_key)
+			VALUES ($1, $2, 'recipient-new', 'device', 'staged-key')
+		`, accountID, fileB)
 
 		sess := &rebuildSession{
 			snapshotID: "snap-integration",
@@ -167,6 +172,12 @@ func TestPromoteRebuildIntegration(t *testing.T) {
 		require.NoError(t, pool.QueryRow(ctx,
 			`SELECT COUNT(*) FROM key_envelopes WHERE file_id='file-without-version'`).Scan(&keGone))
 		require.Equal(t, 0, keGone)
+
+		// 6b. The staged envelope for the surviving file was installed.
+		var stagedKE int
+		require.NoError(t, pool.QueryRow(ctx,
+			`SELECT COUNT(*) FROM key_envelopes WHERE file_id=$1 AND recipient_id='recipient-new' AND recipient_kind='device'`, fileB).Scan(&stagedKE))
+		require.Equal(t, 1, stagedKE)
 
 		// 7. FKs are restored with explicit names and enforce the deletions
 		//    that used to cascade.

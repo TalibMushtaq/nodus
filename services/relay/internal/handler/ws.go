@@ -66,9 +66,14 @@ type PendingNotifyPayload struct {
 	Size          int64  `json:"size"`
 }
 
-func nodeOnlyMessageTypes(messageType string) bool {
+// messageRequiresNode reports whether a message type may only be sent by an
+// authenticated Storage Node (c.NodeID != ""). event_batch is deliberately not
+// in this set: an authenticated device (session cookie) may emit client-side
+// sync events, which is what lets the Path C uploader create the file/version
+// rows buffer_upload.go requires before it accepts shards.
+func messageRequiresNode(messageType string) bool {
 	switch messageType {
-	case "sync_hello", "event_batch", "snapshot_begin", "snapshot_chunk", "snapshot_end", "shard_ack":
+	case "sync_hello", "snapshot_begin", "snapshot_chunk", "snapshot_end", "shard_ack":
 		return true
 	default:
 		return false
@@ -180,8 +185,18 @@ func handleIncomingEnvelope(
 	// cookie must never reach them, even though the payload handlers re-check
 	// identity. Defense in depth: browsers can only heartbeat, register, and
 	// do WebRTC signaling.
-	if nodeOnlyMessageTypes(env.Type) && c.NodeID == "" {
+	if messageRequiresNode(env.Type) && c.NodeID == "" {
 		log.Printf("[ws] rejected node-only message type %q from conn=%s", env.Type, c.ConnID)
+		return
+	}
+
+	// Phase 14 (Path C): event_batch is also open to an authenticated device so
+	// the browser uploader can project FILE_CREATED / FILE_VERSION_ADDED before
+	// POSTing shards. Require a device identity here; HandleEventBatch then
+	// binds every event's origin_id to c.DeviceID and enforces sequence
+	// monotonicity under a row lock.
+	if env.Type == "event_batch" && c.NodeID == "" && c.DeviceID == "" {
+		log.Printf("[ws] rejected event_batch with no device identity from conn=%s", c.ConnID)
 		return
 	}
 

@@ -46,10 +46,18 @@ func promoteRebuild(ctx context.Context, pool *db.Pool, sess *rebuildSession) er
 	}
 
 	// Confirm staging data (defensive; a failed session must not reach here).
-	var stagedFiles, stagedVersions, stagedTombstones int64
+	var stagedFiles, stagedFolders, stagedEnvelopes, stagedVersions, stagedTombstones int64
 	if err := tx.QueryRow(ctx,
 		`SELECT COUNT(*) FROM rebuild_files WHERE account_id = $1`, acct).Scan(&stagedFiles); err != nil {
 		return fmt.Errorf("count staged files: %w", err)
+	}
+	if err := tx.QueryRow(ctx,
+		`SELECT COUNT(*) FROM rebuild_key_envelopes WHERE account_id = $1`, acct).Scan(&stagedEnvelopes); err != nil {
+		return fmt.Errorf("count staged key envelopes: %w", err)
+	}
+	if err := tx.QueryRow(ctx,
+		`SELECT COUNT(*) FROM rebuild_folders WHERE account_id = $1`, acct).Scan(&stagedFolders); err != nil {
+		return fmt.Errorf("count staged folders: %w", err)
 	}
 	if err := tx.QueryRow(ctx,
 		`SELECT COUNT(*) FROM rebuild_file_versions WHERE account_id = $1`, acct).Scan(&stagedVersions); err != nil {
@@ -69,6 +77,9 @@ func promoteRebuild(ctx context.Context, pool *db.Pool, sess *rebuildSession) er
 	if _, err := tx.Exec(ctx, `DELETE FROM files WHERE account_id = $1`, acct); err != nil {
 		return fmt.Errorf("delete live files: %w", err)
 	}
+	if _, err := tx.Exec(ctx, `DELETE FROM folders WHERE account_id = $1`, acct); err != nil {
+		return fmt.Errorf("delete live folders: %w", err)
+	}
 	if _, err := tx.Exec(ctx, `DELETE FROM tombstones WHERE account_id = $1`, acct); err != nil {
 		return fmt.Errorf("delete live tombstones: %w", err)
 	}
@@ -81,7 +92,17 @@ func promoteRebuild(ctx context.Context, pool *db.Pool, sess *rebuildSession) er
 		return fmt.Errorf("delete live sync_cursors: %w", err)
 	}
 
-	// 3. Insert the staged snapshot data into the live tables.
+	// 3. Insert the staged snapshot data into the live tables. Folders go first
+	//    so a later reader never sees a file whose parent folder is absent (there
+	//    is no FK, but insert order keeps the intermediate state coherent).
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO folders (folder_id, account_id, parent_folder_id, encrypted_name, created_at, updated_at)
+		SELECT folder_id, account_id, parent_folder_id, encrypted_name, created_at, created_at
+		FROM rebuild_folders
+		WHERE account_id = $1
+	`, acct); err != nil {
+		return fmt.Errorf("insert live folders: %w", err)
+	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO files (file_id, account_id, parent_folder_id, encrypted_name, created_at, updated_at)
 		SELECT file_id, account_id, parent_folder_id, encrypted_name, created_at, updated_at
@@ -89,6 +110,24 @@ func promoteRebuild(ctx context.Context, pool *db.Pool, sess *rebuildSession) er
 		WHERE account_id = $1
 	`, acct); err != nil {
 		return fmt.Errorf("insert live files: %w", err)
+	}
+	// Replace the account's FEK envelopes from the snapshot. Once envelopes are
+	// snapshotted the node is authoritative, so stale live rows are removed
+	// rather than preserved (§22 preserve behavior no longer applies). Orphans
+	// for files no longer present are pruned in step 5.
+	if _, err := tx.Exec(ctx, `
+		DELETE FROM key_envelopes
+		WHERE file_id IN (SELECT file_id FROM files WHERE account_id = $1)
+	`, acct); err != nil {
+		return fmt.Errorf("delete live key_envelopes: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO key_envelopes (file_id, recipient_id, recipient_kind, encrypted_key, created_at)
+		SELECT file_id, recipient_id, recipient_kind, encrypted_key, created_at
+		FROM rebuild_key_envelopes
+		WHERE account_id = $1
+	`, acct); err != nil {
+		return fmt.Errorf("insert live key_envelopes: %w", err)
 	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO file_versions (file_id, version_number, parent_version_id, conflict_status, version_hash, shard_count, created_at)
@@ -168,8 +207,8 @@ func promoteRebuild(ctx context.Context, pool *db.Pool, sess *rebuildSession) er
 	// 7. Clear this account's staged rows now that they've been promoted.
 	cleanupStagedData(ctx, pool, acct)
 
-	log.Printf("[snapshot] promoted rebuild for account=%s: files=%d versions=%d tombstones=%d cursors=%d",
-		acct, stagedFiles, stagedVersions, stagedTombstones, len(sess.cursors))
+	log.Printf("[snapshot] promoted rebuild for account=%s: files=%d folders=%d envelopes=%d versions=%d tombstones=%d cursors=%d",
+		acct, stagedFiles, stagedFolders, stagedEnvelopes, stagedVersions, stagedTombstones, len(sess.cursors))
 	return nil
 }
 
@@ -179,6 +218,12 @@ func promoteRebuild(ctx context.Context, pool *db.Pool, sess *rebuildSession) er
 func cleanupStagedData(ctx context.Context, pool *db.Pool, accountID string) {
 	if _, err := pool.Exec(ctx, `DELETE FROM rebuild_files WHERE account_id = $1`, accountID); err != nil {
 		log.Printf("[snapshot] warning: clearing rebuild_files for %s: %v", accountID, err)
+	}
+	if _, err := pool.Exec(ctx, `DELETE FROM rebuild_folders WHERE account_id = $1`, accountID); err != nil {
+		log.Printf("[snapshot] warning: clearing rebuild_folders for %s: %v", accountID, err)
+	}
+	if _, err := pool.Exec(ctx, `DELETE FROM rebuild_key_envelopes WHERE account_id = $1`, accountID); err != nil {
+		log.Printf("[snapshot] warning: clearing rebuild_key_envelopes for %s: %v", accountID, err)
 	}
 	if _, err := pool.Exec(ctx, `DELETE FROM rebuild_file_versions WHERE account_id = $1`, accountID); err != nil {
 		log.Printf("[snapshot] warning: clearing rebuild_file_versions for %s: %v", accountID, err)

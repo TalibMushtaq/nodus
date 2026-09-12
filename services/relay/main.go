@@ -179,6 +179,11 @@ func main() {
 		mux.Handle("POST /nodes/register", auth.RequireAuth(sessionStore, cfg)(handler.RegisterNode(pool)))
 		mux.Handle("GET /nodes", auth.RequireAuth(sessionStore, cfg)(handler.ListNodes(pool)))
 
+		// Phase 14: catalog read paths for the web client's cached catalog.
+		mux.Handle("GET /files", auth.RequireAuth(sessionStore, cfg)(handler.ListFiles(pool)))
+		mux.Handle("GET /folders", auth.RequireAuth(sessionStore, cfg)(handler.ListFolders(pool)))
+		mux.Handle("GET /envelopes", auth.RequireAuth(sessionStore, cfg)(handler.ListEnvelopes(pool)))
+
 		// Phase 11: pairing session issuance (device-bound tokens pushed to the
 		// node over WS) plus the node's + client's open verification endpoints.
 		mux.Handle("POST /pairing/sessions", auth.RequireAuth(sessionStore, cfg)(handler.CreatePairingSession(pool, wsHub)))

@@ -71,6 +71,28 @@ type EventBatchPayload struct {
 type BatchAckPayload struct {
 	BatchID         string   `json:"batch_id,omitempty"`
 	AppliedEventIDs []string `json:"applied_event_ids"`
+	// Device-batch fields (Phase 14 Path C). OK is nil for node-originated
+	// batches, keeping the node wire shape unchanged. On a device batch it is
+	// false when the batch was rejected wholesale (sequence regression or a
+	// disallowed event), and LastOriginSequence carries the server's cursor so
+	// the client can re-derive a local counter it got out of sync.
+	OK                 *bool  `json:"ok,omitempty"`
+	Reason             string `json:"reason,omitempty"`
+	LastOriginSequence *int64 `json:"last_origin_sequence,omitempty"`
+}
+
+// deviceAllowedEventType is the Phase 14 device-emission whitelist. DEVICE_REVOKED
+// is server-only (revocation goes through DELETE /devices/{id}) and FOLDER_* is
+// intentionally absent: applySingleEvent has no folder projection, so admitting
+// it would acknowledge an event with no server effect. See Todo.md follow-up.
+func deviceAllowedEventType(t string) bool {
+	switch t {
+	case "FILE_CREATED", "FILE_VERSION_ADDED", "FILE_MODIFIED", "FILE_DELETED",
+		"FOLDER_CREATED", "FOLDER_DELETED", "TOMBSTONE_CREATED", "KEY_ENVELOPE_ADDED":
+		return true
+	default:
+		return false
+	}
 }
 
 type FileVersionEventData struct {
@@ -88,6 +110,23 @@ type FileCreatedEventData struct {
 	FileID         string  `json:"file_id"`
 	ParentFolderID *string `json:"parent_folder_id,omitempty"`
 	EncryptedName  *string `json:"encrypted_name,omitempty"`
+}
+
+// FolderEventData mirrors the canonical FOLDER_CREATED / FOLDER_DELETED payload
+// (`FolderEventPayloadSchema`): folders are identified by folder_id, not the
+// entity_id used by generic tombstone events.
+type FolderEventData struct {
+	FolderID       string  `json:"folder_id"`
+	ParentFolderID *string `json:"parent_folder_id,omitempty"`
+	EncryptedName  *string `json:"encrypted_name,omitempty"`
+}
+
+// KeyEnvelopeEventData mirrors `KeyEnvelopePayloadSchema` (§25, Phase 14 F2).
+type KeyEnvelopeEventData struct {
+	FileID        string `json:"file_id"`
+	RecipientID   string `json:"recipient_id"`
+	RecipientKind string `json:"recipient_kind"`
+	EncryptedKey  string `json:"encrypted_key"`
 }
 
 func sendEnvelope(c *hub.Client, msgType string, payload any) error {
@@ -415,6 +454,15 @@ func HandleEventBatch(
 		return
 	}
 
+	// Phase 14 (Path C): a device-originated batch takes the locked,
+	// all-or-nothing path so a concurrent batch from the same device cannot
+	// advance its sequence past an unapplied event. Node batches keep the
+	// original per-event transaction path unchanged.
+	if c.NodeID == "" {
+		_ = sendEnvelope(c, "batch_ack", applyDeviceBatch(ctx, pool, c.AccountID, c.DeviceID, batch.Events))
+		return
+	}
+
 	appliedIDs := make([]string, 0, len(batch.Events))
 
 	for _, item := range batch.Events {
@@ -430,6 +478,92 @@ func HandleEventBatch(
 	})
 }
 
+// applyDeviceBatch applies a whole device-originated batch in one transaction
+// under a row lock on the device's sync cursor. It pre-validates every item
+// (origin binding, whitelist, strictly-increasing sequence) before applying
+// any, so a rejected batch leaves zero projected rows rather than a partial
+// apply. On rejection it returns the locked cursor so the client can re-derive
+// a local counter it got out of sync.
+func applyDeviceBatch(
+	ctx context.Context,
+	pool *db.Pool,
+	accountID string,
+	deviceID string,
+	events []SyncEventItem,
+) BatchAckPayload {
+	failure := func(reason string, last int64) BatchAckPayload {
+		ok := false
+		return BatchAckPayload{OK: &ok, Reason: reason, LastOriginSequence: &last, AppliedEventIDs: []string{}}
+	}
+
+	if deviceID == "" {
+		return failure("no_device_identity", 0)
+	}
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		log.Printf("[sync] begin device batch transaction: %v", err)
+		return failure("internal_error", 0)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+
+	// Ensure a cursor row exists, then lock it FOR UPDATE. Without the upsert,
+	// a device with no events yet would lock nothing and two concurrent first
+	// batches could both pass validation.
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO sync_cursors (account_id, peer_id, last_sequence, updated_at)
+		VALUES ($1, $2, 0, NOW())
+		ON CONFLICT (account_id, peer_id) DO NOTHING
+	`, accountID, deviceID); err != nil {
+		log.Printf("[sync] ensure device cursor: %v", err)
+		return failure("internal_error", 0)
+	}
+
+	var lastSeq int64
+	if err := tx.QueryRow(ctx, `
+		SELECT last_sequence FROM sync_cursors
+		WHERE account_id = $1 AND peer_id = $2
+		FOR UPDATE
+	`, accountID, deviceID).Scan(&lastSeq); err != nil {
+		log.Printf("[sync] lock device cursor: %v", err)
+		return failure("internal_error", 0)
+	}
+
+	// Pre-validate the whole batch before touching any projection.
+	prev := lastSeq
+	for _, item := range events {
+		switch {
+		case item.OriginID != deviceID:
+			return failure("origin_mismatch", lastSeq)
+		case !deviceAllowedEventType(item.Type):
+			return failure("event_type_not_allowed", lastSeq)
+		case item.OriginSequence <= prev:
+			// Regression or duplicate-ordered item: reject the batch. Strictly
+			// increasing (not gap-free) is intentional — the device owns its
+			// sequence allocation, so an intentional skip strands nothing.
+			return failure("sequence_regression", lastSeq)
+		}
+		prev = item.OriginSequence
+	}
+
+	appliedIDs := make([]string, 0, len(events))
+	for _, item := range events {
+		if !applySingleEventTx(ctx, tx, accountID, item) {
+			return failure("rejected", lastSeq)
+		}
+		appliedIDs = append(appliedIDs, item.EventID)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		log.Printf("[sync] commit device batch: %v", err)
+		return failure("internal_error", lastSeq)
+	}
+
+	ok := true
+	finalSeq := prev
+	return BatchAckPayload{OK: &ok, LastOriginSequence: &finalSeq, AppliedEventIDs: appliedIDs}
+}
+
 func applySingleEvent(
 	ctx context.Context,
 	pool *db.Pool,
@@ -443,6 +577,25 @@ func applySingleEvent(
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
 
+	if !applySingleEventTx(ctx, tx, accountID, item) {
+		return false
+	}
+	if err := tx.Commit(ctx); err != nil {
+		log.Printf("[sync] commit event %s: %v", item.EventID, err)
+		return false
+	}
+	return true
+}
+
+// applySingleEventTx applies one event using the caller's transaction. It never
+// commits or rolls back; the caller decides. Returns false when the event must
+// not be acknowledged (foreign file, projection failure, insert error).
+func applySingleEventTx(
+	ctx context.Context,
+	tx pgx.Tx,
+	accountID string,
+	item SyncEventItem,
+) bool {
 	// Validate file ownership before recording the event. Otherwise a rejected
 	// foreign-file event would be journaled and every retry would be treated as
 	// already applied even though its projection was never made.
@@ -522,6 +675,78 @@ func applySingleEvent(
 			if err != nil || result.RowsAffected() == 0 {
 				return false
 			}
+		}
+
+	case "FOLDER_CREATED":
+		var data FolderEventData
+		if err := json.Unmarshal(item.Payload, &data); err == nil && data.FolderID != "" {
+			// A tombstoned folder must not be resurrected by a late create from
+			// a long-offline device (§17). Acknowledge without projecting.
+			var deleted bool
+			if err := tx.QueryRow(ctx, `
+				SELECT EXISTS(
+					SELECT 1 FROM tombstones
+					WHERE account_id = $1 AND entity_type = 'folder' AND entity_id = $2
+				)
+			`, accountID, data.FolderID).Scan(&deleted); err != nil {
+				return false
+			}
+			if !deleted {
+				// Same account-ownership guard as files: the upsert's WHERE
+				// makes a foreign folder_id a no-op that fails the ack.
+				upsertFolder := `
+					INSERT INTO folders (folder_id, account_id, parent_folder_id, encrypted_name, created_at, updated_at)
+					VALUES ($1, $2, $3, $4, $5, $5)
+					ON CONFLICT (folder_id) DO UPDATE SET
+						parent_folder_id = EXCLUDED.parent_folder_id,
+						encrypted_name = EXCLUDED.encrypted_name,
+						updated_at = EXCLUDED.updated_at
+					WHERE folders.account_id = EXCLUDED.account_id
+				`
+				result, err := tx.Exec(ctx, upsertFolder, data.FolderID, accountID, data.ParentFolderID, data.EncryptedName, t)
+				if err != nil || result.RowsAffected() == 0 {
+					return false
+				}
+			}
+		}
+
+	case "FOLDER_DELETED":
+		var data FolderEventData
+		if err := json.Unmarshal(item.Payload, &data); err == nil && data.FolderID != "" {
+			if _, err := tx.Exec(ctx, `
+				INSERT INTO tombstones (account_id, entity_type, entity_id, deleted_at)
+				VALUES ($1, 'folder', $2, $3)
+				ON CONFLICT (account_id, entity_type, entity_id) DO NOTHING
+			`, accountID, data.FolderID, t); err != nil {
+				return false
+			}
+		}
+
+	case "KEY_ENVELOPE_ADDED":
+		var data KeyEnvelopeEventData
+		if err := json.Unmarshal(item.Payload, &data); err != nil {
+			return false
+		}
+		// Defense in depth: the wire schema already constrains these, but a
+		// malformed payload must reject the batch rather than write a row with
+		// missing/unknown values (F2b reads recipient_kind).
+		if data.FileID == "" || data.RecipientID == "" || data.EncryptedKey == "" {
+			return false
+		}
+		if data.RecipientKind != "device" && data.RecipientKind != "node" {
+			return false
+		}
+		// The Relay stores the opaque envelope only; it never sees the FEK.
+		// One envelope per (file, recipient); a re-seal overwrites.
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO key_envelopes (file_id, recipient_id, recipient_kind, encrypted_key, created_at)
+			VALUES ($1, $2, $3, $4, $5)
+			ON CONFLICT (file_id, recipient_id) DO UPDATE SET
+				recipient_kind = EXCLUDED.recipient_kind,
+				encrypted_key = EXCLUDED.encrypted_key,
+				created_at = EXCLUDED.created_at
+		`, data.FileID, data.RecipientID, data.RecipientKind, data.EncryptedKey, t); err != nil {
+			return false
 		}
 
 	case "FILE_VERSION_ADDED", "FILE_MODIFIED":
@@ -623,10 +848,6 @@ func applySingleEvent(
 		return false
 	}
 
-	if err := tx.Commit(ctx); err != nil {
-		log.Printf("[sync] commit event %s: %v", item.EventID, err)
-		return false
-	}
 	return true
 }
 
@@ -635,6 +856,19 @@ func applySingleEvent(
 // the live schema, so accepting another account's ID would either mutate its
 // projection or leave an acknowledged event with no projection at all.
 func eventReferencesForeignFile(ctx context.Context, tx pgx.Tx, accountID string, item SyncEventItem) (bool, error) {
+	// Folder events are checked against the folders table; file events against
+	// files. folder_id is globally unique, so a create targeting another
+	// account's folder must be rejected rather than silently no-op'd later.
+	if item.Type == "FOLDER_CREATED" || item.Type == "FOLDER_DELETED" {
+		var data FolderEventData
+		if err := json.Unmarshal(item.Payload, &data); err != nil || data.FolderID == "" {
+			return false, nil
+		}
+		var foreign bool
+		err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM folders WHERE folder_id = $1 AND account_id <> $2)`, data.FolderID, accountID).Scan(&foreign)
+		return foreign, err
+	}
+
 	var fileID string
 	switch item.Type {
 	case "FILE_CREATED":
@@ -645,6 +879,12 @@ func eventReferencesForeignFile(ctx context.Context, tx pgx.Tx, accountID string
 		fileID = data.FileID
 	case "FILE_VERSION_ADDED", "FILE_MODIFIED":
 		var data FileVersionEventData
+		if err := json.Unmarshal(item.Payload, &data); err != nil || data.FileID == "" {
+			return false, nil
+		}
+		fileID = data.FileID
+	case "KEY_ENVELOPE_ADDED":
+		var data KeyEnvelopeEventData
 		if err := json.Unmarshal(item.Payload, &data); err != nil || data.FileID == "" {
 			return false, nil
 		}

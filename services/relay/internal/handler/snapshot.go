@@ -63,6 +63,23 @@ type FileVersionRecord struct {
 	ParentFolderID  *string `json:"parent_folder_id,omitempty"`
 }
 
+// FolderRecord is a folder row captured in a snapshot chunk (Phase 14 F1).
+type FolderRecord struct {
+	FolderID       string  `json:"folder_id"`
+	ParentFolderID *string `json:"parent_folder_id,omitempty"`
+	EncryptedName  *string `json:"encrypted_name,omitempty"`
+	CreatedAt      *string `json:"created_at,omitempty"`
+}
+
+// KeyEnvelopeRecord is an opaque FEK envelope captured in a snapshot (F2c).
+type KeyEnvelopeRecord struct {
+	FileID        string  `json:"file_id"`
+	RecipientID   string  `json:"recipient_id"`
+	RecipientKind string  `json:"recipient_kind"`
+	EncryptedKey  string  `json:"encrypted_key"`
+	CreatedAt     *string `json:"created_at,omitempty"`
+}
+
 type TombstoneRecord struct {
 	EntityType string `json:"entity_type"`
 	EntityID   string `json:"entity_id"`
@@ -358,6 +375,63 @@ func stageRebuildChunk(ctx context.Context, pool *db.Pool, accountID string, chu
 			}
 		}
 		return tx.Commit(ctx)
+
+	case "folder":
+		var records []FolderRecord
+		if err := json.Unmarshal(chunk.Records, &records); err != nil {
+			return fmt.Errorf("invalid folder records: %w", err)
+		}
+		for _, r := range records {
+			if r.FolderID == "" {
+				continue
+			}
+			var createdAt *time.Time
+			if r.CreatedAt != nil && *r.CreatedAt != "" {
+				if ts, err := time.Parse(time.RFC3339, *r.CreatedAt); err == nil {
+					createdAt = &ts
+				}
+			}
+			if _, err := pool.Exec(ctx, `
+				INSERT INTO rebuild_folders (account_id, folder_id, parent_folder_id, encrypted_name, created_at)
+				VALUES ($1, $2, $3, $4, COALESCE($5, NOW()))
+				ON CONFLICT (account_id, folder_id) DO UPDATE SET
+					parent_folder_id = EXCLUDED.parent_folder_id,
+					encrypted_name = EXCLUDED.encrypted_name
+			`, accountID, r.FolderID, r.ParentFolderID, r.EncryptedName, createdAt); err != nil {
+				return err
+			}
+		}
+		return nil
+
+	case "key_envelope":
+		var records []KeyEnvelopeRecord
+		if err := json.Unmarshal(chunk.Records, &records); err != nil {
+			return fmt.Errorf("invalid key_envelope records: %w", err)
+		}
+		for _, r := range records {
+			if r.FileID == "" || r.RecipientID == "" || r.EncryptedKey == "" {
+				continue
+			}
+			if r.RecipientKind != "device" && r.RecipientKind != "node" {
+				continue
+			}
+			var createdAt *time.Time
+			if r.CreatedAt != nil && *r.CreatedAt != "" {
+				if ts, err := time.Parse(time.RFC3339, *r.CreatedAt); err == nil {
+					createdAt = &ts
+				}
+			}
+			if _, err := pool.Exec(ctx, `
+				INSERT INTO rebuild_key_envelopes (account_id, file_id, recipient_id, recipient_kind, encrypted_key, created_at)
+				VALUES ($1, $2, $3, $4, $5, COALESCE($6, NOW()))
+				ON CONFLICT (account_id, file_id, recipient_id) DO UPDATE SET
+					recipient_kind = EXCLUDED.recipient_kind,
+					encrypted_key = EXCLUDED.encrypted_key
+			`, accountID, r.FileID, r.RecipientID, r.RecipientKind, r.EncryptedKey, createdAt); err != nil {
+				return err
+			}
+		}
+		return nil
 
 	case "tombstone":
 		var records []TombstoneRecord
