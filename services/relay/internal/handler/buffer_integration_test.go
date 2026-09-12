@@ -289,3 +289,86 @@ func TestBufferUploadProactivelyNotifiesOnlineNode(t *testing.T) {
 		t.Fatal("node never received pending_notify")
 	}
 }
+
+// TestRegisterRerunsDeliveryAfterOfflineUpload is the offline counterpart to
+// TestBufferUploadProactivelyNotifiesOnlineNode: when the target node is NOT
+// connected at upload time, BufferUpload's SendToNode can't deliver, and the
+// shard waits in RELAY_BUFFERED until the node reconnects and registers.
+// register is the reconnect signal, so this guards the wiring that re-issues a
+// fetch token and pushes pending_notify to the node's socket.
+func TestRegisterRerunsDeliveryAfterOfflineUpload(t *testing.T) {
+	h := setupBufferHarness(t)
+	if h.rClient == nil {
+		t.Skip("TEST_REDIS_URL not set; skipping reconnect-delivery test")
+	}
+
+	// Node is offline: do NOT register it with the hub, so the proactive
+	// SendToNode path in BufferUpload has no destination to notify. A unique
+	// file keeps this test independent from sibling tests, which share the
+	// seeded file-buffer rows.
+	fileID := "file-rereg-" + uuid.NewString()
+	_, err := h.pool.Exec(h.ctx,
+		`INSERT INTO files (file_id, account_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`, fileID, h.accountID)
+	require.NoError(t, err)
+	_, err = h.pool.Exec(h.ctx,
+		`INSERT INTO file_versions (file_id, version_number, conflict_status, version_hash, shard_count, created_at)
+		 VALUES ($1, 1, 'none', 'vhash', 1, NOW()) ON CONFLICT DO NOTHING`, fileID)
+	require.NoError(t, err)
+
+	body := []byte("offline-upload-bytes")
+	md := uploadMetadata{FileID: fileID, VersionNumber: 1, ShardIndex: 0, Size: int64(len(body)), TransferID: "t-offline", TargetNode: h.nodeID, SourceDevice: "dev-1"}
+	rr := h.uploadShard(t, md, body, "")
+	require.Equal(t, 201, rr.Code)
+	require.Equal(t, "RELAY_BUFFERED", h.shardStatus(t, fileID, 1, 0))
+
+	// The node comes back: authenticated session sends register. Storage nodes
+	// omit account_id (pairing binds the account), so delivery must not depend
+	// on an account-field match on the envelope.
+	client := newTestingClient(h.accountID, h.nodeID)
+	registerEnv := ProtocolEnvelope{
+		Type:          "register",
+		SchemaVersion: "1.0.0",
+		MessageID:     uuid.NewString(),
+		Timestamp:     time.Now().UTC().Format(time.RFC3339),
+		Payload:       json.RawMessage(`{}`),
+	}
+	handleIncomingEnvelope(client, registerEnv, h.pool, h.rClient, h.buf, h.hub)
+
+	// Sibling tests may have left other shards buffered for the same node, so
+	// skip their notifies and wait for ours.
+	var notify PendingNotifyPayload
+	deadline := time.Now().Add(2 * time.Second)
+found:
+	for time.Now().Before(deadline) {
+		select {
+		case raw := <-client.Send:
+			var env ProtocolEnvelope
+			require.NoError(t, json.Unmarshal(raw, &env))
+			if env.Type != "pending_notify" {
+				continue
+			}
+			var candidate PendingNotifyPayload
+			require.NoError(t, json.Unmarshal(env.Payload, &candidate))
+			if candidate.FileID != fileID {
+				continue
+			}
+			notify = candidate
+			break found
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+	require.Equal(t, fileID, notify.FileID, "register did not re-deliver pending_notify for the buffered shard")
+	require.Equal(t, 1, notify.VersionNumber)
+	require.Equal(t, 0, notify.ShardIndex)
+	require.Equal(t, blake3Hex(body), notify.Hash)
+	require.NotEmpty(t, notify.FetchToken)
+
+	// The re-issued token is redeemable: consuming it serves the bytes and
+	// moves the shard out of RELAY_BUFFERED, completing the deferred delivery.
+	fetchReq := httptest.NewRequest("GET", "/buffer/fetch?token="+notify.FetchToken, nil)
+	fetchRR := httptest.NewRecorder()
+	BufferFetch(h.pool, h.rClient, h.buf)(fetchRR, fetchReq)
+	require.Equal(t, 200, fetchRR.Code)
+	require.Equal(t, body, fetchRR.Body.Bytes())
+	require.Equal(t, "NODE_RECEIVING", h.shardStatus(t, fileID, 1, 0))
+}

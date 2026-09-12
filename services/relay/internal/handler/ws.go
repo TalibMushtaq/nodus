@@ -229,12 +229,31 @@ func handleIncomingEnvelope(
 			return
 		}
 
-		if !c.IsAuthenticated || c.AccountID == "" || c.AccountID != reg.AccountID {
+		if !c.IsAuthenticated || c.AccountID == "" {
+			log.Printf("[ws] rejected register from unauthenticated conn=%s", c.ConnID)
+			return
+		}
+
+		// Storage nodes do not send an account_id — pairing binds the node to
+		// the account, and the identity came from the signed auth response. For
+		// them, register is the (re)connect signal: re-issue fetch tokens and
+		// notify for every shard still sitting in the Relay buffer so an upload
+		// made while the node was offline drains the moment it returns. This is
+		// the counter-half of BufferUpload's proactive SendToNode, which cannot
+		// deliver when the node is offline.
+		if c.NodeID != "" {
+			if pool != nil {
+				checkAndDeliverPendingShards(ctx, c, pool, rClient)
+			}
+			return
+		}
+
+		// Browser identity is derived from the session; never accept peer-supplied
+		// node/device IDs or account IDs.
+		if c.AccountID != reg.AccountID {
 			log.Printf("[ws] account ID mismatch for conn=%s", c.ConnID)
 			return
 		}
-		// Browser identity is derived from the session; never accept peer-supplied
-		// node/device IDs or account IDs.
 		log.Printf("[ws] ignoring client register identity fields for conn=%s", c.ConnID)
 
 	case "heartbeat":
