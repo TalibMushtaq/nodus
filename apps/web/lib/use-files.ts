@@ -11,7 +11,7 @@ import { refreshFolders } from "./folders";
 import { getFileKey } from "./keys";
 import { fetchAndOpenFileKey } from "./envelopes";
 import { shortId } from "./format";
-import { isDownloadable, latestSize, toSyncStatus, type FileEntryView } from "./file-view";
+import { isDownloadable, fileStorageState, latestSize, toSyncStatus, type FileEntryView } from "./file-view";
 import { useAuth } from "../providers/auth-provider";
 
 export type { FileEntryView } from "./file-view";
@@ -47,6 +47,8 @@ async function toView(entry: CatalogEntry, device: StoredDeviceIdentity): Promis
     createdAt: entry.created_at,
     updatedAt: entry.updated_at,
     status: toSyncStatus(entry),
+    storageState: fileStorageState(entry),
+    parentFolderId: entry.parent_folder_id,
     latestVersionNumber: entry.latest_version_number,
     shardCount: entry.shard_count,
     versionHash: entry.version_hash,

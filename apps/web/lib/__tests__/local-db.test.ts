@@ -11,7 +11,7 @@ import {
 import { getCursors, getCursor, nextOriginSequence, resyncOriginSequence } from "../sync-state";
 import { deleteFileKey, getFileKey, putFileKey } from "../keys";
 import { addTrustedNode, getTrustedNodes } from "../trusted-nodes";
-import { getCachedCatalog, toCatalogEntry, upsertCatalogEntries, getCachedFolders, upsertFolders } from "../catalog";
+import { getCachedCatalog, toCatalogEntry, upsertCatalogEntries, getCachedFolders, upsertFolders, pruneCatalog, pruneFolders } from "../catalog";
 import type { RelayFile } from "../catalog";
 import { IndexedDBPathCache } from "../transfer/path-cache";
 import { IndexedDBLocalQueue } from "../transfer/local-queue";
@@ -110,6 +110,29 @@ describe("web local DB", () => {
     const folders = await getCachedFolders();
     expect(folders).toHaveLength(1);
     expect(folders[0]!.folder_id).toBe("dir-1");
+  });
+
+  it("prunes cached entries absent from the latest relay snapshot", async () => {
+    const file = (id: string): RelayFile => ({
+      file_id: id,
+      parent_folder_id: null,
+      encrypted_name: "cipher",
+      created_at: "2026-09-12T00:00:00Z",
+      updated_at: "2026-09-12T00:00:00Z",
+      versions: [{ version_number: 1, shard_count: 1, version_hash: "vh", conflict_status: "none", created_at: "2026-09-12T00:00:00Z" }],
+      locations: [],
+    });
+    await upsertCatalogEntries([file("keep"), file("drop")]);
+    await upsertFolders([
+      { folder_id: "keep-dir", parent_folder_id: null, encrypted_name: "e", created_at: "2026-09-12T00:00:00Z", updated_at: "2026-09-12T00:00:00Z" },
+      { folder_id: "drop-dir", parent_folder_id: null, encrypted_name: "e", created_at: "2026-09-12T00:00:00Z", updated_at: "2026-09-12T00:00:00Z" },
+    ]);
+
+    await pruneCatalog(new Set(["keep"]));
+    await pruneFolders(new Set(["keep-dir"]));
+
+    expect((await getCachedCatalog()).map((c) => c.file_id)).toEqual(["keep"]);
+    expect((await getCachedFolders()).map((f) => f.folder_id)).toEqual(["keep-dir"]);
   });
 
   it("persists and reloads the path cache", async () => {

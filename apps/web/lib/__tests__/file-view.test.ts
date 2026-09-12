@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 
-import { isDownloadable, latestSize, toSyncStatus } from "../file-view";
+import {
+  fileStorageState,
+  findStoredDuplicate,
+  isDownloadable,
+  latestSize,
+  toSyncStatus,
+  type FileEntryView,
+} from "../file-view";
 import type { CatalogEntry } from "../catalog";
 
 function entry(partial: Partial<CatalogEntry> = {}): CatalogEntry {
@@ -35,6 +42,16 @@ describe("toSyncStatus", () => {
 
   it("reports conflicts regardless of storage status", () => {
     expect(toSyncStatus(entry({ conflict_status: "CONFLICT", storage_status: "stored" }))).toBe("conflict");
+  });
+});
+
+describe("fileStorageState", () => {
+  it("distinguishes node-backed from relay-buffered and local-only", () => {
+    expect(fileStorageState(entry({ storage_status: "stored" }))).toBe("node");
+    expect(fileStorageState(entry({ storage_status: "buffered" }))).toBe("relay");
+    expect(fileStorageState(entry({ storage_status: "transferring" }))).toBe("transferring");
+    expect(fileStorageState(entry({ storage_status: null }))).toBe("local");
+    expect(fileStorageState(entry({ conflict_status: "CONFLICT" }))).toBe("conflict");
   });
 });
 
@@ -77,5 +94,36 @@ describe("isDownloadable", () => {
   it("is false when there is no version or shard count", () => {
     expect(isDownloadable(entry({ latest_version_number: null }))).toBe(false);
     expect(isDownloadable(entry({ shard_count: null }))).toBe(false);
+  });
+});
+
+function view(partial: Partial<FileEntryView> = {}): FileEntryView {
+  return {
+    fileId: "f1",
+    name: "a.bin",
+    sizeBytes: 10,
+    createdAt: "2026-09-12T00:00:00Z",
+    updatedAt: "2026-09-12T00:00:00Z",
+    status: "synced",
+    storageState: "node",
+    parentFolderId: null,
+    latestVersionNumber: 1,
+    shardCount: 1,
+    versionHash: "hash-1",
+    encryptedName: null,
+    locations: [],
+    downloadable: true,
+    ...partial,
+  };
+}
+
+describe("findStoredDuplicate", () => {
+  it("matches a fully stored entry by content hash", () => {
+    expect(findStoredDuplicate([view()], "hash-1")?.fileId).toBe("f1");
+    expect(findStoredDuplicate([view()], "other")).toBeUndefined();
+  });
+
+  it("ignores incomplete entries so a retry is not blocked", () => {
+    expect(findStoredDuplicate([view({ downloadable: false })], "hash-1")).toBeUndefined();
   });
 });

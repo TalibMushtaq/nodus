@@ -2,7 +2,7 @@
 // proxy to the Relay) and caches the result in IndexedDB.
 
 import type { RelayFolder } from "./catalog";
-import { upsertFolders } from "./catalog";
+import { pruneFolders, upsertFolders } from "./catalog";
 
 export async function fetchFolders(): Promise<RelayFolder[]> {
   const res = await fetch("/api/folders");
@@ -16,5 +16,7 @@ export async function fetchFolders(): Promise<RelayFolder[]> {
 export async function refreshFolders(): Promise<RelayFolder[]> {
   const folders = await fetchFolders();
   await upsertFolders(folders);
+  // Same reconciliation as the file catalog: prune folders the Relay dropped.
+  await pruneFolders(new Set(folders.map((folder) => folder.folder_id)));
   return folders;
 }

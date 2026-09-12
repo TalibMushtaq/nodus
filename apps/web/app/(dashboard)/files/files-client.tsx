@@ -4,13 +4,20 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@repo/ui/primitives/button";
 import { Section } from "@repo/ui/primitives/section";
 import { EmptyState } from "@repo/ui/primitives/empty-state";
-import { StatusBadge, type SyncStatus } from "@repo/ui/primitives/badge";
+import type { SyncStatus } from "@repo/ui/primitives/badge";
 import { Select } from "@repo/ui/primitives/select";
 import { Progress } from "@repo/ui/primitives/progress";
+import { Modal, ModalHeader, ConfirmDialog } from "@repo/ui/primitives/overlay";
+import { Input } from "@repo/ui/primitives/input";
 
 import { useFiles, type FileEntryView } from "../../../lib/use-files";
 import { useAuth } from "../../../providers/auth-provider";
+import { useTransfer } from "../../../providers/transfer-provider";
 import { useUploader } from "../../../lib/use-uploader";
+import { useFileMutations } from "../../../lib/use-file-mutations";
+import { useMounted } from "../../../lib/use-mounted";
+import type { ShardUpload, ShardUploadResult } from "../../../lib/buffer";
+import type { ShardTransferRequest } from "@repo/transfer-manager";
 import { listNodes, type RelayNode } from "../../../lib/pairing";
 import {
   downloadFile,
@@ -21,11 +28,14 @@ import {
 } from "../../../lib/download";
 import { startTransfer, finishTransfer } from "../../../lib/transfer-log";
 import { formatBytes, timeAgo } from "../../../lib/format";
+import { measurePlaintext, type FileMeasurement } from "../../../lib/uploader";
+import { findStoredDuplicate, type FileStorageState } from "../../../lib/file-view";
 
 // Files view: the first UI over the Phase 14 catalog/upload/download backend.
-// Scope is deliberately list + upload + download + filter/sort; rename, move,
-// delete, conflict resolution, and version restore have no Relay endpoint yet
-// and are rendered disabled rather than as working controls.
+// Scope is list + upload + download + filter/sort, plus rename and delete, which
+// are metadata sync events (`FILE_CREATED` upsert / `TOMBSTONE_CREATED`). Move,
+// conflict resolution, and version restore have no endpoint yet and are not
+// rendered.
 
 type SortKey = "modified" | "name" | "size";
 
@@ -45,14 +55,43 @@ function describeDownloadError(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+const STORAGE_LABELS: Record<FileStorageState, { label: string; color: string }> = {
+  node: { label: "On node", color: "var(--status-synced)" },
+  relay: { label: "Relay buffer", color: "var(--status-pending)" },
+  transferring: { label: "Transferring", color: "var(--status-pending)" },
+  local: { label: "Local only", color: "var(--status-local)" },
+  conflict: { label: "Conflict", color: "var(--status-conflict)" },
+};
+
+/**
+ * Where the latest version actually lives. Deliberately distinct from the
+ * shared "Synced" badge: that label implied the bytes were durable on a node
+ * even when they were only in the Relay's temporary buffer.
+ */
+function FileStorageBadge({ state }: { state: FileStorageState }) {
+  const cfg = STORAGE_LABELS[state];
+  return (
+    <span className="inline-flex items-center gap-1.5 text-xs font-medium shrink-0" style={{ color: cfg.color }}>
+      <span className="inline-block w-1.5 h-1.5 rounded-full" style={{ backgroundColor: cfg.color }} />
+      {cfg.label}
+    </span>
+  );
+}
+
 function FileRowView({
   file,
   downloading,
+  busy,
   onDownload,
+  onRename,
+  onDelete,
 }: {
   file: FileEntryView;
   downloading: boolean;
+  busy: boolean;
   onDownload: (file: FileEntryView) => void;
+  onRename: (file: FileEntryView) => void;
+  onDelete: (file: FileEntryView) => void;
 }) {
   return (
     <div className="flex items-center gap-4 px-5 py-3.5 border-b border-border last:border-0 hover:bg-secondary/40 transition-colors">
@@ -65,7 +104,7 @@ function FileRowView({
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2">
           <span className="text-sm font-medium text-foreground truncate">{file.name}</span>
-          <StatusBadge status={file.status} variant="inline" />
+          <FileStorageBadge state={file.storageState} />
         </div>
         <div className="text-[10px] font-mono text-muted-foreground mt-0.5 truncate">
           {formatBytes(file.sizeBytes)} · updated {timeAgo(file.updatedAt)}
@@ -83,17 +122,17 @@ function FileRowView({
       </button>
       <button
         type="button"
-        disabled
-        title="Rename is not available yet"
-        className="hidden sm:inline-block px-3 py-1.5 text-xs border border-border text-muted-foreground shrink-0 disabled:opacity-40"
+        onClick={() => onRename(file)}
+        disabled={busy}
+        className="hidden sm:inline-block px-3 py-1.5 text-xs border border-border text-foreground hover:border-accent hover:text-accent transition-colors shrink-0 disabled:opacity-40"
       >
         Rename
       </button>
       <button
         type="button"
-        disabled
-        title="Delete is not available yet"
-        className="hidden sm:inline-block px-3 py-1.5 text-xs border border-border text-muted-foreground shrink-0 disabled:opacity-40"
+        onClick={() => onDelete(file)}
+        disabled={busy}
+        className="hidden sm:inline-block px-3 py-1.5 text-xs border border-destructive/30 text-destructive hover:bg-destructive/10 transition-colors shrink-0 disabled:opacity-40"
       >
         Delete
       </button>
@@ -104,15 +143,32 @@ function FileRowView({
 export function FilesClient() {
   const { device } = useAuth();
   const { files, loading, error, refresh } = useFiles();
+  // Device identity and the node catalog are client-only, so the SSR pass would
+  // otherwise render the Upload control differently from the client's first
+  // pass. `useMounted` returns the server snapshot during hydration, keeping both
+  // renders identical, then flips to the client value.
+  const mounted = useMounted();
   const [sortBy, setSortBy] = useState<SortKey>("modified");
   const [filterBy, setFilterBy] = useState<SyncStatus | "all">("all");
   const [nodes, setNodes] = useState<RelayNode[]>([]);
   const [targetNode, setTargetNode] = useState<string | null>(null);
-  const [progress, setProgress] = useState<{ name: string; completed: number; total: number } | null>(null);
+  const [progress, setProgress] = useState<{ name: string; phase: string; completed: number; total: number } | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const currentUploadName = useRef("");
+  // Content hashes accepted in this session. The catalog only refreshes after
+  // an upload completes, so this catches a second identical file selected in
+  // the same batch (or before the refresh lands) without a round trip.
+  const sessionHashes = useRef<Set<string>>(new Set());
+
+  // Rename/delete dialog state. `mutating` disables the actions while a
+  // metadata event is in flight so the same file cannot be changed twice.
+  const [renameTarget, setRenameTarget] = useState<FileEntryView | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+  const [deleteTarget, setDeleteTarget] = useState<FileEntryView | null>(null);
+  const [mutating, setMutating] = useState(false);
+  const [mutationError, setMutationError] = useState<string | null>(null);
 
   // Load the node catalog once to resolve an upload target (primary preferred).
   useEffect(() => {
@@ -139,13 +195,41 @@ export function FilesClient() {
     }
     setProgress({
       name: currentUploadName.current,
+      phase: event.phase,
       completed: event.completedShards,
       total: event.totalShards,
     });
   }, []);
 
-  const { upload, ready: uploadReady } = useUploader(onProgress);
+  const { uploadShard, ready: transferReady } = useTransfer();
 
+  // Route each shard through the Transfer Manager's fallback chain so a node on
+  // the same LAN receives it directly (Path A) instead of always buffering via
+  // the Relay (Path C). The manager falls through to the Relay buffer when no
+  // direct path is available. Before the manager finishes hydrating we let the
+  // uploader use its default relay post so an early upload is not blocked.
+  const transferPostShard = useCallback(
+    async (dto: ShardUpload): Promise<ShardUploadResult> => {
+      const result = await uploadShard({
+        transferId: dto.transferId,
+        fileId: dto.fileId,
+        versionNumber: dto.versionNumber,
+        shardIndex: dto.shardIndex,
+        data: dto.data,
+        hash: dto.hash,
+        targetNode: dto.targetNode as ShardTransferRequest["targetNode"],
+        sourceDevice: dto.sourceDevice,
+      });
+      if (!result.success) {
+        throw new Error(result.error ?? "shard transfer failed");
+      }
+      return { buffer_id: "", status: result.path };
+    },
+    [uploadShard],
+  );
+
+  const { upload } = useUploader(onProgress, transferReady ? transferPostShard : undefined);
+  const { rename, remove } = useFileMutations();
   const handleFilesPicked = useCallback(
     async (fileList: FileList | null) => {
       if (!fileList || fileList.length === 0) return;
@@ -154,11 +238,35 @@ export function FilesClient() {
         return;
       }
       setActionError(null);
+      const skipped: string[] = [];
       for (const file of Array.from(fileList)) {
         currentUploadName.current = file.name;
+
+        // Measure once so an exact-content duplicate is rejected before any
+        // network work; the same result is handed to the uploader so the file
+        // is not hashed a second time.
+        let measured: FileMeasurement;
+        try {
+          measured = await measurePlaintext(file, onProgress);
+        } catch (err) {
+          setProgress(null);
+          currentUploadName.current = "";
+          setActionError(err instanceof Error ? err.message : String(err));
+          continue;
+        }
+
+        const duplicate = findStoredDuplicate(files, measured.versionHash);
+        if (duplicate || sessionHashes.current.has(measured.versionHash)) {
+          setProgress(null);
+          currentUploadName.current = "";
+          skipped.push(file.name);
+          continue;
+        }
+        sessionHashes.current.add(measured.versionHash);
+
         const log = await startTransfer({ kind: "upload", fileId: "", fileName: file.name });
         try {
-          const result = await upload(file, targetNode);
+          const result = await upload(file, targetNode, measured);
           await finishTransfer(log.id, "complete", `${result.shardCount} shards`);
           refresh();
         } catch (err) {
@@ -170,10 +278,17 @@ export function FilesClient() {
           currentUploadName.current = "";
         }
       }
+      if (skipped.length > 0) {
+        setActionError(
+          skipped.length === 1
+            ? `"${skipped[0]}" is already stored — skipped.`
+            : `${skipped.length} files were already stored — skipped.`,
+        );
+      }
       // Allow re-selecting the same file in a later upload.
       if (fileInputRef.current) fileInputRef.current.value = "";
     },
-    [targetNode, upload, refresh],
+    [targetNode, upload, refresh, files, onProgress],
   );
 
   const handleDownload = useCallback(
@@ -211,6 +326,55 @@ export function FilesClient() {
     [device],
   );
 
+  const openRename = useCallback((file: FileEntryView) => {
+    setMutationError(null);
+    setRenameValue(file.name);
+    setRenameTarget(file);
+  }, []);
+
+  const openDelete = useCallback((file: FileEntryView) => {
+    setMutationError(null);
+    setDeleteTarget(file);
+  }, []);
+
+  const confirmRename = useCallback(async () => {
+    if (!renameTarget) return;
+    const trimmed = renameValue.trim();
+    if (!trimmed || trimmed === renameTarget.name) {
+      setRenameTarget(null);
+      return;
+    }
+    setMutating(true);
+    setMutationError(null);
+    try {
+      await rename(renameTarget.fileId, renameTarget.parentFolderId, trimmed);
+      setRenameTarget(null);
+      // Re-fetch so the decrypted name/updated_at reflect the new metadata.
+      refresh();
+    } catch (err) {
+      setMutationError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setMutating(false);
+    }
+  }, [renameTarget, renameValue, rename, refresh]);
+
+  const confirmDelete = useCallback(async () => {
+    if (!deleteTarget) return;
+    setMutating(true);
+    setMutationError(null);
+    try {
+      await remove(deleteTarget.fileId);
+      setDeleteTarget(null);
+      // The tombstone excludes the file from the next catalog snapshot, and the
+      // refresh prunes it from the local cache.
+      refresh();
+    } catch (err) {
+      setMutationError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setMutating(false);
+    }
+  }, [deleteTarget, remove, refresh]);
+
   const visible = useMemo(() => {
     const filtered = filterBy === "all" ? files : files.filter((file) => file.status === filterBy);
     const sorted = [...filtered];
@@ -224,8 +388,9 @@ export function FilesClient() {
     return sorted;
   }, [files, filterBy, sortBy]);
 
-  const canUpload = Boolean(device && uploadReady && targetNode) && !progress;
-  const uploadHint = !device
+  const deviceReady = mounted && Boolean(device);
+  const canUpload = deviceReady && Boolean(targetNode) && !progress;
+  const uploadHint = !deviceReady
     ? "Waiting for device identity…"
     : nodes.length === 0
       ? "Pair a storage node to upload"
@@ -292,7 +457,9 @@ export function FilesClient() {
         {progress && (
           <div className="mb-3 space-y-1" role="status" aria-live="polite">
             <div className="text-[11px] text-muted-foreground truncate">
-              Uploading {progress.name} ({progress.completed}/{progress.total} shards)
+              {progress.phase === "measuring"
+                ? `Checking ${progress.name} for duplicates…`
+                : `Uploading ${progress.name} (${progress.completed}/${progress.total} shards)`}
             </div>
             <Progress value={progress.total === 0 ? 0 : (progress.completed / progress.total) * 100} />
           </div>
@@ -305,6 +472,12 @@ export function FilesClient() {
         {actionError && (
           <p className="text-xs text-destructive mb-3" role="alert">
             {actionError}
+          </p>
+        )}
+
+        {mutationError && (
+          <p className="text-xs text-destructive mb-3" role="alert">
+            {mutationError}
           </p>
         )}
 
@@ -326,12 +499,66 @@ export function FilesClient() {
                 key={file.fileId}
                 file={file}
                 downloading={downloadingId === file.fileId}
+                busy={mutating}
                 onDownload={handleDownload}
+                onRename={openRename}
+                onDelete={openDelete}
               />
             ))}
           </div>
         )}
       </Section>
+
+      {renameTarget && (
+        <Modal
+          className="w-[420px] max-w-full"
+          onClose={mutating ? () => undefined : () => setRenameTarget(null)}
+        >
+          <ModalHeader
+            title="Rename file"
+            onClose={mutating ? () => undefined : () => setRenameTarget(null)}
+          />
+          <div className="p-5 space-y-4">
+            <Input
+              label="Name"
+              value={renameValue}
+              autoFocus
+              onChange={(e) => setRenameValue(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && void confirmRename()}
+            />
+            <div className="flex justify-end gap-2">
+              <Button variant="ghost" size="sm" onClick={() => setRenameTarget(null)} disabled={mutating}>
+                Cancel
+              </Button>
+              <Button
+                variant="primary"
+                size="sm"
+                onClick={() => void confirmRename()}
+                disabled={mutating || !renameValue.trim()}
+              >
+                {mutating ? "Saving…" : "Rename"}
+              </Button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {deleteTarget && (
+        <ConfirmDialog
+          title="Delete file"
+          destructive
+          busy={mutating}
+          confirmLabel="Delete"
+          description={
+            <>
+              Delete “{deleteTarget.name}”? It will be removed from your vault. The stored copy is
+              cleaned up under the retention policy.
+            </>
+          }
+          onConfirm={() => void confirmDelete()}
+          onClose={() => setDeleteTarget(null)}
+        />
+      )}
     </div>
   );
 }

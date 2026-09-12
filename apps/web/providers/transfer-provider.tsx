@@ -16,6 +16,8 @@ import { useAuth } from "./auth-provider";
 interface TransferContextValue {
   /** Undefined until IndexedDB hydration + manager construction complete. */
   uploadShard: (request: ShardTransferRequest) => Promise<TransferResult>;
+  /** True once the manager is hydrated and can run the fallback chain. */
+  ready: boolean;
   queuedCount: number;
   /** Null until capabilities resolve after mount (SSR-safe). */
   capabilities: WebRtcCapabilities | null;
@@ -63,6 +65,7 @@ export function TransferProvider({ children }: { children: ReactNode }) {
         setQueuedCount(manager.queuedCount);
         return result;
       },
+      ready: manager !== null,
       queuedCount,
       capabilities,
     }),

@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { hashShard } from "@repo/core";
+import { SHARD_SIZE_BYTES, hashShard } from "@repo/core";
 import type { EventPayload } from "@repo/protocol";
 
 import type { ShardUpload } from "../buffer";
 import type { UploadProgress } from "../upload-progress";
-import { uploadFile } from "../uploader";
+import { measurePlaintext, uploadFile } from "../uploader";
 import type { UploadDeps } from "../uploader";
 
 function makeDeps() {
@@ -151,5 +151,45 @@ describe("uploadFile", () => {
     await expect(uploadFile({ file, originId: "device-A", targetNode: "n1", deps })).rejects.toThrow("disk full");
     expect(calls.events).toHaveLength(0);
     expect(calls.postShard).toHaveLength(0);
+  });
+
+  it("measures plaintext shard count and a stable content hash", async () => {
+    const data = new Uint8Array(SHARD_SIZE_BYTES + 5);
+    const first = await measurePlaintext(fakeFile(data, "big.bin"));
+    const second = await measurePlaintext(fakeFile(data, "renamed.bin"));
+    expect(first.shardCount).toBe(2);
+    expect(first.versionHash).toMatch(/^[0-9a-f]{64}$/);
+    // Same content → same hash regardless of name (the dedupe key).
+    expect(second.versionHash).toBe(first.versionHash);
+  });
+
+  it("does not re-read the file for a supplied measurement", async () => {
+    const { deps, calls } = makeDeps();
+    const data = new Uint8Array(100);
+    let sliceCalls = 0;
+    const file = {
+      name: "a.bin",
+      size: data.length,
+      slice: (start: number, end?: number) => {
+        sliceCalls += 1;
+        return { arrayBuffer: async () => data.slice(start, end).buffer };
+      },
+    } as unknown as File;
+
+    const measured = await measurePlaintext(file);
+    const beforeUpload = sliceCalls;
+
+    await uploadFile({
+      file,
+      originId: "device-A",
+      targetNode: "n1",
+      deps,
+      versionHash: measured.versionHash,
+      shardCount: measured.shardCount,
+    });
+
+    // Only pass 2 (one read per shard) runs; no second measure pass.
+    expect(sliceCalls - beforeUpload).toBe(measured.shardCount);
+    expect(calls.postShard).toHaveLength(measured.shardCount);
   });
 });

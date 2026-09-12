@@ -1,54 +1,32 @@
 "use client";
 
-import { useCallback, useRef } from "react";
+import { useCallback } from "react";
 import { identityPublicKey } from "@repo/relay-client";
-import { MessageTypes } from "@repo/protocol";
-import type { BatchAckPayload, EventPayload } from "@repo/protocol";
+import type { EventPayload } from "@repo/protocol";
 
 import { useAuth } from "../providers/auth-provider";
-import { useWs } from "../providers/ws-provider";
 import { collectRecipients, envelopeEvent, sealFekForRecipients } from "./envelopes";
 import { nextOriginSequence } from "./sync-state";
+import { useEventBatch } from "./use-event-batch";
 import { browserUploadDeps } from "./upload-deps";
 import { uploadFile } from "./uploader";
-import type { UploadProgressEvent, UploadResult } from "./uploader";
-
-const EVENT_ACK_TIMEOUT_MS = 10_000;
+import type { FileMeasurement, UploadProgressEvent, UploadResult } from "./uploader";
+import type { ShardUpload, ShardUploadResult } from "./buffer";
 
 /**
- * Browser Path C upload entry point. Wires the uploader's injected deps to the
- * app's WebSocket (for sync events) and IndexedDB (FEK + progress).
+ * Browser upload entry point. Wires the uploader's injected deps to the app's
+ * WebSocket (for sync events) and IndexedDB (FEK + progress).
+ *
+ * `postShardOverride` lets the caller route each shard through the Transfer
+ * Manager's path chain (direct LAN WebRTC → relay signaling → relay buffer →
+ * local queue). Without it, shards go straight to the Relay buffer (Path C).
  */
-export function useUploader(onProgress?: (event: UploadProgressEvent) => void) {
+export function useUploader(
+  onProgress?: (event: UploadProgressEvent) => void,
+  postShardOverride?: (dto: ShardUpload) => Promise<ShardUploadResult>,
+) {
   const { device } = useAuth();
-  const { send, on } = useWs();
-  // The Relay's batch_ack carries no correlation id, so serialize event
-  // batches: two overlapping uploads must not race for the same ack.
-  const pendingRef = useRef<Promise<unknown>>(Promise.resolve());
-
-  const sendEventBatch = useCallback(
-    (events: EventPayload[]): Promise<BatchAckPayload> => {
-      const run = () =>
-        new Promise<BatchAckPayload>((resolve, reject) => {
-          let off: () => void = () => undefined;
-          const timer = setTimeout(() => {
-            off();
-            reject(new Error("timed out waiting for batch_ack"));
-          }, EVENT_ACK_TIMEOUT_MS);
-          off = on("batch_ack", (payload) => {
-            clearTimeout(timer);
-            off();
-            resolve(payload as BatchAckPayload);
-          });
-          send({ type: MessageTypes.EVENT_BATCH, payload: { events } });
-        });
-      // Chain so batches leave in arrival order and resolve against their own ack.
-      const next = pendingRef.current.then(run, run);
-      pendingRef.current = next.catch(() => undefined);
-      return next;
-    },
-    [on, send],
-  );
+  const sendEventBatch = useEventBatch();
 
   // Seal the FEK for this device plus every other active device and storage
   // node, then publish the envelopes as sync events (§25 F2).
@@ -76,7 +54,7 @@ export function useUploader(onProgress?: (event: UploadProgressEvent) => void) {
   );
 
   const upload = useCallback(
-    async (file: File, targetNode: string): Promise<UploadResult> => {
+    async (file: File, targetNode: string, measurement?: FileMeasurement): Promise<UploadResult> => {
       if (!device) {
         throw new Error("no device identity available for upload");
       }
@@ -85,11 +63,19 @@ export function useUploader(onProgress?: (event: UploadProgressEvent) => void) {
         originId: device.device_id,
         targetNode,
         sourceDevice: device.device_id,
-        deps: browserUploadDeps({ sendEventBatch, publishEnvelopes }),
+        deps: browserUploadDeps({
+          sendEventBatch,
+          publishEnvelopes,
+          ...(postShardOverride ? { postShard: postShardOverride } : {}),
+        }),
         onProgress,
+        // Pass the precomputed measurement so the uploader does not re-read the
+        // file after the Files UI hashed it for the duplicate check.
+        versionHash: measurement?.versionHash,
+        shardCount: measurement?.shardCount,
       });
     },
-    [device, sendEventBatch, publishEnvelopes, onProgress],
+    [device, sendEventBatch, publishEnvelopes, onProgress, postShardOverride],
   );
 
   return { upload, ready: Boolean(device) };

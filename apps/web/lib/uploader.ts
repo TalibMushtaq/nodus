@@ -60,8 +60,43 @@ export interface UploadFileOptions {
   sourceDevice?: string;
   fileId?: string;
   versionNumber?: number;
+  /** Precomputed plaintext hash from `measurePlaintext` (skips the measure pass). */
+  versionHash?: string;
+  /** Precomputed shard count from `measurePlaintext`. */
+  shardCount?: number;
   deps: UploadDeps;
   onProgress?: (event: UploadProgressEvent) => void;
+}
+
+/** Result of one sequential read that hashes the plaintext and counts shards. */
+export interface FileMeasurement {
+  /** BLAKE3 hex of the whole plaintext version. */
+  versionHash: string;
+  /** Shard count for the version (>= 1 even for an empty file). */
+  shardCount: number;
+}
+
+/**
+ * Hash the plaintext and count shards in one sequential read.
+ *
+ * Exposed so the upload UI can detect a duplicate (same content already stored)
+ * before committing, then hand the measurement to `uploadFile` so the bytes are
+ * not read a second time. An empty file still measures one zero-length shard to
+ * satisfy `shard_count >= 1`.
+ */
+export async function measurePlaintext(
+  file: File,
+  onProgress?: (event: UploadProgressEvent) => void,
+): Promise<FileMeasurement> {
+  const hasher = createPlaintextHasher();
+  let count = 0;
+  for (let offset = 0; offset < file.size; offset += SHARD_SIZE_BYTES) {
+    const chunk = new Uint8Array(await file.slice(offset, offset + SHARD_SIZE_BYTES).arrayBuffer());
+    hasher.update(chunk);
+    count += 1;
+    onProgress?.({ phase: "measuring", completedShards: 0, totalShards: count });
+  }
+  return { versionHash: hasher.digest(), shardCount: Math.max(1, count) };
 }
 
 export type UploadPhase = "measuring" | "announcing" | "uploading" | "done";
@@ -128,19 +163,15 @@ export async function uploadFile(options: UploadFileOptions): Promise<UploadResu
     completedShards = [...existing.completedShards];
     resumed = true;
   } else {
-    // Pass 1: measure shard count and hash the plaintext in one sequential read.
     fek = generateFileEncryptionKey();
-    const hasher = createPlaintextHasher();
-    let count = 0;
-    for (let offset = 0; offset < fileSize; offset += SHARD_SIZE_BYTES) {
-      const chunk = new Uint8Array(await file.slice(offset, offset + SHARD_SIZE_BYTES).arrayBuffer());
-      hasher.update(chunk);
-      count += 1;
-      onProgress?.({ phase: "measuring", completedShards: 0, totalShards: count });
-    }
-    // An empty file still needs one (zero-length) shard to satisfy shard_count >= 1.
-    totalShards = Math.max(1, count);
-    versionHash = hasher.digest();
+    // Reuse a caller-supplied measurement (the Files UI measures once to dedupe)
+    // so an accepted upload does not read the plaintext a second time.
+    const measured =
+      options.versionHash !== undefined && options.shardCount !== undefined
+        ? { versionHash: options.versionHash, shardCount: options.shardCount }
+        : await measurePlaintext(file, onProgress);
+    totalShards = measured.shardCount;
+    versionHash = measured.versionHash;
     encryptedName = encryptName(file.name, fek);
     announced = false;
     completedShards = [];

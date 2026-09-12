@@ -3,7 +3,7 @@
 // render offline-first and survive a reload.
 
 import type { RelayFile } from "./catalog";
-import { upsertCatalogEntries } from "./catalog";
+import { pruneCatalog, upsertCatalogEntries } from "./catalog";
 
 export async function fetchFiles(): Promise<RelayFile[]> {
   const res = await fetch("/api/files");
@@ -17,5 +17,8 @@ export async function fetchFiles(): Promise<RelayFile[]> {
 export async function refreshCatalog(): Promise<RelayFile[]> {
   const files = await fetchFiles();
   await upsertCatalogEntries(files);
+  // Reconcile against the snapshot: drop files the Relay no longer reports so
+  // the UI cannot render ghost rows from an earlier state/reset.
+  await pruneCatalog(new Set(files.map((file) => file.file_id)));
   return files;
 }
