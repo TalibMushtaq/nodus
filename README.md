@@ -216,12 +216,21 @@ Migrations run automatically on startup.
 
 ```bash
 cd services/storage-node
+cargo run                                   # interactive CLI
 cargo run -- --data-dir ~/NodusBackup       # or export NODUS_DATA_DIR=~/NodusBackup
 ```
 
-First run creates the data directory, initializes the SQLite database, and
-generates the node identity. Without `--data-dir` it prompts interactively
-(and picks `~/NodusBackup` by default).
+On a terminal, a bare `nodus` opens the interactive CLI: on first run it asks
+for the **Relay URL** and **pairing code** (mint one in the web app under
+Devices → “+ Add Storage Node”), then presents a menu — run the node, view the
+storage summary, list files/folders, show status, or pair/re-pair. The file and
+folder listings read this node's local SQLite and show ids and sizes only, since
+names are end-to-end encrypted and the node never holds a file key.
+
+Non-interactive invocations (systemd, pipes) skip the menu and boot the daemon
+directly; `nodus node start` always boots the daemon and `nodus node pair
+--relay <url> --code <code>` pairs without prompting. Without `--data-dir` the
+first run prompts for the data directory and defaults to `~/NodusBackup`.
 
 ### 5. Deploy the server unit (single origin)
 
