@@ -99,7 +99,18 @@ Any protocol change MUST:
 
 ## Starting defaults
 
-- `CURRENT_SCHEMA_VERSION = "1.0"` (see `src/version.ts`).
+- `CURRENT_SCHEMA_VERSION = "1.4"` (see `src/version.ts`). All bumps are additive
+  (same major, so `isCompatible` still accepts older peers):
+  - 1.0 → 1.1: `batch_ack` gained optional `ok` / `reason` /
+    `last_origin_sequence` for device-originated batches (Phase 14 Path C).
+  - 1.1 → 1.2: `snapshot_chunk` gained the `"folder"` record type and
+    `FolderRecord` shape so a Relay rebuild can reconstruct the folder tree
+    (Phase 14 F1).
+  - 1.2 → 1.3: `EventTypes` gained `KEY_ENVELOPE_ADDED` for FEK envelope
+    distribution (§25, Phase 14 F2).
+  - 1.3 → 1.4: `snapshot_chunk` gained the `"key_envelope"` record type and
+    `KeyEnvelopeRecord` shape so a Relay rebuild preserves FEK envelopes
+    (Phase 14 F2c).
 - `DEFAULT_SNAPSHOT_CHUNK_SIZE = 256 KB` (see `src/version.ts`). This is a starting
   point for snapshot traffic (§20, Relay ↔ Rust node only), **not** a
   protocol-enforced ceiling — implementations may negotiate or override it.

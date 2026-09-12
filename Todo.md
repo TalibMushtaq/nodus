@@ -405,13 +405,22 @@ stage 7b in §28 (inserted between 7a and 8).
   - [x] Presence (send on connect, expose incoming via `on()`)
   - [x] Message subscription layer (`on`/`off`)
   - [x] React provider (`apps/web/providers/ws-provider.tsx`), StrictMode-safe
-- [ ] Client-side uploader integration (Path C): shard the encrypted stream, emit sync events, and POST shards
-- [ ] Wire-level e2e: real Rust `run_sync_session` against a live Relay + Next.js client uploader
+- [x] Client-side uploader integration (Path C): shard the encrypted stream, emit sync events, and POST shards
+  - [x] Relay accepts device-originated `event_batch`, origin-bound to `device_id`, with
+        locked `origin_sequence` monotonicity and `sequence_regression` recovery
+  - [x] `apps/web/lib/uploader.ts` two-pass hash/upload, FEK persistence gate, resumable progress
+  - [x] `apps/web/app/api/buffer/upload/route.ts` streaming Next proxy
+- [x] Wire-level e2e: real Rust `run_sync_session` against a live Relay + Next.js client uploader
+      (`scripts/e2e-path-c.sh` + `scripts/e2e-path-c/run-uploader.ts`, incl. kill/resume)
 - [x] First-time pairing flow (Web UI): "+ Add Storage Node" pairing-code dialog —
       show relay URL + code + expiry countdown, poll node status (plan §7b);
       **QR-based pairing deferred (non-goal)**
-- [ ] Client local DB (cached catalog, credentials, trusted nodes, sync state)
-- [ ] Browser-specific WebRTC/mDNS handling, with fallback UX when local network access is unavailable
+- [x] Client local DB (cached catalog, credentials, trusted nodes, sync state)
+      (`apps/web/lib/db.ts` stores: catalog, sync_state, path_cache, transfer_queue,
+      upload_progress, keys; `GET /files` + `/api/files` catalog read path)
+- [x] Browser-specific WebRTC/mDNS handling, with fallback UX when local network access is unavailable
+      (`lib/local-network.ts` capability/mixed-content guards, `lib/transfer/attempt-path.ts`
+      A/B→C→D bridge, `TransferPathBanner`; web still skips active mDNS per decision D)
  
 ## Phase 15 — Expo Mobile Client
  
@@ -475,3 +484,34 @@ but should be resolved before the phase that depends on them:
       plan §7b); QR format deferred (non-goal)
 
 - [ ] Replace the device private key stored in `localStorage` with a non-exportable WebCrypto Ed25519 key persisted in IndexedDB, and refactor the identity/signing API to use the key handle instead of exposing `private_key`.
+
+### Phase 14 follow-ups (tracked so they don't disappear when the Phase 14 boxes are checked)
+
+- [x] **Folder projection (F1).** `folders` table + `FOLDER_CREATED`/`FOLDER_DELETED`
+      projection on both the Relay (`011_folders`, with tombstone no-resurrect and
+      foreign-folder rejection) and the Rust node; `"folder"` snapshot record type +
+      `rebuild_folders` staging + promotion keep a Relay rebuild lossless; both types
+      added to the device whitelist. No folder UI yet.
+- [x] **§25 key-envelope transmission (F2a).** The uploader now derives each
+      device/node encryption key as X25519 from its Ed25519 identity
+      (`packages/core` `deriveEncryptionKeypair`), seals the FEK for every active
+      device + node (`apps/web/lib/envelopes.ts`), and publishes
+      `KEY_ENVELOPE_ADDED` events that the Relay projects into `key_envelopes`;
+      `GET /envelopes?file_id=` reads them back. Device revocation already removes
+      the revoked device's envelopes.
+  - [x] **F2b — download/decrypt path.** `apps/web/lib/download.ts` opens the
+        device's envelope, fetches each `NODE_STORED` shard from the node's
+        device-authenticated endpoint (`X-Nodus-Device-Id` stateless signature),
+        verifies BLAKE3 before decrypting, reassembles, and decrypts the name;
+        the shard blob is now `nonce||ciphertext` (`packEncryptedShard`) so the
+        nonce survives the round trip. Distinct errors for missing envelope,
+        unavailable shard, and integrity failure. Covered by unit tests and the
+        second-device `scripts/e2e-path-c.sh` assertion.
+        (`recipient_kind` is persisted on `key_envelopes` via migration 012.)
+  - [x] **F2c — envelope snapshot persistence.** Rust `key_envelopes` table +
+        `engine.rs` projection + `"key_envelope"` snapshot record type; the Relay
+        stages `rebuild_key_envelopes` and replaces the account's live envelopes
+        on promotion, so a full rebuild no longer drops them.
+- [x] Add a CI job that runs `scripts/e2e-path-c.sh` and
+      `scripts/e2e-bootstrap-pairing.sh` against the deploy compose unit
+      (`.github/workflows/e2e.yml`; scheduled/manual, not PR-blocking).

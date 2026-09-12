@@ -109,7 +109,31 @@ A folder was created.
 
 A folder was deleted.
 
-Same payload shape as `FOLDER_CREATED`.
+Same payload shape as `FOLDER_CREATED`; `folder_id` is the only required field.
+
+> **Projection:** since Phase 14 F1 both folder events are projected by the Relay
+> (`folders` table) and the Rust node, and are accepted from authenticated
+> devices. A `FOLDER_CREATED` whose id already has a tombstone is acknowledged
+> but not projected, so a long-offline device cannot resurrect a deleted folder.
+> Folders are also carried in snapshots via the `"folder"` chunk record type.
+
+### `KEY_ENVELOPE_ADDED`
+
+A device published an opaque FEK envelope so a recipient can decrypt a file
+(§25, Phase 14 F2). The payload is:
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `file_id` | string | yes | The file the FEK belongs to |
+| `recipient_id` | string | yes | `device_id` or `node_id` the FEK is sealed for |
+| `recipient_kind` | `"device"` \| `"node"` | yes | Which identity space `recipient_id` is in |
+| `encrypted_key` | string | yes | Opaque client encoding of the sealed FEK |
+
+The Relay projects this into `key_envelopes(file_id, recipient_id, recipient_kind,
+encrypted_key)` and **never sees the FEK**. Revoking a device deletes its
+envelopes. Envelopes are carried in snapshots (`"key_envelope"` chunk record
+type), so a full Relay rebuild preserves them; the node stores them opaquely
+without being able to open them.
 
 ## Adding a new event type
 

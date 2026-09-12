@@ -223,6 +223,25 @@ is finalized.
 |---|---|---|---|
 | `events` | array of events | yes | Events ordered by `origin_sequence` within each origin |
 
+Both Storage Nodes and (Phase 14) authenticated **devices** may send `event_batch`.
+A device-originated batch is validated server-side: every event's `origin_id` must
+equal the session `device_id`, its type must be in the device whitelist, and its
+`origin_sequence` must be strictly greater than the locked per-origin cursor. The
+whole batch applies in one transaction or not at all.
+
+### `batch_ack`
+
+Acknowledges an `event_batch`. Node batches carry only `applied_event_ids`;
+device batches additionally carry the result fields.
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `batch_id` | string | no | Reserved; not currently set by the Relay |
+| `applied_event_ids` | array of strings | yes | Events applied (or already applied) |
+| `ok` | boolean | no | Device batches: false = rejected wholesale, nothing applied |
+| `reason` | string | no | Device rejection reason (`sequence_regression`, `origin_mismatch`, `event_type_not_allowed`) |
+| `last_origin_sequence` | integer ≥ 0 | no | Device batches: server cursor to re-sync a stale local counter from |
+
 ### `reconcile`
 
 Physical reconciliation signal (§21). Carries a content hash / manifest reference
@@ -263,7 +282,15 @@ same index for idempotency.
 |---|---|---|---|
 | `snapshot_id` | string | yes | Snapshot identifier |
 | `chunk_index` | integer ≥ 0 | yes | 0-based reassembly order |
-| `data` | string | yes | Chunk payload (base64 or binary depending on transport) |
+| `record_type` | `"file_version"` \| `"folder"` \| `"key_envelope"` \| `"tombstone"` | yes | Chunks are homogeneous |
+| `records` | array | yes | Up to `SNAPSHOT_CHUNK_MAX_RECORDS` (1000) records of `record_type` |
+
+`folder` records (`Phase 14 F1`) carry `folder_id`, `parent_folder_id`,
+`encrypted_name`, and `created_at`, and let a Relay rebuild reconstruct the
+folder tree instead of leaving files with dangling parent references.
+`key_envelope` records (`Phase 14 F2c`) carry `file_id`, `recipient_id`,
+`recipient_kind`, and the opaque `encrypted_key`, so a rebuild preserves FEK
+envelopes.
 
 ### `snapshot_end`
 

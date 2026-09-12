@@ -129,12 +129,13 @@ immediately on failure of a cached path.
 ### TypeScript client-side
 
 In-memory `Map<string, { path, lastSuccessAt }>` with a generic
-`PathCache` interface. Phase 14 will plug in IndexedDB/SQLite persistence.
-The interface is:
+`PathCache` interface. Phase 14 plugs in IndexedDB persistence for the web
+(`apps/web/lib/transfer/path-cache.ts`, `IndexedDBPathCache`); SQLite for
+mobile remains a later backend. The interface is:
 
 ```typescript
 interface PathCache {
-  get(nodeId: string): TransferPath | undefined;
+  get(nodeId: string): PathCacheEntry | undefined;
   set(nodeId: string, path: TransferPath): void;
   evict(nodeId: string): void;
 }
@@ -151,11 +152,14 @@ interface LocalQueue {
   peek(): QueueItem | undefined;
   remove(transferId: string): void;
   onConnectivityRestored(callback: () => void): void;
+  notifyConnectivityRestored(): void;
+  readonly size: number;
 }
 ```
 
 Default implementation: `MemoryLocalQueue` (in-process, not persisted).
-Phase 14 adds `IndexedDBLocalQueue` for web, `SQLiteLocalQueue` for mobile.
+Phase 14 adds `IndexedDBLocalQueue` (`apps/web/lib/transfer/local-queue.ts`)
+for web; `SQLiteLocalQueue` for mobile remains a later backend.
 
 Retry scheduling is triggered on connectivity restoration or Relay
 reachability — not a blind timer.
