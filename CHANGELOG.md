@@ -1,5 +1,65 @@
 # Changelog
 
+## [2026-09-12] - Node shell `status`: live relay/direct/local connections
+
+**What changed:** The storage-node `status` command now renders a `Connections` block (replacing `Sync link`) with three lines: `Relay WS` (connected/connecting/disconnected), `Direct (internet)` (live + cumulative WebRTC client sessions), and `Local` (the `:9378` LAN listener + last LAN auth). Relay link state is published the moment Relay auth succeeds via a new `SyncClient::new` `on_connected` hook (`sync/client.rs`), so it shows "connected" while a session is *running* instead of only after it ends. `Telemetry` gained `direct_active`/`direct_sessions`/`last_direct_rfc3339`/`local_listening`/`local_last_auth_rfc3339`; `WebRtcManager` publishes direct-session counts (create + reaper prune), and the local server publishes listening + LAN-auth events (`local/server.rs`). `test` gained a `Direct` line. `telemetry` is now `pub mod` in `lib.rs` so the shell's readers can be shared.
+**Why:** `Relay WS` stayed "connecting…" for the entire (long) sync session because `session_up()` only fired when the session returned; and operators had no visibility into direct client or LAN connectivity.
+**Impact:** `services/storage-node/src/{sync/client.rs,telemetry.rs,webrtc/session.rs,local/{mod.rs,server.rs},shell.rs,main.rs,lib.rs}`, `tests/webrtc_transfer_test.rs`. Verified: `cargo build`, `clippy --all-targets -- -D warnings`, `fmt --check`, `cargo test` (278 pass).
+**Follow-ups:** Direct-active is a session-count snapshot (reaper refreshes every 60 s); a full WebRTC datachannel-open/close signal would make it exact.
+
+## [2026-09-12] - Live node status on the devices page
+
+**What changed:** `devices-client.tsx` now re-fetches `GET /api/nodes` and `/api/devices` every 30 s through a `setInterval` effect (same cadence as the sidebar's `useNodeStatus`), updating `nodes`/`devices` state so the online/offline badges recompute via `isNodeOnline()`.
+**Why:** The page fetched the catalog once on mount and never re-rendered, so a storage node that stopped heartbeating stayed green "online" indefinitely until a manual reload or unrelated state change. The Relay's `last_seen_at` was already correct — verified frozen after the node quit — only the client refresh was missing.
+**Impact:** `apps/web/app/(dashboard)/devices/devices-client.tsx`. A quit node now flips to offline once `last_seen_at` ages past the 2-minute heartbeat window (up to ~3.5 min including the Relay's 1/min throttled DB write).
+**Follow-ups:** None.
+
+## [2026-09-12] - Add node online status to sidebar
+
+**What changed:** The sidebar now shows two live status lines:
+```
+Relay  · Connected
+Node   · Online (1/1)
+```
+A `useNodeStatus` hook (`lib/use-node-status.ts`) polls `GET /api/nodes` every 30 s, derives online/offline counts via the existing `isNodeOnline()` check (2-minute heartbeat window), and renders them in the sidebar. Badge: green when any node is online, grey/red when offline or not paired. Collapsed sidebar still hides both lines (dot-only mode unchanged).
+**Why:** Only the relay connection was visible — there was no way to tell at a glance whether the paired storage node(s) were reachable.
+**Impact:** `apps/web/{lib/use-node-status.ts,components/sidebar.tsx}`. Verified: `check-types`, `lint --max-warnings 0`, `test` (133), `build`.
+**Follow-up:** `useNodeStatus` re-fetches on a fixed interval; for a tighter UX it could re-trigger on WS reconnect events.
+
+## [2026-09-12] - Interactive storage-node shell with live diagnostics
+
+**What changed:** `nodus` (and `nodus node start`) no longer blocks silently on Ctrl+C when run on a terminal. `boot_daemon` now hands control to an interactive shell (`shell.rs`) with `help`, `status` (identity, config, uptime, sync link), `storage`, `files`, `folders`, `devices` (paired clients + last auth), `test`/`diag` (live checks: relay `/health` over HTTP, relay WebSocket state, local `:9378` discovery, storage counters), and `quit`. The sync loop publishes its connect/session/failure state into a shared `Telemetry` (`telemetry.rs`), so `test` reflects the *live* link instead of dialing a duplicate connection. Piped/systemd runs keep the legacy non-interactive behavior (still gated on stdin being a terminal).
+**Why:** While the node runs there was no way to see current activity or verify relay/client connectivity without stopping it.
+**Impact:** `services/storage-node/src/{shell.rs,telemetry.rs}` (new), `src/main.rs` (telemetry wiring + TTY branch). Verified: `cargo build`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`, `cargo test` (271 pass), plus a PTY smoke test of the shell.
+**Follow-ups:** `test` reports paired clients from `devices.last_authenticated_at` (node has no live client heartbeat); local HTTP check hits whichever node owns `:9378`.
+
+## [2026-09-12] - Add "Change data location" menu option
+
+**What changed:** Added a **Change data location** option to the interactive menu (`menu.rs`). Selecting it launches the same first-run wizard (`config::change_data_dir`) used at setup, pre-filling the current path and re-running the create-if-missing / writable / prior-install / cloud-sync / removable-drive checks — but then *only* rewrites the `data_dir` field in `config.toml`, preserving the existing `relay_url` so the pairing survives the move. No operator ever needs to hand-edit `config.toml`.
+**Why:** Operators had no built-in way to choose or change the backup directory after initial setup.
+**Impact:** `services/storage-node/src/{config/mod.rs,config/prompt.rs,menu.rs}`; new `write_config` helper + unit test for relay preservation. Verified: `cargo build`, `clippy -D warnings`, `fmt --check`, `cargo test` (271 pass), PTY smoke test confirming the new menu item renders.
+
+## [2026-09-12] - Record delete/restore actions in Activity
+
+**What changed:** Extended the on-device activity log (`lib/transfer-log.ts`) with `delete`/`restore` kinds and a `logTransferAction` helper. The Files page now logs a completed "Moved to Tombstone" entry on soft delete, and the Tombstone page logs "Restored from Tombstone" / "Permanently deleted" (and failures with the error detail) for restore and permanent delete. The Activity view renders these with `trash`/`refresh` icons and new **Deletes** and **Restores** filters, and its empty-state copy now mentions deletes/restores.
+**Why:** Activity only tracked uploads/downloads, so deleting or restoring from Tombstone never appeared there.
+**Impact:** `apps/web/lib/{transfer-log.ts,__tests__/transfer-log.test.ts}`, `apps/web/app/(dashboard)/{activity/activity-client.tsx,files/files-client.tsx,tombstones/tombstones-client.tsx}`. Verified: web `lint`/`check-types`/`test` (133) and `build`.
+**Follow-ups:** Activity is device-local (no Relay history endpoint), so these entries exist only in the browser that performed the action.
+
+## [2026-09-12] - Tombstone (soft-delete) view with per-node purge and restore
+
+**What changed:** Deletes now surface in a **Tombstone** view with per-node progress, restore, permanent delete, and 90-day auto-purge. **Protocol** (`CURRENT_SCHEMA_VERSION` 1.4→1.5): added the `TOMBSTONE_REMOVED` event and the `tombstone_ack` / `purge_tombstone` / `restore_tombstone` Relay↔Node messages, with regenerated schemas. **Relay:** migration `014_tombstone_trash` adds `tombstones.purge_after`/`purge_requested_at` and `tombstone_node_status`; new `GET /tombstones`, `DELETE /tombstones/{type}/{id}`, `POST /tombstones/{type}/{id}/restore`; projects `TOMBSTONE_REMOVED`; ingests node `tombstone_ack`; rejects `FILE_CREATED`/`FILE_VERSION_ADDED` for tombstoned files (anti-resurrection); filters folder tombstones in `GET /folders`; and the retention pruner now purges the entity data (fixing a latent bug where only the tombstone row was deleted, so a deleted file resurrected after 90 days). **Storage Node:** emits `tombstone_ack{deleted}`, handles `purge_tombstone` (frees versions/shards/objects) and `restore_tombstone`, and GC purges tombstoned entities at retention. **Web:** new `/tombstones` page + sidebar entry, API proxies, `lib/tombstones.ts` + `lib/use-tombstones.ts`; Files delete greys the row with "Deleting…" then moves the item to Tombstone; per-item status ("Deleted from Relay/Node", "waiting for node", "Purging", "Permanently deleted"), purge countdown, and Restore / Delete permanently actions.
+**Why:** Deleting appeared to do nothing — files returned on refresh and their data was never removed from the node — with no restore, no delete progress, and no dedicated soft-delete view.
+**Impact:** `packages/protocol/src/{messages/tombstone.ts(new),envelope.ts,index.ts,schema-gen.ts,version.ts,events/event-types.ts}` + generated `schemas/*`; `services/relay/internal/{db/migrations/014_tombstone_trash.*,handler/{tombstones.go(new),sync.go,ws.go,folders.go},tombstone/tombstone.go}`, `services/relay/main.go`; `services/storage-node/src/{sync/client.rs,store/gc.rs}`; `apps/web/{app/api/tombstones/**,app/(dashboard)/tombstones/**,components/{sidebar,app-shell}.tsx,app/(dashboard)/files/files-client.tsx,lib/{tombstones.ts,use-tombstones.ts,__tests__/tombstones.test.ts}}`. Verified: `@repo/protocol` tests (54) + schema generation, web `lint`/`check-types`/`test` (132) + `build`, `go build ./...` + handler tests, `cargo clippy -D warnings` + node tests (138). Applied migration 014 to the dev DB.
+**Follow-ups:** The **Relay must be restarted** to load migration 014 and the new endpoints. Data is retained until purge (so restore works); permanent delete waits for every owning node to ack. Folder names in Tombstone show a short id (no web folder-key path yet) and folder purge does not cascade to contained files.
+
+## [2026-09-12] - Resync incomplete files and auto-retry queued shards
+
+**What changed:** Incomplete ("Local only") files now have a recovery path and automatic retry. `TransferProvider` exposes `queuedCount` (Path D local-queue size), `hasPending(fileId)`, and `retryPending()`, and drains the local queue automatically whenever the relay socket reaches `connected` — so a file whose shards were queued while offline is uploaded without user action once connectivity returns. `IndexedDBLocalQueue.hasFile(fileId)` reports per-file pending shards. `useUploader.upload` accepts an optional `{ fileId, versionNumber }` so re-selecting a file resumes the existing incomplete entry instead of duplicating it, matching by content hash (`findIncompleteByHash`). The Files UI gained a per-row **Resync** button (on any file not `On node`) that drains queued shards or, when no ciphertext is retained, asks the user to re-select the original file, plus a "Retry N pending" toolbar button. Delete now calls `useFiles.forget` to remove the row locally after the tombstone is acknowledged, so it disappears immediately rather than only after a Relay restart.
+**Why:** Files that were announced but never stored had no recovery option, failed shard uploads were never retried, and delete appeared to do nothing because the refreshed catalog still returned the file.
+**Impact:** `apps/web/providers/transfer-provider.tsx`, `apps/web/lib/{use-uploader.ts,use-files.ts,file-view.ts,transfer/local-queue.ts}`, `apps/web/app/(dashboard)/files/files-client.tsx`; tests in `file-view.test.ts` and `local-db.test.ts`. Verified: web `lint`/`check-types`/`test` (127), `build`, root `lint`/`check-types`/`test:ts`.
+**Follow-ups:** Resync can only re-send retained ciphertext (the Path D queue) or bytes from a re-selected file; a failed upload whose shards were never queued is unrecoverable client-side. The Relay still needs a restart for the `GET /files` tombstone filter so deletes persist across reloads.
+
 ## [2026-09-12] - Enable file rename and delete in the Files UI
 
 **What changed:** Rename and Delete are now functional instead of disabled placeholders. **Rename** re-emits a `FILE_CREATED` event carrying the new FEK-encrypted name (the projection on both the Relay and the Storage Node is an upsert that updates `encrypted_name`/`parent_folder_id` without touching versions); a Rename dialog pre-fills the current name. **Delete** emits `TOMBSTONE_CREATED` with the tombstone shape (`entity_type`/`entity_id`) that the Relay and Node parsers expect — the `FILE_DELETED` protocol schema is a `file_id` payload and would project nothing — behind a confirmation, and the Relay's `GET /files` now excludes tombstoned files so deleted files disappear from the catalog (the client's refresh also prunes them). New `lib/{file-events.ts,use-file-mutations.ts,use-event-batch.ts}` (the last shared with `useUploader`, whose inline batch sender it replaces).

@@ -95,6 +95,18 @@ device (§17). Retention is governed by the GC policy (§29a).
 | `entity_id` | string | yes | The deleted entity's ID |
 | `deleted_at` | ISO 8601 string | yes | When the deletion happened |
 
+### `TOMBSTONE_REMOVED`
+
+Restore: removes a tombstone so the entity is live again. Emitted by a device
+from the Tombstone view; both the Relay and the Storage Node delete their
+tombstone row, and retained node data is no longer purged at the original
+retention deadline.
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `entity_type` | enum | yes | `file` or `folder` |
+| `entity_id` | string | yes | The restored entity's ID |
+
 ### `FOLDER_CREATED`
 
 A folder was created.

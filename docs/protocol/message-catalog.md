@@ -168,6 +168,39 @@ via `POST /buffer/upload` while the target node was offline. Includes a
 | `hash` | string | yes | BLAKE3 hex digest — node verifies after fetch |
 | `size` | integer ≥ 0 | yes | Encrypted payload size in bytes — node verifies after fetch |
 
+### `tombstone_ack`
+
+Node → Relay. Reports this node's progress on a tombstoned (soft-deleted)
+entity so the Tombstone view can show per-node status. Sent after applying a
+tombstone (`deleted`) and after permanently removing the data (`purged`). The
+node id is taken from the authenticated WS connection, never the payload.
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `entity_type` | enum | yes | `file` or `folder` |
+| `entity_id` | string | yes | The tombstoned entity's ID |
+| `status` | enum | yes | `deleted` or `purged` |
+
+### `purge_tombstone`
+
+Relay → Node. Ask the node to permanently remove a tombstoned entity's
+versions/shards/objects. The node replies with `tombstone_ack{status:purged}`.
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `entity_type` | enum | yes | `file` or `folder` |
+| `entity_id` | string | yes | The entity to purge |
+
+### `restore_tombstone`
+
+Relay → Node. Undo a tombstone: the node deletes its tombstone row so retained
+data is not purged at the original retention deadline.
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `entity_type` | enum | yes | `file` or `folder` |
+| `entity_id` | string | yes | The entity to restore |
+
 ### `shard_fetch`
 
 Request to retrieve a shard from a peer or the Relay buffer.
