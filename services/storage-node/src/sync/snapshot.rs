@@ -383,18 +383,16 @@ pub async fn build_snapshot(
 /// Next monotonic per-node snapshot sequence number. Persisted in SQLite so
 /// concurrent snapshot attempts on the same node can't double-assign a number.
 async fn bump_snapshot_counter(db: &SqlitePool) -> anyhow::Result<i64> {
-    sqlx::query(
+    // A single upsert with `RETURNING` is atomic: a separate follow-up SELECT
+    // would let two concurrent callers read the same value (the old comment
+    // claimed an atomicity the two-statement version did not have).
+    let current: i64 = sqlx::query_scalar(
         r#"
         INSERT INTO snapshot_counter (counter_name, value)
         VALUES ('snapshot_sequence', 1)
         ON CONFLICT(counter_name) DO UPDATE SET value = snapshot_counter.value + 1
+        RETURNING value
         "#,
-    )
-    .execute(db)
-    .await?;
-
-    let current: i64 = sqlx::query_scalar(
-        "SELECT value FROM snapshot_counter WHERE counter_name = 'snapshot_sequence'",
     )
     .fetch_one(db)
     .await?;

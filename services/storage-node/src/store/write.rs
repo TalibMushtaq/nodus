@@ -26,6 +26,15 @@ pub(crate) fn fsync_dir(dir: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// True when the file at `path` hashes to `expected_hex`. Streams the file so a
+/// large shard is not read into memory just to dedup-check it.
+pub(crate) fn object_is_intact(path: &Path, expected_hex: &str) -> std::io::Result<bool> {
+    let file = fs::File::open(path)?;
+    let mut hasher = blake3::Hasher::new();
+    hasher.update_reader(file)?;
+    Ok(hasher.finalize().to_hex().as_str() == expected_hex)
+}
+
 /// Content-addressed object store backed by on-disk files and SQLite metadata.
 #[derive(Clone)]
 pub struct ObjectStore {
@@ -96,24 +105,35 @@ impl ObjectStore {
         let size = bytes.len() as i64;
 
         if dest.exists() {
-            // Already on disk; ensure metadata matches.
-            sqlx::query(
-                r#"
-                INSERT INTO storage_objects (object_id, size_bytes, status, created_at)
-                VALUES (?, ?, 'STORED', ?)
-                ON CONFLICT(object_id) DO UPDATE SET
-                    status = 'STORED',
-                    size_bytes = excluded.size_bytes
-                "#,
-            )
-            .bind(&hash_hex)
-            .bind(size)
-            .bind(&now)
-            .execute(&self.pool)
-            .await
-            .context("updating existing storage_objects row to STORED")?;
+            // Dedup only if the on-disk bytes still hash to their address. A
+            // corrupt or tampered file would otherwise be reported as a
+            // successful store while `get` later fails; fall through to rewrite
+            // it atomically when the content does not match.
+            let intact = object_is_intact(&dest, &hash_hex).unwrap_or(false);
+            if intact {
+                // Already on disk; ensure metadata matches.
+                sqlx::query(
+                    r#"
+                    INSERT INTO storage_objects (object_id, size_bytes, status, created_at)
+                    VALUES (?, ?, 'STORED', ?)
+                    ON CONFLICT(object_id) DO UPDATE SET
+                        status = 'STORED',
+                        size_bytes = excluded.size_bytes
+                    "#,
+                )
+                .bind(&hash_hex)
+                .bind(size)
+                .bind(&now)
+                .execute(&self.pool)
+                .await
+                .context("updating existing storage_objects row to STORED")?;
 
-            return Ok(hash_hex);
+                return Ok(hash_hex);
+            }
+
+            // Remove the bad copy so the temp+rename below can replace it on
+            // every platform (Windows `rename` refuses an existing target).
+            let _ = fs::remove_file(&dest);
         }
 
         if let Some(parent) = dest.parent() {
@@ -362,6 +382,27 @@ mod tests {
 
         let retrieved = store.get(&hash).await.unwrap();
         assert_eq!(retrieved, data);
+    }
+
+    #[tokio::test]
+    async fn put_repairs_corrupt_existing_object() {
+        let dir = tempdir().unwrap();
+        let pool = create_test_db(dir.path()).await;
+        let store = ObjectStore::new(dir.path().to_path_buf(), pool)
+            .await
+            .unwrap();
+
+        let data = b"important shard";
+        let hash = store.put(data).await.unwrap();
+
+        // Corrupt the bytes at the content-addressed path, then re-store the
+        // same content. Dedup must not report success over the bad file.
+        let dest = layout::object_path(dir.path(), &hash).unwrap();
+        fs::write(&dest, b"corrupted").unwrap();
+        assert!(store.put(data).await.is_ok());
+
+        let retrieved = store.get(&hash).await.unwrap();
+        assert_eq!(retrieved, data, "put must restore the correct bytes");
     }
 
     #[tokio::test]

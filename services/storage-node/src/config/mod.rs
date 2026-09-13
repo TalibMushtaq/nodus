@@ -327,7 +327,9 @@ fn adopt_and_save(
         relay_url: None,
     };
     let toml = toml::to_string(&cfg).map_err(|e| ConfigError::Parse(e.to_string()))?;
-    fs::write(config_path, toml)?;
+    // Durable write: a crash mid-first-run must not leave config.toml truncated
+    // and unparseable, which would block every subsequent boot.
+    write_file_durable(nodus_dir, config_path, toml.as_bytes())?;
     Ok(cfg.data_dir)
 }
 

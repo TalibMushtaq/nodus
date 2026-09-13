@@ -93,50 +93,115 @@ pub fn existing_node_id(nodus_dir: &Path) -> Option<String> {
 }
 
 fn load_key(path: &Path) -> anyhow::Result<SigningKey> {
-    let bytes =
-        fs::read(path).with_context(|| format!("reading private key {}", path.display()))?;
-    if bytes.len() != 32 {
+    use std::io::Read;
+    use zeroize::Zeroizing;
+
+    // Warn (but continue) on a key file that is group/world-accessible: a hard
+    // failure would break unattended restarts on a misconfigured install, but
+    // the operator must be told the private key is exposed.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = fs::metadata(path)?.permissions().mode() & 0o777;
+        if mode & 0o077 != 0 {
+            eprintln!(
+                "[identity] warning: private key {} has permissions {mode:o}; \
+                 expected 0600 (owner read/write only)",
+                path.display()
+            );
+        }
+    }
+
+    let file =
+        fs::File::open(path).with_context(|| format!("reading private key {}", path.display()))?;
+    let len = file
+        .metadata()
+        .with_context(|| format!("stat private key {}", path.display()))?
+        .len();
+    if len != 32 {
         bail!(
-            "private key file {} has {} bytes, expected 32",
+            "private key file {} has {} bytes, expected 32; \
+             restore it from backup or remove it to generate a new identity \
+             (a new identity requires re-pairing)",
             path.display(),
-            bytes.len()
+            len
         );
     }
-    let mut key_bytes = [0u8; 32];
-    key_bytes.copy_from_slice(&bytes);
+
+    // Read directly into a fixed buffer wrapped in `Zeroizing` so the private
+    // bytes are cleared from memory on drop (the header comment's promise).
+    let mut key_bytes = Zeroizing::new([0u8; 32]);
+    file.take(32)
+        .read_exact(&mut *key_bytes)
+        .with_context(|| format!("reading private key {}", path.display()))?;
     Ok(SigningKey::from_bytes(&key_bytes))
 }
 
 fn generate_and_persist(path: &Path) -> anyhow::Result<SigningKey> {
+    use zeroize::Zeroizing;
+
     let key = SigningKey::generate(&mut OsRng);
-    write_private_key(path, key.as_bytes())?;
+    // Write the raw bytes through a Zeroizing copy so the intermediate is also
+    // cleared; `as_bytes` borrows the key, which zeroizes itself on drop.
+    let bytes = Zeroizing::new(*key.as_bytes());
+    write_private_key(path, &bytes[..])?;
     Ok(key)
 }
 
-/// Write `bytes` to `path` with `0o600` permissions (Unix: owner-only).
+/// Write `bytes` to `path` atomically with `0o600` permissions (Unix:
+/// owner-only). A sibling temp file is written with the restricted mode first,
+/// then renamed over `path`; a crash mid-write therefore leaves either no key
+/// or the complete key, never a truncated one that would brick the node.
 fn write_private_key(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
     use std::io::Write;
 
+    let tmp = path.with_extension("tmp");
+
     // On Unix, open with restricted permissions before writing any bytes.
     #[cfg(unix)]
-    {
+    let mut file = {
         use std::os::unix::fs::OpenOptionsExt;
-        let mut file = fs::OpenOptions::new()
+        fs::OpenOptions::new()
             .write(true)
-            .create_new(true)
+            .create(true)
+            .truncate(true)
             .mode(0o600)
-            .open(path)
-            .with_context(|| format!("creating private key file {}", path.display()))?;
-        file.write_all(bytes)
-            .with_context(|| format!("writing private key file {}", path.display()))?;
-    }
+            .open(&tmp)
+            .with_context(|| format!("creating private key file {}", tmp.display()))?
+    };
     // Non-Unix fallback (Windows dev environments).
     #[cfg(not(unix))]
-    {
-        fs::write(path, bytes)
-            .with_context(|| format!("writing private key file {}", path.display()))?;
-    }
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&tmp)
+        .with_context(|| format!("creating private key file {}", tmp.display()))?;
 
+    file.write_all(bytes)
+        .with_context(|| format!("writing private key file {}", tmp.display()))?;
+    file.sync_all()
+        .with_context(|| format!("syncing private key file {}", tmp.display()))?;
+    drop(file);
+
+    fs::rename(&tmp, path).with_context(|| {
+        format!(
+            "renaming private key {} to {}",
+            tmp.display(),
+            path.display()
+        )
+    })?;
+    if let Some(parent) = path.parent() {
+        // Best-effort: make the renamed entry durable.
+        #[cfg(unix)]
+        {
+            let _ = fs::File::open(parent).and_then(|d| d.sync_all());
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = parent;
+        }
+    }
     Ok(())
 }
 
@@ -189,5 +254,35 @@ mod tests {
             existing_node_id(dir.path()).as_deref(),
             Some(generated.node_id.as_str())
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn private_key_is_owner_only_and_no_temp_left_behind() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempdir().unwrap();
+        load_or_generate(dir.path()).unwrap();
+
+        let key_path = dir.path().join(IDENTITY_DIR).join(PRIVATE_KEY_FILE);
+        let mode = fs::metadata(&key_path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "private key must be owner read/write only");
+        assert!(
+            !key_path.with_extension("tmp").exists(),
+            "atomic write must not leave a temp file"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn wide_permission_key_still_loads() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempdir().unwrap();
+        load_or_generate(dir.path()).unwrap();
+        let key_path = dir.path().join(IDENTITY_DIR).join(PRIVATE_KEY_FILE);
+        // Loosen permissions; load must warn but still succeed (a hard failure
+        // would break unattended restarts).
+        fs::set_permissions(&key_path, fs::Permissions::from_mode(0o644)).unwrap();
+        let id = load_or_generate(dir.path()).unwrap();
+        assert_eq!(id.node_id.len(), 64);
     }
 }

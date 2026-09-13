@@ -7,6 +7,7 @@
 //!   - Within 24-hour grace period -> kept (pending)
 //!   - Past 24-hour grace period -> deleted
 
+use std::collections::HashSet;
 use std::fs;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -15,7 +16,7 @@ use anyhow::Context;
 use walkdir::WalkDir;
 
 use super::layout;
-use super::write::{ObjectStore, fsync_dir};
+use super::write::{ObjectStore, fsync_dir, object_is_intact};
 
 /// Summary report of actions performed during a reconciliation scan.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -43,39 +44,52 @@ pub async fn run_reconciliation(store: &ObjectStore) -> anyhow::Result<Reconcile
     let pool = store.pool();
 
     // ── Phase A: Metadata -> Disk ──────────────────────────────────────────
-    let rows: Vec<(String,)> =
-        sqlx::query_as("SELECT object_id FROM storage_objects WHERE status = 'STORED'")
-            .fetch_all(pool)
-            .await
-            .context("fetching storage_objects for reconciliation")?;
+    // Page the scan so a large catalogue does not materialize every object id
+    // in memory at once, and hash by streaming (`object_is_intact`) rather than
+    // `fs::read`, so a single 8 MiB shard is never fully buffered.
+    const PAGE: i64 = 1000;
+    let mut offset: i64 = 0;
+    loop {
+        let rows: Vec<(String,)> = sqlx::query_as(
+            "SELECT object_id FROM storage_objects WHERE status = 'STORED' \
+             ORDER BY object_id LIMIT ? OFFSET ?",
+        )
+        .bind(PAGE)
+        .bind(offset)
+        .fetch_all(pool)
+        .await
+        .context("fetching storage_objects for reconciliation")?;
+        if rows.is_empty() {
+            break;
+        }
+        offset += rows.len() as i64;
 
-    for (object_id,) in rows {
-        let path = layout::object_path(data_dir, &object_id)?;
-        if !path.exists() {
-            // Marked STORED in DB, missing on disk -> DEGRADED
-            sqlx::query("UPDATE storage_objects SET status = 'DEGRADED' WHERE object_id = ?")
-                .bind(&object_id)
-                .execute(pool)
-                .await
-                .context("marking missing object DEGRADED")?;
+        for (object_id,) in rows {
+            let path = layout::object_path(data_dir, &object_id)?;
+            if !path.exists() {
+                // Marked STORED in DB, missing on disk -> DEGRADED
+                sqlx::query("UPDATE storage_objects SET status = 'DEGRADED' WHERE object_id = ?")
+                    .bind(&object_id)
+                    .execute(pool)
+                    .await
+                    .context("marking missing object DEGRADED")?;
 
-            report.missing.push(object_id);
-        } else {
-            // Check hash integrity
-            match fs::read(&path) {
-                Ok(bytes) => {
-                    let actual_hash = blake3::hash(&bytes).to_hex().to_string();
-                    if actual_hash != object_id {
-                        sqlx::query(
-                            "UPDATE storage_objects SET status = 'DEGRADED' WHERE object_id = ?",
-                        )
-                        .bind(&object_id)
-                        .execute(pool)
-                        .await
-                        .context("marking corrupted object DEGRADED")?;
+                report.missing.push(object_id);
+                continue;
+            }
 
-                        report.corrupted.push(object_id);
-                    }
+            match object_is_intact(&path, &object_id) {
+                Ok(true) => {}
+                Ok(false) => {
+                    sqlx::query(
+                        "UPDATE storage_objects SET status = 'DEGRADED' WHERE object_id = ?",
+                    )
+                    .bind(&object_id)
+                    .execute(pool)
+                    .await
+                    .context("marking corrupted object DEGRADED")?;
+
+                    report.corrupted.push(object_id);
                 }
                 Err(e) => {
                     eprintln!(
@@ -92,6 +106,16 @@ pub async fn run_reconciliation(store: &ObjectStore) -> anyhow::Result<Reconcile
     if objects_root.exists() {
         let grace_period = Duration::from_secs(24 * 3600); // 24 hours per ADR-0005
 
+        // Load the known-object set once and test in memory, instead of one
+        // `COUNT(*)` query per file on disk (N+1).
+        let known: HashSet<String> =
+            sqlx::query_scalar::<_, String>("SELECT object_id FROM storage_objects")
+                .fetch_all(pool)
+                .await
+                .context("fetching known object ids for orphan scan")?
+                .into_iter()
+                .collect();
+
         for entry in WalkDir::new(&objects_root)
             .into_iter()
             .filter_map(|e| e.ok())
@@ -101,39 +125,33 @@ pub async fn run_reconciliation(store: &ObjectStore) -> anyhow::Result<Reconcile
             }
 
             let file_name = entry.file_name().to_string_lossy().to_string();
-            // In layout, the filename is the full BLAKE3 hex hash
-            let (count,): (i64,) =
-                sqlx::query_as("SELECT COUNT(*) FROM storage_objects WHERE object_id = ?")
-                    .bind(&file_name)
-                    .fetch_one(pool)
-                    .await
-                    .context("checking object_id presence in storage_objects")?;
+            if known.contains(&file_name) {
+                continue;
+            }
 
-            if count == 0 {
-                // Orphan candidate
-                let modified = entry
-                    .metadata()
-                    .ok()
-                    .and_then(|m| m.modified().ok())
-                    .unwrap_or_else(SystemTime::now);
+            // Orphan candidate
+            let modified = entry
+                .metadata()
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .unwrap_or_else(SystemTime::now);
 
-                let age = SystemTime::now()
-                    .duration_since(modified)
-                    .unwrap_or(Duration::ZERO);
+            let age = SystemTime::now()
+                .duration_since(modified)
+                .unwrap_or(Duration::ZERO);
 
-                if age >= grace_period {
-                    let path = entry.path();
-                    if let Err(e) = fs::remove_file(path) {
-                        eprintln!(
-                            "[reconcile] warning: failed to remove orphan {}: {e}",
-                            path.display()
-                        );
-                    } else {
-                        report.orphans_deleted.push(file_name);
-                    }
+            if age >= grace_period {
+                let path = entry.path();
+                if let Err(e) = fs::remove_file(path) {
+                    eprintln!(
+                        "[reconcile] warning: failed to remove orphan {}: {e}",
+                        path.display()
+                    );
                 } else {
-                    report.orphans_pending.push(file_name);
+                    report.orphans_deleted.push(file_name);
                 }
+            } else {
+                report.orphans_pending.push(file_name);
             }
         }
     }

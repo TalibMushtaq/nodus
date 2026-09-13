@@ -5,6 +5,7 @@
 //! 2. Unreferenced storage objects on disk and in DB after versions are deleted.
 //! 3. Expired tombstones older than `tombstone_retention_days` (90).
 
+use std::collections::HashSet;
 use std::fs;
 use std::sync::Arc;
 use std::time::Duration;
@@ -54,12 +55,28 @@ pub async fn run_gc(store: &ObjectStore, cfg: &GcConfig) -> anyhow::Result<GcRep
     let now = Utc::now();
 
     // ── Step 1: Version Pruning ────────────────────────────────────────────
+    // Files with a live tombstone are skipped: their retained versions are the
+    // restore material for the whole retention window, and pruning them early
+    // would make a restore return a data-less file. (Expired tombstones are
+    // purged wholesale in Step 2.)
+    let tombstoned_files: HashSet<String> = sqlx::query_scalar::<_, String>(
+        "SELECT entity_id FROM tombstones WHERE entity_type = 'file'",
+    )
+    .fetch_all(pool)
+    .await
+    .context("fetching tombstoned file ids for GC")?
+    .into_iter()
+    .collect();
+
     let file_ids: Vec<(String,)> = sqlx::query_as("SELECT DISTINCT file_id FROM file_versions")
         .fetch_all(pool)
         .await
         .context("fetching distinct file_ids for GC")?;
 
     for (file_id,) in file_ids {
+        if tombstoned_files.contains(&file_id) {
+            continue;
+        }
         // Fetch versions ordered newest to oldest
         let versions: Vec<(i64, String)> = sqlx::query_as(
             "SELECT version_number, created_at FROM file_versions WHERE file_id = ? ORDER BY version_number DESC"
@@ -142,6 +159,14 @@ pub async fn purge_file(store: &ObjectStore, file_id: &str) -> anyhow::Result<()
         .execute(pool)
         .await
         .context("deleting file_versions for purge")?;
+    // pending_shard_fetches has no FK, so purge it explicitly: otherwise a
+    // later version event with the same (file_id, version_number) would drain
+    // stale rows and resurrect shard references to purged data.
+    sqlx::query("DELETE FROM pending_shard_fetches WHERE file_id = ?")
+        .bind(file_id)
+        .execute(pool)
+        .await
+        .context("deleting pending_shard_fetches for purge")?;
     sqlx::query("DELETE FROM files WHERE file_id = ?")
         .bind(file_id)
         .execute(pool)
@@ -170,13 +195,44 @@ pub async fn purge_file(store: &ObjectStore, file_id: &str) -> anyhow::Result<()
     Ok(())
 }
 
-/// Permanently remove a folder row (folders hold no objects of their own).
+/// Permanently remove a folder and everything under it (child folders and the
+/// files they contain, plus those files' versions/shards/objects).
+///
+/// `files.parent_folder_id` and `folders.parent_folder_id` have no FK, so an
+/// expired folder tombstone would otherwise delete only the folder row, leaving
+/// orphaned children pointing at a missing parent and their data unreclaimable.
 pub async fn purge_folder(store: &ObjectStore, folder_id: &str) -> anyhow::Result<()> {
-    sqlx::query("DELETE FROM folders WHERE folder_id = ?")
-        .bind(folder_id)
-        .execute(store.pool())
-        .await
-        .context("deleting folder row for purge")?;
+    let pool = store.pool();
+    // Iterative depth-first walk (avoids async recursion): purge each folder's
+    // child files, push child folders, then delete the folder row.
+    let mut stack = vec![folder_id.to_string()];
+    while let Some(fid) = stack.pop() {
+        let child_files: Vec<(String,)> =
+            sqlx::query_as("SELECT file_id FROM files WHERE parent_folder_id = ?")
+                .bind(&fid)
+                .fetch_all(pool)
+                .await
+                .context("fetching folder's files for purge")?;
+        for (child_file,) in child_files {
+            purge_file(store, &child_file).await?;
+        }
+
+        let child_folders: Vec<(String,)> =
+            sqlx::query_as("SELECT folder_id FROM folders WHERE parent_folder_id = ?")
+                .bind(&fid)
+                .fetch_all(pool)
+                .await
+                .context("fetching child folders for purge")?;
+        for (child_folder,) in child_folders {
+            stack.push(child_folder);
+        }
+
+        sqlx::query("DELETE FROM folders WHERE folder_id = ?")
+            .bind(&fid)
+            .execute(pool)
+            .await
+            .context("deleting folder row for purge")?;
+    }
     Ok(())
 }
 
@@ -206,6 +262,15 @@ async fn prune_version(
         .execute(pool)
         .await
         .context("deleting pruned file_version")?;
+
+    // No FK on pending_shard_fetches: clear this version's landing-zone rows so
+    // a later re-delivery cannot drain stale references to pruned objects.
+    sqlx::query("DELETE FROM pending_shard_fetches WHERE file_id = ? AND version_number = ?")
+        .bind(file_id)
+        .bind(version_num)
+        .execute(pool)
+        .await
+        .context("deleting pruned version's pending shard fetches")?;
 
     report.versions_pruned += 1;
 
@@ -573,5 +638,160 @@ mod tests {
                 .unwrap();
         assert_eq!(files.0, 0);
         assert_eq!(objects.0, 0);
+    }
+
+    #[tokio::test]
+    async fn gc_keeps_versions_for_a_live_tombstone() {
+        let dir = tempdir().unwrap();
+        let pool = create_test_db(dir.path()).await;
+        let store = ObjectStore::new(dir.path().to_path_buf(), pool.clone())
+            .await
+            .unwrap();
+
+        let file_id = "restorable-file";
+        let old = (Utc::now() - chrono::Duration::days(40)).to_rfc3339();
+        sqlx::query("INSERT INTO files (file_id, created_at, updated_at) VALUES (?, ?, ?)")
+            .bind(file_id)
+            .bind(&old)
+            .bind(&old)
+            .execute(&pool)
+            .await
+            .unwrap();
+        for v in 1..=7 {
+            let object_id = store.put(format!("v{v}").as_bytes()).await.unwrap();
+            sqlx::query(
+                "INSERT INTO file_versions (file_id, version_number, version_hash, shard_count, created_at) VALUES (?, ?, ?, 1, ?)",
+            )
+            .bind(file_id)
+            .bind(v)
+            .bind(&object_id)
+            .bind(&old)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        // Recent tombstone: within the 90-day restore window, so its retained
+        // versions must not be pruned yet.
+        let recent = (Utc::now() - chrono::Duration::days(10)).to_rfc3339();
+        sqlx::query(
+            "INSERT INTO tombstones (entity_type, entity_id, deleted_at) VALUES ('file', ?, ?)",
+        )
+        .bind(file_id)
+        .bind(&recent)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let report = run_gc(&store, &GcConfig::default()).await.unwrap();
+        assert_eq!(
+            report.versions_pruned, 0,
+            "live tombstone protects versions"
+        );
+
+        let remaining: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM file_versions WHERE file_id = ?")
+                .bind(file_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(remaining.0, 7);
+    }
+
+    #[tokio::test]
+    async fn purge_file_clears_pending_shard_fetches() {
+        let dir = tempdir().unwrap();
+        let pool = create_test_db(dir.path()).await;
+        let store = ObjectStore::new(dir.path().to_path_buf(), pool.clone())
+            .await
+            .unwrap();
+
+        sqlx::query(
+            "INSERT INTO files (file_id, created_at, updated_at) VALUES ('f-pending', 'now', 'now')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO pending_shard_fetches (file_id, version_number, shard_index, object_id, size_bytes, fetched_at) VALUES ('f-pending', 1, 0, 'obj', 10, 'now')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        purge_file(&store, "f-pending").await.unwrap();
+
+        let pending: (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM pending_shard_fetches WHERE file_id = 'f-pending'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(pending.0, 0);
+    }
+
+    #[tokio::test]
+    async fn purge_folder_removes_descendant_files_and_folders() {
+        let dir = tempdir().unwrap();
+        let pool = create_test_db(dir.path()).await;
+        let store = ObjectStore::new(dir.path().to_path_buf(), pool.clone())
+            .await
+            .unwrap();
+
+        // root -> child -> grandchild, with a file in each of root and child.
+        for (id, parent) in [
+            ("root", None),
+            ("child", Some("root")),
+            ("grandchild", Some("child")),
+        ] {
+            sqlx::query(
+                "INSERT INTO folders (folder_id, parent_folder_id, created_at, updated_at) VALUES (?, ?, 'now', 'now')",
+            )
+            .bind(id)
+            .bind(parent)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        let object_id = store.put(b"nested bytes").await.unwrap();
+        for (fid, parent) in [("file-root", "root"), ("file-child", "child")] {
+            sqlx::query(
+                "INSERT INTO files (file_id, parent_folder_id, created_at, updated_at) VALUES (?, ?, 'now', 'now')",
+            )
+            .bind(fid)
+            .bind(parent)
+            .execute(&pool)
+            .await
+            .unwrap();
+            sqlx::query(
+                "INSERT INTO file_versions (file_id, version_number, version_hash, shard_count, created_at) VALUES (?, 1, ?, 1, 'now')",
+            )
+            .bind(fid)
+            .bind(&object_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+            sqlx::query(
+                "INSERT INTO shards (file_id, version_number, shard_index, object_id, size_bytes) VALUES (?, 1, 0, ?, 12)",
+            )
+            .bind(fid)
+            .bind(&object_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        purge_folder(&store, "root").await.unwrap();
+
+        for table in ["folders", "files", "file_versions", "shards"] {
+            let count: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {table}"))
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            assert_eq!(count, 0, "{table} must be empty after recursive purge");
+        }
+        assert!(
+            !store.exists(&object_id),
+            "nested file objects must be freed"
+        );
     }
 }
