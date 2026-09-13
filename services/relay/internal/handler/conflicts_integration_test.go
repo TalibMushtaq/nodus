@@ -62,3 +62,44 @@ func TestResolveConflictMarksFlaggedVersionsResolved(t *testing.T) {
 		`SELECT COUNT(*) FROM sync_events WHERE account_id = $1 AND event_type = 'CONFLICT_RESOLVED'`, account).Scan(&events))
 	require.Equal(t, 1, events)
 }
+
+func TestPendingPurgesForNode(t *testing.T) {
+	url := os.Getenv("TEST_DATABASE_URL")
+	if url == "" {
+		t.Skip("TEST_DATABASE_URL not set; skipping integration test")
+	}
+	ctx := context.Background()
+	require.NoError(t, db.RunMigrations(url))
+	pool, err := db.Open(ctx, &config.Config{DatabaseURL: url})
+	require.NoError(t, err)
+	t.Cleanup(pool.Close)
+
+	suffix := fmt.Sprint(time.Now().UnixNano())
+	account, node := "acct-pp-"+suffix, "node-pp-"+suffix
+	purging, retained := "file-purging-"+suffix, "file-retained-"+suffix
+	_, err = pool.Exec(ctx, `INSERT INTO accounts (account_id, email, password_hash) VALUES ($1, $2, 'hash')`, account, account+"@test.local")
+	require.NoError(t, err)
+	_, err = pool.Exec(ctx, `INSERT INTO storage_nodes (node_id, account_id, public_key) VALUES ($1, $2, 'ab')`, node, account)
+	require.NoError(t, err)
+	for _, file := range []string{purging, retained} {
+		_, err = pool.Exec(ctx, `INSERT INTO files (file_id, account_id) VALUES ($1, $2)`, file, account)
+		require.NoError(t, err)
+		_, err = pool.Exec(ctx, `INSERT INTO file_versions (file_id, version_number, version_hash, shard_count) VALUES ($1, 1, 'vh', 1)`, file)
+		require.NoError(t, err)
+		_, err = pool.Exec(ctx, `INSERT INTO file_locations (file_id, version_number, shard_index, node_id, status) VALUES ($1, 1, 0, $2, 'NODE_STORED')`, file, node)
+		require.NoError(t, err)
+	}
+	// `purging` has a requested purge; `retained` is a plain soft delete.
+	_, err = pool.Exec(ctx, `
+		INSERT INTO tombstones (account_id, entity_type, entity_id, deleted_at, purge_after, purge_requested_at)
+		VALUES ($1, 'file', $2, NOW(), NOW() + INTERVAL '90 days', NOW()),
+		       ($1, 'file', $3, NOW(), NOW() + INTERVAL '90 days', NULL)
+	`, account, purging, retained)
+	require.NoError(t, err)
+
+	entities, err := pendingPurgesForNode(ctx, pool, account, node)
+	require.NoError(t, err)
+	require.Len(t, entities, 1)
+	require.Equal(t, purging, entities[0].EntityID)
+	require.Equal(t, "file", entities[0].EntityType)
+}

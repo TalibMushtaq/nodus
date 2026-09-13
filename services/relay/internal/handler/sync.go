@@ -343,6 +343,7 @@ func HandleSyncHello(
 	c *hub.Client,
 	env ProtocolEnvelope,
 	pool *db.Pool,
+	h *hub.Hub,
 ) {
 	if pool == nil || c.AccountID == "" {
 		return
@@ -405,6 +406,13 @@ func HandleSyncHello(
 			sendMissingEventsToNode(ctx, c, pool, originID, seen)
 		}
 	}
+
+	// A `purge_tombstone` control is fire-and-forget, so a node that was offline
+	// (or that had not yet applied the delete) would otherwise never finish the
+	// purge and the Relay would wait forever for its `purged` ack. Re-send any
+	// still-pending purges now; the missing tombstone events were queued above on
+	// the same connection, so the node applies them first.
+	redeliverPendingPurges(ctx, c, pool, h)
 }
 
 func sendMissingEventsToNode(

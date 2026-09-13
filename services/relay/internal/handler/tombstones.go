@@ -396,3 +396,58 @@ func sendTombstoneControl(h *hub.Hub, nodeID string, body map[string]any) {
 		log.Printf("[tombstone] node %s offline; %s will apply on next sync/GC", nodeID, msgType)
 	}
 }
+
+// redeliverPendingPurges re-sends `purge_tombstone` controls to a node for every
+// file whose purge was requested and that the node holds shards for. The
+// initial control is fire-and-forget: a node that was offline, or that had not
+// yet applied the delete event, would otherwise never finish the purge and the
+// Relay would wait forever for its `purged` ack. Called when a node re-syncs
+// (after the missing-events batch has been queued on the same connection, so
+// the tombstone is applied first).
+func redeliverPendingPurges(ctx context.Context, c *hub.Client, pool *db.Pool, h *hub.Hub) {
+	if pool == nil || c.NodeID == "" || c.AccountID == "" {
+		return
+	}
+	entities, err := pendingPurgesForNode(ctx, pool, c.AccountID, c.NodeID)
+	if err != nil {
+		log.Printf("[tombstone] pending purge scan failed for node %s: %v", c.NodeID, err)
+		return
+	}
+	for _, e := range entities {
+		sendTombstoneControl(h, c.NodeID, map[string]any{
+			"type":    "purge_tombstone",
+			"payload": map[string]any{"entity_type": e.EntityType, "entity_id": e.EntityID},
+		})
+	}
+}
+
+// purgeEntity is one pending purge target for a node.
+type purgeEntity struct {
+	EntityType string
+	EntityID   string
+}
+
+// pendingPurgesForNode lists files whose purge was requested and that the node
+// holds shards for. Only files need node purges (folders finalize Relay-side).
+func pendingPurgesForNode(ctx context.Context, pool *db.Pool, accountID, nodeID string) ([]purgeEntity, error) {
+	rows, err := pool.Query(ctx, `
+		SELECT DISTINCT t.entity_type, t.entity_id
+		FROM tombstones t
+		JOIN file_locations fl ON fl.file_id = t.entity_id AND fl.node_id = $2
+		WHERE t.account_id = $1
+		  AND t.entity_type = 'file'
+		  AND t.purge_requested_at IS NOT NULL
+	`, accountID, nodeID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var entities []purgeEntity
+	for rows.Next() {
+		var e purgeEntity
+		if rows.Scan(&e.EntityType, &e.EntityID) == nil {
+			entities = append(entities, e)
+		}
+	}
+	return entities, rows.Err()
+}

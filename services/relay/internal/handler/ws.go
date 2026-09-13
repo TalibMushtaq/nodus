@@ -208,7 +208,7 @@ func handleIncomingEnvelope(
 		HandleNodeAuthResponse(ctx, c, env, pool, rClient, h)
 
 	case "sync_hello":
-		HandleSyncHello(ctx, c, env, pool)
+		HandleSyncHello(ctx, c, env, pool, h)
 
 	case "event_batch":
 		HandleEventBatch(ctx, c, env, pool)

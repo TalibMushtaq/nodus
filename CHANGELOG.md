@@ -1,5 +1,12 @@
 # Changelog
 
+## [2026-09-13] - Fix permanent delete stalling on a stale node ("no matching local tombstone")
+
+**What changed:** A connected Storage Node only pulled events on its initial `sync_hello`, so it never learned of deletes that happened later in the session; when the Relay then sent `purge_tombstone`, the node's (Phase 3.1) guard correctly refused because it had no local tombstone, and the purge waited forever for its ack. Two fixes: (1) the node's sync read loop now re-sends `sync_hello` every 30 s (`SYNC_PULL_INTERVAL`, via a new `send_sync_hello` helper) so it pulls events missed since the session started; (2) the Relay's `HandleSyncHello` now calls `redeliverPendingPurges`, re-sending `purge_tombstone` for every tombstone with `purge_requested_at` set whose file the node holds — queued after the missing-events batch on the same connection, so the node applies the tombstone before the purge control. The pending-purge query is extracted as `pendingPurgesForNode` and covered by a DB test.
+**Why:** The audit guard that refuses to purge without a tombstone is correct (a compromised Relay must not delete live data), but it deadlocked legitimate permanent deletes because nodes were stale and the purge control is fire-and-forget. The node now self-heals within one sync interval instead of requiring a manual reconnect.
+**Impact:** `services/storage-node/src/sync/client.rs`, `services/relay/internal/handler/{sync.go,tombstones.go,ws.go}`, plus `conflicts_integration_test.go`. Verified `cargo fmt/clippy/test` (205 lib + 186 bin + 2 integration), `gofmt/build/vet`, and the full DB-backed Go suite (`TEST_DATABASE_URL`/`TEST_REDIS_URL`).
+**Follow-ups:** None.
+
 ## [2026-09-13] - Mobile conflict inbox + resolve, and a relay REST resolve path
 
 **What changed:** The relay gains `POST /files/{file_id}/conflicts/resolve` (`internal/handler/conflicts.go`, route in `main.go`): it marks the file's flagged versions resolved, records a `CONFLICT_RESOLVED` sync event under a per-account relay origin (`relay:<account>`), and pushes it to connected nodes via `event_batch`. `apps/mobile/src/relay.ts` gains `relayFiles` + `relayResolveConflict`, and `App.tsx` gains a Conflicts section that lists flagged versions and resolves them (mirroring the web inbox). **Bug fix:** the Phase 15 device-path `CONFLICT_RESOLVED` update used `WHERE account_id = …` on the live `file_versions` table, which has no `account_id` (account scoping is via `files`); it now uses an `EXISTS` guard on `files.account_id`.

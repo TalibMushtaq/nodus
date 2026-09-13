@@ -176,6 +176,14 @@ const OUTBOX_SWEEP_INTERVAL: std::time::Duration = std::time::Duration::from_sec
 /// the node offline mid-rebuild.
 const HEARTBEAT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
 
+/// Cadence at which a connected node re-sends `sync_hello` to pull events that
+/// arrived after the session started. The Relay only pushes missing events in
+/// response to `sync_hello`, so without this a long-lived healthy connection
+/// would never see new device events (deletes/tombstones in particular) and a
+/// `purge_tombstone` control would arrive before the node knew the entity was
+/// deleted. `sync_hello` is idempotent.
+const SYNC_PULL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// Acknowledged outbox rows younger than this are retained: the Relay ack may
 /// still be in flight on the same session, and re-sending a just-acked event
 /// is safer than silently dropping one the Relay never received.
@@ -365,9 +373,7 @@ impl SyncClient {
         }
 
         // 2. Send SYNC_HELLO
-        let hello = Self::build_sync_hello(&self.db, &self.identity.node_id).await?;
-        let hello_env = ProtocolEnvelope::new("sync_hello", serde_json::to_value(hello)?);
-        Self::send_json(&mut write, &hello_env).await?;
+        self.send_sync_hello(&mut write).await?;
 
         // 2b. Register with the Relay. The Relay only scans for RELAY_BUFFERED
         // shards after a `register` envelope, so this is what triggers
@@ -408,6 +414,11 @@ impl SyncClient {
         outbox_flush.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut outbox_sweep = tokio::time::interval(OUTBOX_SWEEP_INTERVAL);
         outbox_sweep.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut sync_pull = tokio::time::interval(SYNC_PULL_INTERVAL);
+        sync_pull.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        // Consume the immediate first tick; the initial SYNC_HELLO was already
+        // sent above, so the first periodic pull is one interval later.
+        sync_pull.tick().await;
         loop {
             tokio::select! {
                 maybe_msg = read.next() => {
@@ -586,6 +597,13 @@ impl SyncClient {
                     // the protocol's HeartbeatPayloadSchema (id + RFC3339 ts).
                     Self::send_heartbeat(&mut write, &self.identity.node_id).await?;
                 }
+                _ = sync_pull.tick() => {
+                    // Re-send SYNC_HELLO so the Relay re-delivers any events
+                    // that arrived after this session began (and any pending
+                    // purge controls the node missed while offline). Without
+                    // this a healthy long-lived session would stay stale.
+                    self.send_sync_hello(&mut write).await?;
+                }
                 _ = outbox_flush.tick() => {
                     // Local events created after the pre-session drain are
                     // flushed here, so a long-lived session keeps delivering
@@ -658,6 +676,19 @@ impl SyncClient {
             }),
         )
         .await
+    }
+
+    /// Send a `sync_hello` carrying this node's cursors so the Relay re-delivers
+    /// any events the node has not applied. Sent at session start and
+    /// periodically by the read loop; idempotent.
+    async fn send_sync_hello<W>(&self, write: &mut W) -> anyhow::Result<()>
+    where
+        W: futures_util::Sink<Message> + Unpin,
+        W::Error: std::error::Error + Send + Sync + 'static,
+    {
+        let hello = Self::build_sync_hello(&self.db, &self.identity.node_id).await?;
+        let hello_env = ProtocolEnvelope::new("sync_hello", serde_json::to_value(hello)?);
+        Self::send_json(write, &hello_env).await
     }
 
     /// Phase 10: consume a pending_notify — fetch the shard bytes from the
