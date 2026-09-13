@@ -184,7 +184,7 @@ pub struct ConflictRow {
 pub async fn conflicts(pool: &SqlitePool) -> anyhow::Result<Vec<ConflictRow>> {
     let rows = sqlx::query_as::<_, (String, i64, String)>(
         "SELECT file_id, version_number, conflicted_name FROM file_versions \
-         WHERE conflicted_name IS NOT NULL \
+         WHERE conflicted_name IS NOT NULL AND conflict_status = 'flagged' \
          ORDER BY file_id ASC, version_number ASC",
     )
     .fetch_all(pool)
@@ -433,7 +433,8 @@ mod tests {
         assert!(conflicts(&pool).await.unwrap().is_empty());
 
         sqlx::query(
-            "UPDATE file_versions SET conflicted_name = 'doc (conflicted copy dev 2026-09-13).pdf' \
+            "UPDATE file_versions SET conflicted_name = 'doc (conflicted copy dev 2026-09-13).pdf', \
+             conflict_status = 'flagged' \
              WHERE file_id = 'file-1' AND version_number = 2",
         )
         .execute(&pool)

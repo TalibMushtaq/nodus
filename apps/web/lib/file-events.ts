@@ -49,3 +49,17 @@ export function fileDeletedEvent(originId: string, sequence: number, fileId: str
     deleted_at: new Date().toISOString(),
   });
 }
+
+/**
+ * Resolve a file's conflicted copy (ADR-0003). Both the Relay and every Storage
+ * Node mark the file's flagged versions `resolved`; the version data is kept.
+ */
+export function conflictResolvedEvent(
+  originId: string,
+  sequence: number,
+  fileId: string,
+): EventPayload {
+  return baseEvent(originId, sequence, EventTypes.CONFLICT_RESOLVED, {
+    file_id: fileId,
+  });
+}

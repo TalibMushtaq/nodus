@@ -1,11 +1,9 @@
 # Storage Node Audit — Fix Plan
 
-Status: Phases 1-14 implemented and committed (one commit per phase). All audit
-findings (including the low-severity items) are addressed. #22 uses a
-device-signed per-shard manifest (Phase 10); M8's liveness/peak-memory issues
-are fixed (Phase 11); the node persists/reports conflicted copies (Phase 12) and
-the web conflict inbox renders them (Phase 13); remaining audit lows are closed
-(Phase 14). Only optional/design-level follow-ups remain (see Deferred).
+Status: Phases 1-15 implemented and committed (one commit per phase). All audit
+findings are addressed, and the ADR-0003 conflict flow is now complete
+end-to-end (node persistence in Phase 12, web inbox + in-place resolution in
+Phases 13/15). Only optional/design-level follow-ups remain (see Deferred).
 
 Source audit: `services/storage-node/` (Rust, ~13.7k LOC). Baseline at plan time:
 `cargo fmt --check` clean, `cargo clippy --all-targets` clean, `cargo test` 168 passed.
@@ -242,6 +240,22 @@ format). Each phase is committed separately.
 - `should_prune` treats `now == 0` (pre-epoch/unavailable clock) as unknown and
   keeps sessions rather than reaping them all.
 
+## Phase 15 — In-place conflict resolution (commit: `fix(web): phase 15 ...`)
+
+### 15.1 Protocol (`packages/protocol`)
+- New `CONFLICT_RESOLVED { file_id }` event (schemas regenerated).
+
+### 15.2 Relay + node
+- Relay `applySingleEventTx` and the node's `apply_remote_event_conn` both set
+  `file_versions.conflict_status = 'resolved'` for the file's `flagged` versions
+  (version data retained); the node's `report::conflicts` now filters on
+  `conflict_status = 'flagged'`.
+
+### 15.3 Web
+- `conflictResolvedEvent` builder; the Conflicts inbox gains a **Resolve** button
+  that emits the event (serialized via the existing event-batch hook) and
+  revalidates. Mobile remains a scaffold.
+
 ## Verification (each phase)
 
 - `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`.
@@ -252,12 +266,9 @@ format). Each phase is committed separately.
 
 ## Deferred / needs investigation
 
-- **ADR-0003 mobile conflict inbox** — the web inbox ships (Phase 13); the
-  mobile app is still a scaffold and would render from the same `CatalogEntry`
-  data model.
-- **Conflict resolution action** — the inbox links to Files; an in-place
-  "keep this version, discard the other" action needs download+delete wiring and
-  is product work.
+- **ADR-0003 mobile conflict inbox** — the web inbox and in-place resolution
+  ship (Phases 13/15); the mobile app is still a scaffold and would render from
+  the same `CatalogEntry` data model.
 - **M8 true streaming** — chunks are still all held before BEGIN (which carries
   the final content hash), so a rebuild still holds O(chunks) metadata; Phase 11
   removed the O(records) intermediate buffers and fixed the liveness block. A

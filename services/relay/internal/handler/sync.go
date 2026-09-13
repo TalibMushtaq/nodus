@@ -90,7 +90,7 @@ func deviceAllowedEventType(t string) bool {
 	switch t {
 	case "FILE_CREATED", "FILE_VERSION_ADDED", "FILE_MODIFIED", "FILE_DELETED",
 		"FOLDER_CREATED", "FOLDER_DELETED", "TOMBSTONE_CREATED", "TOMBSTONE_REMOVED",
-		"KEY_ENVELOPE_ADDED", "FILE_SHARD_MANIFEST":
+		"KEY_ENVELOPE_ADDED", "FILE_SHARD_MANIFEST", "CONFLICT_RESOLVED":
 		return true
 	default:
 		return false
@@ -938,6 +938,22 @@ func applySingleEventTx(
 				DELETE FROM tombstone_node_status
 				WHERE account_id = $1 AND entity_type = $2 AND entity_id = $3
 			`, accountID, tData.EntityType, tData.EntityID); err != nil {
+				return false
+			}
+		}
+
+	case "CONFLICT_RESOLVED":
+		// ADR-0003: the user resolved a file's conflicted copy from the inbox.
+		// Mark every flagged version of that file resolved so it leaves the
+		// inbox on all clients; the version rows (and shards) are retained.
+		var cData struct {
+			FileID string `json:"file_id"`
+		}
+		if err := json.Unmarshal(item.Payload, &cData); err == nil && cData.FileID != "" {
+			if _, err := tx.Exec(ctx, `
+				UPDATE file_versions SET conflict_status = 'resolved'
+				WHERE account_id = $1 AND file_id = $2 AND conflict_status = 'flagged'
+			`, accountID, cData.FileID); err != nil {
 				return false
 			}
 		}

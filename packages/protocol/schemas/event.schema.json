@@ -26,7 +26,8 @@
         "FOLDER_CREATED",
         "FOLDER_DELETED",
         "KEY_ENVELOPE_ADDED",
-        "FILE_SHARD_MANIFEST"
+        "FILE_SHARD_MANIFEST",
+        "CONFLICT_RESOLVED"
       ]
     },
     "payload": {

@@ -21,6 +21,7 @@ export const EventTypes = {
   FOLDER_DELETED: "FOLDER_DELETED",
   KEY_ENVELOPE_ADDED: "KEY_ENVELOPE_ADDED",
   FILE_SHARD_MANIFEST: "FILE_SHARD_MANIFEST",
+  CONFLICT_RESOLVED: "CONFLICT_RESOLVED",
 } as const;
 
 export const EventTypeSchema = z.enum([
@@ -35,6 +36,7 @@ export const EventTypeSchema = z.enum([
   EventTypes.FOLDER_DELETED,
   EventTypes.KEY_ENVELOPE_ADDED,
   EventTypes.FILE_SHARD_MANIFEST,
+  EventTypes.CONFLICT_RESOLVED,
 ]);
 
 export type EventType = z.infer<typeof EventTypeSchema>;
@@ -150,6 +152,17 @@ export const FileShardManifestPayloadSchema = z.object({
   signature: z.string(),
 });
 
+/**
+ * Conflict resolution (ADR-0003). The user resolves a file's conflicted copy
+ * from the inbox; the Relay and every Storage Node mark that file's flagged
+ * versions `resolved` so the conflict leaves the inbox on all clients. The
+ * version data itself is retained (resolution is an acknowledgement, not a
+ * deletion), so a user can still recover either side.
+ */
+export const ConflictResolvedPayloadSchema = z.object({
+  file_id: z.string(),
+});
+
 // ── Event payload union ────────────────────────────────────────────
 
 /**
@@ -168,6 +181,7 @@ const EventPayloadMap: Record<EventType, z.ZodType> = {
   FOLDER_DELETED: FolderEventPayloadSchema,
   KEY_ENVELOPE_ADDED: KeyEnvelopePayloadSchema,
   FILE_SHARD_MANIFEST: FileShardManifestPayloadSchema,
+  CONFLICT_RESOLVED: ConflictResolvedPayloadSchema,
 };
 
 /**

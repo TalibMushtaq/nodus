@@ -592,6 +592,26 @@ pub(crate) async fn apply_remote_event_conn(
             apply_shard_manifest_conn(&mut tx, event).await?;
         }
 
+        "CONFLICT_RESOLVED" => {
+            // ADR-0003: the user resolved a file's conflicted copy. Mark its
+            // flagged versions resolved so the local conflict report/listing
+            // matches the Relay and the web inbox; version data is retained.
+            let file_id = event
+                .payload
+                .get("file_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if !file_id.is_empty() {
+                sqlx::query(
+                    "UPDATE file_versions SET conflict_status = 'resolved' \
+                     WHERE file_id = ? AND conflict_status = 'flagged'",
+                )
+                .bind(file_id)
+                .execute(&mut *tx)
+                .await?;
+            }
+        }
+
         "FILE_DELETED" | "TOMBSTONE_CREATED" => {
             let entity_id = event
                 .payload
@@ -959,6 +979,55 @@ mod tests {
             }),
             timestamp: "2026-09-13T00:00:00Z".to_string(),
         }
+    }
+
+    #[tokio::test]
+    async fn conflict_resolved_marks_flagged_versions_resolved() {
+        let dir = tempdir().unwrap();
+        let pool = db::open(dir.path()).await.unwrap();
+
+        sqlx::query(
+            "INSERT INTO files (file_id, created_at, updated_at) VALUES ('f1','now','now')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        // One flagged (conflicted) and one clean version.
+        for (version, status) in [(1_i64, "none"), (2_i64, "flagged")] {
+            sqlx::query(
+                "INSERT INTO file_versions (file_id, version_number, conflict_status, version_hash, shard_count, created_at) \
+                 VALUES ('f1', ?, ?, 'h', 1, 'now')",
+            )
+            .bind(version)
+            .bind(status)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        let event = SyncEvent {
+            event_id: "evt-resolve".to_string(),
+            origin_id: "device-1".to_string(),
+            origin_sequence: 1,
+            event_type: "CONFLICT_RESOLVED".to_string(),
+            payload: serde_json::json!({ "file_id": "f1" }),
+            timestamp: "2026-09-13T00:00:00Z".to_string(),
+        };
+        apply_remote_event(&pool, &event, "node-test")
+            .await
+            .unwrap();
+
+        let statuses: Vec<(i64, String)> = sqlx::query_as(
+            "SELECT version_number, conflict_status FROM file_versions WHERE file_id = 'f1' ORDER BY version_number",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            statuses,
+            vec![(1, "none".to_string()), (2, "resolved".to_string())],
+            "flagged versions become resolved; clean versions are untouched"
+        );
     }
 
     #[tokio::test]

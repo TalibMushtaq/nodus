@@ -210,6 +210,7 @@ export {
   FolderEventPayloadSchema,
   KeyEnvelopePayloadSchema,
   FileShardManifestPayloadSchema,
+  ConflictResolvedPayloadSchema,
   validateEventPayload,
   EventPayloadMap,
 } from "./events/event-types.js";

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { fileDeletedEvent, fileUpsertEvent } from "../file-events";
+import { fileDeletedEvent, fileUpsertEvent, conflictResolvedEvent } from "../file-events";
 
 describe("file mutation events", () => {
   it("renames via a FILE_CREATED metadata upsert", () => {
@@ -22,5 +22,12 @@ describe("file mutation events", () => {
     expect(event.type).toBe("TOMBSTONE_CREATED");
     expect(event.payload).toMatchObject({ entity_type: "file", entity_id: "file-1" });
     expect(typeof (event.payload as { deleted_at?: unknown }).deleted_at).toBe("string");
+  });
+
+  it("resolves a conflict via CONFLICT_RESOLVED", () => {
+    const event = conflictResolvedEvent("device-1", 9, "file-1");
+    expect(event.type).toBe("CONFLICT_RESOLVED");
+    expect(event.origin_sequence).toBe(9);
+    expect(event.payload).toMatchObject({ file_id: "file-1" });
   });
 });

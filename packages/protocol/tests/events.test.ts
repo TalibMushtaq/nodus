@@ -125,6 +125,14 @@ describe("validateEventPayload", () => {
     });
     expect(result.ok).toBe(false);
   });
+
+  it("accepts a valid CONFLICT_RESOLVED payload", () => {
+    expect(validateEventPayload("CONFLICT_RESOLVED", { file_id: "f1" })).toEqual({ ok: true });
+  });
+
+  it("rejects a CONFLICT_RESOLVED payload missing file_id", () => {
+    expect(validateEventPayload("CONFLICT_RESOLVED", {}).ok).toBe(false);
+  });
 });
 
 describe("toProtocolFileId mapping helper", () => {
