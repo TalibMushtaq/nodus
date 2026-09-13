@@ -715,6 +715,30 @@ impl SyncClient {
         object_id: &str,
         size: i64,
     ) -> anyhow::Result<()> {
+        // A signed per-shard manifest, when present, is authoritative: refuse
+        // bytes that do not match it rather than content-addressing whatever the
+        // Relay supplied.
+        let expected: Option<String> = sqlx::query_scalar(
+            "SELECT shard_hash FROM file_version_shard_hashes \
+             WHERE file_id = ? AND version_number = ? AND shard_index = ?",
+        )
+        .bind(&n.file_id)
+        .bind(n.version_number)
+        .bind(n.shard_index)
+        .fetch_optional(&self.db)
+        .await?;
+        if let Some(expected) = expected
+            && expected != object_id
+        {
+            anyhow::bail!(
+                "relay shard for {}:{}:{} does not match the signed manifest \
+                 (expected {expected}, got {object_id})",
+                n.file_id,
+                n.version_number,
+                n.shard_index
+            );
+        }
+
         // The Relay is not trusted for shard identity: if this (file, version,
         // shard) slot is already filled, the bytes must be identical. A
         // differing relay-supplied object is rejected and surfaced (rather than
@@ -1322,5 +1346,56 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(stored, "obj-a");
+    }
+
+    #[tokio::test]
+    async fn record_shard_metadata_enforces_signed_manifest() {
+        let dir = tempdir().unwrap();
+        let pool = db::open(dir.path()).await.unwrap();
+        let store = ObjectStore::new(dir.path().join("objects"), pool.clone())
+            .await
+            .unwrap();
+        let client = SyncClient::new(
+            "ws://127.0.0.1:8080/ws".to_string(),
+            Arc::new(identity::load_or_generate(dir.path()).unwrap()),
+            pool.clone(),
+            Arc::new(store),
+            100,
+            None,
+        );
+
+        let n = PendingNotifyPayload {
+            file_id: "file-manifest".to_string(),
+            version_number: 1,
+            shard_index: 0,
+            buffer_id: "buf-1".to_string(),
+            fetch_token: "tok-1".to_string(),
+            from_device: "dev-1".to_string(),
+            hash: "h".to_string(),
+            size: 10,
+        };
+        sqlx::query(
+            "INSERT INTO file_version_shard_hashes (file_id, version_number, shard_index, shard_hash) \
+             VALUES ('file-manifest', 1, 0, ?)",
+        )
+        .bind("a".repeat(64))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // Bytes matching the signed manifest are accepted (staged, since the
+        // version row is absent).
+        client
+            .record_shard_metadata(&n, &"a".repeat(64), 10)
+            .await
+            .unwrap();
+
+        // A different object id is refused.
+        let err = client
+            .record_shard_metadata(&n, &"b".repeat(64), 10)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("signed manifest"), "unexpected: {err}");
     }
 }

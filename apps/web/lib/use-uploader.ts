@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback } from "react";
-import { identityPublicKey } from "@repo/relay-client";
+import { identityPrivateKey, identityPublicKey, signDeviceMessage } from "@repo/relay-client";
 import type { EventPayload } from "@repo/protocol";
 
 import { useAuth } from "../providers/auth-provider";
@@ -75,6 +75,9 @@ export function useUploader(
         deps: browserUploadDeps({
           sendEventBatch,
           publishEnvelopes,
+          // Sign the per-shard manifest with the device key so the node can
+          // authenticate the hashes and reject Relay-substituted shards (#22).
+          signManifest: (message) => signDeviceMessage(identityPrivateKey(device), message),
           ...(postShardOverride ? { postShard: postShardOverride } : {}),
         }),
         onProgress,

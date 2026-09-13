@@ -90,7 +90,7 @@ func deviceAllowedEventType(t string) bool {
 	switch t {
 	case "FILE_CREATED", "FILE_VERSION_ADDED", "FILE_MODIFIED", "FILE_DELETED",
 		"FOLDER_CREATED", "FOLDER_DELETED", "TOMBSTONE_CREATED", "TOMBSTONE_REMOVED",
-		"KEY_ENVELOPE_ADDED":
+		"KEY_ENVELOPE_ADDED", "FILE_SHARD_MANIFEST":
 		return true
 	default:
 		return false

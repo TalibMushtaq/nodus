@@ -163,8 +163,33 @@ describe("uploadFile", () => {
     expect(second.versionHash).toBe(first.versionHash);
   });
 
-  it("does not re-read the file for a supplied measurement", async () => {
+  it("emits a signed per-shard manifest when a signer is provided", async () => {
     const { deps, calls } = makeDeps();
+    const signed: string[] = [];
+    deps.signManifest = (message) => {
+      signed.push(message);
+      return "ab".repeat(64);
+    };
+    const file = fakeFile(new Uint8Array(SHARD_SIZE_BYTES + 3), "big.bin");
+
+    const result = await uploadFile({ file, originId: "device-A", targetNode: "n1", deps });
+
+    const manifest = calls.events
+      .flat()
+      .find((e) => e.type === "FILE_SHARD_MANIFEST");
+    expect(manifest).toBeDefined();
+    const payload = manifest!.payload as { shard_hashes: string[]; signature: string };
+    expect(payload.shard_hashes).toHaveLength(2);
+    expect(payload.signature).toBe("ab".repeat(64));
+
+    // The signed message binds file id, version, and a BLAKE3 of the hash list.
+    const manifestHash = hashShard(new TextEncoder().encode(payload.shard_hashes.join(",")));
+    expect(signed).toEqual([
+      `nodus-shard-manifest:v1:${result.fileId}:1:${manifestHash}`,
+    ]);
+  });
+
+  it("does not re-read the file for a supplied measurement", async () => {    const { deps, calls } = makeDeps();
     const data = new Uint8Array(100);
     let sliceCalls = 0;
     const file = {

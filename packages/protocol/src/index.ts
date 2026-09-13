@@ -209,6 +209,7 @@ export {
   TombstoneRemovedPayloadSchema,
   FolderEventPayloadSchema,
   KeyEnvelopePayloadSchema,
+  FileShardManifestPayloadSchema,
   validateEventPayload,
   EventPayloadMap,
 } from "./events/event-types.js";

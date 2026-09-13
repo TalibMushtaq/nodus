@@ -30,6 +30,12 @@ export interface UploadProgress {
   announced: boolean;
   /** Shard indices confirmed RELAY_BUFFERED by a successful postShard. */
   completedShards: number[];
+  /**
+   * BLAKE3 hex of each uploaded packed shard, indexed by shard index. Persisted
+   * so a resumed upload can still publish the signed per-shard manifest
+   * (audit #22). Optional: records written before the manifest feature lack it.
+   */
+  shardHashes?: string[];
   createdAt: string;
   updatedAt: string;
 }
@@ -47,12 +53,26 @@ export async function getUploadProgress(fileId: string, versionNumber: number): 
 }
 
 /** Record one successfully buffered shard. Idempotent by index. */
-export async function markShardComplete(fileId: string, versionNumber: number, shardIndex: number): Promise<void> {
+export async function markShardComplete(
+  fileId: string,
+  versionNumber: number,
+  shardIndex: number,
+  hash?: string,
+): Promise<void> {
   const progress = await getUploadProgress(fileId, versionNumber);
   if (!progress) return;
-  if (!progress.completedShards.includes(shardIndex)) {
+  let hashChanged = false;
+  if (hash !== undefined) {
+    progress.shardHashes ??= [];
+    hashChanged = progress.shardHashes[shardIndex] !== hash;
+    progress.shardHashes[shardIndex] = hash;
+  }
+  const newlyCompleted = !progress.completedShards.includes(shardIndex);
+  if (newlyCompleted) {
     progress.completedShards.push(shardIndex);
     progress.completedShards.sort((a, b) => a - b);
+  }
+  if (hashChanged || newlyCompleted) {
     progress.updatedAt = new Date().toISOString();
     await saveUploadProgress(progress);
   }

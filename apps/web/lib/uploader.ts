@@ -42,8 +42,15 @@ export interface UploadDeps {
   getFileKey(fileId: string): Promise<Uint8Array | undefined>;
   saveProgress(progress: UploadProgress): Promise<void>;
   getProgress(fileId: string, versionNumber: number): Promise<UploadProgress | undefined>;
-  markShardComplete(fileId: string, versionNumber: number, shardIndex: number): Promise<void>;
+  markShardComplete(fileId: string, versionNumber: number, shardIndex: number, hash: string): Promise<void>;
   clearProgress?(fileId: string, versionNumber: number): Promise<void>;
+  /**
+   * Sign the per-shard integrity manifest with the device key (audit #22).
+   * When absent, no manifest event is emitted and the node falls back to
+   * content-addressing only. Returns a hex Ed25519 signature over the canonical
+   * `"nodus-shard-manifest:v1:{file_id}:{version}:{blake3(hashes.join(','))}"`.
+   */
+  signManifest?: (message: string) => string | Promise<string>;
   /**
    * Seal + publish the FEK for the account's other devices/nodes (§25 F2).
    * Called after the file/version events are announced (so the FK target
@@ -147,6 +154,8 @@ export async function uploadFile(options: UploadFileOptions): Promise<UploadResu
   let encryptedName: string;
   let announced: boolean;
   let completedShards: number[];
+  /** BLAKE3 hex of each uploaded packed shard, indexed by shard index. */
+  let shardHashes: string[];
   let resumed = false;
 
   if (existing && existingKey && existing.totalShards > 0) {
@@ -161,6 +170,9 @@ export async function uploadFile(options: UploadFileOptions): Promise<UploadResu
     encryptedName = existing.encryptedName;
     announced = existing.announced;
     completedShards = [...existing.completedShards];
+    // Older progress records predate per-shard hashes; an empty list simply
+    // means the manifest cannot be emitted for this resume.
+    shardHashes = existing.shardHashes ? [...existing.shardHashes] : [];
     resumed = true;
   } else {
     fek = generateFileEncryptionKey();
@@ -175,6 +187,7 @@ export async function uploadFile(options: UploadFileOptions): Promise<UploadResu
     encryptedName = encryptName(file.name, fek);
     announced = false;
     completedShards = [];
+    shardHashes = [];
 
     // Durability gate: persist the FEK before anything references the file.
     await deps.putFileKey(fileId, fek);
@@ -239,12 +252,13 @@ export async function uploadFile(options: UploadFileOptions): Promise<UploadResu
     // The stored/uploaded blob is nonce||ciphertext; the nonce must travel with
     // the bytes or the shard can never be decrypted again (F2b).
     const packed = packEncryptedShard(encrypted);
+    const shardHash = hashShard(packed);
 
     await deps.postShard({
       fileId,
       versionNumber,
       shardIndex: index,
-      hash: hashShard(packed),
+      hash: shardHash,
       // The Relay verifies the packed blob's length/hash, not the plaintext size.
       size: packed.length,
       targetNode,
@@ -252,9 +266,35 @@ export async function uploadFile(options: UploadFileOptions): Promise<UploadResu
       sourceDevice,
       data: packed,
     });
-    await deps.markShardComplete(fileId, versionNumber, index);
+    await deps.markShardComplete(fileId, versionNumber, index, shardHash);
+    shardHashes[index] = shardHash;
     done.add(index);
     onProgress?.({ phase: "uploading", completedShards: done.size, totalShards });
+  }
+
+  // Publish the signed per-shard manifest once every shard is buffered (audit
+  // #22). Runs on every attempt, including a resume, so a manifest lost to a
+  // crash is retried; the node upserts it and re-checks already-stored shards.
+  if (deps.signManifest) {
+    const hashes = Array.from({ length: totalShards }, (_, i) => shardHashes[i]);
+    if (hashes.every((h): h is string => typeof h === "string")) {
+      const manifestHash = hashShard(new TextEncoder().encode(hashes.join(",")));
+      const signature = await deps.signManifest(
+        `nodus-shard-manifest:v1:${fileId}:${versionNumber}:${manifestHash}`,
+      );
+      const sequence = await deps.allocateSequence(originId);
+      const ack = await deps.sendEventBatch([
+        event(originId, sequence, EventTypes.FILE_SHARD_MANIFEST, {
+          file_id: fileId,
+          version_number: versionNumber,
+          shard_hashes: hashes,
+          signature,
+        }),
+      ]);
+      if (ack && ack.ok === false) {
+        throw new Error(`shard manifest batch rejected: ${ack.reason ?? "unknown"}`);
+      }
+    }
   }
 
   await deps.clearProgress?.(fileId, versionNumber);

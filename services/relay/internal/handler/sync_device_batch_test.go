@@ -16,7 +16,8 @@ import (
 func TestDeviceAllowedEventType(t *testing.T) {
 	allowed := []string{
 		"FILE_CREATED", "FILE_VERSION_ADDED", "FILE_MODIFIED", "FILE_DELETED",
-		"FOLDER_CREATED", "FOLDER_DELETED", "TOMBSTONE_CREATED", "KEY_ENVELOPE_ADDED",
+		"FOLDER_CREATED", "FOLDER_DELETED", "TOMBSTONE_CREATED", "TOMBSTONE_REMOVED",
+		"KEY_ENVELOPE_ADDED", "FILE_SHARD_MANIFEST",
 	}
 	for _, typ := range allowed {
 		require.Truef(t, deviceAllowedEventType(typ), "%s should be device-allowed", typ)

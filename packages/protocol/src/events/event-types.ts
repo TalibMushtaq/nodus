@@ -20,6 +20,7 @@ export const EventTypes = {
   FOLDER_CREATED: "FOLDER_CREATED",
   FOLDER_DELETED: "FOLDER_DELETED",
   KEY_ENVELOPE_ADDED: "KEY_ENVELOPE_ADDED",
+  FILE_SHARD_MANIFEST: "FILE_SHARD_MANIFEST",
 } as const;
 
 export const EventTypeSchema = z.enum([
@@ -33,6 +34,7 @@ export const EventTypeSchema = z.enum([
   EventTypes.FOLDER_CREATED,
   EventTypes.FOLDER_DELETED,
   EventTypes.KEY_ENVELOPE_ADDED,
+  EventTypes.FILE_SHARD_MANIFEST,
 ]);
 
 export type EventType = z.infer<typeof EventTypeSchema>;
@@ -127,6 +129,27 @@ export const KeyEnvelopePayloadSchema = z.object({
   encrypted_key: z.string(),
 });
 
+/**
+ * Per-shard integrity manifest (audit #22). The uploading device, which alone
+ * holds the FEK and encrypted the shards, asserts the BLAKE3 hash of every
+ * uploaded shard so a Storage Node can reject bytes a compromised Relay tries
+ * to plant for a shard it is first to deliver.
+ *
+ * `shard_hashes[i]` is the BLAKE3 hex of the packed `nonce||ciphertext` for
+ * shard index `i` (the same value used as the shard's content address).
+ *
+ * `signature` is the origin device's Ed25519 signature over
+ * `"nodus-shard-manifest:v1:{file_id}:{version_number}:{blake3(shard_hashes.join(','))}"`.
+ * The Node verifies it against the paired device key so the Relay cannot forge
+ * a manifest that matches bytes it substituted.
+ */
+export const FileShardManifestPayloadSchema = z.object({
+  file_id: z.string(),
+  version_number: z.number().int().min(1),
+  shard_hashes: z.array(z.string()).min(1),
+  signature: z.string(),
+});
+
 // ── Event payload union ────────────────────────────────────────────
 
 /**
@@ -144,6 +167,7 @@ const EventPayloadMap: Record<EventType, z.ZodType> = {
   FOLDER_CREATED: FolderEventPayloadSchema,
   FOLDER_DELETED: FolderEventPayloadSchema,
   KEY_ENVELOPE_ADDED: KeyEnvelopePayloadSchema,
+  FILE_SHARD_MANIFEST: FileShardManifestPayloadSchema,
 };
 
 /**

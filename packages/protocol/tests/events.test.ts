@@ -105,6 +105,26 @@ describe("validateEventPayload", () => {
     );
     expect(result.ok).toBe(false);
   });
+
+  it("accepts a valid FILE_SHARD_MANIFEST payload", () => {
+    const result = validateEventPayload("FILE_SHARD_MANIFEST", {
+      file_id: "f1",
+      version_number: 1,
+      shard_hashes: ["a".repeat(64), "b".repeat(64)],
+      signature: "c".repeat(128),
+    });
+    expect(result).toEqual({ ok: true });
+  });
+
+  it("rejects a FILE_SHARD_MANIFEST payload without hashes", () => {
+    const result = validateEventPayload("FILE_SHARD_MANIFEST", {
+      file_id: "f1",
+      version_number: 1,
+      shard_hashes: [],
+      signature: "c".repeat(128),
+    });
+    expect(result.ok).toBe(false);
+  });
 });
 
 describe("toProtocolFileId mapping helper", () => {

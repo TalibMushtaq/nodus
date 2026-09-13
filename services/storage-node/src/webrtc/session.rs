@@ -350,6 +350,39 @@ impl WebRtcSession {
                                     return;
                                 }
 
+                                // If the uploading device published a signed
+                                // per-shard manifest, it is authoritative: a
+                                // sender may not substitute different bytes.
+                                let expected: Option<String> = sqlx::query_scalar(
+                                    "SELECT shard_hash FROM file_version_shard_hashes \
+                                     WHERE file_id = ? AND version_number = ? AND shard_index = ?",
+                                )
+                                .bind(&metadata.file_id)
+                                .bind(metadata.version_number)
+                                .bind(metadata.shard_index)
+                                .fetch_optional(&db)
+                                .await
+                                .ok()
+                                .flatten();
+                                if let Some(expected) = expected
+                                    && expected != actual_hash
+                                {
+                                    let ack = ShardAckPayload {
+                                        file_id: metadata.file_id,
+                                        version_number: metadata.version_number,
+                                        shard_index: metadata.shard_index,
+                                        status: "failed".into(),
+                                        transfer_id: metadata.transfer_id,
+                                        error_message: Some(format!(
+                                            "Shard does not match the signed manifest: got {actual_hash}, expected {expected}"
+                                        )),
+                                    };
+                                    if let Ok(ack_json) = serde_json::to_string(&ack) {
+                                        let _ = dc.send_text(ack_json).await;
+                                    }
+                                    return;
+                                }
+
                                 // 1. Save shard bytes to ObjectStore
                                 if let Err(e) = store.put(&chunks).await {
                                     eprintln!("[webrtc] error saving object: {e}");

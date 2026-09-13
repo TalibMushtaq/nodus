@@ -59,6 +59,153 @@ async fn has_tombstone_conn(
     Ok(count > 0)
 }
 
+/// Apply a `FILE_SHARD_MANIFEST`: verify the origin device's signature over the
+/// declared per-shard hashes, store them, and re-check any shard already
+/// recorded for that version. Runs on the caller's transaction.
+///
+/// The manifest is the only authoritative per-shard hash the node ever gets
+/// (the version event carries only the whole-version hash), so an unsigned or
+/// wrong-device manifest is ignored rather than trusted.
+async fn apply_shard_manifest_conn(
+    conn: &mut SqliteConnection,
+    event: &SyncEvent,
+) -> anyhow::Result<()> {
+    let malformed = |detail: String| anyhow::Error::new(MalformedEvent(detail));
+
+    let file_id = event
+        .payload
+        .get("file_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let version_number = event
+        .payload
+        .get("version_number")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+    let signature = event
+        .payload
+        .get("signature")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let hashes: Vec<String> = event
+        .payload
+        .get("shard_hashes")
+        .and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    if file_id.is_empty()
+        || version_number < 1
+        || signature.is_empty()
+        || hashes.is_empty()
+        || hashes
+            .iter()
+            .any(|h| !crate::store::layout::is_valid_object_id(h))
+    {
+        return Err(malformed(format!(
+            "invalid FILE_SHARD_MANIFEST for {file_id}:{version_number}"
+        )));
+    }
+
+    // The manifest must come from a paired, active device; the Relay cannot
+    // forge a device signature.
+    let pubkey: Option<Vec<u8>> = sqlx::query_scalar(
+        "SELECT public_key_bytes FROM devices WHERE device_id = ? AND status = 'ACTIVE'",
+    )
+    .bind(&event.origin_id)
+    .fetch_optional(&mut *conn)
+    .await?;
+    let Some(pubkey) = pubkey else {
+        eprintln!(
+            "[sync] ignoring FILE_SHARD_MANIFEST from unverified origin {}",
+            event.origin_id
+        );
+        return Ok(());
+    };
+
+    let manifest_hash = blake3::hash(hashes.join(",").as_bytes())
+        .to_hex()
+        .to_string();
+    let message = format!("nodus-shard-manifest:v1:{file_id}:{version_number}:{manifest_hash}");
+    if crate::local::auth::verify_signature(&pubkey, message.as_bytes(), &signature).is_err() {
+        eprintln!(
+            "[sync] rejecting FILE_SHARD_MANIFEST for {file_id}:{version_number}: \
+             signature does not verify"
+        );
+        return Ok(());
+    }
+
+    // If the version row exists, its declared shard count must agree.
+    let expected_count: Option<i64> = sqlx::query_scalar(
+        "SELECT shard_count FROM file_versions WHERE file_id = ? AND version_number = ?",
+    )
+    .bind(&file_id)
+    .bind(version_number)
+    .fetch_optional(&mut *conn)
+    .await?;
+    if let Some(count) = expected_count
+        && count != hashes.len() as i64
+    {
+        eprintln!(
+            "[sync] rejecting FILE_SHARD_MANIFEST for {file_id}:{version_number}: \
+             {} hashes but shard_count is {count}",
+            hashes.len()
+        );
+        return Ok(());
+    }
+
+    sqlx::query("DELETE FROM file_version_shard_hashes WHERE file_id = ? AND version_number = ?")
+        .bind(&file_id)
+        .bind(version_number)
+        .execute(&mut *conn)
+        .await?;
+    for (index, hash) in hashes.iter().enumerate() {
+        sqlx::query(
+            "INSERT INTO file_version_shard_hashes (file_id, version_number, shard_index, shard_hash) \
+             VALUES (?, ?, ?, ?)",
+        )
+        .bind(&file_id)
+        .bind(version_number)
+        .bind(index as i64)
+        .bind(hash)
+        .execute(&mut *conn)
+        .await?;
+    }
+
+    // Re-check shards already stored for this version (they may have arrived
+    // before the manifest). A mismatch means a relay/peer delivered wrong bytes;
+    // mark the object DEGRADED so it is not silently trusted.
+    let recorded: Vec<(i64, String)> = sqlx::query_as(
+        "SELECT shard_index, object_id FROM shards WHERE file_id = ? AND version_number = ?",
+    )
+    .bind(&file_id)
+    .bind(version_number)
+    .fetch_all(&mut *conn)
+    .await?;
+    for (index, object_id) in recorded {
+        if let Some(expected) = hashes.get(index as usize)
+            && expected != &object_id
+        {
+            eprintln!(
+                "[sync] shard {file_id}:{version_number}:{index} stored object {object_id} \
+                 does not match the signed manifest ({expected}); marking DEGRADED"
+            );
+            sqlx::query("UPDATE storage_objects SET status = 'DEGRADED' WHERE object_id = ?")
+                .bind(&object_id)
+                .execute(&mut *conn)
+                .await?;
+        }
+    }
+
+    Ok(())
+}
+
 /// Connection variant of [`apply_remote_event`]: the idempotency check, the
 /// `sync_events` insert, every domain projection and the cursor update all run
 /// inside ONE transaction, so a mid-projection failure (e.g. an unfulfillable
@@ -424,6 +571,13 @@ pub(crate) async fn apply_remote_event_conn(
             }
         }
 
+        "FILE_SHARD_MANIFEST" => {
+            // Authenticated per-shard hashes (audit #22). The device that
+            // encrypted the file signs them, so the node can reject bytes a
+            // compromised Relay substitutes before first delivery.
+            apply_shard_manifest_conn(&mut tx, event).await?;
+        }
+
         "FILE_DELETED" | "TOMBSTONE_CREATED" => {
             let entity_id = event
                 .payload
@@ -762,6 +916,167 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(ack.applied_event_ids, vec!["evt-bad"]);
+    }
+
+    /// Build a signed `FILE_SHARD_MANIFEST` for `(file_id, version, hashes)`.
+    fn signed_manifest(
+        signing: &ed25519_dalek::SigningKey,
+        device_id: &str,
+        file_id: &str,
+        version: i64,
+        hashes: &[String],
+    ) -> SyncEvent {
+        use ed25519_dalek::Signer;
+        let manifest_hash = blake3::hash(hashes.join(",").as_bytes())
+            .to_hex()
+            .to_string();
+        let message = format!("nodus-shard-manifest:v1:{file_id}:{version}:{manifest_hash}");
+        let signature = hex::encode(signing.sign(message.as_bytes()).to_bytes());
+        SyncEvent {
+            event_id: format!("evt-manifest-{file_id}-{version}"),
+            origin_id: device_id.to_string(),
+            origin_sequence: 1,
+            event_type: "FILE_SHARD_MANIFEST".to_string(),
+            payload: serde_json::json!({
+                "file_id": file_id,
+                "version_number": version,
+                "shard_hashes": hashes,
+                "signature": signature,
+            }),
+            timestamp: "2026-09-13T00:00:00Z".to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn shard_manifest_verifies_signature_and_records_hashes() {
+        let dir = tempdir().unwrap();
+        let pool = db::open(dir.path()).await.unwrap();
+
+        let signing = ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]);
+        let pubkey = signing.verifying_key().to_bytes();
+        sqlx::query(
+            "INSERT INTO devices (device_id, public_key_bytes, status, created_at, paired_at) \
+             VALUES ('dev-1', ?, 'ACTIVE', 'now', 'now')",
+        )
+        .bind(&pubkey[..])
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let hashes = vec!["a".repeat(64), "b".repeat(64)];
+        let event = signed_manifest(&signing, "dev-1", "f1", 1, &hashes);
+        apply_remote_event(&pool, &event, "node-test")
+            .await
+            .unwrap();
+
+        let stored: Vec<String> = sqlx::query_scalar(
+            "SELECT shard_hash FROM file_version_shard_hashes \
+             WHERE file_id = 'f1' AND version_number = 1 ORDER BY shard_index",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(stored, hashes);
+    }
+
+    #[tokio::test]
+    async fn shard_manifest_with_bad_signature_is_ignored() {
+        let dir = tempdir().unwrap();
+        let pool = db::open(dir.path()).await.unwrap();
+
+        let signing = ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]);
+        let pubkey = signing.verifying_key().to_bytes();
+        sqlx::query(
+            "INSERT INTO devices (device_id, public_key_bytes, status, created_at, paired_at) \
+             VALUES ('dev-1', ?, 'ACTIVE', 'now', 'now')",
+        )
+        .bind(&pubkey[..])
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let hashes = vec!["a".repeat(64)];
+        let mut event = signed_manifest(&signing, "dev-1", "f1", 1, &hashes);
+        // Replace the signature with a forged one (valid shape, wrong key).
+        let forged = ed25519_dalek::SigningKey::from_bytes(&[10u8; 32]);
+        use ed25519_dalek::Signer;
+        let manifest_hash = blake3::hash(hashes.join(",").as_bytes())
+            .to_hex()
+            .to_string();
+        let message = format!("nodus-shard-manifest:v1:f1:1:{manifest_hash}");
+        event.payload["signature"] =
+            serde_json::json!(hex::encode(forged.sign(message.as_bytes()).to_bytes()));
+        apply_remote_event(&pool, &event, "node-test")
+            .await
+            .unwrap();
+
+        let stored: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM file_version_shard_hashes")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(stored, 0, "a forged manifest must not be trusted");
+    }
+
+    #[tokio::test]
+    async fn shard_manifest_marks_mismatched_stored_shard_degraded() {
+        let dir = tempdir().unwrap();
+        let pool = db::open(dir.path()).await.unwrap();
+
+        let signing = ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]);
+        let pubkey = signing.verifying_key().to_bytes();
+        sqlx::query(
+            "INSERT INTO devices (device_id, public_key_bytes, status, created_at, paired_at) \
+             VALUES ('dev-1', ?, 'ACTIVE', 'now', 'now')",
+        )
+        .bind(&pubkey[..])
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let wrong = "c".repeat(64);
+        sqlx::query(
+            "INSERT INTO storage_objects (object_id, size_bytes, status, created_at) \
+             VALUES (?, 1, 'STORED', 'now')",
+        )
+        .bind(&wrong)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO files (file_id, created_at, updated_at) VALUES ('f1','now','now')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO file_versions (file_id, version_number, version_hash, shard_count, created_at) \
+             VALUES ('f1', 1, 'vh', 1, 'now')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO shards (file_id, version_number, shard_index, object_id, size_bytes) \
+             VALUES ('f1', 1, 0, ?, 1)",
+        )
+        .bind(&wrong)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let hashes = vec!["a".repeat(64)];
+        let event = signed_manifest(&signing, "dev-1", "f1", 1, &hashes);
+        apply_remote_event(&pool, &event, "node-test")
+            .await
+            .unwrap();
+
+        let (status,): (String,) =
+            sqlx::query_as("SELECT status FROM storage_objects WHERE object_id = ?")
+                .bind(&wrong)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(status, "DEGRADED");
     }
 
     #[tokio::test]

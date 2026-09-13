@@ -1,9 +1,10 @@
 # Storage Node Audit — Fix Plan
 
-Status: Phases 1-9 implemented and committed (one commit per phase). All audit
-findings are addressed except #22's *first-copy* guarantee (needs a cross-language
-protocol addition: per-shard hashes on the version event) and the M6/M8 feature
-work, documented under Deferred.
+Status: Phases 1-10 implemented and committed (one commit per phase). All audit
+findings are addressed. #22's first-copy guarantee now uses a device-signed
+per-shard manifest (Phase 10). The remaining M6 (conflicted-copy surfacing) and
+M8 (snapshot streaming) items are feature/perf work, not correctness/security
+fixes, and stay documented under Deferred.
 
 Source audit: `services/storage-node/` (Rust, ~13.7k LOC). Baseline at plan time:
 `cargo fmt --check` clean, `cargo clippy --all-targets` clean, `cargo test` 168 passed.
@@ -161,6 +162,29 @@ format). Each phase is committed separately.
 - A `file_version` with an empty hash / non-positive shard count is omitted from
   a rebuild; log it rather than dropping it silently.
 
+## Phase 10 — #22 device-signed per-shard manifest (commit: `fix(storage-node): phase 10 ...`)
+
+### 10.1 Protocol (`packages/protocol`)
+- New `FILE_SHARD_MANIFEST` event: `{ file_id, version_number, shard_hashes, signature }`.
+- Signature message `"nodus-shard-manifest:v1:{file_id}:{version}:{blake3(hashes.join(','))}"`,
+  signed by the uploading device's Ed25519 key; schemas regenerated.
+
+### 10.2 Relay (`services/relay/internal/handler/sync.go`)
+- Add the type to `deviceAllowedEventType`; the event is logged/forwarded like
+  any other (no projection needed — nodes are the verifiers).
+
+### 10.3 Storage node
+- Migration `file_version_shard_hashes`.
+- `sync/engine.rs` verifies the origin device's signature and stores the hashes,
+  then re-checks already-stored shards (marking mismatches DEGRADED).
+- `sync/client.rs` (Relay buffer) and `webrtc/session.rs` (Path A) refuse a shard
+  whose object id differs from the signed manifest.
+
+### 10.4 Web uploader (`apps/web/lib`)
+- Persist each uploaded shard hash in progress; after all shards, emit the
+  signed `FILE_SHARD_MANIFEST` (retried on resume). `signManifest` is optional so
+  non-browser harnesses remain compatible.
+
 ## Verification (each phase)
 
 - `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`.
@@ -171,10 +195,13 @@ format). Each phase is committed separately.
 
 ## Deferred / needs investigation
 
-- **#22 full closure** — requires `shard_hashes` on `FILE_VERSION_ADDED` across
-  protocol, TS clients, Go relay, and node (Phase 8 records this).
 - **M6 conflicted-copy UX (ADR-0003)** — `generate_conflicted_filename` is still
   computed and discarded; surfacing it needs a client-visible conflicted-copy
   record, a feature beyond this audit.
 - **M8 snapshot streaming** — snapshots are still fully materialized before
   sending; a streaming rewrite is a larger change.
+- **Relay-rebuild caveat for #22** — `file_version_shard_hashes` is node-local
+  and not carried in node→relay snapshots, so a relay rebuilt from scratch won't
+  re-serve old manifests to newly paired nodes. Existing nodes keep their
+  authenticated hashes; a newly paired node trusts the relay for initial data as
+  before. Carrying manifests in snapshots is a possible follow-up.
