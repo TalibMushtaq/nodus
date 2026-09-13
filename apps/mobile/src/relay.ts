@@ -29,6 +29,26 @@ export interface PairingSession {
   device_id?: string;
 }
 
+/** One file version as returned by `GET /files`. */
+export interface RelayFileVersion {
+  version_number: number;
+  shard_count: number;
+  version_hash: string;
+  conflict_status: string;
+  conflicted_name: string | null;
+  created_at: string;
+}
+
+/** One file with its versions as returned by `GET /files`. */
+export interface RelayFile {
+  file_id: string;
+  parent_folder_id: string | null;
+  encrypted_name: string | null;
+  created_at: string;
+  updated_at: string;
+  versions: RelayFileVersion[];
+}
+
 async function json<T>(
 	url: string,
 	init: { method?: string; token?: string; body?: unknown; mobileAuth?: boolean } = {},
@@ -82,4 +102,24 @@ export async function relayCreatePairingSession(
     token: jwt,
     body: { node_id: nodeId, device_id: deviceId },
   });
+}
+
+/** Catalog with per-version `conflict_status` (ADR-0003 inbox source). */
+export async function relayFiles(jwt: string): Promise<RelayFile[]> {
+  return json<RelayFile[]>(`${RELAY_BASE}/files`, { token: jwt });
+}
+
+/**
+ * Resolve a file's conflicted copy over HTTP. Mobile has no browser session
+ * cookie for the WebSocket event path, so the Relay exposes this REST endpoint;
+ * it marks the file's flagged versions resolved and notifies connected nodes.
+ */
+export async function relayResolveConflict(
+  jwt: string,
+  fileId: string,
+): Promise<{ status: string; resolved: number }> {
+  return json<{ status: string; resolved: number }>(
+    `${RELAY_BASE}/files/${encodeURIComponent(fileId)}/conflicts/resolve`,
+    { method: "POST", token: jwt },
+  );
 }

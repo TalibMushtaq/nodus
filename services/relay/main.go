@@ -187,6 +187,9 @@ func main() {
 		mux.Handle("GET /tombstones", auth.RequireAuth(sessionStore, cfg)(handler.ListTombstones(pool)))
 		mux.Handle("DELETE /tombstones/{entity_type}/{entity_id}", auth.RequireAuth(sessionStore, cfg)(handler.PurgeTombstone(pool, wsHub)))
 		mux.Handle("POST /tombstones/{entity_type}/{entity_id}/restore", auth.RequireAuth(sessionStore, cfg)(handler.RestoreTombstone(pool, wsHub)))
+		// ADR-0003 conflict resolution over HTTP (mobile has no session cookie
+		// for the WebSocket event path).
+		mux.Handle("POST /files/{file_id}/conflicts/resolve", auth.RequireAuth(sessionStore, cfg)(handler.ResolveConflict(pool, wsHub)))
 
 		// Phase 11: pairing session issuance (device-bound tokens pushed to the
 		// node over WS) plus the node's + client's open verification endpoints.

@@ -1,10 +1,11 @@
 # Storage Node Audit — Fix Plan
 
-Status: Phases 1-18 implemented and committed (one commit per phase). All audit
-findings are addressed; the ADR-0003 conflict flow is complete; M8 streams in
-O(chunk) memory (Phase 17); and the relay preserves both conflicted names
-(Phase 16) and signed shard hashes (Phase 18) across a rebuild. Only the mobile
-conflict inbox + resolve remains (Phase 19).
+Status: Phases 1-19 implemented and committed (all chosen items done). The
+storage-node audit is fully closed; the ADR-0003 flow works on web and mobile;
+M8 streams in O(chunk) memory; and the relay preserves conflicted names and
+signed shard hashes across a rebuild. A latent Phase 15 relay SQL bug (live
+`file_versions` has no `account_id`) was found by the new DB integration tests
+and fixed in Phase 19.
 
 Source audit: `services/storage-node/` (Rust, ~13.7k LOC). Baseline at plan time:
 `cargo fmt --check` clean, `cargo clippy --all-targets` clean, `cargo test` 168 passed.
@@ -291,6 +292,22 @@ format). Each phase is committed separately.
   staging + promote copy the hashes (the live rows cascade away with the old
   versions).
 
+## Phase 19 — Mobile conflict inbox + resolve, and a relay REST resolve path (commit: `fix(web): phase 19 ...`)
+
+### 19.1 Relay REST resolve (`internal/handler/conflicts.go`, `main.go`)
+- `POST /files/{file_id}/conflicts/resolve` (session/Bearer auth) marks the
+  file's flagged versions resolved, records a `CONFLICT_RESOLVED` sync event
+  under a per-account relay origin, and pushes it to connected nodes. Mobile has
+  no browser session cookie for the WS event path, so it resolves over HTTP.
+- **Bug fix:** the Phase 15 device-path update used `WHERE account_id = …` on
+  the live `file_versions` table, which has no `account_id`; it now scopes
+  through `files`. DB integration tests added for both paths (the existing
+  DB-free tests could not catch this).
+
+### 19.2 Mobile (`src/relay.ts`, `App.tsx`)
+- `relayFiles` + `relayResolveConflict`; a Conflicts section lists flagged
+  versions and resolves them, mirroring the web inbox.
+
 ## Verification (each phase)
 
 - `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`.
@@ -301,4 +318,5 @@ format). Each phase is committed separately.
 
 ## Deferred / needs investigation
 
-- **Mobile conflict inbox + resolve** — chosen for implementation (Phase 19).
+None outstanding. All audit findings and all three chosen follow-ups are
+implemented. (`fix.md` records every phase and decision.)

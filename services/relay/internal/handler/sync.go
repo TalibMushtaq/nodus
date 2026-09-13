@@ -950,10 +950,17 @@ func applySingleEventTx(
 			FileID string `json:"file_id"`
 		}
 		if err := json.Unmarshal(item.Payload, &cData); err == nil && cData.FileID != "" {
+			// Live `file_versions` is keyed by (file_id, version_number) and
+			// scoped through `files.account_id`; scope the update so a device
+			// cannot resolve another account's file.
 			if _, err := tx.Exec(ctx, `
 				UPDATE file_versions SET conflict_status = 'resolved'
-				WHERE account_id = $1 AND file_id = $2 AND conflict_status = 'flagged'
-			`, accountID, cData.FileID); err != nil {
+				WHERE file_id = $1 AND conflict_status = 'flagged'
+				  AND EXISTS (
+					SELECT 1 FROM files f
+					WHERE f.file_id = file_versions.file_id AND f.account_id = $2
+				  )
+			`, cData.FileID, accountID); err != nil {
 				return false
 			}
 		}

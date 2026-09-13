@@ -36,10 +36,13 @@ import {
 import { myLanV4, probeHost, scanLan, type LanCandidate } from "./src/discovery";
 import {
   relayCreatePairingSession,
+  relayFiles,
   relayLogin,
   relayNodes,
   relayRegisterDevice,
+  relayResolveConflict,
   type PairingSession,
+  type RelayFile,
   type RelayNode,
 } from "./src/relay";
 import {
@@ -68,6 +71,9 @@ export default function App() {
   const [host, setHost] = React.useState("");
   const [probe, setProbe] = React.useState<LanCandidate | null>(null);
   const [trusted, setTrusted] = React.useState<TrustedNode[]>([]);
+
+  // ── Conflict inbox (ADR-0003) ─────────────────────────────────────────────
+  const [conflicts, setConflicts] = React.useState<{ file_id: string; versions: number[] }[]>([]);
 
   const [error, setError] = React.useState<string | null>(null);
   const [notice, setNotice] = React.useState<string | null>(null);
@@ -109,8 +115,52 @@ export default function App() {
     }
   }, [jwt]);
 
-  const issueToken = React.useCallback(async () => {
-    if (!device || !jwt || !selectedNode) return;
+  // Conflicts whose versions the Relay has flagged (unresolved). The relay
+  // returns per-version `conflict_status`, so no separate endpoint is needed.
+  const loadConflicts = React.useCallback(async () => {
+    if (!jwt) return;
+    setBusy("loading-conflicts");
+    setError(null);
+    try {
+      const files: RelayFile[] = await relayFiles(jwt);
+      setConflicts(
+        files
+          .map((file) => ({
+            file_id: file.file_id,
+            versions: file.versions
+              .filter((v) => v.conflict_status === "flagged")
+              .map((v) => v.version_number)
+              .sort((a, b) => a - b),
+          }))
+          .filter((c) => c.versions.length > 0),
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(null);
+    }
+  }, [jwt]);
+
+  const resolveConflict = React.useCallback(
+    async (fileId: string) => {
+      if (!jwt) return;
+      setBusy(`resolving-${fileId}`);
+      setError(null);
+      setNotice(null);
+      try {
+        await relayResolveConflict(jwt, fileId);
+        setNotice("Conflict resolved across your devices and nodes.");
+        await loadConflicts();
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setBusy(null);
+      }
+    },
+    [jwt, loadConflicts],
+  );
+
+  const issueToken = React.useCallback(async () => {    if (!device || !jwt || !selectedNode) return;
     setBusy("issuing-token");
     setError(null);
     setNotice(null);
@@ -308,6 +358,23 @@ export default function App() {
           <Text key={t.node_id} style={styles.hint}>
             {t.node_id.slice(0, 12)}… @ {t.host} — paired {t.paired_at}
           </Text>
+        ))}
+      </Section>
+
+      <Section title="Conflicts (ADR-0003)">
+        <Button title="Load conflicts" onPress={() => void loadConflicts()} disabled={!jwt || busy !== null} />
+        {conflicts.length === 0 && <Text style={styles.hint}>No unresolved conflicts.</Text>}
+        {conflicts.map((c) => (
+          <View key={c.file_id} style={styles.radioRow}>
+            <Text style={styles.hint}>
+              {c.file_id.slice(0, 12)}… · version{c.versions.length === 1 ? "" : "s"} {c.versions.join(", ")}
+            </Text>
+            <Button
+              title={busy === `resolving-${c.file_id}` ? "Resolving…" : "Resolve"}
+              onPress={() => void resolveConflict(c.file_id)}
+              disabled={busy !== null}
+            />
+          </View>
         ))}
       </Section>
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## [2026-09-13] - Mobile conflict inbox + resolve, and a relay REST resolve path
+
+**What changed:** The relay gains `POST /files/{file_id}/conflicts/resolve` (`internal/handler/conflicts.go`, route in `main.go`): it marks the file's flagged versions resolved, records a `CONFLICT_RESOLVED` sync event under a per-account relay origin (`relay:<account>`), and pushes it to connected nodes via `event_batch`. `apps/mobile/src/relay.ts` gains `relayFiles` + `relayResolveConflict`, and `App.tsx` gains a Conflicts section that lists flagged versions and resolves them (mirroring the web inbox). **Bug fix:** the Phase 15 device-path `CONFLICT_RESOLVED` update used `WHERE account_id = …` on the live `file_versions` table, which has no `account_id` (account scoping is via `files`); it now uses an `EXISTS` guard on `files.account_id`.
+**Why:** Completes the ADR-0003 flow for mobile. Mobile has no browser session cookie, so the WebSocket event path is unavailable; a session/Bearer-authenticated REST endpoint is the viable resolve path. The SQL bug was invisible to DB-free Go tests and only surfaced when running the real Postgres integration suite.
+**Impact:** `services/relay/internal/handler/{conflicts.go,conflicts_integration_test.go,sync.go,sync_integration_test.go}`, `services/relay/main.go`, `apps/mobile/src/relay.ts`, `apps/mobile/App.tsx`. Verified `gofmt/build/vet/test` and the full DB-backed suite with `TEST_DATABASE_URL`/`TEST_REDIS_URL`; `pnpm --filter mobile check-types`.
+**Follow-ups:** None outstanding.
+
 ## [2026-09-13] - Relay preserves signed shard hashes across a rebuild (#22)
 
 **What changed:** New `shard_hash` snapshot record type in `packages/protocol/src/messages/snapshot.ts` (schema + union, regenerated). The node (`sync/types.rs`, `sync/snapshot.rs`) streams `file_version_shard_hashes` as `shard_hash` chunks via `SnapshotRecord::ShardHash`. The relay gains `migrations/016_shard_hashes` (`file_version_shard_hashes` + `rebuild_file_version_shard_hashes`), staging in `snapshot.go`, and promotion in `promote.go` (live rows cascade away with the replaced versions).
