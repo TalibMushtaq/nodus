@@ -1,10 +1,11 @@
 # Storage Node Audit — Fix Plan
 
-Status: Phases 1-13 implemented and committed (one commit per phase). All audit
-findings are addressed. #22 uses a device-signed per-shard manifest (Phase 10);
-M8's liveness/peak-memory issues are fixed (Phase 11); the node persists and
-reports conflicted copies (Phase 12) and the web conflict inbox renders them
-(Phase 13). Remaining items are optional/design-level (see Deferred).
+Status: Phases 1-14 implemented and committed (one commit per phase). All audit
+findings (including the low-severity items) are addressed. #22 uses a
+device-signed per-shard manifest (Phase 10); M8's liveness/peak-memory issues
+are fixed (Phase 11); the node persists/reports conflicted copies (Phase 12) and
+the web conflict inbox renders them (Phase 13); remaining audit lows are closed
+(Phase 14). Only optional/design-level follow-ups remain (see Deferred).
 
 Source audit: `services/storage-node/` (Rust, ~13.7k LOC). Baseline at plan time:
 `cargo fmt --check` clean, `cargo clippy --all-targets` clean, `cargo test` 168 passed.
@@ -221,6 +222,25 @@ format). Each phase is committed separately.
 - A `useConflicts` hook (mount + refresh + 15 s poll) and a `/conflicts` page
   listing preserved conflicted copies with a link to resolve them in Files; the
   sidebar gains a Conflicts entry.
+
+## Phase 14 — Remaining audit lows (commit: `fix(storage-node): phase 14 ...`)
+
+### 14.1 Durability pragma (`db.rs`)
+- Set `PRAGMA synchronous = FULL` (WAL defaults to NORMAL) so a power loss
+  cannot drop the last committed metadata transaction for a backup product.
+
+### 14.2 Auth ordering + sync_status (`sync/client.rs`)
+- Only honour a `node_auth_result{ok}` after a challenge was answered; use
+  `sync_status` to warn when the Relay's per-origin cursor is behind the local
+  one (possible relay data loss) instead of discarding it.
+
+### 14.3 Authenticate before id validation (`local/server.rs`)
+- `/nodus/shard/{id}` verifies the signed caller before rejecting a malformed id,
+  removing the unauthenticated 400-vs-401 oracle.
+
+### 14.4 Clock-safe session reaping (`webrtc/session.rs`)
+- `should_prune` treats `now == 0` (pre-epoch/unavailable clock) as unknown and
+  keeps sessions rather than reaping them all.
 
 ## Verification (each phase)
 

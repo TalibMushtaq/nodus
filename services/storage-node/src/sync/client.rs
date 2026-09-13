@@ -301,6 +301,10 @@ impl SyncClient {
 
         // 1. Wait for auth challenge
         let mut authenticated = false;
+        // A challenge must be answered before an "ok" result is honoured, so a
+        // relay frame ordering bug (or a replayed/forged result) cannot
+        // authenticate a session that never proved possession of the node key.
+        let mut challenged = false;
         while let Some(msg_res) = read.next().await {
             let msg = msg_res?;
             if let Message::Text(text) = msg {
@@ -326,9 +330,13 @@ impl SyncClient {
                     let resp_env =
                         ProtocolEnvelope::new("node_auth_response", serde_json::to_value(resp)?);
                     Self::send_json(&mut write, &resp_env).await?;
+                    challenged = true;
                 } else if env.msg_type == "node_auth_result" {
                     let result: NodeAuthResultPayload = serde_json::from_value(env.payload)?;
                     if result.status == "ok" {
+                        if !challenged {
+                            anyhow::bail!("relay accepted auth without ever issuing a challenge");
+                        }
                         authenticated = true;
                         // Relay accepted us: this session is live, so let the
                         // sync-loop telemetry stop showing "connecting" now.
@@ -423,7 +431,29 @@ impl SyncClient {
                         }
                         match env.msg_type.as_str() {
                     "sync_status" => {
-                        let _status: SyncStatusPayload = serde_json::from_value(env.payload)?;
+                        let status: SyncStatusPayload = serde_json::from_value(env.payload)?;
+                        // The Relay reports its per-origin cursor. If it is
+                        // *behind* our local cursor, the Relay lost events
+                        // (e.g. a DB reset without a rebuild) and the account is
+                        // diverging — surface it. Ahead is the normal catch-up
+                        // case and the event stream will close the gap.
+                        for cursor in &status.cursors {
+                            let local: Option<i64> = sqlx::query_scalar(
+                                "SELECT last_sequence_seen FROM sync_cursors WHERE peer_id = ?",
+                            )
+                            .bind(&cursor.origin_id)
+                            .fetch_optional(&self.db)
+                            .await?;
+                            if let Some(local) = local
+                                && cursor.sequence < local
+                            {
+                                eprintln!(
+                                    "[sync] relay is behind for origin {} (relay seq {}, local {}); \
+                                     possible relay data loss — a rebuild may be required",
+                                    cursor.origin_id, cursor.sequence, local
+                                );
+                            }
+                        }
                     }
                     "batch_ack" => {
                         let ack: BatchAckPayload = serde_json::from_value(env.payload)?;

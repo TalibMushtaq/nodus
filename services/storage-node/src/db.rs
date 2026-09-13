@@ -6,7 +6,9 @@
 
 use std::path::Path;
 
-use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions};
+use sqlx::sqlite::{
+    SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions, SqliteSynchronous,
+};
 
 /// How long a connection waits for a competing writer before failing with
 /// SQLITE_BUSY. WAL lets readers run alongside a writer, but writers still
@@ -23,6 +25,11 @@ const BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 ///   the reconciliation scanner and sync drain run concurrently.
 /// - `PRAGMA busy_timeout = 5000` — a competing writer is waited out instead of
 ///   surfacing SQLITE_BUSY on the first encounter.
+/// - `PRAGMA synchronous = FULL` — WAL's default is NORMAL, which can lose the
+///   last committed transaction(s) on a power loss. This is a backup product,
+///   so metadata durability is worth the extra fsync per commit: a `STORED` row
+///   must never outlive the file it points at (nor go missing after the file is
+///   durably written).
 pub async fn open(data_dir: &Path) -> anyhow::Result<SqlitePool> {
     std::fs::create_dir_all(data_dir)?;
     let db_path = data_dir.join("nodus.db");
@@ -31,6 +38,7 @@ pub async fn open(data_dir: &Path) -> anyhow::Result<SqlitePool> {
         .filename(&db_path)
         .create_if_missing(true)
         .journal_mode(SqliteJournalMode::Wal)
+        .synchronous(SqliteSynchronous::Full)
         .foreign_keys(true)
         .busy_timeout(BUSY_TIMEOUT);
 

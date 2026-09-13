@@ -1,5 +1,12 @@
 # Changelog
 
+## [2026-09-13] - Storage node audit phase 14: remaining low-severity items
+
+**What changed:** `db.rs` sets `PRAGMA synchronous = FULL` (WAL's default NORMAL can drop the last commit on power loss). `sync/client.rs` refuses a `node_auth_result{ok}` that arrives without the node ever having answered a challenge, and now uses `sync_status` to warn when the Relay's per-origin cursor is behind the node's local cursor (possible relay data loss) instead of discarding the payload. `local/server.rs::handle_shard_fetch` verifies the signed caller *before* rejecting a malformed object id, closing an unauthenticated 400-vs-401 oracle. `webrtc/session.rs::should_prune` treats `now_millis() == 0` (pre-epoch/unavailable clock) as unknown and keeps sessions rather than reaping them all.
+**Why:** The last low-severity audit items: (store L4) metadata durability under power loss; (sync L6) auth state machine ordering; (sync L4) discarded `sync_status`; (local L5) pre-auth id-validation oracle; (session L4) wall-clock reaping could mass-prune on a clock fault.
+**Impact:** `db.rs`, `sync/client.rs`, `local/server.rs`, `webrtc/session.rs`. New test: `reaper_keeps_sessions_when_clock_is_unknown`. Verified `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` (202 lib + 183 bin + 2 integration).
+**Follow-ups:** Only optional/design-level items remain: mobile conflict inbox, in-place conflict resolution, M8 true streaming, and relay-rebuild persistence of node-local tables.
+
 ## [2026-09-13] - Web conflict inbox (ADR-0003, audit M6 client side)
 
 **What changed:** `apps/web/lib/catalog.ts` now records every version whose Relay `conflict_status` is `flagged` in a new `CatalogEntry.conflicted_versions` (the latest-version status alone missed preserved siblings). New `apps/web/lib/conflicts.ts` (`listConflicts` + decrypted display names) and `apps/web/lib/use-conflicts.ts` (mount + refresh + 15 s poll) derive the inbox from the cached catalog — no new endpoint, since `GET /files` already returns per-version `conflict_status`. New `app/(dashboard)/conflicts/page.tsx` + `conflicts-client.tsx` render a persistent list with a "Resolve in Files" link, and `components/sidebar.tsx` gains a Conflicts entry.

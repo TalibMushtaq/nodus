@@ -639,6 +639,12 @@ fn now_millis() -> u64 {
 /// activity stops. Independently, `MAX_SESSION_LIFETIME` bounds even a
 /// connected session's total age, so a device cannot pin memory/fds forever.
 fn should_prune(created_ms: u64, last_active_ms: u64, now_ms: u64, connected: bool) -> bool {
+    // `now_millis()` yields 0 only when the system clock reads before the Unix
+    // epoch (or is unavailable). Treat that as "unknown time" and keep every
+    // session rather than computing a huge age and reaping the lot.
+    if now_ms == 0 {
+        return false;
+    }
     let idle = now_ms.saturating_sub(last_active_ms) > SESSION_IDLE_TIMEOUT.as_millis() as u64
         && !connected;
     let too_old = now_ms.saturating_sub(created_ms) > MAX_SESSION_LIFETIME.as_millis() as u64;
@@ -939,6 +945,14 @@ mod tests {
         let now = now_millis();
         let too_old = now - MAX_SESSION_LIFETIME.as_millis() as u64 - 1;
         assert!(should_prune(too_old, now, now, true));
+    }
+
+    #[test]
+    fn reaper_keeps_sessions_when_clock_is_unknown() {
+        // `now_millis() == 0` means a pre-epoch/unavailable clock; never treat
+        // that as "infinitely old" and reap every session.
+        assert!(!should_prune(0, 0, 0, false));
+        assert!(!should_prune(1, 999, 0, false));
     }
 
     #[tokio::test]

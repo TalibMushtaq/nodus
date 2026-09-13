@@ -352,21 +352,22 @@ async fn handle_shard_fetch(
     Path(object_id): Path<String>,
     headers: HeaderMap,
 ) -> Result<(StatusCode, Vec<u8>), LocalError> {
-    // The caller controls this string and the signature binds it verbatim, so
-    // validate it BEFORE path construction: a malformed id (e.g. `..` segments
-    // or absolute paths) must never reach `object_path` and read files outside
-    // `objects/` under data_dir.
-    validate_object_id(&object_id)?;
-
-    // Phase 14 F2b: the same endpoint serves two caller kinds. A Storage Node
-    // pulls shards for repair (node-signed), and a paired client device
-    // downloads a stored shard (device-signed). Exactly one identity header.
+    // Authenticate first, then validate the id: returning a 400 for a malformed
+    // object id before checking the signature would be a small oracle letting an
+    // unauthenticated prober distinguish id shapes. The signed message binds the
+    // id verbatim either way.
     let (caller, _is_device, timestamp, _signature) = parse_signed_headers(&headers)?;
 
     // The signed message binds caller, target object, and time together, so a
     // captured signature can't be replayed against a different object.
     let message = format!("{caller}:{object_id}:{timestamp}");
     verify_signed_caller(&state.db, &headers, message.as_bytes()).await?;
+
+    // The caller controls this string and the signature binds it verbatim, so
+    // validate it BEFORE path construction: a malformed id (e.g. `..` segments
+    // or absolute paths) must never reach `object_path` and read files outside
+    // `objects/` under data_dir.
+    validate_object_id(&object_id)?;
 
     // Presence check only: the requester hash-verifies against the object_id
     // it asked for, so corrupt local content fails verification there (and is
