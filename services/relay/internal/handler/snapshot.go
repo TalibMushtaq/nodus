@@ -88,6 +88,15 @@ type TombstoneRecord struct {
 	DeletedAt  string `json:"deleted_at"`
 }
 
+// ShardHashRecord is a device-signed per-shard integrity hash captured in a
+// snapshot (audit #22).
+type ShardHashRecord struct {
+	FileID        string `json:"file_id"`
+	VersionNumber int64  `json:"version_number"`
+	ShardIndex    int64  `json:"shard_index"`
+	ShardHash     string `json:"shard_hash"`
+}
+
 type SnapshotChunkPayload struct {
 	SnapshotID string          `json:"snapshot_id"`
 	ChunkIndex int64           `json:"chunk_index"`
@@ -452,6 +461,26 @@ func stageRebuildChunk(ctx context.Context, pool *db.Pool, accountID string, chu
 				VALUES ($1, $2, $3, $4)
 				ON CONFLICT (account_id, entity_type, entity_id) DO UPDATE SET deleted_at = EXCLUDED.deleted_at
 			`, accountID, r.EntityType, r.EntityID, deletedAt); err != nil {
+				return err
+			}
+		}
+		return nil
+
+	case "shard_hash":
+		var records []ShardHashRecord
+		if err := json.Unmarshal(chunk.Records, &records); err != nil {
+			return fmt.Errorf("invalid shard_hash records: %w", err)
+		}
+		for _, r := range records {
+			if r.FileID == "" || r.ShardHash == "" {
+				continue
+			}
+			if _, err := pool.Exec(ctx, `
+				INSERT INTO rebuild_file_version_shard_hashes (account_id, file_id, version_number, shard_index, shard_hash)
+				VALUES ($1, $2, $3, $4, $5)
+				ON CONFLICT (account_id, file_id, version_number, shard_index) DO UPDATE SET
+					shard_hash = EXCLUDED.shard_hash
+			`, accountID, r.FileID, r.VersionNumber, r.ShardIndex, r.ShardHash); err != nil {
 				return err
 			}
 		}

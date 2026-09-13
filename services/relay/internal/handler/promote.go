@@ -137,6 +137,16 @@ func promoteRebuild(ctx context.Context, pool *db.Pool, sess *rebuildSession) er
 	`, acct); err != nil {
 		return fmt.Errorf("insert live file_versions: %w", err)
 	}
+	// Signed per-shard hashes (audit #22). The live rows for these files were
+	// removed by the file_versions delete above via ON DELETE CASCADE.
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO file_version_shard_hashes (file_id, version_number, shard_index, shard_hash)
+		SELECT file_id, version_number, shard_index, shard_hash
+		FROM rebuild_file_version_shard_hashes
+		WHERE account_id = $1
+	`, acct); err != nil {
+		return fmt.Errorf("insert live file_version_shard_hashes: %w", err)
+	}
 	// `rebuild_tombstones` predates the trash window (migration 014), so it has
 	// no purge_after. Derive it from deleted_at exactly as the live tombstone
 	// path does, or the NOT NULL constraint rejects the promote.

@@ -1,11 +1,10 @@
 # Storage Node Audit — Fix Plan
 
-Status: Phases 1-17 implemented and committed (one commit per phase). All audit
-findings are addressed; the ADR-0003 conflict flow is complete end-to-end; the
-relay preserves conflicted names (Phase 16); and M8 true streaming now sends a
-snapshot in O(chunk) memory over one read transaction (Phase 17). Remaining:
-mobile inbox + resolve, and shard-hash relay persistence (both chosen for
-implementation; see Deferred for anything not yet done).
+Status: Phases 1-18 implemented and committed (one commit per phase). All audit
+findings are addressed; the ADR-0003 conflict flow is complete; M8 streams in
+O(chunk) memory (Phase 17); and the relay preserves both conflicted names
+(Phase 16) and signed shard hashes (Phase 18) across a rebuild. Only the mobile
+conflict inbox + resolve remains (Phase 19).
 
 Source audit: `services/storage-node/` (Rust, ~13.7k LOC). Baseline at plan time:
 `cargo fmt --check` clean, `cargo clippy --all-targets` clean, `cargo test` 168 passed.
@@ -278,6 +277,20 @@ format). Each phase is committed separately.
 ### 17.2 Test
 - `two_passes_on_one_transaction_are_identical` pins identical chunks/hash.
 
+## Phase 18 — Persist signed shard hashes through a relay rebuild (commit: `fix(relay): phase 18 ...`)
+
+### 18.1 Protocol (`snapshot.ts`)
+- New `shard_hash` snapshot record type (`ShardHashRecordSchema`) and union member.
+
+### 18.2 Node (`sync/{types,snapshot}.rs`)
+- `ShardHashRecord` + `SnapshotRecord::ShardHash`; `emit_chunks` streams
+  `file_version_shard_hashes` as `shard_hash` chunks.
+
+### 18.3 Relay (`migrations/016_*`, `snapshot.go`, `promote.go`)
+- New `file_version_shard_hashes` + `rebuild_file_version_shard_hashes` tables;
+  staging + promote copy the hashes (the live rows cascade away with the old
+  versions).
+
 ## Verification (each phase)
 
 - `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`.
@@ -288,6 +301,4 @@ format). Each phase is committed separately.
 
 ## Deferred / needs investigation
 
-- **Mobile conflict inbox + resolve** — chosen for implementation; see below.
-- **`file_version_shard_hashes` relay persistence** — chosen for implementation;
-  see below.
+- **Mobile conflict inbox + resolve** — chosen for implementation (Phase 19).

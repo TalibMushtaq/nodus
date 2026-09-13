@@ -11,7 +11,7 @@ use futures_util::TryStreamExt;
 use sqlx::{Acquire, Row, SqliteConnection, SqlitePool};
 
 use super::types::{
-    FileVersionRecord, FolderRecord, KeyEnvelopeRecord, RebuildRequiredPayload,
+    FileVersionRecord, FolderRecord, KeyEnvelopeRecord, RebuildRequiredPayload, ShardHashRecord,
     SnapshotBeginPayload, SnapshotChunkPayload, SnapshotEndPayload, SnapshotRecord, SyncCursor,
     TombstoneRecord,
 };
@@ -340,6 +340,32 @@ pub async fn emit_chunks(
     }
     drop(tombstone_rows);
 
+    // Signed per-shard hashes (audit #22): carried so a rebuilt Relay preserves
+    // the authenticated hashes alongside the versions that reference them.
+    let mut shard_rows = sqlx::query(
+        r#"
+        SELECT file_id, version_number, shard_index, shard_hash
+        FROM file_version_shard_hashes
+        ORDER BY file_id ASC, version_number ASC, shard_index ASC
+        "#,
+    )
+    .fetch(&mut *conn);
+    while let Some(row) = shard_rows.try_next().await? {
+        writer
+            .push(
+                sink,
+                "shard_hash",
+                SnapshotRecord::ShardHash(ShardHashRecord {
+                    file_id: row.get("file_id"),
+                    version_number: row.get("version_number"),
+                    shard_index: row.get("shard_index"),
+                    shard_hash: row.get("shard_hash"),
+                }),
+            )
+            .await?;
+    }
+    drop(shard_rows);
+
     writer.flush(sink).await?;
     Ok(())
 }
@@ -529,6 +555,36 @@ mod tests {
                 assert_eq!(e.recipient_kind, "device");
             }
             other => panic!("expected key_envelope record, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_build_snapshot_includes_shard_hashes() {
+        let dir = tempdir().unwrap();
+        let pool = db::open(dir.path()).await.unwrap();
+        let identity = crate::identity::load_or_generate(dir.path()).unwrap();
+
+        sqlx::query(
+            "INSERT INTO file_version_shard_hashes (file_id, version_number, shard_index, shard_hash) \
+             VALUES ('f1', 1, 0, 'h0')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let (_begin, chunks, _end) = build_snapshot(&pool, &identity).await.unwrap();
+
+        let shard_chunks: Vec<_> = chunks
+            .iter()
+            .filter(|c| c.record_type == "shard_hash")
+            .collect();
+        assert_eq!(shard_chunks.len(), 1);
+        match &shard_chunks[0].records[0] {
+            SnapshotRecord::ShardHash(s) => {
+                assert_eq!(s.file_id, "f1");
+                assert_eq!(s.shard_hash, "h0");
+            }
+            other => panic!("expected shard_hash record, got {other:?}"),
         }
     }
 

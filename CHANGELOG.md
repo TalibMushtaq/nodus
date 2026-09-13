@@ -1,5 +1,12 @@
 # Changelog
 
+## [2026-09-13] - Relay preserves signed shard hashes across a rebuild (#22)
+
+**What changed:** New `shard_hash` snapshot record type in `packages/protocol/src/messages/snapshot.ts` (schema + union, regenerated). The node (`sync/types.rs`, `sync/snapshot.rs`) streams `file_version_shard_hashes` as `shard_hash` chunks via `SnapshotRecord::ShardHash`. The relay gains `migrations/016_shard_hashes` (`file_version_shard_hashes` + `rebuild_file_version_shard_hashes`), staging in `snapshot.go`, and promotion in `promote.go` (live rows cascade away with the replaced versions).
+**Why:** Completes the relay-rebuild data-preservation story for audit #22: a relay rebuilt from a node snapshot now keeps the device-signed per-shard hashes alongside the versions.
+**Impact:** `packages/protocol/src/messages/snapshot.ts`, `services/storage-node/src/sync/{types,snapshot}.rs`, `services/relay/internal/{db/migrations/016_shard_hashes.*,handler/snapshot.go,handler/promote.go}`. New test `test_build_snapshot_includes_shard_hashes`. Verified: `cargo fmt/clippy/test` (204 lib + 185 bin + 2 integration), protocol test/lint/check-types, Go `gofmt/build/vet/test`.
+**Follow-ups:** Mobile conflict inbox + resolve (Phase 19) is the last chosen item.
+
 ## [2026-09-13] - Storage node M8: streaming snapshot in O(chunk) memory
 
 **What changed:** `sync/snapshot.rs` factors chunk emission into `emit_chunks(conn, snapshot_id, &mut dyn SnapshotSink)` (with `ChunkWriter` preserving the exact homogeneous split and `hash_chunk`), so `build_snapshot` (tests) collects via a `CollectSink` while the daemon streams. `sync/client.rs::stream_snapshot` now acquires one connection + SQLite read transaction, hashes chunks in a first pass, sends the identical chunks in a second pass, and heartbeats between them — instead of materializing the whole snapshot. New `load_cursors_conn`; `bump_snapshot_counter` is now public for the streaming path.

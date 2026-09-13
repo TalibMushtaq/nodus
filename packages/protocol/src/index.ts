@@ -146,6 +146,8 @@ export {
   type KeyEnvelopeRecord,
   TombstoneRecordSchema,
   type TombstoneRecord,
+  ShardHashRecordSchema,
+  type ShardHashRecord,
   SnapshotBeginPayloadSchema,
   type SnapshotBeginPayload,
   SnapshotChunkPayloadSchema,

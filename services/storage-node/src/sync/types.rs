@@ -248,10 +248,20 @@ pub struct TombstoneRecord {
     pub deleted_at: String,
 }
 
-/// Snapshot chunk record — a single file_version or tombstone row.
-/// `untagged` keeps records as plain JSON objects on the wire (matching the TS
-/// `SnapshotChunkPayloadSchema`); the outer `record_type` discriminates which
-/// shape each record has.
+/// A signed per-shard integrity hash (audit #22) captured in a snapshot chunk,
+/// so a rebuilt Relay preserves the authenticated hashes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShardHashRecord {
+    pub file_id: String,
+    pub version_number: i64,
+    pub shard_index: i64,
+    pub shard_hash: String,
+}
+
+/// Snapshot chunk record — a single file_version/folder/envelope/tombstone/
+/// shard_hash row. `untagged` keeps records as plain JSON objects on the wire
+/// (matching the TS `SnapshotChunkPayloadSchema`); the outer `record_type`
+/// discriminates which shape each record has.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum SnapshotRecord {
@@ -261,6 +271,7 @@ pub enum SnapshotRecord {
     Folder(FolderRecord),
     KeyEnvelope(KeyEnvelopeRecord),
     Tombstone(TombstoneRecord),
+    ShardHash(ShardHashRecord),
 }
 
 /// Snapshot_begin metadata (§20).

@@ -13,7 +13,7 @@ import { NodeId, SnapshotId } from "../types.js";
 export const SNAPSHOT_CHUNK_MAX_RECORDS = 1000;
 
 /** Snapshot record type discriminants. */
-export const SnapshotRecordTypeSchema = z.enum(["file_version", "folder", "key_envelope", "tombstone"]);
+export const SnapshotRecordTypeSchema = z.enum(["file_version", "folder", "key_envelope", "tombstone", "shard_hash"]);
 export type SnapshotRecordType = z.infer<typeof SnapshotRecordTypeSchema>;
 
 /**
@@ -80,6 +80,20 @@ export const TombstoneRecordSchema = z.object({
 
 export type TombstoneRecord = z.infer<typeof TombstoneRecordSchema>;
 
+/**
+ * A signed per-shard integrity hash (audit #22). The node stores these from a
+ * device's `FILE_SHARD_MANIFEST` and carries them in a snapshot so a rebuilt
+ * Relay preserves the authenticated per-shard hashes alongside the versions.
+ */
+export const ShardHashRecordSchema = z.object({
+  file_id: z.string(),
+  version_number: z.number().int().min(1),
+  shard_index: z.number().int().min(0),
+  shard_hash: z.string(),
+});
+
+export type ShardHashRecord = z.infer<typeof ShardHashRecordSchema>;
+
 // ── Snapshot Begin ─────────────────────────────────────────────────
 
 /**
@@ -141,6 +155,7 @@ export const SnapshotChunkPayloadSchema = z.object({
         FolderRecordSchema,
         KeyEnvelopeRecordSchema,
         TombstoneRecordSchema,
+        ShardHashRecordSchema,
       ]),
     )
     .max(SNAPSHOT_CHUNK_MAX_RECORDS),
