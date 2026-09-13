@@ -7,6 +7,7 @@
 //! the node's identity key. The Relay verifies signature + hash before
 //! promoting any state.
 
+use futures_util::TryStreamExt;
 use sqlx::{Row, SqlitePool};
 
 use super::types::{
@@ -38,166 +39,6 @@ pub fn is_rebuild_required_for(
     } else {
         None
     }
-}
-
-/// Loads every file_version row (joined with the file catalog for encrypted
-/// name/folder metadata) from SQLite, ordered deterministically for a stable
-/// content hash.
-async fn load_file_version_records(db: &SqlitePool) -> anyhow::Result<Vec<FileVersionRecord>> {
-    let rows = sqlx::query(
-        r#"
-        SELECT
-            fv.file_id,
-            fv.version_number,
-            fv.parent_version_id,
-            fv.conflict_status,
-            fv.version_hash,
-            fv.shard_count,
-            f.created_at,
-            f.encrypted_name,
-            f.parent_folder_id
-        FROM file_versions fv
-        JOIN files f ON f.file_id = fv.file_id
-        ORDER BY fv.file_id ASC, fv.version_number ASC
-        "#,
-    )
-    .fetch_all(db)
-    .await?;
-
-    let mut records = Vec::with_capacity(rows.len());
-    for row in rows {
-        let parent_version_id: Option<i64> = row.get("parent_version_id");
-        let version_hash: String = row.get("version_hash");
-        let shard_count: i64 = row.get("shard_count");
-        if version_hash.is_empty() || shard_count <= 0 {
-            // A malformed row would be silently absent from a rebuild; surface
-            // it so the operator can investigate rather than losing a version.
-            eprintln!(
-                "[snapshot] omitting file_version {}:{} from snapshot: version_hash={:?} shard_count={}",
-                row.get::<String, _>("file_id"),
-                row.get::<i64, _>("version_number"),
-                version_hash,
-                shard_count
-            );
-            continue;
-        }
-        records.push(FileVersionRecord {
-            file_id: row.get("file_id"),
-            version_number: row.get("version_number"),
-            parent_version_id,
-            conflict_status: row
-                .try_get::<Option<String>, _>("conflict_status")
-                .ok()
-                .flatten(),
-            version_hash,
-            shard_count,
-            encrypted_name: row
-                .try_get::<Option<String>, _>("encrypted_name")
-                .ok()
-                .flatten(),
-            parent_folder_id: row
-                .try_get::<Option<String>, _>("parent_folder_id")
-                .ok()
-                .flatten(),
-        });
-    }
-
-    Ok(records)
-}
-
-/// Loads every folder row from SQLite, ordered deterministically. Folders are
-/// carried in the snapshot so a Relay rebuild reconstructs the tree instead of
-/// leaving files with dangling `parent_folder_id` values.
-async fn load_folder_records(db: &SqlitePool) -> anyhow::Result<Vec<FolderRecord>> {
-    let rows = sqlx::query(
-        r#"
-        SELECT folder_id, parent_folder_id, encrypted_name, created_at
-        FROM folders
-        ORDER BY folder_id ASC
-        "#,
-    )
-    .fetch_all(db)
-    .await?;
-
-    let mut records = Vec::with_capacity(rows.len());
-    for row in rows {
-        records.push(FolderRecord {
-            folder_id: row.get("folder_id"),
-            parent_folder_id: row
-                .try_get::<Option<String>, _>("parent_folder_id")
-                .ok()
-                .flatten(),
-            encrypted_name: row
-                .try_get::<Option<String>, _>("encrypted_name")
-                .ok()
-                .flatten(),
-            created_at: row
-                .try_get::<Option<String>, _>("created_at")
-                .ok()
-                .flatten(),
-        });
-    }
-
-    Ok(records)
-}
-
-/// Loads every key envelope row. Envelopes are opaque here; carrying them keeps
-/// a Relay rebuild from dropping them (Phase 14 F2c).
-async fn load_key_envelope_records(db: &SqlitePool) -> anyhow::Result<Vec<KeyEnvelopeRecord>> {
-    let rows = sqlx::query(
-        r#"
-        SELECT file_id, recipient_id, recipient_kind, encrypted_key, created_at
-        FROM key_envelopes
-        ORDER BY file_id ASC, recipient_id ASC
-        "#,
-    )
-    .fetch_all(db)
-    .await?;
-
-    let mut records = Vec::with_capacity(rows.len());
-    for row in rows {
-        records.push(KeyEnvelopeRecord {
-            file_id: row.get("file_id"),
-            recipient_id: row.get("recipient_id"),
-            recipient_kind: row.get("recipient_kind"),
-            encrypted_key: row.get("encrypted_key"),
-            created_at: row
-                .try_get::<Option<String>, _>("created_at")
-                .ok()
-                .flatten(),
-        });
-    }
-
-    Ok(records)
-}
-
-/// Loads tombstones newer than the retention window from SQLite.
-async fn load_tombstone_records(db: &SqlitePool) -> anyhow::Result<Vec<TombstoneRecord>> {
-    let cutoff = chrono::Utc::now() - chrono::Duration::days(TOMBSTONE_RETENTION_DAYS);
-    let cutoff_str = cutoff.to_rfc3339();
-
-    let rows = sqlx::query(
-        r#"
-        SELECT entity_type, entity_id, deleted_at
-        FROM tombstones
-        WHERE deleted_at >= ?
-        ORDER BY entity_type ASC, entity_id ASC
-        "#,
-    )
-    .bind(&cutoff_str)
-    .fetch_all(db)
-    .await?;
-
-    let mut records = Vec::with_capacity(rows.len());
-    for row in rows {
-        records.push(TombstoneRecord {
-            entity_type: row.get("entity_type"),
-            entity_id: row.get("entity_id"),
-            deleted_at: row.get("deleted_at"),
-        });
-    }
-
-    Ok(records)
 }
 
 /// Loads the per-origin sync cursor map so the Relay can repopulate
@@ -258,6 +99,32 @@ pub fn cursors_in_snapshot(cursors: &[SyncCursor]) -> bool {
     cursors.iter().all(|c| seen.insert(c.origin_id.clone()))
 }
 
+/// Append `record` to the last chunk when it is the same record type and still
+/// under the per-chunk cap, otherwise start a new chunk. Shared by every type
+/// so the deterministic split (and therefore the content hash) is identical to
+/// the previous builder.
+fn push_snapshot_record(
+    chunks: &mut Vec<SnapshotChunkPayload>,
+    chunk_index: &mut i64,
+    record_type: &str,
+    record: SnapshotRecord,
+) {
+    if let Some(last) = chunks.last_mut()
+        && last.record_type == record_type
+        && last.records.len() < SNAPSHOT_CHUNK_MAX_RECORDS
+    {
+        last.records.push(record);
+        return;
+    }
+    chunks.push(SnapshotChunkPayload {
+        snapshot_id: String::new(),
+        chunk_index: *chunk_index,
+        record_type: record_type.to_string(),
+        records: vec![record],
+    });
+    *chunk_index += 1;
+}
+
 /// Build a full snapshot payload set (BEGIN + ordered homogeneous chunks + END)
 /// from the local SQLite database. This is deterministic for a given DB state:
 /// same records in, same chunks and content hash out.
@@ -269,88 +136,162 @@ pub async fn build_snapshot(
     Vec<SnapshotChunkPayload>,
     SnapshotEndPayload,
 )> {
-    let file_records = load_file_version_records(db).await?;
-    let folder_records = load_folder_records(db).await?;
-    let envelope_records = load_key_envelope_records(db).await?;
-    let tombstone_records = load_tombstone_records(db).await?;
-    let cursors = load_cursors(db).await?;
-
-    // Homogeneous chunking: file_versions, folders, key_envelopes, tombstones;
-    // each chunk capped at SNAPSHOT_CHUNK_MAX_RECORDS. Deterministic split keeps
-    // the content hash stable for identical DB states.
+    // Homogeneous chunking built directly from the row streams: records are not
+    // first collected into per-type `Vec`s, so peak memory is the chunks we
+    // return rather than records + chunks. The order, 1000-record cap, and skip
+    // rules match the previous builder exactly, so the content hash (and the
+    // Relay's reassembly check) is unchanged.
     let mut chunks = Vec::<SnapshotChunkPayload>::new();
     let mut chunk_index: i64 = 0;
 
-    for record in file_records.into_iter().map(SnapshotRecord::FileVersion) {
-        if let Some(last) = chunks.last_mut()
-            && last.record_type == "file_version"
-            && last.records.len() < SNAPSHOT_CHUNK_MAX_RECORDS
-        {
-            last.records.push(record);
+    // file_versions, joined with the file catalog for name/folder metadata.
+    let mut version_rows = sqlx::query(
+        r#"
+        SELECT
+            fv.file_id,
+            fv.version_number,
+            fv.parent_version_id,
+            fv.conflict_status,
+            fv.version_hash,
+            fv.shard_count,
+            f.created_at,
+            f.encrypted_name,
+            f.parent_folder_id
+        FROM file_versions fv
+        JOIN files f ON f.file_id = fv.file_id
+        ORDER BY fv.file_id ASC, fv.version_number ASC
+        "#,
+    )
+    .fetch(db);
+    while let Some(row) = version_rows.try_next().await? {
+        let version_hash: String = row.get("version_hash");
+        let shard_count: i64 = row.get("shard_count");
+        if version_hash.is_empty() || shard_count <= 0 {
+            // A malformed row would be silently absent from a rebuild; surface
+            // it so the operator can investigate rather than losing a version.
+            eprintln!(
+                "[snapshot] omitting file_version {}:{} from snapshot: version_hash={:?} shard_count={}",
+                row.get::<String, _>("file_id"),
+                row.get::<i64, _>("version_number"),
+                version_hash,
+                shard_count
+            );
             continue;
         }
-        chunks.push(SnapshotChunkPayload {
-            snapshot_id: String::new(),
-            chunk_index,
-            record_type: "file_version".to_string(),
-            records: vec![record],
-        });
-        chunk_index += 1;
+        push_snapshot_record(
+            &mut chunks,
+            &mut chunk_index,
+            "file_version",
+            SnapshotRecord::FileVersion(FileVersionRecord {
+                file_id: row.get("file_id"),
+                version_number: row.get("version_number"),
+                parent_version_id: row.get("parent_version_id"),
+                conflict_status: row
+                    .try_get::<Option<String>, _>("conflict_status")
+                    .ok()
+                    .flatten(),
+                version_hash,
+                shard_count,
+                encrypted_name: row
+                    .try_get::<Option<String>, _>("encrypted_name")
+                    .ok()
+                    .flatten(),
+                parent_folder_id: row
+                    .try_get::<Option<String>, _>("parent_folder_id")
+                    .ok()
+                    .flatten(),
+            }),
+        );
     }
 
-    for record in folder_records.into_iter().map(SnapshotRecord::Folder) {
-        if let Some(last) = chunks.last_mut()
-            && last.record_type == "folder"
-            && last.records.len() < SNAPSHOT_CHUNK_MAX_RECORDS
-        {
-            last.records.push(record);
-            continue;
-        }
-        chunks.push(SnapshotChunkPayload {
-            snapshot_id: String::new(),
-            chunk_index,
-            record_type: "folder".to_string(),
-            records: vec![record],
-        });
-        chunk_index += 1;
+    // Folders: carried so a rebuild reconstructs the tree instead of leaving
+    // files with dangling `parent_folder_id` values.
+    let mut folder_rows = sqlx::query(
+        r#"
+        SELECT folder_id, parent_folder_id, encrypted_name, created_at
+        FROM folders
+        ORDER BY folder_id ASC
+        "#,
+    )
+    .fetch(db);
+    while let Some(row) = folder_rows.try_next().await? {
+        push_snapshot_record(
+            &mut chunks,
+            &mut chunk_index,
+            "folder",
+            SnapshotRecord::Folder(FolderRecord {
+                folder_id: row.get("folder_id"),
+                parent_folder_id: row
+                    .try_get::<Option<String>, _>("parent_folder_id")
+                    .ok()
+                    .flatten(),
+                encrypted_name: row
+                    .try_get::<Option<String>, _>("encrypted_name")
+                    .ok()
+                    .flatten(),
+                created_at: row
+                    .try_get::<Option<String>, _>("created_at")
+                    .ok()
+                    .flatten(),
+            }),
+        );
     }
 
-    for record in envelope_records
-        .into_iter()
-        .map(SnapshotRecord::KeyEnvelope)
-    {
-        if let Some(last) = chunks.last_mut()
-            && last.record_type == "key_envelope"
-            && last.records.len() < SNAPSHOT_CHUNK_MAX_RECORDS
-        {
-            last.records.push(record);
-            continue;
-        }
-        chunks.push(SnapshotChunkPayload {
-            snapshot_id: String::new(),
-            chunk_index,
-            record_type: "key_envelope".to_string(),
-            records: vec![record],
-        });
-        chunk_index += 1;
+    // Key envelopes: opaque here; carrying them keeps a rebuild from dropping
+    // them (Phase 14 F2c).
+    let mut envelope_rows = sqlx::query(
+        r#"
+        SELECT file_id, recipient_id, recipient_kind, encrypted_key, created_at
+        FROM key_envelopes
+        ORDER BY file_id ASC, recipient_id ASC
+        "#,
+    )
+    .fetch(db);
+    while let Some(row) = envelope_rows.try_next().await? {
+        push_snapshot_record(
+            &mut chunks,
+            &mut chunk_index,
+            "key_envelope",
+            SnapshotRecord::KeyEnvelope(KeyEnvelopeRecord {
+                file_id: row.get("file_id"),
+                recipient_id: row.get("recipient_id"),
+                recipient_kind: row.get("recipient_kind"),
+                encrypted_key: row.get("encrypted_key"),
+                created_at: row
+                    .try_get::<Option<String>, _>("created_at")
+                    .ok()
+                    .flatten(),
+            }),
+        );
     }
 
-    for record in tombstone_records.into_iter().map(SnapshotRecord::Tombstone) {
-        if let Some(last) = chunks.last_mut()
-            && last.record_type == "tombstone"
-            && last.records.len() < SNAPSHOT_CHUNK_MAX_RECORDS
-        {
-            last.records.push(record);
-            continue;
-        }
-        chunks.push(SnapshotChunkPayload {
-            snapshot_id: String::new(),
-            chunk_index,
-            record_type: "tombstone".to_string(),
-            records: vec![record],
-        });
-        chunk_index += 1;
+    // Tombstones within the retention window (older ones are already prunable).
+    let cutoff = chrono::Utc::now() - chrono::Duration::days(TOMBSTONE_RETENTION_DAYS);
+    let cutoff_str = cutoff.to_rfc3339();
+    let mut tombstone_rows = sqlx::query(
+        r#"
+        SELECT entity_type, entity_id, deleted_at
+        FROM tombstones
+        WHERE deleted_at >= ?
+        ORDER BY entity_type ASC, entity_id ASC
+        "#,
+    )
+    .bind(&cutoff_str)
+    .fetch(db);
+    while let Some(row) = tombstone_rows.try_next().await? {
+        push_snapshot_record(
+            &mut chunks,
+            &mut chunk_index,
+            "tombstone",
+            SnapshotRecord::Tombstone(TombstoneRecord {
+                entity_type: row.get("entity_type"),
+                entity_id: row.get("entity_id"),
+                deleted_at: row.get("deleted_at"),
+            }),
+        );
     }
+
+    let cursors = load_cursors(db).await?;
 
     let total_chunks = chunks.len() as i64;
 

@@ -170,6 +170,11 @@ const OUTBOX_FLUSH_INTERVAL: std::time::Duration = std::time::Duration::from_sec
 /// the flush cadence so the purge never competes with event delivery.
 const OUTBOX_SWEEP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(600);
 
+/// Liveness heartbeat cadence (§13). Used by the idle select loop and, during a
+/// long snapshot upload, by the snapshot stream itself so the Relay never marks
+/// the node offline mid-rebuild.
+const HEARTBEAT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// Acknowledged outbox rows younger than this are retained: the Relay ack may
 /// still be in flight on the same session, and re-sending a just-acked event
 /// is safer than silently dropping one the Relay never received.
@@ -388,7 +393,7 @@ impl SyncClient {
         // so the Relay's throttled write (once/minute, hub.go) keeps the node
         // "online" regardless of traffic. The 30 s cadence matches the web
         // client and the 2-minute online window (NODE_ONLINE_WINDOW_MS).
-        let mut heartbeat = tokio::time::interval(std::time::Duration::from_secs(30));
+        let mut heartbeat = tokio::time::interval(HEARTBEAT_INTERVAL);
         heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut outbox_flush = tokio::time::interval(OUTBOX_FLUSH_INTERVAL);
         outbox_flush.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -548,11 +553,7 @@ impl SyncClient {
                     // online/offline state off this envelope, and it writes
                     // `last_seen_at` at most once per minute. Payload matches
                     // the protocol's HeartbeatPayloadSchema (id + RFC3339 ts).
-                    Self::send_envelope(&mut write, "heartbeat", &serde_json::json!({
-                        "id": self.identity.node_id,
-                        "timestamp": chrono::Utc::now().to_rfc3339(),
-                    }))
-                    .await?;
+                    Self::send_heartbeat(&mut write, &self.identity.node_id).await?;
                 }
                 _ = outbox_flush.tick() => {
                     // Local events created after the pre-session drain are
@@ -608,6 +609,24 @@ impl SyncClient {
     {
         let env = ProtocolEnvelope::new(msg_type, payload.clone());
         Self::send_json(write, &env).await
+    }
+
+    /// Send one liveness heartbeat (§13). Shared by the idle select loop and the
+    /// snapshot stream, which can occupy the writer for a long rebuild.
+    async fn send_heartbeat<W>(write: &mut W, node_id: &str) -> anyhow::Result<()>
+    where
+        W: futures_util::Sink<Message> + Unpin,
+        W::Error: std::error::Error + Send + Sync + 'static,
+    {
+        Self::send_envelope(
+            write,
+            "heartbeat",
+            &serde_json::json!({
+                "id": node_id,
+                "timestamp": chrono::Utc::now().to_rfc3339(),
+            }),
+        )
+        .await
     }
 
     /// Phase 10: consume a pending_notify — fetch the shard bytes from the
@@ -825,6 +844,11 @@ impl SyncClient {
     /// Streams a full snapshot to the Relay in response to REBUILD_REQUIRED:
     /// SNAPSHOT_BEGIN, then each homogeneous chunk (up to 1000 records), then
     /// SNAPSHOT_END with the final content hash.
+    ///
+    /// A long rebuild can occupy the writer for many seconds, during which the
+    /// caller's select loop cannot fire its heartbeat arm. This method sends a
+    /// heartbeat itself on the same cadence so the Relay does not mark the node
+    /// offline mid-snapshot.
     async fn stream_snapshot<W>(&self, write: &mut W) -> anyhow::Result<()>
     where
         W: futures_util::Sink<Message> + Unpin,
@@ -836,9 +860,14 @@ impl SyncClient {
         let begin_env = ProtocolEnvelope::new("snapshot_begin", serde_json::to_value(begin)?);
         Self::send_json(write, &begin_env).await?;
 
+        let mut last_ping = std::time::Instant::now();
         for chunk in chunks {
             let chunk_env = ProtocolEnvelope::new("snapshot_chunk", serde_json::to_value(chunk)?);
             Self::send_json(write, &chunk_env).await?;
+            if last_ping.elapsed() >= HEARTBEAT_INTERVAL {
+                Self::send_heartbeat(write, &self.identity.node_id).await?;
+                last_ping = std::time::Instant::now();
+            }
         }
 
         let end_env = ProtocolEnvelope::new("snapshot_end", serde_json::to_value(end)?);

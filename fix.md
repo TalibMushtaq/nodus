@@ -1,10 +1,10 @@
 # Storage Node Audit — Fix Plan
 
-Status: Phases 1-10 implemented and committed (one commit per phase). All audit
-findings are addressed. #22's first-copy guarantee now uses a device-signed
-per-shard manifest (Phase 10). The remaining M6 (conflicted-copy surfacing) and
-M8 (snapshot streaming) items are feature/perf work, not correctness/security
-fixes, and stay documented under Deferred.
+Status: Phases 1-11 implemented and committed (one commit per phase). All audit
+findings are addressed. #22 uses a device-signed per-shard manifest (Phase 10);
+M8's liveness issue is fixed and its peak materialization reduced (Phase 11).
+The remaining M6 (conflicted-copy surfacing) is product/feature work, not a
+correctness/security fix, and stays documented under Deferred.
 
 Source audit: `services/storage-node/` (Rust, ~13.7k LOC). Baseline at plan time:
 `cargo fmt --check` clean, `cargo clippy --all-targets` clean, `cargo test` 168 passed.
@@ -185,6 +185,19 @@ format). Each phase is committed separately.
   signed `FILE_SHARD_MANIFEST` (retried on resume). `signManifest` is optional so
   non-browser harnesses remain compatible.
 
+## Phase 11 — M8 snapshot send (commit: `fix(storage-node): phase 11 ...`)
+
+### 11.1 Heartbeat during snapshot transmission (`sync/client.rs`)
+- `stream_snapshot` sends a liveness heartbeat on the 30 s cadence between
+  chunks, so a long rebuild cannot make the Relay mark the node offline. Shared
+  `send_heartbeat` helper with the idle select loop.
+
+### 11.2 Single-pass chunk building (`sync/snapshot.rs`)
+- Build homogeneous chunks directly from the SQL row streams (via
+  `push_snapshot_record`) instead of loading every table into per-type `Vec`s
+  first, halving peak metadata memory. Chunk order, 1000-record cap, and skip
+  rules are unchanged, so the content hash is byte-identical.
+
 ## Verification (each phase)
 
 - `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`.
@@ -198,8 +211,11 @@ format). Each phase is committed separately.
 - **M6 conflicted-copy UX (ADR-0003)** — `generate_conflicted_filename` is still
   computed and discarded; surfacing it needs a client-visible conflicted-copy
   record, a feature beyond this audit.
-- **M8 snapshot streaming** — snapshots are still fully materialized before
-  sending; a streaming rewrite is a larger change.
+- **M8 true streaming** — chunks are still all held before BEGIN (which carries
+  the final content hash), so a rebuild still holds O(chunks) metadata; Phase 11
+  removed the O(records) intermediate buffers and fixed the liveness block. A
+  genuine O(chunk) stream would need a two-pass scan or a protocol change to
+  BEGIN/chunk ordering.
 - **Relay-rebuild caveat for #22** — `file_version_shard_hashes` is node-local
   and not carried in node→relay snapshots, so a relay rebuilt from scratch won't
   re-serve old manifests to newly paired nodes. Existing nodes keep their
