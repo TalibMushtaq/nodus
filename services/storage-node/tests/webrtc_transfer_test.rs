@@ -20,7 +20,9 @@ use webrtc::api::APIBuilder;
 use webrtc::peer_connection::configuration::RTCConfiguration;
 
 /// Signed `POST` request: every WebRTC signaling call must prove device
-/// possession with a fresh signature over `"{device_id}:{session_id}:{timestamp}"`.
+/// possession with a fresh signature over
+/// `"{device_id}:{session_id}:{timestamp}:{blake3(payload)}"`, binding the
+/// signature to the exact SDP/candidate body.
 fn signed_post(
     path: &str,
     body: serde_json::Value,
@@ -29,7 +31,13 @@ fn signed_post(
     key: &SigningKey,
 ) -> Request<Body> {
     let timestamp = chrono::Utc::now().timestamp_millis();
-    let message = format!("{device_id}:{session_id}:{timestamp}");
+    let payload = body
+        .get("sdp")
+        .or_else(|| body.get("candidate"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let payload_hash = blake3::hash(payload.as_bytes()).to_hex().to_string();
+    let message = format!("{device_id}:{session_id}:{timestamp}:{payload_hash}");
     let signature = hex::encode(key.sign(message.as_bytes()).to_bytes());
     let mut request = Request::builder()
         .uri(path)

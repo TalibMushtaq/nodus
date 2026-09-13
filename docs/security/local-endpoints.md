@@ -53,6 +53,7 @@ reasons, and threat model.
 | Replayed pairing token | Single-use token, redeemed atomically at the Relay; server-side `consumed_at` |
 | Sniffed token used by a different device | Token is bound to a device pubkey at issuance; redemption requires that same device identity |
 | Replayed challenge-response | Nonces are single-use and TTL-bounded |
+| On-path attacker swaps WebRTC SDP/ICE on the plaintext LAN listener | Each signaling request signs `"{device_id}:{session_id}:{timestamp_ms}:{blake3(payload)}"`, so a body swap invalidates the signature |
 | Browser origin probing the node | Permissive CORS on the LAN listener, accepted for the home-LAN v1 trust model |
 
 ## Known accepted risks (v1)

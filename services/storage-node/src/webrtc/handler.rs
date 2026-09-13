@@ -46,11 +46,17 @@ pub struct IceQuery {
 /// proves possession of its pairing key per message; the body's `device_id`
 /// must equal the authenticated caller so a signature can't be replayed across
 /// sessions or devices.
+///
+/// `payload_hash` is the hex BLAKE3 of the message's payload (`sdp` or
+/// `candidate`). Binding it into the signed message stops an on-path attacker
+/// on the plaintext LAN listener from swapping the SDP/ICE body while
+/// replaying a valid signature.
 async fn verify_webrtc_caller(
     state: &LocalState,
     headers: &HeaderMap,
     device_id: &str,
     session_id: &str,
+    payload_hash: &str,
 ) -> Result<(), (StatusCode, Json<LocalError>)> {
     let timestamp = headers
         .get("x-nodus-timestamp")
@@ -58,9 +64,9 @@ async fn verify_webrtc_caller(
         .and_then(|v| v.parse::<i64>().ok())
         .ok_or_else(|| unauthorized_err("missing or invalid X-Nodus-Timestamp header"))?;
 
-    // The message binds device, session, and time; verify_signed_caller also
-    // enforces the timestamp freshness window from the same header.
-    let message = format!("{device_id}:{session_id}:{timestamp}");
+    // The message binds device, session, time, and payload; verify_signed_caller
+    // also enforces the timestamp freshness window from the same header.
+    let message = format!("{device_id}:{session_id}:{timestamp}:{payload_hash}");
     let caller = verify_signed_caller(&state.db, headers, message.as_bytes())
         .await
         .map_err(to_unauthorized)?;
@@ -118,7 +124,17 @@ pub async fn handle_offer(
         ));
     }
 
-    verify_webrtc_caller(&state, &headers, &body.device_id, &body.session_id).await?;
+    // Bind the signed message to the exact SDP offered: the signature alone
+    // only proves the device, not that this body is the one it sent.
+    let payload_hash = blake3::hash(body.sdp.as_bytes()).to_hex().to_string();
+    verify_webrtc_caller(
+        &state,
+        &headers,
+        &body.device_id,
+        &body.session_id,
+        &payload_hash,
+    )
+    .await?;
 
     // Get or create WebRTC session (single-flight in the manager).
     let session = state
@@ -158,7 +174,16 @@ pub async fn handle_ice_candidate(
     headers: HeaderMap,
     Json(body): Json<IceCandidateRequest>,
 ) -> Result<StatusCode, (StatusCode, Json<LocalError>)> {
-    verify_webrtc_caller(&state, &headers, &body.device_id, &body.session_id).await?;
+    // Bind the signature to the exact ICE candidate body.
+    let payload_hash = blake3::hash(body.candidate.as_bytes()).to_hex().to_string();
+    verify_webrtc_caller(
+        &state,
+        &headers,
+        &body.device_id,
+        &body.session_id,
+        &payload_hash,
+    )
+    .await?;
 
     let session = match state.webrtc_manager.get_session(&body.session_id).await {
         Some(s) => s,

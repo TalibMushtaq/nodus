@@ -1,9 +1,47 @@
 import type { RelayWsClient } from "@repo/relay-client";
 import { describe, expect, it, vi } from "vitest";
 import { MessageTypes } from "@repo/protocol";
-import { createRelaySignalingChannel } from "../src/signaling.js";
+import { blake3 } from "@noble/hashes/blake3";
+import { bytesToHex } from "@noble/hashes/utils";
+import { createRelaySignalingChannel, createLocalSignalingChannel } from "../src/signaling.js";
 
 describe("WebRTC Signaling Channels", () => {
+  it("local signaling binds the signed message to the payload hash", async () => {
+    const seen: string[] = [];
+    const sign = (message: string) => {
+      seen.push(message);
+      return "00";
+    };
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ sdp: "v=0 answer" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      const channel = createLocalSignalingChannel({
+        baseUrl: "http://127.0.0.1:9378",
+        deviceId: "dev",
+        sessionId: "sess",
+        sign,
+      });
+      await channel.sendOffer("v=0 offer");
+      channel.close();
+
+      // `dev:sess:<timestamp_ms>:<blake3(sdp)>` — the payload binding is what
+      // stops an on-path attacker swapping SDP behind a valid signature.
+      const expectedHash = bytesToHex(blake3(new TextEncoder().encode("v=0 offer")));
+      expect(seen).toHaveLength(1);
+      expect(seen[0]).toMatch(/^dev:sess:\d+:[0-9a-f]{64}$/);
+      expect(seen[0]).toBe(`dev:sess:${seen[0]!.split(":")[2]}:${expectedHash}`);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("relay signaling channel correctly formats outgoing envelopes and forwards incoming messages", async () => {
     const sentMessages: unknown[] = [];
     const mockWsClient = {

@@ -1,5 +1,12 @@
 # Changelog
 
+## [2026-09-13] - Storage node audit phase 7: WebRTC signaling signature binds the SDP/ICE payload
+
+**What changed:** `services/storage-node/src/webrtc/handler.rs` now signs and verifies `"{device_id}:{session_id}:{timestamp_ms}:{blake3(payload)}"` for `/nodus/webrtc/offer` (payload = `sdp`) and `/nodus/webrtc/ice` (payload = `candidate`); the receive-only SSE candidate stream keeps the payload-free `"{device}:{session}:{timestamp}"` message. `packages/webrtc-transport/src/signaling.ts` computes the same BLAKE3 hash (via the already-present `@noble/hashes`) for offer/answer/candidate and updates the `sign` callback doc. `docs/security/local-endpoints.md` documents the binding, and the WebRTC integration test plus a new TS unit test assert it.
+**Why:** Audit finding #4: the local signaling listener is plaintext HTTP, and the signature covered only device/session/time, so an on-path attacker could substitute the SDP/ICE body and MITM the Path A session despite the authenticated caller.
+**Impact:** `webrtc/handler.rs`, `packages/webrtc-transport/src/signaling.ts`, `tests/webrtc_transfer_test.rs`, `packages/webrtc-transport/tests/signaling.test.ts`, `docs/security/local-endpoints.md`. This is an HTTP-only format change (not a wire schema), so no relay protocol bump; a mixed-version client/node pair fails Path A with 401 and falls back to Path B/C. Verified: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` (195 lib + 177 bin + 2 integration), and `pnpm --filter @repo/webrtc-transport test|lint|check-types`.
+**Follow-ups:** Phase 8 (relay-buffer consistency guard + documented per-shard-manifest protocol requirement) remains.
+
 ## [2026-09-13] - Storage node audit phase 6: residual races and sync robustness
 
 **What changed:** `store/gc.rs` replaces the `SELECT COUNT(*) FROM shards` then `DELETE FROM storage_objects` pair in `purge_file` and `prune_version` with a single conditional `DELETE ... WHERE object_id = ? AND NOT EXISTS (SELECT 1 FROM shards WHERE object_id = ?)`, removing the object file only when exactly one row was deleted. `sync/client.rs::store_pairing_token` now takes the local node id and ignores a relay push addressed to a different node (matching its long-standing doc comment); inbound frames with an incompatible envelope `schema_version` major are skipped; a `schema_major_compatible` helper is unit-tested. `sync/outbox.rs::sweep_synced_outbox` compares `datetime(created_at) < datetime(?)` so mixed `Z`/`+00:00`/fractional RFC3339 forms order correctly.

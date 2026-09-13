@@ -5,8 +5,19 @@ import {
   WebRTCIceCandidatePayloadSchema,
   WebRTCOfferPayloadSchema,
 } from "@repo/protocol";
+import { blake3 } from "@noble/hashes/blake3";
+import { bytesToHex } from "@noble/hashes/utils";
 import type { RelayWsClient } from "@repo/relay-client";
 import type { SignalingChannel } from "./types.js";
+
+/**
+ * Hex BLAKE3 of a signaling payload (`sdp`/`candidate`). The node binds this
+ * into the signed message so an on-path attacker cannot swap the body while
+ * replaying a valid signature.
+ */
+function payloadHash(payload: string): string {
+  return bytesToHex(blake3(new TextEncoder().encode(payload)));
+}
 
 /** Local HTTP signaling channel for Path A */
 export interface LocalSignalingOptions {
@@ -18,10 +29,11 @@ export interface LocalSignalingOptions {
    * Optional per-message signing callback. When provided, every signaling
    * request is authenticated with the same stateless `X-Nodus-*` scheme the
    * shard-fetch path uses: the callback receives
-   * `"{device_id}:{session_id}:{timestamp_ms}"` and returns a hex Ed25519
-   * signature (e.g. from `signDeviceMessage/identityPrivateKey`). Without a
-   * signer the node rejects signaling with 401, so a caller that needs direct
-   * transfers MUST supply one.
+   * `"{device_id}:{session_id}:{timestamp_ms}:{blake3(payload)}"` and returns a
+   * hex Ed25519 signature (e.g. from `signDeviceMessage/identityPrivateKey`).
+   * Without a signer the node rejects signaling with 401, so a caller that
+   * needs direct transfers MUST supply one. (The SSE candidate stream is
+   * receive-only and uses the payload-free `"{device}:{session}:{timestamp}"`.)
    */
   sign?: (message: string) => string | Promise<string>;
 }
@@ -31,9 +43,12 @@ async function signedHeaders(
   deviceId: string,
   sessionId: string,
   sign: NonNullable<LocalSignalingOptions["sign"]>,
+  payload: string,
 ): Promise<Record<string, string>> {
   const timestamp = Date.now();
-  const signature = await sign(`${deviceId}:${sessionId}:${timestamp}`);
+  const signature = await sign(
+    `${deviceId}:${sessionId}:${timestamp}:${payloadHash(payload)}`,
+  );
   return {
     "x-nodus-device-id": deviceId,
     "x-nodus-timestamp": String(timestamp),
@@ -101,7 +116,7 @@ export function createLocalSignalingChannel(opts: LocalSignalingOptions): Signal
     async sendOffer(sdp: string): Promise<void> {
       const headers: Record<string, string> = { "Content-Type": "application/json" };
       if (opts.sign) {
-        Object.assign(headers, await signedHeaders(deviceId, sessionId, opts.sign));
+        Object.assign(headers, await signedHeaders(deviceId, sessionId, opts.sign, sdp));
       }
       const res = await fetch(`${baseUrl}/nodus/webrtc/offer`, {
         method: "POST",
@@ -128,7 +143,7 @@ export function createLocalSignalingChannel(opts: LocalSignalingOptions): Signal
     async sendAnswer(sdp: string): Promise<void> {
       const headers: Record<string, string> = { "Content-Type": "application/json" };
       if (opts.sign) {
-        Object.assign(headers, await signedHeaders(deviceId, sessionId, opts.sign));
+        Object.assign(headers, await signedHeaders(deviceId, sessionId, opts.sign, sdp));
       }
       const res = await fetch(`${baseUrl}/nodus/webrtc/answer`, {
         method: "POST",
@@ -149,7 +164,7 @@ export function createLocalSignalingChannel(opts: LocalSignalingOptions): Signal
     async sendIceCandidate(candidate: string): Promise<void> {
       const headers: Record<string, string> = { "Content-Type": "application/json" };
       if (opts.sign) {
-        Object.assign(headers, await signedHeaders(deviceId, sessionId, opts.sign));
+        Object.assign(headers, await signedHeaders(deviceId, sessionId, opts.sign, candidate));
       }
       const res = await fetch(`${baseUrl}/nodus/webrtc/ice`, {
         method: "POST",
