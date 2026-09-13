@@ -1,5 +1,12 @@
 # Changelog
 
+## [2026-09-13] - Relay tombstone inserts honor the NOT NULL `purge_after` (fixes 3 integration tests)
+
+**What changed:** `services/relay/internal/handler/promote.go` now derives `purge_after = deleted_at + INTERVAL '90 days'` when promoting `rebuild_tombstones` into the live `tombstones` table, and `services/relay/internal/handler/sync.go` does the same in the `FOLDER_DELETED` case. Both paths previously inserted only `(account_id, entity_type, entity_id, deleted_at)`. The file `FILE_DELETED`/`TOMBSTONE_CREATED` path already set `purge_after` and was the model.
+**Why:** Migration `014_tombstone_trash.up.sql` added `purge_after`, backfilled it, and made it `NOT NULL`. Two older insert paths predate that column, so snapshot promote aborted with `null value in column "purge_after" ... SQLSTATE 23502` and folder deletion rejected the whole batch. These were the three relay integration failures previously recorded as pre-existing "tombstone/rebuild schema drift".
+**Impact:** `promote.go`, `sync.go`. `TestFolderProjectionCreateDeleteNoResurrect`, `TestSnapshotIngestionIntegration`, and `TestPromoteRebuildIntegration` now pass; `go test ./...` is green against `TEST_DATABASE_URL`/`TEST_REDIS_URL` (Postgres 17 + Redis 7 via `services/relay/docker-compose.yml`).
+**Follow-ups:** None.
+
 ## [2026-09-13] - Relay matches the node's preserve-both fork handling (#10/#12 parity)
 
 **What changed:** `services/relay/internal/handler/sync.go` FILE_VERSION_ADDED/FILE_MODIFIED now resolve the incoming version against its claimed `(file_id, version_number)` slot before inserting. A vacant slot inserts as claimed; an occupant with the same `parent_version_id` and `version_hash` is treated as a benign re-delivery; any other occupant (different parent or hash) is a real fork — the incoming event is renumbered to `MAX(version_number)+1`, `conflict_status` is set to `'flagged'`, and the incumbent's branch (`parent_version_id` + `version_hash`) is flagged too. The fork decision is extracted into the pure `isVersionSlotFork` helper. This closes the `REQUIRES FOLLOW-UP` noted in the node-side #10 entry, where the Relay's `ON CONFLICT DO UPDATE` would overwrite the incumbent and disagree with the node on the next snapshot.
