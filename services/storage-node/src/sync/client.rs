@@ -721,21 +721,21 @@ impl SyncClient {
         // silently ignored and still acked "verified"), so an operator sees the
         // relay anomaly. Full protection for the *first* copy needs a signed
         // per-shard manifest on FILE_VERSION_ADDED (see fix.md #22).
+        //
+        // An identical re-delivery falls through so the idempotent inserts and
+        // the pending→shards drain still run (the version row may have arrived
+        // since the original fetch).
         if let Some(existing) =
             existing_shard_object(&self.db, &n.file_id, n.version_number, n.shard_index).await?
+            && existing != object_id
         {
-            if existing != object_id {
-                anyhow::bail!(
-                    "relay shard conflict for {}:{}:{}: already stored object {existing}, \
-                     relay supplied {object_id}; refusing to overwrite",
-                    n.file_id,
-                    n.version_number,
-                    n.shard_index
-                );
-            }
-            // Identical re-delivery: fall through so the idempotent inserts and
-            // the pending→shards drain still run (the version row may have
-            // arrived since the original fetch).
+            anyhow::bail!(
+                "relay shard conflict for {}:{}:{}: already stored object {existing}, \
+                 relay supplied {object_id}; refusing to overwrite",
+                n.file_id,
+                n.version_number,
+                n.shard_index
+            );
         }
 
         let has_version: Option<i64> = sqlx::query_scalar(

@@ -1,5 +1,12 @@
 # Changelog
 
+## [2026-09-13] - Storage node phase 8 lint follow-up
+
+**What changed:** Collapsed the nested `if let`/`if` in `sync/client.rs::record_shard_metadata` into a let-chain so `cargo clippy --all-targets -- -D warnings` is clean.
+**Why:** Phase 8's commit compiles and tests green but tripped `clippy::collapsible_if` under `-D warnings`.
+**Impact:** `sync/client.rs` only; no behavior change. Verified `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` (196 lib + 178 bin + 2 integration).
+**Follow-ups:** None.
+
 ## [2026-09-13] - Storage node audit phase 8: relay-buffer shard consistency guard (#22)
 
 **What changed:** `services/storage-node/src/sync/client.rs::record_shard_metadata` now consults `existing_shard_object` (covering both `shards` and `pending_shard_fetches`) before recording a relay-delivered shard. A slot already holding a *different* object id is rejected with a surfaced error ("refusing to overwrite") instead of being silently dropped by `ON CONFLICT DO NOTHING` and still acked `verified`; an identical re-delivery falls through so the pending→shards drain still runs. `fix.md` records the remaining protocol requirement.
