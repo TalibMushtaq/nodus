@@ -12,17 +12,21 @@ export interface RelayNode {
   capabilities: string[];
   status: string;
   is_primary: boolean;
+  /** User-assigned label; absent until renamed. */
+  display_name?: string | null;
   last_seen_at?: string | null;
   created_at: string;
 }
 
-/** Mirrors the Relay's DeviceResponse (GET /devices) — the *only* client
- * identity the Relay catalogs (no display name / model / OS is stored). */
+/** Mirrors the Relay's DeviceResponse (GET /devices). The Relay stores no
+ * model/OS metadata; `display_name` is the account's own label for the device. */
 export interface RelayDevice {
   device_id: string;
   account_id: string;
   public_key: string;
   status: string;
+  /** User-assigned label; absent until renamed. */
+  display_name?: string | null;
   created_at: string;
   revoked_at?: string | null;
 }
@@ -88,6 +92,33 @@ export async function revokeDevice(deviceId: string): Promise<void> {
   if (!res.ok) {
     throw new Error(`device revocation failed: ${res.status}`);
   }
+}
+
+/**
+ * Assign (or clear, with an empty string) a node's display name via
+ * PATCH /api/nodes/{node_id}. Returns the stored value: null when cleared.
+ */
+export async function renameNode(nodeId: string, name: string): Promise<string | null> {
+  return patchDisplayName(`/api/nodes/${encodeURIComponent(nodeId)}`, name, "node");
+}
+
+/** Assign (or clear) a device's display name via PATCH /api/devices/{id}. */
+export async function renameDevice(deviceId: string, name: string): Promise<string | null> {
+  return patchDisplayName(`/api/devices/${encodeURIComponent(deviceId)}`, name, "device");
+}
+
+async function patchDisplayName(path: string, name: string, kind: "node" | "device"): Promise<string | null> {
+  const res = await fetch(path, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => null)) as { error?: string } | null;
+    throw new Error(body?.error ?? `${kind} rename failed: ${res.status}`);
+  }
+  const body = (await res.json()) as { display_name?: string | null };
+  return body.display_name ?? null;
 }
 
 /** Mirrors the Relay's PairingSessionResponse (POST /pairing/sessions). */

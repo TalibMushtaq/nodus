@@ -585,6 +585,54 @@ pub(crate) async fn apply_remote_event_conn(
             }
         }
 
+        // Folder key envelopes: opaque, keyed by folder_id. Stored for snapshot
+        // rebuilds only; the node cannot decrypt the folder name.
+        "FOLDER_KEY_ENVELOPE_ADDED" => {
+            let folder_id = event
+                .payload
+                .get("folder_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let recipient_id = event
+                .payload
+                .get("recipient_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let recipient_kind = event
+                .payload
+                .get("recipient_kind")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let encrypted_key = event
+                .payload
+                .get("encrypted_key")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+
+            if !folder_id.is_empty()
+                && !recipient_id.is_empty()
+                && !encrypted_key.is_empty()
+                && (recipient_kind == "device" || recipient_kind == "node")
+            {
+                sqlx::query(
+                    r#"
+                    INSERT INTO folder_key_envelopes (folder_id, recipient_id, recipient_kind, encrypted_key, created_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(folder_id, recipient_id) DO UPDATE SET
+                        recipient_kind = excluded.recipient_kind,
+                        encrypted_key = excluded.encrypted_key
+                    "#,
+                )
+                .bind(folder_id)
+                .bind(recipient_id)
+                .bind(recipient_kind)
+                .bind(encrypted_key)
+                .bind(&event.timestamp)
+                .execute(&mut *tx)
+                .await?;
+            }
+        }
+
         "FILE_SHARD_MANIFEST" => {
             // Authenticated per-shard hashes (audit #22). The device that
             // encrypted the file signs them, so the node can reject bytes a
@@ -1160,6 +1208,37 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(status, "DEGRADED");
+    }
+
+    #[tokio::test]
+    async fn test_apply_folder_key_envelope_event() {
+        let dir = tempdir().unwrap();
+        let pool = db::open(dir.path()).await.unwrap();
+
+        let event = SyncEvent {
+            event_id: "evt-folderenv-1".to_string(),
+            origin_id: "device-1".to_string(),
+            origin_sequence: 1,
+            event_type: "FOLDER_KEY_ENVELOPE_ADDED".to_string(),
+            payload: serde_json::json!({
+                "folder_id": "dir-1",
+                "recipient_id": "device-2",
+                "recipient_kind": "device",
+                "encrypted_key": "opaque"
+            }),
+            timestamp: "2026-09-12T12:00:00Z".to_string(),
+        };
+        apply_remote_event(&pool, &event, "node-test")
+            .await
+            .unwrap();
+
+        let stored: String = sqlx::query_scalar(
+            "SELECT encrypted_key FROM folder_key_envelopes WHERE folder_id = 'dir-1' AND recipient_id = 'device-2'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(stored, "opaque");
     }
 
     #[tokio::test]

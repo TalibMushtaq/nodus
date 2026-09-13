@@ -130,6 +130,9 @@ func main() {
 	// 5. WebSocket Hub initialization
 	wsHub := hub.New(redisClient)
 	go wsHub.Run(ctx)
+	// Correlates manual ping HTTP requests with the pong the peer sends back
+	// over its WS connection (Devices page "Ping" action).
+	pingTracker := handler.NewPingTracker()
 	log.Println("[relay] websocket hub: running")
 
 	// 6. Start buffer TTL cleanup worker (sweeps every 30m)
@@ -175,14 +178,25 @@ func main() {
 		mux.Handle("POST /devices/register", auth.RequireAuth(sessionStore, cfg)(handler.RegisterDevice(pool)))
 		mux.Handle("GET /devices", auth.RequireAuth(sessionStore, cfg)(handler.ListDevices(pool)))
 		mux.Handle("DELETE /devices/{id}", auth.RequireAuth(sessionStore, cfg)(handler.RevokeDevice(pool, sessionStore)))
+		mux.Handle("PATCH /devices/{id}", auth.RequireAuth(sessionStore, cfg)(handler.RenameDevice(pool)))
 
 		mux.Handle("POST /nodes/register", auth.RequireAuth(sessionStore, cfg)(handler.RegisterNode(pool)))
 		mux.Handle("GET /nodes", auth.RequireAuth(sessionStore, cfg)(handler.ListNodes(pool)))
+		// Manual reachability probes (Devices page). The Relay sends a `ping`
+		// over the peer's WS connection and waits for its `pong`, so a hung peer
+		// with an open socket is reported unreachable.
+		mux.Handle("POST /nodes/{node_id}/ping", auth.RequireAuth(sessionStore, cfg)(handler.PingPeer(pool, wsHub, pingTracker, "node")))
+		mux.Handle("POST /devices/{device_id}/ping", auth.RequireAuth(sessionStore, cfg)(handler.PingPeer(pool, wsHub, pingTracker, "device")))
+		// User-assigned display names for the Devices page.
+		mux.Handle("PATCH /nodes/{node_id}", auth.RequireAuth(sessionStore, cfg)(handler.RenameNode(pool)))
 
 		// Phase 14: catalog read paths for the web client's cached catalog.
 		mux.Handle("GET /files", auth.RequireAuth(sessionStore, cfg)(handler.ListFiles(pool)))
 		mux.Handle("GET /folders", auth.RequireAuth(sessionStore, cfg)(handler.ListFolders(pool)))
 		mux.Handle("GET /envelopes", auth.RequireAuth(sessionStore, cfg)(handler.ListEnvelopes(pool)))
+		// Bulk folder-key fetch: the client needs every folder envelope in one
+		// request to decrypt the folder tree (avoids an N+1 per refresh).
+		mux.Handle("GET /folder-envelopes", auth.RequireAuth(sessionStore, cfg)(handler.ListFolderEnvelopes(pool)))
 		// Tombstone (soft-delete) view: list, permanent delete, restore.
 		mux.Handle("GET /tombstones", auth.RequireAuth(sessionStore, cfg)(handler.ListTombstones(pool)))
 		mux.Handle("DELETE /tombstones/{entity_type}/{entity_id}", auth.RequireAuth(sessionStore, cfg)(handler.PurgeTombstone(pool, wsHub)))
@@ -213,7 +227,7 @@ func main() {
 
 	// WebSocket Gateway (browser auth via session cookie; node auth via Ed25519
 	// challenge-response)
-	mux.HandleFunc("GET /ws", handler.WebSocket(wsHub, pool, redisClient, buf, sessionStore, cfg))
+	mux.HandleFunc("GET /ws", handler.WebSocket(wsHub, pool, redisClient, buf, sessionStore, cfg, pingTracker))
 
 	// 8. HTTP Server Lifecycle
 	server := &http.Server{

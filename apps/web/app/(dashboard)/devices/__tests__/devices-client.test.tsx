@@ -13,7 +13,16 @@ vi.mock("../../../../lib/pairing", async (importOriginal) => {
     listDevices: vi.fn(),
     revokeDevice: vi.fn(),
     createPairingCode: vi.fn(),
+    renameNode: vi.fn(),
+    renameDevice: vi.fn(),
   };
+});
+
+// Ping hits the Relay through /api/*; mock the client helper so the test stays
+// offline and can assert the rendered verdict.
+vi.mock("../../../../lib/ping", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../../../lib/ping")>();
+  return { ...actual, pingNode: vi.fn(), pingDevice: vi.fn() };
 });
 
 // DevicesClient now reads the signed-in device (to warn before self-revocation),
@@ -32,13 +41,17 @@ vi.mock("../../../../providers/auth-provider", () => ({
   }),
 }));
 
-import { listNodes, listDevices, revokeDevice, createPairingCode, type RelayNode } from "../../../../lib/pairing";
+import { listNodes, listDevices, revokeDevice, createPairingCode, renameNode, type RelayNode } from "../../../../lib/pairing";
+import { pingNode, pingDevice } from "../../../../lib/ping";
 import { DevicesClient } from "../devices-client";
 
 const mockListNodes = vi.mocked(listNodes);
 const mockListDevices = vi.mocked(listDevices);
 const mockRevokeDevice = vi.mocked(revokeDevice);
 const mockCreatePairingCode = vi.mocked(createPairingCode);
+const mockPingNode = vi.mocked(pingNode);
+const mockPingDevice = vi.mocked(pingDevice);
+const mockRenameNode = vi.mocked(renameNode);
 
 function node(partial: Partial<RelayNode> = {}): RelayNode {
   return {
@@ -135,5 +148,55 @@ describe("DevicesClient", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Revoke device" }));
     await waitFor(() => expect(mockRevokeDevice).toHaveBeenCalledWith("other-device-1234"));
+  });
+
+  it("pings a node and shows the round-trip time", async () => {
+    mockListNodes.mockResolvedValue([node()]);
+    mockPingNode.mockResolvedValue({ online: true, rttMs: 42 });
+
+    render(<DevicesClient publicRelayUrl="https://nodus.example.com" />);
+    await screen.findByText("node-123…");
+
+    fireEvent.click(screen.getByRole("button", { name: "Ping" }));
+
+    expect(await screen.findByText("Reachable · 42 ms")).toBeInTheDocument();
+    expect(mockPingNode).toHaveBeenCalledWith("node-1234567890abcdef");
+  });
+
+  it("reports a device that does not answer", async () => {
+    mockListDevices.mockResolvedValue([
+      {
+        device_id: "other-device-1234",
+        account_id: "acct-1",
+        public_key: "ab".repeat(32),
+        status: "ACTIVE",
+        created_at: "2026-09-11T00:00:00.000Z",
+        revoked_at: null,
+      },
+    ]);
+    mockPingDevice.mockResolvedValue({ online: false, reason: "timeout" });
+
+    render(<DevicesClient publicRelayUrl="https://nodus.example.com" />);
+    await screen.findByText("other-device-1234");
+
+    fireEvent.click(screen.getByRole("button", { name: "Ping" }));
+
+    expect(await screen.findByText("No response")).toBeInTheDocument();
+    expect(mockPingDevice).toHaveBeenCalledWith("other-device-1234");
+  });
+
+  it("renames a node and shows the new label", async () => {
+    mockListNodes.mockResolvedValue([node()]);
+    mockRenameNode.mockResolvedValue("My NAS");
+
+    render(<DevicesClient publicRelayUrl="https://nodus.example.com" />);
+    await screen.findByText("node-123…");
+
+    fireEvent.click(screen.getByRole("button", { name: "Rename" }));
+    fireEvent.change(await screen.findByLabelText("Name"), { target: { value: "My NAS" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(await screen.findByText("My NAS")).toBeInTheDocument();
+    expect(mockRenameNode).toHaveBeenCalledWith("node-1234567890abcdef", "My NAS");
   });
 });

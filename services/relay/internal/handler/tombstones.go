@@ -335,6 +335,8 @@ func finalizeTombstonePurge(ctx context.Context, pool *db.Pool, accountID, entit
 			return err
 		}
 	} else {
+		// folder_key_envelopes cascade from the folders row (migration 017), so
+		// deleting the folder also removes its keys.
 		if _, err := tx.Exec(ctx, `DELETE FROM folders WHERE folder_id=$1 AND account_id=$2`, entityID, accountID); err != nil {
 			return err
 		}

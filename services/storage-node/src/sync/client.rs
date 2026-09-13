@@ -586,6 +586,16 @@ impl SyncClient {
                             .await?;
                         }
                     }
+                    // Manual reachability probe from the Relay (Devices page
+                    // "Ping"): echo the correlation id straight back so the
+                    // Relay can measure a real round trip. Runs inline in the
+                    // read loop, so it also proves the node's event loop is live.
+                    "ping" => {
+                        if let Some(id) = env.payload.get("id").and_then(|v| v.as_str()) {
+                            let payload = serde_json::json!({ "id": id });
+                            Self::send_envelope(&mut write, "pong", &payload).await?;
+                        }
+                    }
                     _ => {}
                 }
             }

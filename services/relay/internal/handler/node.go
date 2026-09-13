@@ -22,6 +22,7 @@ type NodeResponse struct {
 	Capabilities []string   `json:"capabilities"`
 	Status       string     `json:"status"`
 	IsPrimary    bool       `json:"is_primary"`
+	DisplayName  *string    `json:"display_name,omitempty"`
 	LastSeenAt   *time.Time `json:"last_seen_at,omitempty"`
 	CreatedAt    time.Time  `json:"created_at"`
 }
@@ -104,7 +105,7 @@ func ListNodes(pool *db.Pool) http.HandlerFunc {
 		}
 
 		query := `
-			SELECT node_id, account_id, public_key, capabilities, status, is_primary, last_seen_at, created_at
+			SELECT node_id, account_id, public_key, capabilities, status, is_primary, last_seen_at, created_at, display_name
 			FROM storage_nodes
 			WHERE account_id = $1
 			ORDER BY created_at ASC
@@ -133,6 +134,7 @@ func ListNodes(pool *db.Pool) http.HandlerFunc {
 				&isPrimary,
 				&node.LastSeenAt,
 				&node.CreatedAt,
+				&node.DisplayName,
 			); err != nil {
 				respondError(w, http.StatusInternalServerError, "failed to scan storage node")
 				return

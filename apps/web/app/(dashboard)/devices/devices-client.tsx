@@ -6,9 +6,20 @@ import { Button } from "@repo/ui/primitives/button";
 import { Section } from "@repo/ui/primitives/section";
 import { EmptyState } from "@repo/ui/primitives/empty-state";
 import { StatusBadge, DeviceStateBadge } from "@repo/ui/primitives/badge";
-import { ConfirmDialog } from "@repo/ui/primitives/overlay";
+import { ConfirmDialog, Modal, ModalHeader } from "@repo/ui/primitives/overlay";
+import { Input } from "@repo/ui/primitives/input";
 
-import { listNodes, listDevices, revokeDevice, isNodeOnline, type RelayNode, type RelayDevice } from "../../../lib/pairing";
+import {
+  listNodes,
+  listDevices,
+  revokeDevice,
+  renameNode,
+  renameDevice,
+  isNodeOnline,
+  type RelayNode,
+  type RelayDevice,
+} from "../../../lib/pairing";
+import { pingNode, pingDevice, type PingResult } from "../../../lib/ping";
 import { shortId, timeAgo } from "../../../lib/format";
 import { AddStorageNodeDialog } from "../../../components/add-storage-node-dialog";
 import { useAuth } from "../../../providers/auth-provider";
@@ -25,7 +36,45 @@ interface DevicesClientProps {
   publicRelayUrl: string | null;
 }
 
-function NodeRowView({ node, onManage }: { node: RelayNode; onManage: () => void }) {
+// Per-peer manual ping state. Kept in the parent so a poll re-render does not
+// discard a probe result.
+type PingState =
+  | { status: "pending" }
+  | { status: "done"; result: PingResult }
+  | { status: "error"; message: string };
+
+function PingResultText({ state }: { state?: PingState }) {
+  if (!state) return null;
+  if (state.status === "pending") {
+    return <span className="text-[10px] text-muted-foreground shrink-0">Pinging…</span>;
+  }
+  if (state.status === "error") {
+    return <span className="text-[10px] text-destructive shrink-0">{state.message}</span>;
+  }
+  return state.result.online ? (
+    <span className="text-[10px] shrink-0" style={{ color: "var(--status-synced)" }}>
+      Reachable · {state.result.rttMs ?? 0} ms
+    </span>
+  ) : (
+    <span className="text-[10px] text-muted-foreground shrink-0">
+      {state.result.reason === "timeout" ? "No response" : "Offline"}
+    </span>
+  );
+}
+
+function NodeRowView({
+  node,
+  onManage,
+  onPing,
+  onRename,
+  pingState,
+}: {
+  node: RelayNode;
+  onManage: () => void;
+  onPing: () => void;
+  onRename: () => void;
+  pingState?: PingState;
+}) {
   // Staleness-derived, not "has ever been seen" (see isNodeOnline).
   const online = isNodeOnline(node);
   return (
@@ -38,23 +87,42 @@ function NodeRowView({ node, onManage }: { node: RelayNode; onManage: () => void
       </div>
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2">
-          <span className="text-sm font-medium text-foreground font-mono">{shortId(node.node_id)}</span>
+          <span className="text-sm font-medium text-foreground truncate">
+            {node.display_name ?? shortId(node.node_id)}
+          </span>
           <StatusBadge status={online ? "synced" : "offline"} variant="inline" />
           {node.is_primary && (
             <span className="px-1.5 py-0.5 text-[9px] font-medium border border-accent/40 text-accent bg-accent/10 rounded-sm">PRIMARY</span>
           )}
         </div>
-        <div className="text-[10px] font-mono text-muted-foreground mt-0.5">
+        <div className="text-[10px] font-mono text-muted-foreground mt-0.5 truncate">
+          {node.display_name ? `${shortId(node.node_id)} · ` : ""}
           {node.capabilities.length > 0 ? node.capabilities.join(" · ") : "storage · sync"}
         </div>
       </div>
       <div className="text-[10px] text-muted-foreground hidden sm:block">
         {node.last_seen_at ? `Last seen ${timeAgo(node.last_seen_at)}` : "Never seen"}
       </div>
+      <PingResultText state={pingState} />
+      <button
+        type="button"
+        onClick={onPing}
+        disabled={pingState?.status === "pending"}
+        className="px-3 py-1.5 text-xs border border-border hover:border-accent hover:text-accent transition-colors text-foreground shrink-0 disabled:opacity-40"
+      >
+        {pingState?.status === "pending" ? "Pinging…" : "Ping"}
+      </button>
+      <button
+        type="button"
+        onClick={onRename}
+        className="hidden sm:inline-block px-3 py-1.5 text-xs border border-border hover:border-accent hover:text-accent transition-colors text-foreground shrink-0"
+      >
+        Rename
+      </button>
       <button
         type="button"
         onClick={onManage}
-        className="px-3 py-1.5 text-xs border border-border hover:border-accent hover:text-accent transition-colors text-foreground shrink-0"
+        className="hidden sm:inline-block px-3 py-1.5 text-xs border border-border hover:border-accent hover:text-accent transition-colors text-foreground shrink-0"
       >
         Manage
       </button>
@@ -62,7 +130,19 @@ function NodeRowView({ node, onManage }: { node: RelayNode; onManage: () => void
   );
 }
 
-function DeviceRowView({ device, onRevoke }: { device: RelayDevice; onRevoke: () => void }) {
+function DeviceRowView({
+  device,
+  onRevoke,
+  onPing,
+  onRename,
+  pingState,
+}: {
+  device: RelayDevice;
+  onRevoke: () => void;
+  onPing: () => void;
+  onRename: () => void;
+  pingState?: PingState;
+}) {
   const revoked = device.status === "REVOKED";
   return (
     <div className="flex items-center gap-4 px-5 py-3.5 border-b border-border last:border-0 hover:bg-secondary/40 transition-colors">
@@ -74,10 +154,12 @@ function DeviceRowView({ device, onRevoke }: { device: RelayDevice; onRevoke: ()
       </div>
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2">
-          <span className="text-sm font-medium text-foreground font-mono">{shortId(device.device_id)}</span>
+          <span className="text-sm font-medium text-foreground truncate">
+            {device.display_name ?? shortId(device.device_id)}
+          </span>
           <DeviceStateBadge revoked={revoked} />
         </div>
-        <div className="text-[10px] font-mono text-muted-foreground mt-0.5">{device.device_id}</div>
+        <div className="text-[10px] font-mono text-muted-foreground mt-0.5 truncate">{device.device_id}</div>
       </div>
       <div className="text-[10px] text-muted-foreground hidden sm:block">
         {revoked ? `Revoked ${timeAgo(device.revoked_at)}` : `Registered ${timeAgo(device.created_at)}`}
@@ -85,13 +167,31 @@ function DeviceRowView({ device, onRevoke }: { device: RelayDevice; onRevoke: ()
       {revoked ? (
         <span className="text-[10px] text-muted-foreground shrink-0">Revoked</span>
       ) : (
-        <button
-          type="button"
-          onClick={onRevoke}
-          className="px-3 py-1.5 text-xs border border-destructive/30 text-destructive hover:bg-destructive/10 transition-colors shrink-0"
-        >
-          Revoke
-        </button>
+        <>
+          <PingResultText state={pingState} />
+          <button
+            type="button"
+            onClick={onPing}
+            disabled={pingState?.status === "pending"}
+            className="px-3 py-1.5 text-xs border border-border hover:border-accent hover:text-accent transition-colors text-foreground shrink-0 disabled:opacity-40"
+          >
+            {pingState?.status === "pending" ? "Pinging…" : "Ping"}
+          </button>
+          <button
+            type="button"
+            onClick={onRename}
+            className="hidden sm:inline-block px-3 py-1.5 text-xs border border-border hover:border-accent hover:text-accent transition-colors text-foreground shrink-0"
+          >
+            Rename
+          </button>
+          <button
+            type="button"
+            onClick={onRevoke}
+            className="px-3 py-1.5 text-xs border border-destructive/30 text-destructive hover:bg-destructive/10 transition-colors shrink-0"
+          >
+            Revoke
+          </button>
+        </>
       )}
     </div>
   );
@@ -109,6 +209,68 @@ export function DevicesClient({ publicRelayUrl }: DevicesClientProps) {
   // and envelopes, so it must be an explicit second action, not one click.
   const [revokeTarget, setRevokeTarget] = useState<RelayDevice | null>(null);
   const [revoking, setRevoking] = useState(false);
+  // Manual ping results keyed by peer id. A poll re-render must not clear them,
+  // so they live here rather than in the row components.
+  const [pings, setPings] = useState<Record<string, PingState>>({});
+  // In-flight rename dialog target. `current` lets us treat a no-op as cancel.
+  const [renamePeer, setRenamePeer] = useState<{ kind: "node" | "device"; id: string; current: string } | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+  const [renaming, setRenaming] = useState(false);
+  const [renameError, setRenameError] = useState<string | null>(null);
+
+  const openRename = useCallback((kind: "node" | "device", id: string, current: string) => {
+    setRenameError(null);
+    setRenameValue(current);
+    setRenamePeer({ kind, id, current });
+  }, []);
+
+  // Persist a display name and patch the local catalog so the label updates
+  // without waiting for the next 30s poll.
+  const confirmRenamePeer = useCallback(async () => {
+    if (!renamePeer) return;
+    const trimmed = renameValue.trim();
+    if (trimmed === renamePeer.current.trim()) {
+      setRenamePeer(null);
+      return;
+    }
+    setRenaming(true);
+    setRenameError(null);
+    try {
+      const stored =
+        renamePeer.kind === "node"
+          ? await renameNode(renamePeer.id, trimmed)
+          : await renameDevice(renamePeer.id, trimmed);
+      if (renamePeer.kind === "node") {
+        setNodes((previous) =>
+          previous.map((n) => (n.node_id === renamePeer.id ? { ...n, display_name: stored } : n)),
+        );
+      } else {
+        setDevices((previous) =>
+          previous.map((d) => (d.device_id === renamePeer.id ? { ...d, display_name: stored } : d)),
+        );
+      }
+      setRenamePeer(null);
+    } catch (err) {
+      setRenameError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRenaming(false);
+    }
+  }, [renamePeer, renameValue]);
+
+  // Send a manual probe and record the outcome. The Relay performs the round
+  // trip; this only reflects its verdict.
+  const runPing = useCallback(async (peerId: string, kind: "node" | "device") => {
+    setPings((previous) => ({ ...previous, [peerId]: { status: "pending" } }));
+    try {
+      const result = kind === "node" ? await pingNode(peerId) : await pingDevice(peerId);
+      setPings((previous) => ({ ...previous, [peerId]: { status: "done", result } }));
+    } catch (err) {
+      setPings((previous) => ({
+        ...previous,
+        [peerId]: { status: "error", message: err instanceof Error ? err.message : String(err) },
+      }));
+    }
+  }, []);
 
   // Loaded once on mount; loading starts true so the effect only fires
   // setState from async callbacks (react-hooks/set-state-in-effect). The +Pair
@@ -245,7 +407,14 @@ export function DevicesClient({ publicRelayUrl }: DevicesClientProps) {
         ) : (
           <div className="border border-border rounded-xl overflow-hidden bg-card">
             {nodes.map((n) => (
-              <NodeRowView key={n.node_id} node={n} onManage={() => router.push("/pair")} />
+              <NodeRowView
+                key={n.node_id}
+                node={n}
+                onManage={() => router.push("/pair")}
+                onPing={() => void runPing(n.node_id, "node")}
+                onRename={() => openRename("node", n.node_id, n.display_name ?? "")}
+                pingState={pings[n.node_id]}
+              />
             ))}
           </div>
         )}
@@ -266,7 +435,14 @@ export function DevicesClient({ publicRelayUrl }: DevicesClientProps) {
         ) : (
           <div className="border border-border rounded-xl overflow-hidden bg-card">
             {devices.map((d) => (
-              <DeviceRowView key={d.device_id} device={d} onRevoke={() => setRevokeTarget(d)} />
+              <DeviceRowView
+                key={d.device_id}
+                device={d}
+                onRevoke={() => setRevokeTarget(d)}
+                onPing={() => void runPing(d.device_id, "device")}
+                onRename={() => openRename("device", d.device_id, d.display_name ?? "")}
+                pingState={pings[d.device_id]}
+              />
             ))}
           </div>
         )}
@@ -303,6 +479,42 @@ export function DevicesClient({ publicRelayUrl }: DevicesClientProps) {
           onConfirm={() => void confirmRevoke()}
           onClose={() => setRevokeTarget(null)}
         />
+      )}
+
+      {renamePeer && (
+        <Modal
+          className="w-[420px] max-w-full"
+          onClose={renaming ? () => undefined : () => setRenamePeer(null)}
+        >
+          <ModalHeader
+            title={renamePeer.kind === "node" ? "Name storage node" : "Name device"}
+            onClose={renaming ? () => undefined : () => setRenamePeer(null)}
+          />
+          <div className="p-5 space-y-4">
+            <Input
+              label="Name"
+              value={renameValue}
+              autoFocus
+              maxLength={64}
+              hint="Leave empty to fall back to the short id."
+              onChange={(e) => setRenameValue(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && void confirmRenamePeer()}
+            />
+            {renameError && (
+              <p className="text-xs text-destructive" role="alert">
+                {renameError}
+              </p>
+            )}
+            <div className="flex justify-end gap-2">
+              <Button variant="ghost" size="sm" onClick={() => setRenamePeer(null)} disabled={renaming}>
+                Cancel
+              </Button>
+              <Button variant="primary" size="sm" onClick={() => void confirmRenamePeer()} disabled={renaming}>
+                {renaming ? "Saving…" : "Save"}
+              </Button>
+            </div>
+          </div>
+        </Modal>
       )}
     </div>
   );

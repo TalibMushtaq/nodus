@@ -71,6 +71,8 @@ export interface UploadFileOptions {
   versionHash?: string;
   /** Precomputed shard count from `measurePlaintext`. */
   shardCount?: number;
+  /** Folder the file belongs to; null/undefined places it at the root. */
+  parentFolderId?: string | null;
   deps: UploadDeps;
   onProgress?: (event: UploadProgressEvent) => void;
 }
@@ -97,19 +99,39 @@ export async function measurePlaintext(
 ): Promise<FileMeasurement> {
   const hasher = createPlaintextHasher();
   let count = 0;
+  let bytesRead = 0;
   for (let offset = 0; offset < file.size; offset += SHARD_SIZE_BYTES) {
     const chunk = new Uint8Array(await file.slice(offset, offset + SHARD_SIZE_BYTES).arrayBuffer());
     hasher.update(chunk);
     count += 1;
-    onProgress?.({ phase: "measuring", completedShards: 0, totalShards: count });
+    bytesRead += chunk.length;
+    onProgress?.({
+      phase: "measuring",
+      // The file id is not allocated yet; the consumer attributes progress by
+      // the active task, so an empty id is fine during the measure pass.
+      fileId: "",
+      fileName: file.name,
+      completedBytes: bytesRead,
+      totalBytes: file.size,
+      completedShards: count,
+      totalShards: count,
+    });
   }
   return { versionHash: hasher.digest(), shardCount: Math.max(1, count) };
 }
 
 export type UploadPhase = "measuring" | "announcing" | "uploading" | "done";
 
+/** Byte-accurate progress event. `completedBytes` drives the bar and speed. */
 export interface UploadProgressEvent {
   phase: UploadPhase;
+  /** Empty during the measure pass (the file id does not exist yet). */
+  fileId: string;
+  fileName: string;
+  /** Plaintext bytes processed/uploaded so far. */
+  completedBytes: number;
+  /** Plaintext size of the whole file. */
+  totalBytes: number;
   completedShards: number;
   totalShards: number;
 }
@@ -140,6 +162,7 @@ function event(originId: string, sequence: number, type: EventPayload["type"], p
  */
 export async function uploadFile(options: UploadFileOptions): Promise<UploadResult> {
   const { file, originId, targetNode, sourceDevice, deps, onProgress } = options;
+  const parentFolderId = options.parentFolderId ?? null;
   const fileId = options.fileId ?? crypto.randomUUID();
   const versionNumber = options.versionNumber ?? 1;
   const transferId = uploadKey(fileId, versionNumber);
@@ -207,13 +230,29 @@ export async function uploadFile(options: UploadFileOptions): Promise<UploadResu
   }
 
   if (!announced) {
-    onProgress?.({ phase: "announcing", completedShards: completedShards.length, totalShards });
+    onProgress?.({
+      phase: "announcing",
+      fileId,
+      fileName: file.name,
+      completedBytes: 0,
+      totalBytes: fileSize,
+      completedShards: completedShards.length,
+      totalShards,
+    });
     const created = await deps.allocateSequence(originId);
     const version = await deps.allocateSequence(originId);
     const ack = await deps.sendEventBatch([
-      event(originId, created, EventTypes.FILE_CREATED, { file_id: fileId, encrypted_name: encryptedName }),
+      // parent_folder_id is projected by the FILE_CREATED upsert on both the
+      // Relay and the node; FILE_VERSION_ADDED carries it too so a receiver
+      // that first learns of the file from the version event still nests it.
+      event(originId, created, EventTypes.FILE_CREATED, {
+        file_id: fileId,
+        parent_folder_id: parentFolderId,
+        encrypted_name: encryptedName,
+      }),
       event(originId, version, EventTypes.FILE_VERSION_ADDED, {
         file_id: fileId,
+        parent_folder_id: parentFolderId,
         version_number: versionNumber,
         shard_count: totalShards,
         version_hash: versionHash,
@@ -244,6 +283,9 @@ export async function uploadFile(options: UploadFileOptions): Promise<UploadResu
 
   // Pass 2: encrypt + upload the shards not already buffered.
   const done = new Set(completedShards);
+  // Plaintext bytes already committed by a prior attempt, so a resumed upload's
+  // progress starts where it left off instead of at zero.
+  let committedBytes = Math.min(done.size * SHARD_SIZE_BYTES, fileSize);
   for (let index = 0; index < totalShards; index += 1) {
     if (done.has(index)) continue;
     const offset = index * SHARD_SIZE_BYTES;
@@ -265,11 +307,34 @@ export async function uploadFile(options: UploadFileOptions): Promise<UploadResu
       transferId,
       sourceDevice,
       data: packed,
+      // In-shard byte progress. Path C (Relay XHR) and the WebRTC paths report
+      // it; Path D (deferred queue) cannot and simply omits it, so the bar
+      // advances by whole shards there.
+      onProgress: (sentBytes) => {
+        onProgress?.({
+          phase: "uploading",
+          fileId,
+          fileName: file.name,
+          completedBytes: Math.min(committedBytes + sentBytes, fileSize),
+          totalBytes: fileSize,
+          completedShards: done.size,
+          totalShards,
+        });
+      },
     });
     await deps.markShardComplete(fileId, versionNumber, index, shardHash);
     shardHashes[index] = shardHash;
     done.add(index);
-    onProgress?.({ phase: "uploading", completedShards: done.size, totalShards });
+    committedBytes = Math.min(done.size * SHARD_SIZE_BYTES, fileSize);
+    onProgress?.({
+      phase: "uploading",
+      fileId,
+      fileName: file.name,
+      completedBytes: committedBytes,
+      totalBytes: fileSize,
+      completedShards: done.size,
+      totalShards,
+    });
   }
 
   // Publish the signed per-shard manifest once every shard is buffered (audit
@@ -298,6 +363,14 @@ export async function uploadFile(options: UploadFileOptions): Promise<UploadResu
   }
 
   await deps.clearProgress?.(fileId, versionNumber);
-  onProgress?.({ phase: "done", completedShards: totalShards, totalShards });
+  onProgress?.({
+    phase: "done",
+    fileId,
+    fileName: file.name,
+    completedBytes: fileSize,
+    totalBytes: fileSize,
+    completedShards: totalShards,
+    totalShards,
+  });
   return { fileId, versionNumber, shardCount: totalShards, versionHash, resumed };
 }

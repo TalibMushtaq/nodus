@@ -6,7 +6,9 @@ import {
   collectRecipients,
   decodeEnvelope,
   envelopeEvent,
+  folderEnvelopeEvent,
   openFekFromEnvelope,
+  openFolderKeyFromEnvelopes,
   sealFekForRecipientIdentity,
   sealFekForRecipients,
 } from "../envelopes";
@@ -75,6 +77,39 @@ describe("FEK envelopes", () => {
     expect(first).not.toBe(second);
     expect(Array.from(openFekFromEnvelope(first, identityPrivateKey(recipient)))).toEqual(Array.from(fek));
     expect(Array.from(openFekFromEnvelope(second, identityPrivateKey(recipient)))).toEqual(Array.from(fek));
+  });
+
+  it("builds folder key envelope events and opens them by folder id", () => {
+    const fek = generateFileEncryptionKey();
+    const recipient = createDeviceIdentity();
+    const [sealed] = sealFekForRecipients(fek, [
+      { recipientId: recipient.device_id, recipientKind: "device", edPublicKey: identityPublicKey(recipient) },
+    ]);
+
+    const event = folderEnvelopeEvent("device-1", 4, "dir-1", sealed!);
+    expect(event.type).toBe("FOLDER_KEY_ENVELOPE_ADDED");
+    expect(event.payload).toMatchObject({
+      folder_id: "dir-1",
+      recipient_id: recipient.device_id,
+      recipient_kind: "device",
+    });
+
+    const opened = openFolderKeyFromEnvelopes(
+      [{ folder_id: "dir-1", recipient_id: recipient.device_id, recipient_kind: "device", encrypted_key: sealed!.encrypted_key }],
+      "dir-1",
+      recipient.device_id,
+      identityPrivateKey(recipient),
+    );
+    expect(Array.from(opened ?? [])).toEqual(Array.from(fek));
+    // A different folder id has no matching envelope.
+    expect(
+      openFolderKeyFromEnvelopes(
+        [{ folder_id: "dir-1", recipient_id: recipient.device_id, recipient_kind: "device", encrypted_key: sealed!.encrypted_key }],
+        "dir-2",
+        recipient.device_id,
+        identityPrivateKey(recipient),
+      ),
+    ).toBeNull();
   });
 });
 

@@ -42,6 +42,28 @@ export const HeartbeatPayloadSchema = z.object({
 
 export type HeartbeatPayload = z.infer<typeof HeartbeatPayloadSchema>;
 
+// ── Ping / Pong ────────────────────────────────────────────────────
+
+/**
+ * Manual reachability probe (the Devices page "Ping" action). The Relay sends a
+ * `ping` to a connected node or device; the target immediately echoes a `pong`
+ * with the same `id`, letting the Relay measure a real round trip rather than
+ * inferring liveness from an open socket. Both directions carry only the
+ * correlation id — no account or peer data.
+ */
+export const PingPayloadSchema = z.object({
+  /** Correlation id echoed back in the matching pong. */
+  id: z.string(),
+});
+
+export type PingPayload = z.infer<typeof PingPayloadSchema>;
+
+export const PongPayloadSchema = z.object({
+  id: z.string(),
+});
+
+export type PongPayload = z.infer<typeof PongPayloadSchema>;
+
 // ── Node Auth (Phase 8) ────────────────────────────────────────────
 
 /**

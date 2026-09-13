@@ -14,6 +14,11 @@ export interface ShardUpload {
   transferId: string;
   sourceDevice?: string;
   data: Uint8Array;
+  /**
+   * Byte-level progress for the request body. Only the Relay path can report
+   * this; Path D (deferred queue) ignores it.
+   */
+  onProgress?: (sentBytes: number, totalBytes: number) => void;
 }
 
 export interface ShardUploadResult {
@@ -41,6 +46,41 @@ export async function postShard(dto: ShardUpload, baseUrl = ""): Promise<ShardUp
     headers["x-nodus-source-device"] = dto.sourceDevice;
   }
 
+  // XHR rather than fetch: only XHR exposes `upload.onprogress` portably, which
+  // is what gives byte-level progress. The Node e2e harness has no
+  // XMLHttpRequest and uses the fetch path without progress.
+  if (typeof XMLHttpRequest === "undefined") {
+    return postShardFetch(baseUrl, headers, dto);
+  }
+
+  return new Promise<ShardUploadResult>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", `${baseUrl}/api/buffer/upload`);
+    for (const [key, value] of Object.entries(headers)) {
+      xhr.setRequestHeader(key, value);
+    }
+    xhr.responseType = "json";
+    xhr.upload.onprogress = (event) => {
+      if (event.lengthComputable) dto.onProgress?.(event.loaded, event.total);
+    };
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve(xhr.response as ShardUploadResult);
+      } else {
+        const body = xhr.response as { error?: string } | null;
+        reject(new Error(body?.error ?? `shard upload failed: ${xhr.status}`));
+      }
+    };
+    xhr.onerror = () => reject(new Error("shard upload failed: network error"));
+    xhr.send(dto.data as unknown as ArrayBufferView<ArrayBuffer>);
+  });
+}
+
+async function postShardFetch(
+  baseUrl: string,
+  headers: Record<string, string>,
+  dto: ShardUpload,
+): Promise<ShardUploadResult> {
   const res = await fetch(`${baseUrl}/api/buffer/upload`, {
     method: "POST",
     headers,

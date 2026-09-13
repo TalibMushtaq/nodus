@@ -5,7 +5,7 @@ import type { EventPayload } from "@repo/protocol";
 import type { ShardUpload } from "../buffer";
 import type { UploadProgress } from "../upload-progress";
 import { measurePlaintext, uploadFile } from "../uploader";
-import type { UploadDeps } from "../uploader";
+import type { UploadDeps, UploadProgressEvent } from "../uploader";
 
 function makeDeps() {
   const order: string[] = [];
@@ -216,5 +216,36 @@ describe("uploadFile", () => {
     // Only pass 2 (one read per shard) runs; no second measure pass.
     expect(sliceCalls - beforeUpload).toBe(measured.shardCount);
     expect(calls.postShard).toHaveLength(measured.shardCount);
+  });
+
+  it("nests the file under the target folder and reports byte progress", async () => {
+    const { deps, calls } = makeDeps();
+    const events: UploadProgressEvent[] = [];
+    // Report the whole shard as sent so the uploader exercises its in-shard
+    // progress path (Path C and WebRTC both supply this callback).
+    deps.postShard = async (dto) => {
+      dto.onProgress?.(dto.data.length, dto.data.length);
+      return { buffer_id: "b", status: "RELAY_BUFFERED" };
+    };
+    const file = fakeFile(new Uint8Array(100), "in-folder.bin");
+
+    await uploadFile({
+      file,
+      originId: "device-A",
+      targetNode: "n1",
+      parentFolderId: "dir-9",
+      deps,
+      onProgress: (event) => events.push(event),
+    });
+
+    const batch = calls.events[0]!;
+    expect(batch.find((e) => e.type === "FILE_CREATED")?.payload).toMatchObject({
+      parent_folder_id: "dir-9",
+    });
+    expect(batch.find((e) => e.type === "FILE_VERSION_ADDED")?.payload).toMatchObject({
+      parent_folder_id: "dir-9",
+    });
+    expect(events.at(-1)).toMatchObject({ phase: "done", completedBytes: 100, totalBytes: 100 });
+    expect(events.some((e) => e.phase === "uploading" && e.completedBytes === 100)).toBe(true);
   });
 });

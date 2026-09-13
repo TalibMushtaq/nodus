@@ -1,9 +1,11 @@
 {
-  "schema_version": "1.5",
+  "schema_version": "1.7",
   "default_snapshot_chunk_size": 262144,
   "messages": {
     "register": "register.schema.json",
     "heartbeat": "heartbeat.schema.json",
+    "ping": "ping.schema.json",
+    "pong": "pong.schema.json",
     "node_auth_challenge": "node_auth_challenge.schema.json",
     "node_auth_response": "node_auth_response.schema.json",
     "node_auth_result": "node_auth_result.schema.json",

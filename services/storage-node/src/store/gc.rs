@@ -172,6 +172,13 @@ pub async fn purge_file(store: &ObjectStore, file_id: &str) -> anyhow::Result<()
         .execute(pool)
         .await
         .context("deleting file row for purge")?;
+    // Envelopes are not covered by a FK on the node, so purge them explicitly;
+    // otherwise a purged file's key material lingers in snapshots forever.
+    sqlx::query("DELETE FROM key_envelopes WHERE file_id = ?")
+        .bind(file_id)
+        .execute(pool)
+        .await
+        .context("deleting key envelopes for purge")?;
 
     for (object_id,) in object_ids {
         // Single conditional DELETE: the refcount check and the delete happen in
@@ -238,6 +245,13 @@ pub async fn purge_folder(store: &ObjectStore, folder_id: &str) -> anyhow::Resul
             stack.push(child_folder);
         }
 
+        // No FK to folders on this table, so collect the folder's envelopes here
+        // or they survive a purge and keep leaking into snapshots.
+        sqlx::query("DELETE FROM folder_key_envelopes WHERE folder_id = ?")
+            .bind(&fid)
+            .execute(pool)
+            .await
+            .context("deleting folder key envelopes for purge")?;
         sqlx::query("DELETE FROM folders WHERE folder_id = ?")
             .bind(&fid)
             .execute(pool)
@@ -797,11 +811,32 @@ mod tests {
             .execute(&pool)
             .await
             .unwrap();
+            // Envelope rows carry key material and must be freed with the file.
+            sqlx::query(
+                "INSERT INTO key_envelopes (file_id, recipient_id, recipient_kind, encrypted_key, created_at) VALUES (?, 'dev-1', 'device', 'opaque', 'now')",
+            )
+            .bind(fid)
+            .execute(&pool)
+            .await
+            .unwrap();
         }
+        sqlx::query(
+            "INSERT INTO folder_key_envelopes (folder_id, recipient_id, recipient_kind, encrypted_key, created_at) VALUES ('child', 'dev-1', 'device', 'opaque', 'now')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
 
         purge_folder(&store, "root").await.unwrap();
 
-        for table in ["folders", "files", "file_versions", "shards"] {
+        for table in [
+            "folders",
+            "files",
+            "file_versions",
+            "shards",
+            "key_envelopes",
+            "folder_key_envelopes",
+        ] {
             let count: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {table}"))
                 .fetch_one(&pool)
                 .await

@@ -82,6 +82,17 @@ type KeyEnvelopeRecord struct {
 	CreatedAt     *string `json:"created_at,omitempty"`
 }
 
+// FolderKeyEnvelopeRecord is an opaque folder-key envelope captured in a
+// snapshot. Carrying it keeps folder names decryptable after a Relay rebuild,
+// matching the file-envelope record above.
+type FolderKeyEnvelopeRecord struct {
+	FolderID      string  `json:"folder_id"`
+	RecipientID   string  `json:"recipient_id"`
+	RecipientKind string  `json:"recipient_kind"`
+	EncryptedKey  string  `json:"encrypted_key"`
+	CreatedAt     *string `json:"created_at,omitempty"`
+}
+
 type TombstoneRecord struct {
 	EntityType string `json:"entity_type"`
 	EntityID   string `json:"entity_id"`
@@ -440,6 +451,36 @@ func stageRebuildChunk(ctx context.Context, pool *db.Pool, accountID string, chu
 					recipient_kind = EXCLUDED.recipient_kind,
 					encrypted_key = EXCLUDED.encrypted_key
 			`, accountID, r.FileID, r.RecipientID, r.RecipientKind, r.EncryptedKey, createdAt); err != nil {
+				return err
+			}
+		}
+		return nil
+
+	case "folder_key_envelope":
+		var records []FolderKeyEnvelopeRecord
+		if err := json.Unmarshal(chunk.Records, &records); err != nil {
+			return fmt.Errorf("invalid folder_key_envelope records: %w", err)
+		}
+		for _, r := range records {
+			if r.FolderID == "" || r.RecipientID == "" || r.EncryptedKey == "" {
+				continue
+			}
+			if r.RecipientKind != "device" && r.RecipientKind != "node" {
+				continue
+			}
+			var createdAt *time.Time
+			if r.CreatedAt != nil && *r.CreatedAt != "" {
+				if ts, err := time.Parse(time.RFC3339, *r.CreatedAt); err == nil {
+					createdAt = &ts
+				}
+			}
+			if _, err := pool.Exec(ctx, `
+				INSERT INTO rebuild_folder_key_envelopes (account_id, folder_id, recipient_id, recipient_kind, encrypted_key, created_at)
+				VALUES ($1, $2, $3, $4, $5, COALESCE($6, NOW()))
+				ON CONFLICT (account_id, folder_id, recipient_id) DO UPDATE SET
+					recipient_kind = EXCLUDED.recipient_kind,
+					encrypted_key = EXCLUDED.encrypted_key
+			`, accountID, r.FolderID, r.RecipientID, r.RecipientKind, r.EncryptedKey, createdAt); err != nil {
 				return err
 			}
 		}

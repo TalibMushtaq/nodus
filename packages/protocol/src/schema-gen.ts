@@ -4,6 +4,8 @@ import { fileURLToPath } from "node:url";
 import {
   RegisterPayloadSchema,
   HeartbeatPayloadSchema,
+  PingPayloadSchema,
+  PongPayloadSchema,
   NodeAuthChallengePayloadSchema,
   NodeAuthResponsePayloadSchema,
   NodeAuthResultPayloadSchema,
@@ -57,6 +59,8 @@ type SchemaEntry = { name: string; schema: object };
 const entries: SchemaEntry[] = [
   { name: "register", schema: RegisterPayloadSchema.toJSONSchema() },
   { name: "heartbeat", schema: HeartbeatPayloadSchema.toJSONSchema() },
+  { name: "ping", schema: PingPayloadSchema.toJSONSchema() },
+  { name: "pong", schema: PongPayloadSchema.toJSONSchema() },
   { name: "node_auth_challenge", schema: NodeAuthChallengePayloadSchema.toJSONSchema() },
   { name: "node_auth_response", schema: NodeAuthResponsePayloadSchema.toJSONSchema() },
   { name: "node_auth_result", schema: NodeAuthResultPayloadSchema.toJSONSchema() },

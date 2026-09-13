@@ -11,7 +11,8 @@ use futures_util::TryStreamExt;
 use sqlx::{Acquire, Row, SqliteConnection, SqlitePool};
 
 use super::types::{
-    FileVersionRecord, FolderRecord, KeyEnvelopeRecord, RebuildRequiredPayload, ShardHashRecord,
+    FileVersionRecord, FolderKeyEnvelopeRecord, FolderRecord, KeyEnvelopeRecord,
+    RebuildRequiredPayload, ShardHashRecord,
     SnapshotBeginPayload, SnapshotChunkPayload, SnapshotEndPayload, SnapshotRecord, SyncCursor,
     TombstoneRecord,
 };
@@ -312,6 +313,36 @@ pub async fn emit_chunks(
     }
     drop(envelope_rows);
 
+    // Folder key envelopes: same rationale as file envelopes — a rebuild that
+    // dropped these would make every folder name undecryptable.
+    let mut folder_envelope_rows = sqlx::query(
+        r#"
+        SELECT folder_id, recipient_id, recipient_kind, encrypted_key, created_at
+        FROM folder_key_envelopes
+        ORDER BY folder_id ASC, recipient_id ASC
+        "#,
+    )
+    .fetch(&mut *conn);
+    while let Some(row) = folder_envelope_rows.try_next().await? {
+        writer
+            .push(
+                sink,
+                "folder_key_envelope",
+                SnapshotRecord::FolderKeyEnvelope(FolderKeyEnvelopeRecord {
+                    folder_id: row.get("folder_id"),
+                    recipient_id: row.get("recipient_id"),
+                    recipient_kind: row.get("recipient_kind"),
+                    encrypted_key: row.get("encrypted_key"),
+                    created_at: row
+                        .try_get::<Option<String>, _>("created_at")
+                        .ok()
+                        .flatten(),
+                }),
+            )
+            .await?;
+    }
+    drop(folder_envelope_rows);
+
     // Tombstones within the retention window (older ones are already prunable).
     let cutoff = chrono::Utc::now() - chrono::Duration::days(TOMBSTONE_RETENTION_DAYS);
     let cutoff_str = cutoff.to_rfc3339();
@@ -526,6 +557,35 @@ mod tests {
         match &folder_chunks[0].records[0] {
             SnapshotRecord::Folder(f) => assert_eq!(f.folder_id, "dir-1"),
             other => panic!("expected folder record, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_build_snapshot_includes_folder_key_envelopes() {
+        let dir = tempdir().unwrap();
+        let pool = db::open(dir.path()).await.unwrap();
+        let identity = crate::identity::load_or_generate(dir.path()).unwrap();
+
+        sqlx::query(
+            "INSERT INTO folder_key_envelopes (folder_id, recipient_id, recipient_kind, encrypted_key, created_at) VALUES ('dir-1', 'dev-1', 'device', 'opaque', 'now')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let (_begin, chunks, _end) = build_snapshot(&pool, &identity).await.unwrap();
+
+        let envelope_chunks: Vec<_> = chunks
+            .iter()
+            .filter(|c| c.record_type == "folder_key_envelope")
+            .collect();
+        assert_eq!(envelope_chunks.len(), 1);
+        match &envelope_chunks[0].records[0] {
+            SnapshotRecord::FolderKeyEnvelope(e) => {
+                assert_eq!(e.folder_id, "dir-1");
+                assert_eq!(e.recipient_id, "dev-1");
+            }
+            other => panic!("expected folder_key_envelope record, got {other:?}"),
         }
     }
 

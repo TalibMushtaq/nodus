@@ -36,6 +36,14 @@ export interface RelayEnvelope {
   encrypted_key: string;
 }
 
+/** A folder-key envelope as returned by `GET /api/folder-envelopes`. */
+export interface RelayFolderEnvelope {
+  folder_id: string;
+  recipient_id: string;
+  recipient_kind: RecipientKind;
+  encrypted_key: string;
+}
+
 function toBase64(bytes: Uint8Array): string {
   let bin = "";
   for (const b of bytes) bin += String.fromCharCode(b);
@@ -141,6 +149,19 @@ export async function fetchEnvelopes(fileId: string): Promise<RelayEnvelope[]> {
 }
 
 /**
+ * Fetch every folder-key envelope for the account in one request. The folder
+ * tree needs all of them to decrypt names created on other devices; fetching
+ * per-folder would be an N+1 round trip on every catalog refresh.
+ */
+export async function fetchFolderEnvelopes(): Promise<RelayFolderEnvelope[]> {
+  const res = await fetch("/api/folder-envelopes");
+  if (!res.ok) {
+    throw new Error(`failed to load folder envelopes: ${res.status}`);
+  }
+  return (await res.json()) as RelayFolderEnvelope[];
+}
+
+/**
  * Fetch this device's envelope for a file and open it. Returns null when no
  * envelope exists for this device (e.g. the file was uploaded before F2).
  */
@@ -151,6 +172,22 @@ export async function fetchAndOpenFileKey(
 ): Promise<Uint8Array | null> {
   const envelopes = await fetchEnvelopes(fileId);
   const mine = envelopes.find((e) => e.recipient_id === deviceId);
+  if (!mine) return null;
+  return openFekFromEnvelope(mine.encrypted_key, edPrivateSeed);
+}
+
+/**
+ * Open this device's folder-key envelope from an already-fetched list. Kept
+ * separate from `fetchFolderEnvelopes` so the folder tree can fetch once and
+ * open N envelopes without N round trips.
+ */
+export function openFolderKeyFromEnvelopes(
+  envelopes: RelayFolderEnvelope[],
+  folderId: string,
+  deviceId: string,
+  edPrivateSeed: Uint8Array,
+): Uint8Array | null {
+  const mine = envelopes.find((e) => e.folder_id === folderId && e.recipient_id === deviceId);
   if (!mine) return null;
   return openFekFromEnvelope(mine.encrypted_key, edPrivateSeed);
 }
@@ -204,6 +241,28 @@ export function envelopeEvent(
     type: EventTypes.KEY_ENVELOPE_ADDED,
     payload: {
       file_id: fileId,
+      recipient_id: sealed.recipient_id,
+      recipient_kind: sealed.recipient_kind,
+      encrypted_key: sealed.encrypted_key,
+    },
+    timestamp: new Date().toISOString(),
+  };
+}
+
+/** Build a FOLDER_KEY_ENVELOPE_ADDED event for one sealed folder key. */
+export function folderEnvelopeEvent(
+  originId: string,
+  sequence: number,
+  folderId: string,
+  sealed: { recipient_id: string; recipient_kind: RecipientKind; encrypted_key: string },
+): EventPayload {
+  return {
+    event_id: crypto.randomUUID() as EventPayload["event_id"],
+    origin_id: originId,
+    origin_sequence: sequence,
+    type: EventTypes.FOLDER_KEY_ENVELOPE_ADDED,
+    payload: {
+      folder_id: folderId,
       recipient_id: sealed.recipient_id,
       recipient_kind: sealed.recipient_kind,
       encrypted_key: sealed.encrypted_key,

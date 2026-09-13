@@ -24,6 +24,11 @@ export interface ShardTransferRequest {
   hash: string;
   targetNode: NodeId;
   sourceDevice?: string;
+  /**
+   * Byte-level send progress for the active path. Optional and never persisted:
+   * the local queue (Path D) cannot resume mid-shard, so it omits this.
+   */
+  onProgress?: (sentBytes: number, totalBytes: number) => void;
 }
 
 /** Outcome of a shard transfer. */

@@ -90,7 +90,7 @@ func presencePeerID(c *hub.Client) string {
 }
 
 // WebSocket handles incoming WebSocket connection upgrades and message lifecycle.
-func WebSocket(h *hub.Hub, pool *db.Pool, rClient *rdb.Client, buf *buffer.Buffer, store auth.SessionStore, cfg *config.Config) http.HandlerFunc {
+func WebSocket(h *hub.Hub, pool *db.Pool, rClient *rdb.Client, buf *buffer.Buffer, store auth.SessionStore, cfg *config.Config, pingTracker *PingTracker) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !originAllowed(r, cfg) {
 			http.Error(w, "forbidden origin", http.StatusForbidden)
@@ -162,7 +162,7 @@ func WebSocket(h *hub.Hub, pool *db.Pool, rClient *rdb.Client, buf *buffer.Buffe
 				return
 			}
 
-			handleIncomingEnvelope(c, env, pool, rClient, buf, h)
+			handleIncomingEnvelope(c, env, pool, rClient, buf, h, pingTracker)
 		})
 	}
 }
@@ -174,6 +174,7 @@ func handleIncomingEnvelope(
 	rClient *rdb.Client,
 	buf *buffer.Buffer,
 	h *hub.Hub,
+	pingTracker *PingTracker,
 ) {
 	ctx := context.Background()
 	if !c.IsAuthenticated && env.Type != "node_auth_response" {
@@ -201,6 +202,11 @@ func handleIncomingEnvelope(
 	}
 
 	switch env.Type {
+	case "pong":
+		// Manual ping reply from a node or device; resolves the waiting HTTP
+		// handler. Handled before the node-only guard because devices reply too.
+		HandlePong(pingTracker, env)
+
 	case "webrtc_offer", "webrtc_answer", "webrtc_ice_candidate":
 		HandleWebRTCSignaling(ctx, c, env, h)
 

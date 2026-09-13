@@ -13,6 +13,7 @@ import { useRouter } from "next/navigation";
 import type { ReactNode } from "react";
 import { RelayWsClient, relayWsEndpoint } from "@repo/relay-client";
 import type { ConnectionState, WsOutgoing } from "@repo/relay-client";
+import { MessageTypes } from "@repo/protocol";
 
 import { useAuth } from "./auth-provider";
 
@@ -104,6 +105,18 @@ export function WsProvider({ children }: { children: ReactNode }) {
   );
 
   const value = useMemo(() => ({ status, send, on }), [status, send, on]);
+
+  // Answer manual reachability probes from the Relay: echo the correlation id
+  // straight back so the Devices page can measure a real round trip to this
+  // browser. Registered once and re-applied to each new socket by `on`.
+  useEffect(() => {
+    return on(MessageTypes.PING, (payload) => {
+      const id = (payload as { id?: unknown } | null)?.id;
+      if (typeof id === "string" && id !== "") {
+        send({ type: MessageTypes.PONG, payload: { id } });
+      }
+    });
+  }, [on, send]);
 
   return <WsContext.Provider value={value}>{children}</WsContext.Provider>;
 }

@@ -4,16 +4,24 @@ import { NodeId, SnapshotId } from "../types.js";
 // ── Snapshot records ────────────────────────────────────────────────
 //
 // A snapshot is streamed as typed, homogeneous chunks. Each chunk carries one
-// record type ('file_version' | 'folder' | 'key_envelope' | 'tombstone') and an array of up to
-// SNAPSHOT_CHUNK_MAX_RECORDS records. Keeping each chunk homogeneous (one
-// record type) rather than interleaving types is simpler to validate and apply,
-// at the cost of slightly more chunks for accounts with multiple record types.
+// record type ('file_version' | 'folder' | 'key_envelope' | 'folder_key_envelope'
+// | 'tombstone' | 'shard_hash') and an array of up to SNAPSHOT_CHUNK_MAX_RECORDS
+// records. Keeping each chunk homogeneous (one record type) rather than
+// interleaving types is simpler to validate and apply, at the cost of slightly
+// more chunks for accounts with multiple record types.
 
 /** Maximum number of records carried in a single snapshot chunk. */
 export const SNAPSHOT_CHUNK_MAX_RECORDS = 1000;
 
 /** Snapshot record type discriminants. */
-export const SnapshotRecordTypeSchema = z.enum(["file_version", "folder", "key_envelope", "tombstone", "shard_hash"]);
+export const SnapshotRecordTypeSchema = z.enum([
+  "file_version",
+  "folder",
+  "key_envelope",
+  "folder_key_envelope",
+  "tombstone",
+  "shard_hash",
+]);
 export type SnapshotRecordType = z.infer<typeof SnapshotRecordTypeSchema>;
 
 /**
@@ -66,6 +74,21 @@ export const KeyEnvelopeRecordSchema = z.object({
 });
 
 export type KeyEnvelopeRecord = z.infer<typeof KeyEnvelopeRecordSchema>;
+
+/**
+ * A folder key envelope captured in a snapshot. Without it, a Relay rebuild from
+ * an empty database would drop the folder keys and every folder name would
+ * become undecryptable on the account's devices.
+ */
+export const FolderKeyEnvelopeRecordSchema = z.object({
+  folder_id: z.string(),
+  recipient_id: z.string(),
+  recipient_kind: z.enum(["device", "node"]),
+  encrypted_key: z.string(),
+  created_at: z.string().datetime().optional(),
+});
+
+export type FolderKeyEnvelopeRecord = z.infer<typeof FolderKeyEnvelopeRecordSchema>;
 
 /**
  * A tombstone row captured in a snapshot. Only tombstones newer than the
@@ -154,6 +177,7 @@ export const SnapshotChunkPayloadSchema = z.object({
         FileVersionRecordSchema,
         FolderRecordSchema,
         KeyEnvelopeRecordSchema,
+        FolderKeyEnvelopeRecordSchema,
         TombstoneRecordSchema,
         ShardHashRecordSchema,
       ]),

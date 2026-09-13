@@ -36,7 +36,7 @@ func upsertDeviceForAccount(q dbQuerier, r *http.Request, deviceID, publicKey, a
 			status = 'ACTIVE',
 			revoked_at = NULL
 		WHERE devices.account_id = excluded.account_id
-		RETURNING device_id, account_id, public_key, status, created_at, revoked_at
+		RETURNING device_id, account_id, public_key, status, created_at, revoked_at, display_name
 	`, deviceID, accountID, publicKey).Scan(
 		&dev.DeviceID,
 		&dev.AccountID,
@@ -44,6 +44,7 @@ func upsertDeviceForAccount(q dbQuerier, r *http.Request, deviceID, publicKey, a
 		&dev.Status,
 		&dev.CreatedAt,
 		&dev.RevokedAt,
+		&dev.DisplayName,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, errDeviceOwnedElsewhere
@@ -70,12 +71,13 @@ type RegisterDeviceRequest struct {
 }
 
 type DeviceResponse struct {
-	DeviceID  string     `json:"device_id"`
-	AccountID string     `json:"account_id"`
-	PublicKey string     `json:"public_key"`
-	Status    string     `json:"status"`
-	CreatedAt time.Time  `json:"created_at"`
-	RevokedAt *time.Time `json:"revoked_at,omitempty"`
+	DeviceID    string     `json:"device_id"`
+	AccountID   string     `json:"account_id"`
+	PublicKey   string     `json:"public_key"`
+	Status      string     `json:"status"`
+	DisplayName *string    `json:"display_name,omitempty"`
+	CreatedAt   time.Time  `json:"created_at"`
+	RevokedAt   *time.Time `json:"revoked_at,omitempty"`
 }
 
 // RegisterDevice registers a new cryptographic device identity for the
@@ -120,7 +122,7 @@ func ListDevices(pool *db.Pool) http.HandlerFunc {
 		}
 
 		query := `
-			SELECT device_id, account_id, public_key, status, created_at, revoked_at
+			SELECT device_id, account_id, public_key, status, created_at, revoked_at, display_name
 			FROM devices
 			WHERE account_id = $1
 			ORDER BY created_at ASC
@@ -143,6 +145,7 @@ func ListDevices(pool *db.Pool) http.HandlerFunc {
 				&dev.Status,
 				&dev.CreatedAt,
 				&dev.RevokedAt,
+				&dev.DisplayName,
 			); err != nil {
 				respondError(w, http.StatusInternalServerError, "failed to scan device")
 				return
@@ -189,8 +192,11 @@ func RevokeDevice(pool *db.Pool, store auth.SessionStore) http.HandlerFunc {
 			return
 		}
 
-		// Also delete any key envelopes associated with this device (ADR-0001)
+		// Also delete any key envelopes associated with this device (ADR-0001).
+		// Folder-key envelopes must go too, or a revoked device keeps a usable
+		// folder-name key.
 		_, _ = pool.Exec(r.Context(), "DELETE FROM key_envelopes WHERE recipient_id = $1", deviceID)
+		_, _ = pool.Exec(r.Context(), "DELETE FROM folder_key_envelopes WHERE recipient_id = $1", deviceID)
 
 		// Revoke all sessions bound to the revoked device.
 		if err := store.RevokeAllForDevice(r.Context(), deviceID); err != nil {

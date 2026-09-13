@@ -79,6 +79,8 @@ export function createBrowserAttemptPath(deps: BrowserAttemptPathDeps): AttemptP
         transferId: request.transferId,
         sourceDevice: deps.sourceDevice,
         data: request.data,
+        // Relay path reports in-shard bytes via XHR upload progress.
+        onProgress: request.onProgress,
       });
       return toResult(request, path, startedAt, true);
     }
@@ -124,6 +126,8 @@ export function createBrowserAttemptPath(deps: BrowserAttemptPathDeps): AttemptP
         sourceDevice: deps.sourceDevice,
       },
       path: path === "local_signaling" ? "A" : "B",
+      // WebRTC streams the shard in 16 KB chunks and reports send progress.
+      onProgress: request.onProgress,
     });
     return {
       path,

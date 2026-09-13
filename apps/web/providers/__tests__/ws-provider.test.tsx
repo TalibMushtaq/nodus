@@ -183,7 +183,11 @@ describe("WsProvider", () => {
       </WsProvider>,
     );
     await act(async () => screen.getByTestId("subscribe").click());
-    expect(on).toHaveBeenCalledTimes(1);
+    // The provider also registers a built-in "ping" responder, so count only
+    // this test's subscriptions.
+    const heartbeatCalls = () =>
+      (on.mock.calls as unknown[][]).filter(([type]) => type === "heartbeat").length;
+    expect(heartbeatCalls()).toBe(1);
 
     authState.deviceId = "replacement-device-id";
     await act(async () =>
@@ -193,7 +197,7 @@ describe("WsProvider", () => {
         </WsProvider>,
       ),
     );
-    expect(on).toHaveBeenCalledTimes(2);
+    expect(heartbeatCalls()).toBe(2);
     unsubscribe?.();
     expect(off).toHaveBeenCalledWith("heartbeat", expect.any(Function));
   });

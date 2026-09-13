@@ -20,6 +20,7 @@ export const EventTypes = {
   FOLDER_CREATED: "FOLDER_CREATED",
   FOLDER_DELETED: "FOLDER_DELETED",
   KEY_ENVELOPE_ADDED: "KEY_ENVELOPE_ADDED",
+  FOLDER_KEY_ENVELOPE_ADDED: "FOLDER_KEY_ENVELOPE_ADDED",
   FILE_SHARD_MANIFEST: "FILE_SHARD_MANIFEST",
   CONFLICT_RESOLVED: "CONFLICT_RESOLVED",
 } as const;
@@ -35,6 +36,7 @@ export const EventTypeSchema = z.enum([
   EventTypes.FOLDER_CREATED,
   EventTypes.FOLDER_DELETED,
   EventTypes.KEY_ENVELOPE_ADDED,
+  EventTypes.FOLDER_KEY_ENVELOPE_ADDED,
   EventTypes.FILE_SHARD_MANIFEST,
   EventTypes.CONFLICT_RESOLVED,
 ]);
@@ -132,6 +134,20 @@ export const KeyEnvelopePayloadSchema = z.object({
 });
 
 /**
+ * Folder key envelope event payload. Folder names are encrypted with a per-folder
+ * key, exactly like file names are encrypted with the file's FEK; that key must
+ * reach the account's other devices or they cannot render the folder name. This
+ * is the folder analogue of `KEY_ENVELOPE_ADDED` (same envelope primitive, keyed
+ * by `folder_id` instead of `file_id`).
+ */
+export const FolderKeyEnvelopePayloadSchema = z.object({
+  folder_id: z.string(),
+  recipient_id: z.string(),
+  recipient_kind: z.enum(["device", "node"]),
+  encrypted_key: z.string(),
+});
+
+/**
  * Per-shard integrity manifest (audit #22). The uploading device, which alone
  * holds the FEK and encrypted the shards, asserts the BLAKE3 hash of every
  * uploaded shard so a Storage Node can reject bytes a compromised Relay tries
@@ -180,6 +196,7 @@ const EventPayloadMap: Record<EventType, z.ZodType> = {
   FOLDER_CREATED: FolderEventPayloadSchema,
   FOLDER_DELETED: FolderEventPayloadSchema,
   KEY_ENVELOPE_ADDED: KeyEnvelopePayloadSchema,
+  FOLDER_KEY_ENVELOPE_ADDED: FolderKeyEnvelopePayloadSchema,
   FILE_SHARD_MANIFEST: FileShardManifestPayloadSchema,
   CONFLICT_RESOLVED: ConflictResolvedPayloadSchema,
 };

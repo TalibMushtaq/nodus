@@ -83,14 +83,14 @@ type BatchAckPayload struct {
 }
 
 // deviceAllowedEventType is the Phase 14 device-emission whitelist. DEVICE_REVOKED
-// is server-only (revocation goes through DELETE /devices/{id}) and FOLDER_* is
-// intentionally absent: applySingleEvent has no folder projection, so admitting
-// it would acknowledge an event with no server effect. See Todo.md follow-up.
+// is server-only (revocation goes through DELETE /devices/{id}). FOLDER_* and
+// FOLDER_KEY_ENVELOPE_ADDED are admitted because both have projections in
+// applySingleEventTx below.
 func deviceAllowedEventType(t string) bool {
 	switch t {
 	case "FILE_CREATED", "FILE_VERSION_ADDED", "FILE_MODIFIED", "FILE_DELETED",
 		"FOLDER_CREATED", "FOLDER_DELETED", "TOMBSTONE_CREATED", "TOMBSTONE_REMOVED",
-		"KEY_ENVELOPE_ADDED", "FILE_SHARD_MANIFEST", "CONFLICT_RESOLVED":
+		"KEY_ENVELOPE_ADDED", "FOLDER_KEY_ENVELOPE_ADDED", "FILE_SHARD_MANIFEST", "CONFLICT_RESOLVED":
 		return true
 	default:
 		return false
@@ -126,6 +126,16 @@ type FolderEventData struct {
 // KeyEnvelopeEventData mirrors `KeyEnvelopePayloadSchema` (§25, Phase 14 F2).
 type KeyEnvelopeEventData struct {
 	FileID        string `json:"file_id"`
+	RecipientID   string `json:"recipient_id"`
+	RecipientKind string `json:"recipient_kind"`
+	EncryptedKey  string `json:"encrypted_key"`
+}
+
+// FolderKeyEnvelopeEventData mirrors `FolderKeyEnvelopePayloadSchema`. Folders
+// use the same envelope primitive as files but are keyed by folder_id; the Relay
+// stores the opaque ciphertext and never sees the folder key.
+type FolderKeyEnvelopeEventData struct {
+	FolderID      string `json:"folder_id"`
 	RecipientID   string `json:"recipient_id"`
 	RecipientKind string `json:"recipient_kind"`
 	EncryptedKey  string `json:"encrypted_key"`
@@ -786,6 +796,30 @@ func applySingleEventTx(
 			return false
 		}
 
+	case "FOLDER_KEY_ENVELOPE_ADDED":
+		var data FolderKeyEnvelopeEventData
+		if err := json.Unmarshal(item.Payload, &data); err != nil {
+			return false
+		}
+		// Same defense-in-depth validation as the file path: a malformed payload
+		// must reject the batch rather than write a row missing its recipient.
+		if data.FolderID == "" || data.RecipientID == "" || data.EncryptedKey == "" {
+			return false
+		}
+		if data.RecipientKind != "device" && data.RecipientKind != "node" {
+			return false
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO folder_key_envelopes (folder_id, recipient_id, recipient_kind, encrypted_key, created_at)
+			VALUES ($1, $2, $3, $4, $5)
+			ON CONFLICT (folder_id, recipient_id) DO UPDATE SET
+				recipient_kind = EXCLUDED.recipient_kind,
+				encrypted_key = EXCLUDED.encrypted_key,
+				created_at = EXCLUDED.created_at
+		`, data.FolderID, data.RecipientID, data.RecipientKind, data.EncryptedKey, t); err != nil {
+			return false
+		}
+
 	case "FILE_VERSION_ADDED", "FILE_MODIFIED":
 		var data FileVersionEventData
 		if err := json.Unmarshal(item.Payload, &data); err == nil && data.FileID != "" {
@@ -1009,7 +1043,9 @@ func eventReferencesForeignFile(ctx context.Context, tx pgx.Tx, accountID string
 	// Folder events are checked against the folders table; file events against
 	// files. folder_id is globally unique, so a create targeting another
 	// account's folder must be rejected rather than silently no-op'd later.
-	if item.Type == "FOLDER_CREATED" || item.Type == "FOLDER_DELETED" {
+	// Folder key envelopes reference the same folders table and get the same
+	// account-ownership guard.
+	if item.Type == "FOLDER_CREATED" || item.Type == "FOLDER_DELETED" || item.Type == "FOLDER_KEY_ENVELOPE_ADDED" {
 		var data FolderEventData
 		if err := json.Unmarshal(item.Payload, &data); err != nil || data.FolderID == "" {
 			return false, nil

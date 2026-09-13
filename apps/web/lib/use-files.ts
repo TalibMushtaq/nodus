@@ -5,12 +5,18 @@ import { decryptName } from "@repo/core";
 import { identityPrivateKey } from "@repo/relay-client";
 import type { StoredDeviceIdentity } from "@repo/relay-client";
 
-import { getCachedCatalog, type CatalogEntry } from "./catalog";
-import { STORE_CATALOG, idbDelete } from "./db";
+import { getCachedCatalog, getCachedFolders, type CatalogEntry, type FolderEntry } from "./catalog";
+import { STORE_CATALOG, STORE_FOLDERS, idbDelete } from "./db";
 import { refreshCatalog } from "./files";
 import { refreshFolders } from "./folders";
 import { getFileKey } from "./keys";
-import { fetchAndOpenFileKey } from "./envelopes";
+import { getFolderKey } from "./folder-keys";
+import {
+  fetchAndOpenFileKey,
+  fetchFolderEnvelopes,
+  openFolderKeyFromEnvelopes,
+  type RelayFolderEnvelope,
+} from "./envelopes";
 import { shortId } from "./format";
 import { isDownloadable, fileStorageState, latestSize, toSyncStatus, type FileEntryView } from "./file-view";
 import { useAuth } from "../providers/auth-provider";
@@ -59,6 +65,70 @@ async function toView(entry: CatalogEntry, device: StoredDeviceIdentity): Promis
   };
 }
 
+/** A folder row projected for display, with its name decrypted when possible. */
+export interface FolderView {
+  folderId: string;
+  parentFolderId: string | null;
+  name: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * Decrypt folder display names. The bulk envelope fetch happens once for the
+ * whole tree (not per folder) so a folder created on another device is readable
+ * without an N+1 round trip. Falls back to a short id exactly like file names.
+ */
+async function toFolderViews(entries: FolderEntry[], device: StoredDeviceIdentity): Promise<FolderView[]> {
+  let envelopes: RelayFolderEnvelope[];
+  try {
+    envelopes = await fetchFolderEnvelopes();
+  } catch {
+    // Relay unreachable: local keys still decrypt this device's own folders.
+    envelopes = [];
+  }
+
+  const views: FolderView[] = [];
+  for (const entry of entries) {
+    let name: string;
+    if (!entry.encrypted_name) {
+      name = shortId(entry.folder_id);
+    } else {
+      let fek = await getFolderKey(entry.folder_id);
+      if (!fek) {
+        try {
+          fek =
+            openFolderKeyFromEnvelopes(
+              envelopes,
+              entry.folder_id,
+              device.device_id,
+              identityPrivateKey(device),
+            ) ?? undefined;
+        } catch {
+          fek = undefined;
+        }
+      }
+      if (!fek) {
+        name = `Encrypted · ${shortId(entry.folder_id)}`;
+      } else {
+        try {
+          name = decryptName(entry.encrypted_name, fek);
+        } catch {
+          name = shortId(entry.folder_id);
+        }
+      }
+    }
+    views.push({
+      folderId: entry.folder_id,
+      parentFolderId: entry.parent_folder_id,
+      name,
+      createdAt: entry.created_at,
+      updatedAt: entry.updated_at,
+    });
+  }
+  return views;
+}
+
 /**
  * Cached file catalog for the Files page. Renders from IndexedDB first and
  * revalidates against the Relay; on a failed refresh the cached copy is kept
@@ -73,6 +143,7 @@ async function toView(entry: CatalogEntry, device: StoredDeviceIdentity): Promis
 export function useFiles(pollMs = 15_000) {
   const { device } = useAuth();
   const [files, setFiles] = useState<FileEntryView[]>([]);
+  const [folders, setFolders] = useState<FolderView[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [reloadToken, setReloadToken] = useState(0);
@@ -82,19 +153,25 @@ export function useFiles(pollMs = 15_000) {
   // through .then/.finally callbacks — the app's established pattern for
   // setting state from async work (see the devices page). On failure the
   // cached rows are still returned so the list never blanks out.
-  const load = useCallback(async (): Promise<{ views: FileEntryView[]; error: string | null }> => {
-    if (!device) return { views: [], error: null };
-    let error: string | null = null;
-    try {
-      await Promise.all([refreshCatalog(), refreshFolders()]);
-    } catch (err) {
-      // Relay unreachable: keep whatever is cached rather than blanking.
-      error = err instanceof Error ? err.message : String(err);
-    }
-    const cached = await getCachedCatalog();
-    const views = await Promise.all(cached.map((entry) => toView(entry, device)));
-    return { views, error };
-  }, [device]);
+  const load = useCallback(
+    async (): Promise<{ views: FileEntryView[]; folderViews: FolderView[]; error: string | null }> => {
+      if (!device) return { views: [], folderViews: [], error: null };
+      let error: string | null = null;
+      try {
+        await Promise.all([refreshCatalog(), refreshFolders()]);
+      } catch (err) {
+        // Relay unreachable: keep whatever is cached rather than blanking.
+        error = err instanceof Error ? err.message : String(err);
+      }
+      const [cached, cachedFolders] = await Promise.all([getCachedCatalog(), getCachedFolders()]);
+      const [views, folderViews] = await Promise.all([
+        Promise.all(cached.map((entry) => toView(entry, device))),
+        toFolderViews(cachedFolders, device),
+      ]);
+      return { views, folderViews, error };
+    },
+    [device],
+  );
 
   // Loaded on mount, after a manual `refresh`, and when the account device is
   // resolved. The spinner is owned by `refresh` (which bumps `reloadToken`);
@@ -103,10 +180,11 @@ export function useFiles(pollMs = 15_000) {
   useEffect(() => {
     if (!device) return;
     let cancelled = false;
-    void load().then(({ views, error }) => {
+    void load().then(({ views, folderViews, error }) => {
       if (cancelled) return;
       if (error) setError(error);
       setFiles(views);
+      setFolders(folderViews);
       setLoading(false);
     });
     return () => {
@@ -124,10 +202,11 @@ export function useFiles(pollMs = 15_000) {
     if (!device) return;
     let cancelled = false;
     const timer = setInterval(() => {
-      void load().then(({ views, error }) => {
+      void load().then(({ views, folderViews, error }) => {
         if (cancelled) return;
         if (!error) setError(null);
         setFiles(views);
+        setFolders(folderViews);
       });
     }, pollMs);
     return () => {
@@ -152,5 +231,11 @@ export function useFiles(pollMs = 15_000) {
     setFiles((previous) => previous.filter((file) => file.fileId !== fileId));
   }, []);
 
-  return { files, loading, error, refresh, forget };
+  /** Same as `forget` for a deleted (tombstoned) folder. */
+  const forgetFolder = useCallback(async (folderId: string) => {
+    await idbDelete(STORE_FOLDERS, folderId);
+    setFolders((previous) => previous.filter((folder) => folder.folderId !== folderId));
+  }, []);
+
+  return { files, folders, loading, error, refresh, forget, forgetFolder };
 }

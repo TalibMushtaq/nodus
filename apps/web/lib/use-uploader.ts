@@ -59,6 +59,7 @@ export function useUploader(
       targetNode: string,
       measurement?: FileMeasurement,
       target?: { fileId: string; versionNumber: number },
+      parentFolderId?: string | null,
     ): Promise<UploadResult> => {
       if (!device) {
         throw new Error("no device identity available for upload");
@@ -72,6 +73,7 @@ export function useUploader(
         // picks up its persisted progress instead of creating a duplicate.
         fileId: target?.fileId,
         versionNumber: target?.versionNumber,
+        parentFolderId,
         deps: browserUploadDeps({
           sendEventBatch,
           publishEnvelopes,

@@ -240,6 +240,18 @@ pub struct KeyEnvelopeRecord {
     pub created_at: Option<String>,
 }
 
+/// A folder key envelope captured in a snapshot chunk. Same opaque treatment as
+/// `KeyEnvelopeRecord`, keyed by folder_id so folder names survive a rebuild.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FolderKeyEnvelopeRecord {
+    pub folder_id: String,
+    pub recipient_id: String,
+    pub recipient_kind: String, // "device" | "node"
+    pub encrypted_key: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<String>,
+}
+
 /// A tombstone row captured in a snapshot chunk.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TombstoneRecord {
@@ -270,6 +282,7 @@ pub enum SnapshotRecord {
     FileVersion(FileVersionRecord),
     Folder(FolderRecord),
     KeyEnvelope(KeyEnvelopeRecord),
+    FolderKeyEnvelope(FolderKeyEnvelopeRecord),
     Tombstone(TombstoneRecord),
     ShardHash(ShardHashRecord),
 }

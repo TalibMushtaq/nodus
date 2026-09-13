@@ -5,6 +5,8 @@ import { MessageId } from "./types.js";
 import {
   RegisterPayloadSchema,
   HeartbeatPayloadSchema,
+  PingPayloadSchema,
+  PongPayloadSchema,
   NodeAuthChallengePayloadSchema,
   NodeAuthResponsePayloadSchema,
   NodeAuthResultPayloadSchema,
@@ -56,6 +58,8 @@ import { ErrorPayloadSchema } from "./errors.js";
 export const MessageTypes = {
   REGISTER: "register",
   HEARTBEAT: "heartbeat",
+  PING: "ping",
+  PONG: "pong",
   NODE_AUTH_CHALLENGE: "node_auth_challenge",
   NODE_AUTH_RESPONSE: "node_auth_response",
   NODE_AUTH_RESULT: "node_auth_result",
@@ -122,6 +126,8 @@ export type ParseResult =
 export const MessagePayloadSchemas: Record<string, z.ZodType> = {
   [MessageTypes.REGISTER]: RegisterPayloadSchema,
   [MessageTypes.HEARTBEAT]: HeartbeatPayloadSchema,
+  [MessageTypes.PING]: PingPayloadSchema,
+  [MessageTypes.PONG]: PongPayloadSchema,
   [MessageTypes.NODE_AUTH_CHALLENGE]: NodeAuthChallengePayloadSchema,
   [MessageTypes.NODE_AUTH_RESPONSE]: NodeAuthResponsePayloadSchema,
   [MessageTypes.NODE_AUTH_RESULT]: NodeAuthResultPayloadSchema,

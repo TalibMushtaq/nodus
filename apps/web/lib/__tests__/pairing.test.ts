@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { createPairingCode, findNewNode, findNode, listNodes, type RelayNode } from "../pairing";
+import { createPairingCode, findNewNode, findNode, listNodes, renameDevice, renameNode, type RelayNode } from "../pairing";
 
 const ORIGINAL_FETCH = globalThis.fetch;
 
@@ -88,5 +88,35 @@ describe("listNodes / findNode", () => {
     expect(found?.node_id).toBe("node-2");
     // Empty baseline vs empty catalog stays pending.
     expect(findNewNode([], [])).toBeUndefined();
+  });
+});
+
+describe("renameNode / renameDevice", () => {
+  it("PATCHes the node name and returns the stored value", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response(JSON.stringify({ node_id: "node-1", display_name: "NAS" }), { status: 200 }));
+    globalThis.fetch = fetchMock;
+
+    await expect(renameNode("node-1", "NAS")).resolves.toBe("NAS");
+    expect(fetchMock).toHaveBeenCalledWith("/api/nodes/node-1", {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "NAS" }),
+    });
+  });
+
+  it("clears a device name and normalizes null", async () => {
+    globalThis.fetch = vi
+      .fn()
+      .mockResolvedValue(new Response(JSON.stringify({ device_id: "d1", display_name: null }), { status: 200 }));
+    await expect(renameDevice("d1", "")).resolves.toBeNull();
+  });
+
+  it("surfaces the relay error on failure", async () => {
+    globalThis.fetch = vi
+      .fn()
+      .mockResolvedValue(new Response(JSON.stringify({ error: "node not found" }), { status: 404 }));
+    await expect(renameNode("node-1", "x")).rejects.toThrow("node not found");
   });
 });

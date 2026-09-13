@@ -20,7 +20,7 @@ type NavPage = "overview" | "files" | "conflicts" | "devices" | "activity" | "se
 
 const navItems: { id: NavPage; label: string; icon: IconName }[] = [
   { id: "overview", label: "Overview", icon: "overview" },
-  { id: "files", label: "Files", icon: "files" },
+  { id: "files", label: "Backups", icon: "files" },
   { id: "conflicts", label: "Conflicts", icon: "copy" },
   { id: "tombstones", label: "Tombstone", icon: "trash" },
   { id: "devices", label: "Devices", icon: "devices" },

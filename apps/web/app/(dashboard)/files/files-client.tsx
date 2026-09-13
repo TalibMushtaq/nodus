@@ -9,12 +9,14 @@ import { Select } from "@repo/ui/primitives/select";
 import { Progress } from "@repo/ui/primitives/progress";
 import { Modal, ModalHeader, ConfirmDialog } from "@repo/ui/primitives/overlay";
 import { Input } from "@repo/ui/primitives/input";
+import { Icon } from "@repo/ui/primitives/icons";
 
-import { useFiles, type FileEntryView } from "../../../lib/use-files";
+import { useFiles, type FileEntryView, type FolderView } from "../../../lib/use-files";
 import { useAuth } from "../../../providers/auth-provider";
 import { useTransfer } from "../../../providers/transfer-provider";
 import { useUploader } from "../../../lib/use-uploader";
 import { useFileMutations } from "../../../lib/use-file-mutations";
+import { useFolderMutations } from "../../../lib/folder-mutations";
 import { useMounted } from "../../../lib/use-mounted";
 import type { ShardUpload, ShardUploadResult } from "../../../lib/buffer";
 import type { ShardTransferRequest } from "@repo/transfer-manager";
@@ -26,16 +28,21 @@ import {
   ShardUnavailableError,
   ShardIntegrityError,
 } from "../../../lib/download";
+import { buildFolderZip, triggerBlobDownload } from "../../../lib/folder-download";
 import { startTransfer, finishTransfer, logTransferAction } from "../../../lib/transfer-log";
 import { formatBytes, timeAgo } from "../../../lib/format";
-import { measurePlaintext, type FileMeasurement } from "../../../lib/uploader";
+import {
+  measurePlaintext,
+  type FileMeasurement,
+  type UploadPhase,
+  type UploadProgressEvent,
+} from "../../../lib/uploader";
 import { findIncompleteByHash, findStoredDuplicate, type FileStorageState } from "../../../lib/file-view";
 
-// Files view: the first UI over the Phase 14 catalog/upload/download backend.
-// Scope is list + upload + download + filter/sort, plus rename and delete, which
-// are metadata sync events (`FILE_CREATED` upsert / `TOMBSTONE_CREATED`). Move,
-// conflict resolution, and version restore have no endpoint yet and are not
-// rendered.
+// Files view: catalog/upload/download plus a folder tree. Folders are metadata
+// sync events (FOLDER_CREATED / FOLDER_DELETED); the current folder is the
+// upload target and the breadcrumb is navigation. Uploads run sequentially with
+// byte-level progress and a client-computed transfer rate.
 
 type SortKey = "modified" | "name" | "size";
 
@@ -78,6 +85,221 @@ function FileStorageBadge({ state }: { state: FileStorageState }) {
   );
 }
 
+// ── Upload queue model ─────────────────────────────────────────────────
+
+type UploadStatus = "queued" | "active" | "done" | "error" | "skipped";
+
+interface UploadTask {
+  id: string;
+  name: string;
+  sizeBytes: number;
+  completedBytes: number;
+  completedShards: number;
+  totalShards: number;
+  phase: UploadPhase;
+  status: UploadStatus;
+  error?: string;
+}
+
+const UPLOAD_STATUS_TEXT: Record<UploadStatus, string> = {
+  queued: "Queued",
+  active: "Uploading",
+  done: "Uploaded",
+  error: "Failed",
+  skipped: "Skipped (already stored)",
+};
+
+const UPLOAD_STATUS_COLOR: Record<UploadStatus, string> = {
+  queued: "var(--status-local)",
+  active: "var(--status-pending)",
+  done: "var(--status-synced)",
+  error: "var(--status-conflict)",
+  skipped: "var(--status-local)",
+};
+
+function UploadQueue({
+  tasks,
+  speedBps,
+  activeId,
+  onDismiss,
+}: {
+  tasks: UploadTask[];
+  speedBps: number;
+  activeId: string | null;
+  onDismiss: () => void;
+}) {
+  if (tasks.length === 0) return null;
+  const finished = tasks.every((task) => task.status !== "queued" && task.status !== "active");
+  return (
+    <div className="mb-3 border border-border rounded-xl overflow-hidden bg-card" role="status" aria-live="polite">
+      <div className="flex items-center justify-between px-4 py-2 border-b border-border">
+        <span className="text-xs font-medium text-foreground">
+          Uploads ({tasks.filter((t) => t.status === "done").length}/{tasks.length})
+        </span>
+        {finished && (
+          <button type="button" onClick={onDismiss} className="text-xs text-muted-foreground hover:text-foreground">
+            Dismiss
+          </button>
+        )}
+      </div>
+      {tasks.map((task) => {
+        const pct = task.sizeBytes === 0 ? 0 : (task.completedBytes / task.sizeBytes) * 100;
+        const active = task.id === activeId;
+        return (
+          <div key={task.id} className="px-4 py-2.5 border-b border-border last:border-0">
+            <div className="flex items-center justify-between gap-3">
+              <span className="text-xs font-medium text-foreground truncate">{task.name}</span>
+              <span className="text-[10px] shrink-0" style={{ color: UPLOAD_STATUS_COLOR[task.status] }}>
+                {UPLOAD_STATUS_TEXT[task.status]}
+                {active && speedBps > 0 ? ` · ${formatBytes(speedBps)}/s` : ""}
+              </span>
+            </div>
+            <div className="mt-1.5">
+              <Progress value={pct} />
+            </div>
+            <div className="mt-1 text-[10px] font-mono text-muted-foreground">
+              {formatBytes(task.completedBytes)} / {formatBytes(task.sizeBytes)}
+              {task.totalShards > 0 ? ` · ${task.completedShards}/${task.totalShards} shards` : ""}
+              {task.error ? ` · ${task.error}` : ""}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ── Row components ─────────────────────────────────────────────────────
+
+/**
+ * Small accessible popover menu anchored to a trigger. Closes on outside click
+ * and Escape. Client-only; used by the folder tiles (rename / download /
+ * properties / delete) so the tile itself stays a single tap target.
+ */
+function MenuButton({
+  label,
+  items,
+}: {
+  label: string;
+  items: { label: string; onSelect: () => void; destructive?: boolean }[];
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (event: MouseEvent) => {
+      if (ref.current && !ref.current.contains(event.target as Node)) setOpen(false);
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("mousedown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [open]);
+
+  return (
+    <div ref={ref} className="absolute top-1.5 right-1.5 z-10">
+      <button
+        type="button"
+        aria-label={label}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={(event) => {
+          event.stopPropagation();
+          setOpen((previous) => !previous);
+        }}
+        className="p-1 rounded-sm text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors"
+      >
+        <Icon name="more" size={16} />
+      </button>
+      {open && (
+        <div
+          role="menu"
+          className="absolute right-0 mt-1 w-36 py-1 rounded-lg border border-border bg-card shadow-lg"
+        >
+          {items.map((item) => (
+            <button
+              key={item.label}
+              type="button"
+              role="menuitem"
+              onClick={(event) => {
+                event.stopPropagation();
+                setOpen(false);
+                item.onSelect();
+              }}
+              className={`w-full text-left px-3 py-1.5 text-xs transition-colors hover:bg-secondary ${
+                item.destructive ? "text-destructive" : "text-foreground"
+              }`}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// File-manager style folder tile: a large folder glyph with the name beneath it
+// and a three-dots menu (rename / download as zip / properties / delete).
+function FolderTile({
+  folder,
+  busy,
+  downloading,
+  onOpen,
+  onRename,
+  onDownload,
+  onProperties,
+  onDelete,
+}: {
+  folder: FolderView;
+  busy: boolean;
+  downloading: boolean;
+  onOpen: (folder: FolderView) => void;
+  onRename: (folder: FolderView) => void;
+  onDownload: (folder: FolderView) => void;
+  onProperties: (folder: FolderView) => void;
+  onDelete: (folder: FolderView) => void;
+}) {
+  return (
+    <div className="group relative flex flex-col items-center justify-start gap-2 p-4 rounded-xl border border-border bg-card hover:border-accent/50 hover:bg-secondary/40 transition-colors">
+      <button
+        type="button"
+        onClick={() => onOpen(folder)}
+        title={folder.name}
+        className="flex flex-col items-center gap-2 w-full"
+      >
+        <Icon name="folder" size={44} className="text-accent shrink-0" />
+        <span className="text-xs font-medium text-foreground text-center line-clamp-2 break-all">
+          {folder.name}
+        </span>
+      </button>
+      <MenuButton
+        label={`Actions for ${folder.name}`}
+        items={[
+          { label: "Rename", onSelect: () => onRename(folder) },
+          {
+            label: downloading ? "Downloading…" : "Download (.zip)",
+            onSelect: () => {
+              if (!downloading) onDownload(folder);
+            },
+          },
+          { label: "Properties", onSelect: () => onProperties(folder) },
+          { label: "Delete", onSelect: () => onDelete(folder), destructive: true },
+        ]}
+      />
+      {busy && (
+        <span className="absolute bottom-1.5 right-2 text-[10px] text-muted-foreground">…</span>
+      )}
+    </div>
+  );
+}
+
 function FileRowView({
   file,
   downloading,
@@ -86,6 +308,7 @@ function FileRowView({
   onDownload,
   onResync,
   onRename,
+  onMove,
   onDelete,
 }: {
   file: FileEntryView;
@@ -95,6 +318,7 @@ function FileRowView({
   onDownload: (file: FileEntryView) => void;
   onResync: (file: FileEntryView) => void;
   onRename: (file: FileEntryView) => void;
+  onMove: (file: FileEntryView) => void;
   onDelete: (file: FileEntryView) => void;
 }) {
   return (
@@ -153,6 +377,14 @@ function FileRowView({
       </button>
       <button
         type="button"
+        onClick={() => onMove(file)}
+        disabled={busy}
+        className="hidden sm:inline-block px-3 py-1.5 text-xs border border-border text-foreground hover:border-accent hover:text-accent transition-colors shrink-0 disabled:opacity-40"
+      >
+        Move
+      </button>
+      <button
+        type="button"
         onClick={() => onDelete(file)}
         disabled={busy}
         className="hidden sm:inline-block px-3 py-1.5 text-xs border border-destructive/30 text-destructive hover:bg-destructive/10 transition-colors shrink-0 disabled:opacity-40"
@@ -163,9 +395,62 @@ function FileRowView({
   );
 }
 
+/** Flatten the folder tree into indented options for the move-to-folder dialog. */
+function folderOptions(folders: FolderView[]): { id: string; label: string }[] {
+  const byParent = new Map<string | null, FolderView[]>();
+  for (const folder of folders) {
+    const siblings = byParent.get(folder.parentFolderId) ?? [];
+    siblings.push(folder);
+    byParent.set(folder.parentFolderId, siblings);
+  }
+  const options: { id: string; label: string }[] = [];
+  const walk = (parentId: string | null, depth: number) => {
+    const children = (byParent.get(parentId) ?? []).sort((a, b) => a.name.localeCompare(b.name));
+    for (const child of children) {
+      options.push({ id: child.folderId, label: `${"  ".repeat(depth)}${child.name}` });
+      walk(child.folderId, depth + 1);
+    }
+  };
+  walk(null, 0);
+  return options;
+}
+
+/**
+ * Recursively summarize a folder's contents for the Properties dialog: total
+ * file bytes, direct file count, and descendant folder count. `depth` guards
+ * against a corrupt `parent_folder_id` cycle.
+ */
+function folderContents(
+  folderId: string,
+  folders: FolderView[],
+  files: FileEntryView[],
+  depth = 0,
+): { bytes: number; files: number; folders: number } {
+  if (depth > 64) return { bytes: 0, files: 0, folders: 0 };
+  let bytes = 0;
+  let fileCount = 0;
+  let folderCount = 0;
+  for (const file of files) {
+    if ((file.parentFolderId ?? null) === folderId) {
+      bytes += file.sizeBytes ?? 0;
+      fileCount += 1;
+    }
+  }
+  for (const folder of folders) {
+    if ((folder.parentFolderId ?? null) === folderId) {
+      folderCount += 1;
+      const child = folderContents(folder.folderId, folders, files, depth + 1);
+      bytes += child.bytes;
+      fileCount += child.files;
+      folderCount += child.folders;
+    }
+  }
+  return { bytes, files: fileCount, folders: folderCount };
+}
+
 export function FilesClient() {
   const { device } = useAuth();
-  const { files, loading, error, refresh, forget } = useFiles();
+  const { files, folders, loading, error, refresh, forget, forgetFolder } = useFiles();
   // Device identity and the node catalog are client-only, so the SSR pass would
   // otherwise render the Upload control differently from the client's first
   // pass. `useMounted` returns the server snapshot during hydration, keeping both
@@ -175,21 +460,41 @@ export function FilesClient() {
   const [filterBy, setFilterBy] = useState<SyncStatus | "all">("all");
   const [nodes, setNodes] = useState<RelayNode[]>([]);
   const [targetNode, setTargetNode] = useState<string | null>(null);
-  const [progress, setProgress] = useState<{ name: string; phase: string; completed: number; total: number } | null>(null);
+  const [currentFolderId, setCurrentFolderId] = useState<string | null>(null);
+  const [uploads, setUploads] = useState<UploadTask[]>([]);
+  const [activeUploadId, setActiveUploadId] = useState<string | null>(null);
+  const [speedBps, setSpeedBps] = useState(0);
   const [actionError, setActionError] = useState<string | null>(null);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const currentUploadName = useRef("");
   // Content hashes accepted in this session. The catalog only refreshes after
   // an upload completes, so this catches a second identical file selected in
   // the same batch (or before the refresh lands) without a round trip.
   const sessionHashes = useRef<Set<string>>(new Set());
+  // Live byte count and the per-file progress sink. Uploads run sequentially, so
+  // the hook's single onProgress callback is routed to the active task.
+  const liveBytesRef = useRef(0);
+  const progressHandlerRef = useRef<((event: UploadProgressEvent) => void) | null>(null);
 
-  // Rename/delete dialog state. `mutating` disables the actions while a
+  // Rename/delete/move dialog state. `mutating` disables the actions while a
   // metadata event is in flight so the same file cannot be changed twice.
   const [renameTarget, setRenameTarget] = useState<FileEntryView | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<FileEntryView | null>(null);
+  const [moveTarget, setMoveTarget] = useState<FileEntryView | null>(null);
+  const [moveFolderId, setMoveFolderId] = useState<string | null>(null);
+  const [newFolderOpen, setNewFolderOpen] = useState(false);
+  const [newFolderName, setNewFolderName] = useState("");
+  const [deleteFolderTarget, setDeleteFolderTarget] = useState<FolderView | null>(null);
+  const [folderRenameTarget, setFolderRenameTarget] = useState<FolderView | null>(null);
+  const [folderRenameValue, setFolderRenameValue] = useState("");
+  const [folderPropsTarget, setFolderPropsTarget] = useState<FolderView | null>(null);
+  // Folder-zip download progress; `folderDownloadId` gates the trigger so the
+  // same folder cannot be archived twice concurrently.
+  const [folderDownload, setFolderDownload] = useState<{ name: string; completed: number; total: number } | null>(
+    null,
+  );
+  const [folderDownloadId, setFolderDownloadId] = useState<string | null>(null);
   const [mutating, setMutating] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [mutationError, setMutationError] = useState<string | null>(null);
@@ -213,17 +518,31 @@ export function FilesClient() {
     };
   }, []);
 
-  const onProgress = useCallback((event: { phase: string; completedShards: number; totalShards: number }) => {
-    if (event.phase === "done") {
-      setProgress(null);
-      return;
-    }
-    setProgress({
-      name: currentUploadName.current,
-      phase: event.phase,
-      completed: event.completedShards,
-      total: event.totalShards,
-    });
+  // Sample the live byte counter every 500ms to derive a transfer rate. Using a
+  // timer rather than per-event deltas keeps the displayed speed steady and lets
+  // it decay to zero when a shard stalls. The rate is reset by the upload
+  // handler when a task starts/finishes, so this effect only subscribes.
+  useEffect(() => {
+    if (!activeUploadId) return;
+    let lastBytes = liveBytesRef.current;
+    let lastAt = Date.now();
+    const timer = setInterval(() => {
+      const now = Date.now();
+      const bytes = liveBytesRef.current;
+      const seconds = (now - lastAt) / 1000;
+      if (seconds > 0) {
+        const instant = Math.max(0, (bytes - lastBytes) / seconds);
+        // Exponential smoothing so the number does not jitter every tick.
+        setSpeedBps((previous) => (previous === 0 ? instant : previous * 0.5 + instant * 0.5));
+      }
+      lastBytes = bytes;
+      lastAt = now;
+    }, 500);
+    return () => clearInterval(timer);
+  }, [activeUploadId]);
+
+  const onProgress = useCallback((event: UploadProgressEvent) => {
+    progressHandlerRef.current?.(event);
   }, []);
 
   const { uploadShard, ready: transferReady, queuedCount, hasPending, retryPending } = useTransfer();
@@ -244,6 +563,8 @@ export function FilesClient() {
         hash: dto.hash,
         targetNode: dto.targetNode as ShardTransferRequest["targetNode"],
         sourceDevice: dto.sourceDevice,
+        // Byte-level progress for whichever path runs (WebRTC or Relay XHR).
+        onProgress: dto.onProgress,
       });
       if (!result.success) {
         throw new Error(result.error ?? "shard transfer failed");
@@ -255,6 +576,8 @@ export function FilesClient() {
 
   const { upload } = useUploader(onProgress, transferReady ? transferPostShard : undefined);
   const { rename, remove } = useFileMutations();
+  const { create: createFolder, rename: renameFolder, remove: removeFolder } = useFolderMutations();
+
   const handleFilesPicked = useCallback(
     async (fileList: FileList | null) => {
       if (!fileList || fileList.length === 0) return;
@@ -263,57 +586,89 @@ export function FilesClient() {
         return;
       }
       setActionError(null);
+      const chosen = Array.from(fileList);
+      const tasks: UploadTask[] = chosen.map((file) => ({
+        id: crypto.randomUUID(),
+        name: file.name,
+        sizeBytes: file.size,
+        completedBytes: 0,
+        completedShards: 0,
+        totalShards: 0,
+        phase: "measuring",
+        status: "queued",
+      }));
+      setUploads((previous) => [...previous, ...tasks]);
       const skipped: string[] = [];
-      for (const file of Array.from(fileList)) {
-        currentUploadName.current = file.name;
 
-        // Measure once so an exact-content duplicate is rejected before any
-        // network work; the same result is handed to the uploader so the file
-        // is not hashed a second time.
-        let measured: FileMeasurement;
+      // Sequential on purpose: one 8MB shard is in memory at a time and the
+      // event-batch stream stays ordered.
+      for (let index = 0; index < chosen.length; index += 1) {
+        const file = chosen[index]!;
+        const task = tasks[index]!;
+        liveBytesRef.current = 0;
+        setSpeedBps(0);
+        setActiveUploadId(task.id);
+        const updateTask = (patch: Partial<UploadTask>) => {
+          setUploads((previous) => previous.map((t) => (t.id === task.id ? { ...t, ...patch } : t)));
+        };
+        progressHandlerRef.current = (event) => {
+          liveBytesRef.current = event.completedBytes;
+          updateTask({
+            completedBytes: event.completedBytes,
+            completedShards: event.completedShards,
+            totalShards: event.totalShards,
+            phase: event.phase,
+            status: "active",
+          });
+        };
+
         try {
-          measured = await measurePlaintext(file, onProgress);
-        } catch (err) {
-          setProgress(null);
-          currentUploadName.current = "";
-          setActionError(err instanceof Error ? err.message : String(err));
-          continue;
-        }
+          // Measure once so an exact-content duplicate is rejected before any
+          // network work; the same result is handed to the uploader so the file
+          // is not hashed a second time.
+          const measured: FileMeasurement = await measurePlaintext(file, onProgress);
 
-        const duplicate = findStoredDuplicate(files, measured.versionHash);
-        if (duplicate || sessionHashes.current.has(measured.versionHash)) {
-          setProgress(null);
-          currentUploadName.current = "";
-          skipped.push(file.name);
-          continue;
-        }
-        // An announced-but-incomplete file with the same content is resumed
-        // (same fileId/version) rather than creating a duplicate, so re-selecting
-        // a failed upload completes the original entry.
-        const incomplete = findIncompleteByHash(files, measured.versionHash);
-        sessionHashes.current.add(measured.versionHash);
+          const duplicate = findStoredDuplicate(files, measured.versionHash);
+          if (duplicate || sessionHashes.current.has(measured.versionHash)) {
+            skipped.push(file.name);
+            updateTask({ status: "skipped" });
+            continue;
+          }
+          // An announced-but-incomplete file with the same content is resumed
+          // (same fileId/version) rather than creating a duplicate, so
+          // re-selecting a failed upload completes the original entry.
+          const incomplete = findIncompleteByHash(files, measured.versionHash);
+          sessionHashes.current.add(measured.versionHash);
 
-        const log = await startTransfer({
-          kind: "upload",
-          fileId: incomplete?.fileId ?? "",
-          fileName: file.name,
-        });
-        try {
-          const target = incomplete
-            ? { fileId: incomplete.fileId, versionNumber: incomplete.latestVersionNumber ?? 1 }
-            : undefined;
-          const result = await upload(file, targetNode, measured, target);
-          await finishTransfer(log.id, "complete", `${result.shardCount} shards`);
-          refresh();
+          const log = await startTransfer({
+            kind: "upload",
+            fileId: incomplete?.fileId ?? "",
+            fileName: file.name,
+          });
+          try {
+            const target = incomplete
+              ? { fileId: incomplete.fileId, versionNumber: incomplete.latestVersionNumber ?? 1 }
+              : undefined;
+            const result = await upload(file, targetNode, measured, target, currentFolderId);
+            await finishTransfer(log.id, "complete", `${result.shardCount} shards`);
+            updateTask({ status: "done", completedBytes: file.size, completedShards: result.shardCount, totalShards: result.shardCount });
+            refresh();
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            await finishTransfer(log.id, "failed", message);
+            updateTask({ status: "error", error: message });
+            setActionError(message);
+          }
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
-          await finishTransfer(log.id, "failed", message);
+          updateTask({ status: "error", error: message });
           setActionError(message);
-        } finally {
-          setProgress(null);
-          currentUploadName.current = "";
         }
       }
+
+      progressHandlerRef.current = null;
+      setActiveUploadId(null);
+      setSpeedBps(0);
       if (skipped.length > 0) {
         setActionError(
           skipped.length === 1
@@ -324,7 +679,7 @@ export function FilesClient() {
       // Allow re-selecting the same file in a later upload.
       if (fileInputRef.current) fileInputRef.current.value = "";
     },
-    [targetNode, upload, refresh, files, onProgress],
+    [targetNode, upload, refresh, files, onProgress, currentFolderId],
   );
 
   const handleDownload = useCallback(
@@ -373,6 +728,12 @@ export function FilesClient() {
     setDeleteTarget(file);
   }, []);
 
+  const openMove = useCallback((file: FileEntryView) => {
+    setMutationError(null);
+    setMoveFolderId(file.parentFolderId);
+    setMoveTarget(file);
+  }, []);
+
   const confirmRename = useCallback(async () => {
     if (!renameTarget) return;
     const trimmed = renameValue.trim();
@@ -393,6 +754,27 @@ export function FilesClient() {
       setMutating(false);
     }
   }, [renameTarget, renameValue, rename, refresh]);
+
+  const confirmMove = useCallback(async () => {
+    if (!moveTarget) return;
+    if (moveFolderId === moveTarget.parentFolderId) {
+      setMoveTarget(null);
+      return;
+    }
+    setMutating(true);
+    setMutationError(null);
+    try {
+      // A move reuses the rename upsert (FILE_CREATED) with a new parent id,
+      // keeping the name and versions untouched.
+      await rename(moveTarget.fileId, moveFolderId, moveTarget.name);
+      setMoveTarget(null);
+      refresh();
+    } catch (err) {
+      setMutationError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setMutating(false);
+    }
+  }, [moveTarget, moveFolderId, rename, refresh]);
 
   const confirmDelete = useCallback(async () => {
     if (!deleteTarget) return;
@@ -421,6 +803,112 @@ export function FilesClient() {
     }
   }, [deleteTarget, remove, forget]);
 
+  const confirmCreateFolder = useCallback(async () => {
+    const trimmed = newFolderName.trim();
+    if (!trimmed) return;
+    setMutating(true);
+    setMutationError(null);
+    try {
+      await createFolder(trimmed, currentFolderId);
+      setNewFolderOpen(false);
+      setNewFolderName("");
+      refresh();
+    } catch (err) {
+      setMutationError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setMutating(false);
+    }
+  }, [newFolderName, createFolder, currentFolderId, refresh]);
+
+  const confirmDeleteFolder = useCallback(async () => {
+    if (!deleteFolderTarget) return;
+    setMutating(true);
+    setMutationError(null);
+    try {
+      await removeFolder(deleteFolderTarget.folderId);
+      await forgetFolder(deleteFolderTarget.folderId);
+      setDeleteFolderTarget(null);
+      refresh();
+    } catch (err) {
+      setMutationError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setMutating(false);
+    }
+  }, [deleteFolderTarget, removeFolder, forgetFolder, refresh]);
+
+  const confirmRenameFolder = useCallback(async () => {
+    if (!folderRenameTarget) return;
+    const trimmed = folderRenameValue.trim();
+    if (!trimmed || trimmed === folderRenameTarget.name) {
+      setFolderRenameTarget(null);
+      return;
+    }
+    setMutating(true);
+    setMutationError(null);
+    try {
+      await renameFolder(folderRenameTarget.folderId, folderRenameTarget.parentFolderId, trimmed);
+      setFolderRenameTarget(null);
+      refresh();
+    } catch (err) {
+      setMutationError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setMutating(false);
+    }
+  }, [folderRenameTarget, folderRenameValue, renameFolder, refresh]);
+
+  // Archive the folder's contents into one zip. Each file is fetched and
+  // decrypted individually; not-yet-stored files are skipped so one bad file
+  // does not block the whole archive.
+  const handleFolderDownload = useCallback(
+    async (folder: FolderView) => {
+      if (!device) {
+        setActionError("Sign in to download.");
+        return;
+      }
+      if (folderDownloadId) return;
+      setActionError(null);
+      setMutationError(null);
+      setFolderDownloadId(folder.folderId);
+      setFolderDownload({ name: folder.name, completed: 0, total: 0 });
+      const log = await startTransfer({ kind: "download", fileId: "", fileName: `${folder.name}.zip` });
+      try {
+        const archive = await buildFolderZip({
+          folderName: folder.name,
+          folderId: folder.folderId,
+          folders,
+          files,
+          deps: browserDownloadDeps(device),
+          onProgress: (completed, total) => setFolderDownload({ name: folder.name, completed, total }),
+        });
+        if (archive.fileCount === 0) {
+          // Nothing was added: do not hand the user an empty archive.
+          await finishTransfer(log.id, "failed", "no downloadable files");
+          setActionError(
+            archive.skipped.length > 0
+              ? `${archive.skipped.length} file(s) in “${folder.name}” are not stored on a node and could not be downloaded.`
+              : `“${folder.name}” has no files to download.`,
+          );
+        } else {
+          triggerBlobDownload(archive.data, archive.fileName);
+          await finishTransfer(log.id, "complete", `${archive.fileCount} files, ${formatBytes(archive.bytes)}`);
+          if (archive.skipped.length > 0) {
+            setActionError(
+              `${archive.skipped.length} file(s) were not stored on a node and were left out of the zip.`,
+            );
+          }
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        await finishTransfer(log.id, "failed", message);
+        setActionError(message);
+      } finally {
+        setFolderDownload(null);
+        setFolderDownloadId(null);
+      }
+    },
+    [device, folders, files, folderDownloadId],
+  );
+
   const resync = useCallback(
     (file: FileEntryView) => {
       setMutationError(null);
@@ -441,8 +929,34 @@ export function FilesClient() {
     [hasPending, retryPending, refresh],
   );
 
+  const folderById = useMemo(() => new Map(folders.map((folder) => [folder.folderId, folder])), [folders]);
+
+  // Breadcrumb root → current. Guards against a cycle from bad metadata.
+  const breadcrumb = useMemo(() => {
+    const trail: FolderView[] = [];
+    const seen = new Set<string>();
+    let id = currentFolderId;
+    while (id && !seen.has(id)) {
+      seen.add(id);
+      const folder = folderById.get(id);
+      if (!folder) break;
+      trail.unshift(folder);
+      id = folder.parentFolderId;
+    }
+    return trail;
+  }, [currentFolderId, folderById]);
+
+  const visibleFolders = useMemo(
+    () =>
+      folders
+        .filter((folder) => folder.parentFolderId === currentFolderId)
+        .sort((a, b) => a.name.localeCompare(b.name)),
+    [folders, currentFolderId],
+  );
+
   const visible = useMemo(() => {
-    const filtered = filterBy === "all" ? files : files.filter((file) => file.status === filterBy);
+    const inFolder = files.filter((file) => (file.parentFolderId ?? null) === currentFolderId);
+    const filtered = filterBy === "all" ? inFolder : inFolder.filter((file) => file.status === filterBy);
     const sorted = [...filtered];
     if (sortBy === "name") {
       sorted.sort((a, b) => a.name.localeCompare(b.name));
@@ -452,15 +966,17 @@ export function FilesClient() {
       sorted.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
     }
     return sorted;
-  }, [files, filterBy, sortBy]);
+  }, [files, filterBy, sortBy, currentFolderId]);
 
+  const uploading = uploads.some((task) => task.status === "queued" || task.status === "active");
   const deviceReady = mounted && Boolean(device);
-  const canUpload = deviceReady && Boolean(targetNode) && !progress;
+  const canUpload = deviceReady && Boolean(targetNode) && !uploading;
   const uploadHint = !deviceReady
     ? "Waiting for device identity…"
     : nodes.length === 0
       ? "Pair a storage node to upload"
       : null;
+  const moveOptions = useMemo(() => folderOptions(folders), [folders]);
 
   return (
     <div className="space-y-6 p-6">
@@ -474,7 +990,7 @@ export function FilesClient() {
       )}
 
       <Section
-        title="Files"
+        title="Backups"
         action={
           <div className="flex items-center gap-2">
             <Select
@@ -506,6 +1022,18 @@ export function FilesClient() {
               </Button>
             )}
             <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => {
+                setMutationError(null);
+                setNewFolderName("");
+                setNewFolderOpen(true);
+              }}
+              disabled={!deviceReady}
+            >
+              New folder
+            </Button>
+            <Button
               variant="primary"
               size="sm"
               onClick={() => fileInputRef.current?.click()}
@@ -525,19 +1053,32 @@ export function FilesClient() {
           </div>
         }
       >
-        {progress && (
-          <div className="mb-3 space-y-1" role="status" aria-live="polite">
-            <div className="text-[11px] text-muted-foreground truncate">
-              {progress.phase === "measuring"
-                ? `Checking ${progress.name} for duplicates…`
-                : `Uploading ${progress.name} (${progress.completed}/${progress.total} shards)`}
-            </div>
-            <Progress value={progress.total === 0 ? 0 : (progress.completed / progress.total) * 100} />
-          </div>
-        )}
+        <UploadQueue
+          tasks={uploads}
+          speedBps={speedBps}
+          activeId={activeUploadId}
+          onDismiss={() => setUploads([])}
+        />
 
         {uploadHint && !loading && (
           <p className="text-xs text-muted-foreground mb-3">{uploadHint}</p>
+        )}
+
+        {folderDownload && (
+          <div className="mb-3 space-y-1" role="status" aria-live="polite">
+            <div className="text-[11px] text-muted-foreground truncate">
+              {folderDownload.total > 0
+                ? `Preparing “${folderDownload.name}.zip” (${folderDownload.completed}/${folderDownload.total} files)…`
+                : `Preparing “${folderDownload.name}.zip”…`}
+            </div>
+            <Progress
+              value={
+                folderDownload.total === 0
+                  ? 0
+                  : (folderDownload.completed / folderDownload.total) * 100
+              }
+            />
+          </div>
         )}
 
         {actionError && (
@@ -558,32 +1099,89 @@ export function FilesClient() {
           </p>
         )}
 
+        {/* Breadcrumb navigation. Root is always tappable so the tree can be
+            traversed without a separate sidebar. */}
+        <nav className="flex items-center gap-1.5 mb-3 text-xs" aria-label="Breadcrumb">
+          <button
+            type="button"
+            onClick={() => setCurrentFolderId(null)}
+            className={currentFolderId === null ? "text-foreground font-medium" : "text-muted-foreground hover:text-accent"}
+          >
+            Backups
+          </button>
+          {breadcrumb.map((folder) => (
+            <span key={folder.folderId} className="flex items-center gap-1.5">
+              <span className="text-muted-foreground">/</span>
+              <button
+                type="button"
+                onClick={() => setCurrentFolderId(folder.folderId)}
+                className={
+                  folder.folderId === currentFolderId
+                    ? "text-foreground font-medium"
+                    : "text-muted-foreground hover:text-accent"
+                }
+              >
+                {folder.name}
+              </button>
+            </span>
+          ))}
+        </nav>
+
         {loading ? (
           <p className="text-xs text-muted-foreground px-1">Loading files…</p>
-        ) : visible.length === 0 ? (
+        ) : visibleFolders.length === 0 && visible.length === 0 ? (
           <EmptyState
-            title={files.length === 0 ? "No files yet" : "No files match this filter"}
+            title={files.length === 0 && folders.length === 0 ? "No files yet" : "This folder is empty"}
             description={
-              files.length === 0
+              files.length === 0 && folders.length === 0
                 ? "Upload a file to store it end-to-end encrypted across your nodes."
-                : "Try a different status filter."
+                : "Upload a file or create a folder here."
             }
           />
         ) : (
-          <div className="border border-border rounded-xl overflow-hidden bg-card">
-            {visible.map((file) => (
-              <FileRowView
-                key={file.fileId}
-                file={file}
-                downloading={downloadingId === file.fileId}
-                busy={mutating}
-                deleting={deletingId === file.fileId}
-                onDownload={handleDownload}
-                onResync={resync}
-                onRename={openRename}
-                onDelete={openDelete}
-              />
-            ))}
+          <div className="space-y-4">
+            {visibleFolders.length > 0 && (
+              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
+                {visibleFolders.map((folder) => (
+                  <FolderTile
+                    key={folder.folderId}
+                    folder={folder}
+                    busy={mutating}
+                    downloading={folderDownloadId === folder.folderId}
+                    onOpen={(target) => setCurrentFolderId(target.folderId)}
+                    onRename={(target) => {
+                      setMutationError(null);
+                      setFolderRenameValue(target.name);
+                      setFolderRenameTarget(target);
+                    }}
+                    onDownload={handleFolderDownload}
+                    onProperties={(target) => setFolderPropsTarget(target)}
+                    onDelete={(target) => {
+                      setMutationError(null);
+                      setDeleteFolderTarget(target);
+                    }}
+                  />
+                ))}
+              </div>
+            )}
+            {visible.length > 0 && (
+              <div className="border border-border rounded-xl overflow-hidden bg-card">
+                {visible.map((file) => (
+                  <FileRowView
+                    key={file.fileId}
+                    file={file}
+                    downloading={downloadingId === file.fileId}
+                    busy={mutating}
+                    deleting={deletingId === file.fileId}
+                    onDownload={handleDownload}
+                    onResync={resync}
+                    onRename={openRename}
+                    onMove={openMove}
+                    onDelete={openDelete}
+                  />
+                ))}
+              </div>
+            )}
           </div>
         )}
       </Section>
@@ -622,6 +1220,78 @@ export function FilesClient() {
         </Modal>
       )}
 
+      {moveTarget && (
+        <Modal
+          className="w-[420px] max-w-full"
+          onClose={mutating ? () => undefined : () => setMoveTarget(null)}
+        >
+          <ModalHeader
+            title="Move file"
+            onClose={mutating ? () => undefined : () => setMoveTarget(null)}
+          />
+          <div className="p-5 space-y-4">
+            <label className="block space-y-1.5">
+              <span className="text-xs font-medium text-foreground">Folder</span>
+              <Select
+                aria-label="Move to folder"
+                value={moveFolderId ?? ""}
+                onChange={(e) => setMoveFolderId(e.target.value === "" ? null : e.target.value)}
+                className="w-full"
+              >
+                <option value="">Backups (root)</option>
+                {moveOptions.map((option) => (
+                  <option key={option.id} value={option.id}>
+                    {option.label}
+                  </option>
+                ))}
+              </Select>
+            </label>
+            <div className="flex justify-end gap-2">
+              <Button variant="ghost" size="sm" onClick={() => setMoveTarget(null)} disabled={mutating}>
+                Cancel
+              </Button>
+              <Button variant="primary" size="sm" onClick={() => void confirmMove()} disabled={mutating}>
+                {mutating ? "Moving…" : "Move"}
+              </Button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {newFolderOpen && (
+        <Modal
+          className="w-[420px] max-w-full"
+          onClose={mutating ? () => undefined : () => setNewFolderOpen(false)}
+        >
+          <ModalHeader
+            title="New folder"
+            onClose={mutating ? () => undefined : () => setNewFolderOpen(false)}
+          />
+          <div className="p-5 space-y-4">
+            <Input
+              label="Folder name"
+              value={newFolderName}
+              autoFocus
+              onChange={(e) => setNewFolderName(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && void confirmCreateFolder()}
+            />
+            <div className="flex justify-end gap-2">
+              <Button variant="ghost" size="sm" onClick={() => setNewFolderOpen(false)} disabled={mutating}>
+                Cancel
+              </Button>
+              <Button
+                variant="primary"
+                size="sm"
+                onClick={() => void confirmCreateFolder()}
+                disabled={mutating || !newFolderName.trim()}
+              >
+                {mutating ? "Creating…" : "Create"}
+              </Button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
       {deleteTarget && (
         <ConfirmDialog
           title="Delete file"
@@ -638,6 +1308,132 @@ export function FilesClient() {
           onClose={() => setDeleteTarget(null)}
         />
       )}
+
+      {deleteFolderTarget && (
+        <ConfirmDialog
+          title="Delete folder"
+          destructive
+          busy={mutating}
+          confirmLabel="Delete folder"
+          description={
+            <>
+              Delete “{deleteFolderTarget.name}”? Files inside are not deleted and will move to the
+              folder's parent after the next sync.
+            </>
+          }
+          onConfirm={() => void confirmDeleteFolder()}
+          onClose={() => setDeleteFolderTarget(null)}
+        />
+      )}
+
+      {folderRenameTarget && (
+        <Modal
+          className="w-[420px] max-w-full"
+          onClose={mutating ? () => undefined : () => setFolderRenameTarget(null)}
+        >
+          <ModalHeader
+            title="Rename folder"
+            onClose={mutating ? () => undefined : () => setFolderRenameTarget(null)}
+          />
+          <div className="p-5 space-y-4">
+            <Input
+              label="Folder name"
+              value={folderRenameValue}
+              autoFocus
+              onChange={(e) => setFolderRenameValue(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && void confirmRenameFolder()}
+            />
+            <div className="flex justify-end gap-2">
+              <Button variant="ghost" size="sm" onClick={() => setFolderRenameTarget(null)} disabled={mutating}>
+                Cancel
+              </Button>
+              <Button
+                variant="primary"
+                size="sm"
+                onClick={() => void confirmRenameFolder()}
+                disabled={mutating || !folderRenameValue.trim()}
+              >
+                {mutating ? "Saving…" : "Rename"}
+              </Button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {folderPropsTarget && (
+        <FolderPropertiesModal
+          folder={folderPropsTarget}
+          summary={folderContents(folderPropsTarget.folderId, folders, files)}
+          parentName={
+            folderPropsTarget.parentFolderId
+              ? folderById.get(folderPropsTarget.parentFolderId)?.name ?? null
+              : null
+          }
+          onClose={() => setFolderPropsTarget(null)}
+        />
+      )}
     </div>
+  );
+}
+
+/** Read-only metadata panel for a folder: location, size, counts, timestamps. */
+function FolderPropertiesModal({
+  folder,
+  summary,
+  parentName,
+  onClose,
+}: {
+  folder: FolderView;
+  summary: { bytes: number; files: number; folders: number };
+  parentName: string | null;
+  onClose: () => void;
+}) {
+  const rows: { label: string; value: string; mono?: boolean }[] = [
+    { label: "Name", value: folder.name },
+    { label: "Type", value: "Folder" },
+    { label: "Location", value: parentName ?? "Backups (root)" },
+    {
+      label: "Size",
+      value: summary.files === 0 ? "Empty" : formatBytes(summary.bytes),
+    },
+    {
+      label: "Contents",
+      value: `${summary.files} file${summary.files === 1 ? "" : "s"}, ${
+        summary.folders
+      } subfolder${summary.folders === 1 ? "" : "s"}`,
+    },
+    { label: "Created", value: new Date(folder.createdAt).toLocaleString() },
+    { label: "Modified", value: new Date(folder.updatedAt).toLocaleString() },
+    { label: "Folder ID", value: folder.folderId, mono: true },
+  ];
+  return (
+    <Modal className="w-[460px] max-w-full" onClose={onClose}>
+      <ModalHeader title="Properties" onClose={onClose} />
+      <div className="p-5 space-y-4">
+        <div className="flex flex-col items-center gap-2">
+          <Icon name="folder" size={44} className="text-accent" />
+          <span className="text-sm font-medium text-foreground text-center break-all">{folder.name}</span>
+        </div>
+        <dl className="border border-border rounded-xl divide-y divide-border overflow-hidden">
+          {rows.map((row) => (
+            <div key={row.label} className="flex items-start gap-3 px-4 py-2.5">
+              <dt className="w-24 shrink-0 text-xs text-muted-foreground">{row.label}</dt>
+              <dd
+                className={`flex-1 min-w-0 text-xs text-foreground break-all ${
+                  row.mono ? "font-mono" : ""
+                }`}
+              >
+                {row.value}
+              </dd>
+            </div>
+          ))}
+        </dl>
+        <div className="flex justify-end">
+          <Button variant="secondary" size="sm" onClick={onClose}>
+            Close
+          </Button>
+        </div>
+      </div>
+    </Modal>
   );
 }

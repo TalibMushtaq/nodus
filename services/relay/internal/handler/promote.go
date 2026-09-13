@@ -44,9 +44,15 @@ func promoteRebuild(ctx context.Context, pool *db.Pool, sess *rebuildSession) er
 	if err := dropFkViaRel(ctx, tx, "key_envelopes", "files"); err != nil {
 		return fmt.Errorf("drop key_envelopes->files FK: %w", err)
 	}
+	// Folder-key envelopes cascade from folders; drop that FK too so the
+	// account-wide folder DELETE below cannot erase them before we replace them
+	// from staging.
+	if err := dropFkViaRel(ctx, tx, "folder_key_envelopes", "folders"); err != nil {
+		return fmt.Errorf("drop folder_key_envelopes->folders FK: %w", err)
+	}
 
 	// Confirm staging data (defensive; a failed session must not reach here).
-	var stagedFiles, stagedFolders, stagedEnvelopes, stagedVersions, stagedTombstones int64
+	var stagedFiles, stagedFolders, stagedEnvelopes, stagedFolderEnvelopes, stagedVersions, stagedTombstones int64
 	if err := tx.QueryRow(ctx,
 		`SELECT COUNT(*) FROM rebuild_files WHERE account_id = $1`, acct).Scan(&stagedFiles); err != nil {
 		return fmt.Errorf("count staged files: %w", err)
@@ -54,6 +60,10 @@ func promoteRebuild(ctx context.Context, pool *db.Pool, sess *rebuildSession) er
 	if err := tx.QueryRow(ctx,
 		`SELECT COUNT(*) FROM rebuild_key_envelopes WHERE account_id = $1`, acct).Scan(&stagedEnvelopes); err != nil {
 		return fmt.Errorf("count staged key envelopes: %w", err)
+	}
+	if err := tx.QueryRow(ctx,
+		`SELECT COUNT(*) FROM rebuild_folder_key_envelopes WHERE account_id = $1`, acct).Scan(&stagedFolderEnvelopes); err != nil {
+		return fmt.Errorf("count staged folder key envelopes: %w", err)
 	}
 	if err := tx.QueryRow(ctx,
 		`SELECT COUNT(*) FROM rebuild_folders WHERE account_id = $1`, acct).Scan(&stagedFolders); err != nil {
@@ -76,6 +86,14 @@ func promoteRebuild(ctx context.Context, pool *db.Pool, sess *rebuildSession) er
 	}
 	if _, err := tx.Exec(ctx, `DELETE FROM files WHERE account_id = $1`, acct); err != nil {
 		return fmt.Errorf("delete live files: %w", err)
+	}
+	// Folder-key envelopes must be cleared explicitly: their folders FK was
+	// dropped above, so the folder DELETE below will not cascade to them.
+	if _, err := tx.Exec(ctx, `
+		DELETE FROM folder_key_envelopes
+		WHERE folder_id IN (SELECT folder_id FROM folders WHERE account_id = $1)
+	`, acct); err != nil {
+		return fmt.Errorf("delete live folder_key_envelopes: %w", err)
 	}
 	if _, err := tx.Exec(ctx, `DELETE FROM folders WHERE account_id = $1`, acct); err != nil {
 		return fmt.Errorf("delete live folders: %w", err)
@@ -102,6 +120,15 @@ func promoteRebuild(ctx context.Context, pool *db.Pool, sess *rebuildSession) er
 		WHERE account_id = $1
 	`, acct); err != nil {
 		return fmt.Errorf("insert live folders: %w", err)
+	}
+	// Folder keys from the snapshot, mirroring the file-envelope replace below.
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO folder_key_envelopes (folder_id, recipient_id, recipient_kind, encrypted_key, created_at)
+		SELECT folder_id, recipient_id, recipient_kind, encrypted_key, created_at
+		FROM rebuild_folder_key_envelopes
+		WHERE account_id = $1
+	`, acct); err != nil {
+		return fmt.Errorf("insert live folder_key_envelopes: %w", err)
 	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO files (file_id, account_id, parent_folder_id, encrypted_name, created_at, updated_at)
@@ -194,6 +221,12 @@ func promoteRebuild(ctx context.Context, pool *db.Pool, sess *rebuildSession) er
 	`); err != nil {
 		return fmt.Errorf("prune orphaned key_envelopes: %w", err)
 	}
+	if _, err := tx.Exec(ctx, `
+		DELETE FROM folder_key_envelopes fe
+		WHERE NOT EXISTS (SELECT 1 FROM folders f WHERE f.folder_id = fe.folder_id)
+	`); err != nil {
+		return fmt.Errorf("prune orphaned folder_key_envelopes: %w", err)
+	}
 
 	// 6. Restore the cascade FKs with explicit names so future DELETE/UPDATE
 	//    behaviour is preserved.
@@ -212,6 +245,11 @@ func promoteRebuild(ctx context.Context, pool *db.Pool, sess *rebuildSession) er
 		"fk_key_envelopes_file"); err != nil {
 		return fmt.Errorf("restore key_envelopes FK: %w", err)
 	}
+	if err := addFkViaRel(ctx, tx, "folder_key_envelopes", "folders",
+		"(folder_id) REFERENCES folders (folder_id) ON DELETE CASCADE",
+		"fk_folder_key_envelopes_folder"); err != nil {
+		return fmt.Errorf("restore folder_key_envelopes FK: %w", err)
+	}
 
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit promotion tx: %w", err)
@@ -220,8 +258,8 @@ func promoteRebuild(ctx context.Context, pool *db.Pool, sess *rebuildSession) er
 	// 7. Clear this account's staged rows now that they've been promoted.
 	cleanupStagedData(ctx, pool, acct)
 
-	log.Printf("[snapshot] promoted rebuild for account=%s: files=%d folders=%d envelopes=%d versions=%d tombstones=%d cursors=%d",
-		acct, stagedFiles, stagedFolders, stagedEnvelopes, stagedVersions, stagedTombstones, len(sess.cursors))
+	log.Printf("[snapshot] promoted rebuild for account=%s: files=%d folders=%d envelopes=%d folder_envelopes=%d versions=%d tombstones=%d cursors=%d",
+		acct, stagedFiles, stagedFolders, stagedEnvelopes, stagedFolderEnvelopes, stagedVersions, stagedTombstones, len(sess.cursors))
 	return nil
 }
 
@@ -237,6 +275,9 @@ func cleanupStagedData(ctx context.Context, pool *db.Pool, accountID string) {
 	}
 	if _, err := pool.Exec(ctx, `DELETE FROM rebuild_key_envelopes WHERE account_id = $1`, accountID); err != nil {
 		log.Printf("[snapshot] warning: clearing rebuild_key_envelopes for %s: %v", accountID, err)
+	}
+	if _, err := pool.Exec(ctx, `DELETE FROM rebuild_folder_key_envelopes WHERE account_id = $1`, accountID); err != nil {
+		log.Printf("[snapshot] warning: clearing rebuild_folder_key_envelopes for %s: %v", accountID, err)
 	}
 	if _, err := pool.Exec(ctx, `DELETE FROM rebuild_file_versions WHERE account_id = $1`, accountID); err != nil {
 		log.Printf("[snapshot] warning: clearing rebuild_file_versions for %s: %v", accountID, err)
