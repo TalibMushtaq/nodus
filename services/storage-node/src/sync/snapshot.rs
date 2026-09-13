@@ -8,7 +8,7 @@
 //! promoting any state.
 
 use futures_util::TryStreamExt;
-use sqlx::{Row, SqlitePool};
+use sqlx::{Acquire, Row, SqliteConnection, SqlitePool};
 
 use super::types::{
     FileVersionRecord, FolderRecord, KeyEnvelopeRecord, RebuildRequiredPayload,
@@ -42,8 +42,9 @@ pub fn is_rebuild_required_for(
 }
 
 /// Loads the per-origin sync cursor map so the Relay can repopulate
-/// `sync_cursors` after promotion.
-async fn load_cursors(db: &SqlitePool) -> anyhow::Result<Vec<SyncCursor>> {
+/// `sync_cursors` after promotion. Runs on the caller's connection so it sees
+/// the same read snapshot as the chunk passes.
+pub async fn load_cursors_conn(conn: &mut SqliteConnection) -> anyhow::Result<Vec<SyncCursor>> {
     let rows = sqlx::query(
         r#"
         SELECT peer_id, last_sequence_seen
@@ -51,7 +52,7 @@ async fn load_cursors(db: &SqlitePool) -> anyhow::Result<Vec<SyncCursor>> {
         ORDER BY peer_id ASC
         "#,
     )
-    .fetch_all(db)
+    .fetch_all(&mut *conn)
     .await?;
 
     let cursors = rows
@@ -75,20 +76,24 @@ pub async fn load_total_events_sequence(db: &SqlitePool) -> anyhow::Result<i64> 
     Ok(total.unwrap_or(0))
 }
 
+/// Fold one chunk into the running content hash. Chunks are hashed in order as
+/// `[8-byte BE record count] ++ [canonical JSON records]` — exactly what the
+/// Relay recomputes over the chunks it receives, so a successful reassembly
+/// makes BEGIN's `content_hash` equal END's `final_hash`.
+pub fn hash_chunk(hasher: &mut blake3::Hasher, chunk: &SnapshotChunkPayload) -> anyhow::Result<()> {
+    let records_json = serde_json::to_vec(&chunk.records)?;
+    hasher.update(&(chunk.records.len() as u64).to_be_bytes());
+    hasher.update(&records_json);
+    Ok(())
+}
+
 /// BLAKE3 hash over the concatenated canonical JSON of every record in the
-/// snapshot, in chunk order. Mirrors what the Relay recomputes during
-/// reassembly, so BEGIN's content_hash == END's final_hash when all chunks
-/// arrive intact.
+/// snapshot, in chunk order.
 pub fn hash_snapshot_records(chunks: &[SnapshotChunkPayload]) -> anyhow::Result<String> {
     let mut hasher = blake3::Hasher::new();
-
-    // Hash chunks in order; each chunk's records are canonicalized by serde.
     for chunk in chunks {
-        let records_json = serde_json::to_vec(&chunk.records)?;
-        hasher.update(&(chunk.records.len() as u64).to_be_bytes());
-        hasher.update(&records_json);
+        hash_chunk(&mut hasher, chunk)?;
     }
-
     Ok(hasher.finalize().to_hex().to_string())
 }
 
@@ -99,50 +104,81 @@ pub fn cursors_in_snapshot(cursors: &[SyncCursor]) -> bool {
     cursors.iter().all(|c| seen.insert(c.origin_id.clone()))
 }
 
-/// Append `record` to the last chunk when it is the same record type and still
-/// under the per-chunk cap, otherwise start a new chunk. Shared by every type
-/// so the deterministic split (and therefore the content hash) is identical to
-/// the previous builder.
-fn push_snapshot_record(
-    chunks: &mut Vec<SnapshotChunkPayload>,
-    chunk_index: &mut i64,
-    record_type: &str,
-    record: SnapshotRecord,
-) {
-    if let Some(last) = chunks.last_mut()
-        && last.record_type == record_type
-        && last.records.len() < SNAPSHOT_CHUNK_MAX_RECORDS
-    {
-        last.records.push(record);
-        return;
-    }
-    chunks.push(SnapshotChunkPayload {
-        snapshot_id: String::new(),
-        chunk_index: *chunk_index,
-        record_type: record_type.to_string(),
-        records: vec![record],
-    });
-    *chunk_index += 1;
+/// Receives snapshot chunks in canonical order. Implemented once per pass so the
+/// streaming path can hash a first pass and transmit a second pass over the same
+/// DB read snapshot without materializing every chunk.
+#[async_trait::async_trait]
+pub trait SnapshotSink: Send {
+    async fn chunk(&mut self, chunk: SnapshotChunkPayload) -> anyhow::Result<()>;
 }
 
-/// Build a full snapshot payload set (BEGIN + ordered homogeneous chunks + END)
-/// from the local SQLite database. This is deterministic for a given DB state:
-/// same records in, same chunks and content hash out.
-pub async fn build_snapshot(
-    db: &SqlitePool,
-    identity: &NodeIdentity,
-) -> anyhow::Result<(
-    SnapshotBeginPayload,
-    Vec<SnapshotChunkPayload>,
-    SnapshotEndPayload,
-)> {
-    // Homogeneous chunking built directly from the row streams: records are not
-    // first collected into per-type `Vec`s, so peak memory is the chunks we
-    // return rather than records + chunks. The order, 1000-record cap, and skip
-    // rules match the previous builder exactly, so the content hash (and the
-    // Relay's reassembly check) is unchanged.
-    let mut chunks = Vec::<SnapshotChunkPayload>::new();
-    let mut chunk_index: i64 = 0;
+/// Groups records into homogeneous chunks of at most
+/// [`SNAPSHOT_CHUNK_MAX_RECORDS`] and flushes them to a [`SnapshotSink`].
+/// Deterministic split keeps the content hash stable for identical DB states.
+struct ChunkWriter<'a> {
+    snapshot_id: &'a str,
+    next_index: i64,
+    open: Option<(String, i64, Vec<SnapshotRecord>)>,
+}
+
+impl<'a> ChunkWriter<'a> {
+    fn new(snapshot_id: &'a str) -> Self {
+        Self {
+            snapshot_id,
+            next_index: 0,
+            open: None,
+        }
+    }
+
+    async fn push(
+        &mut self,
+        sink: &mut (dyn SnapshotSink + Send),
+        record_type: &str,
+        record: SnapshotRecord,
+    ) -> anyhow::Result<()> {
+        let start_new = match &self.open {
+            Some((kind, _, records)) => {
+                kind != record_type || records.len() >= SNAPSHOT_CHUNK_MAX_RECORDS
+            }
+            None => true,
+        };
+        if start_new {
+            self.flush(sink).await?;
+            self.open = Some((record_type.to_string(), self.next_index, Vec::new()));
+            self.next_index += 1;
+        }
+        if let Some((_, _, records)) = &mut self.open {
+            records.push(record);
+        }
+        Ok(())
+    }
+
+    async fn flush(&mut self, sink: &mut (dyn SnapshotSink + Send)) -> anyhow::Result<()> {
+        if let Some((record_type, chunk_index, records)) = self.open.take() {
+            sink.chunk(SnapshotChunkPayload {
+                snapshot_id: self.snapshot_id.to_string(),
+                chunk_index,
+                record_type,
+                records,
+            })
+            .await?;
+        }
+        Ok(())
+    }
+}
+
+/// Enumerate every snapshot chunk in canonical order, handing each to `sink`.
+///
+/// The caller MUST run this on a stable DB snapshot when invoking it twice (the
+/// streaming path wraps both passes in one read transaction); otherwise the hash
+/// pass and the send pass could observe different rows and the Relay's
+/// reassembly hash check would fail.
+pub async fn emit_chunks(
+    conn: &mut SqliteConnection,
+    snapshot_id: &str,
+    sink: &mut (dyn SnapshotSink + Send),
+) -> anyhow::Result<()> {
+    let mut writer = ChunkWriter::new(snapshot_id);
 
     // file_versions, joined with the file catalog for name/folder metadata.
     let mut version_rows = sqlx::query(
@@ -163,7 +199,7 @@ pub async fn build_snapshot(
         ORDER BY fv.file_id ASC, fv.version_number ASC
         "#,
     )
-    .fetch(db);
+    .fetch(&mut *conn);
     while let Some(row) = version_rows.try_next().await? {
         let version_hash: String = row.get("version_hash");
         let shard_count: i64 = row.get("shard_count");
@@ -179,35 +215,37 @@ pub async fn build_snapshot(
             );
             continue;
         }
-        push_snapshot_record(
-            &mut chunks,
-            &mut chunk_index,
-            "file_version",
-            SnapshotRecord::FileVersion(FileVersionRecord {
-                file_id: row.get("file_id"),
-                version_number: row.get("version_number"),
-                parent_version_id: row.get("parent_version_id"),
-                conflict_status: row
-                    .try_get::<Option<String>, _>("conflict_status")
-                    .ok()
-                    .flatten(),
-                version_hash,
-                shard_count,
-                encrypted_name: row
-                    .try_get::<Option<String>, _>("encrypted_name")
-                    .ok()
-                    .flatten(),
-                parent_folder_id: row
-                    .try_get::<Option<String>, _>("parent_folder_id")
-                    .ok()
-                    .flatten(),
-                conflicted_name: row
-                    .try_get::<Option<String>, _>("conflicted_name")
-                    .ok()
-                    .flatten(),
-            }),
-        );
+        writer
+            .push(
+                sink,
+                "file_version",
+                SnapshotRecord::FileVersion(FileVersionRecord {
+                    file_id: row.get("file_id"),
+                    version_number: row.get("version_number"),
+                    parent_version_id: row.get("parent_version_id"),
+                    conflict_status: row
+                        .try_get::<Option<String>, _>("conflict_status")
+                        .ok()
+                        .flatten(),
+                    version_hash,
+                    shard_count,
+                    encrypted_name: row
+                        .try_get::<Option<String>, _>("encrypted_name")
+                        .ok()
+                        .flatten(),
+                    parent_folder_id: row
+                        .try_get::<Option<String>, _>("parent_folder_id")
+                        .ok()
+                        .flatten(),
+                    conflicted_name: row
+                        .try_get::<Option<String>, _>("conflicted_name")
+                        .ok()
+                        .flatten(),
+                }),
+            )
+            .await?;
     }
+    drop(version_rows);
 
     // Folders: carried so a rebuild reconstructs the tree instead of leaving
     // files with dangling `parent_folder_id` values.
@@ -218,29 +256,31 @@ pub async fn build_snapshot(
         ORDER BY folder_id ASC
         "#,
     )
-    .fetch(db);
+    .fetch(&mut *conn);
     while let Some(row) = folder_rows.try_next().await? {
-        push_snapshot_record(
-            &mut chunks,
-            &mut chunk_index,
-            "folder",
-            SnapshotRecord::Folder(FolderRecord {
-                folder_id: row.get("folder_id"),
-                parent_folder_id: row
-                    .try_get::<Option<String>, _>("parent_folder_id")
-                    .ok()
-                    .flatten(),
-                encrypted_name: row
-                    .try_get::<Option<String>, _>("encrypted_name")
-                    .ok()
-                    .flatten(),
-                created_at: row
-                    .try_get::<Option<String>, _>("created_at")
-                    .ok()
-                    .flatten(),
-            }),
-        );
+        writer
+            .push(
+                sink,
+                "folder",
+                SnapshotRecord::Folder(FolderRecord {
+                    folder_id: row.get("folder_id"),
+                    parent_folder_id: row
+                        .try_get::<Option<String>, _>("parent_folder_id")
+                        .ok()
+                        .flatten(),
+                    encrypted_name: row
+                        .try_get::<Option<String>, _>("encrypted_name")
+                        .ok()
+                        .flatten(),
+                    created_at: row
+                        .try_get::<Option<String>, _>("created_at")
+                        .ok()
+                        .flatten(),
+                }),
+            )
+            .await?;
     }
+    drop(folder_rows);
 
     // Key envelopes: opaque here; carrying them keeps a rebuild from dropping
     // them (Phase 14 F2c).
@@ -251,24 +291,26 @@ pub async fn build_snapshot(
         ORDER BY file_id ASC, recipient_id ASC
         "#,
     )
-    .fetch(db);
+    .fetch(&mut *conn);
     while let Some(row) = envelope_rows.try_next().await? {
-        push_snapshot_record(
-            &mut chunks,
-            &mut chunk_index,
-            "key_envelope",
-            SnapshotRecord::KeyEnvelope(KeyEnvelopeRecord {
-                file_id: row.get("file_id"),
-                recipient_id: row.get("recipient_id"),
-                recipient_kind: row.get("recipient_kind"),
-                encrypted_key: row.get("encrypted_key"),
-                created_at: row
-                    .try_get::<Option<String>, _>("created_at")
-                    .ok()
-                    .flatten(),
-            }),
-        );
+        writer
+            .push(
+                sink,
+                "key_envelope",
+                SnapshotRecord::KeyEnvelope(KeyEnvelopeRecord {
+                    file_id: row.get("file_id"),
+                    recipient_id: row.get("recipient_id"),
+                    recipient_kind: row.get("recipient_kind"),
+                    encrypted_key: row.get("encrypted_key"),
+                    created_at: row
+                        .try_get::<Option<String>, _>("created_at")
+                        .ok()
+                        .flatten(),
+                }),
+            )
+            .await?;
     }
+    drop(envelope_rows);
 
     // Tombstones within the retention window (older ones are already prunable).
     let cutoff = chrono::Utc::now() - chrono::Duration::days(TOMBSTONE_RETENTION_DAYS);
@@ -282,35 +324,65 @@ pub async fn build_snapshot(
         "#,
     )
     .bind(&cutoff_str)
-    .fetch(db);
+    .fetch(&mut *conn);
     while let Some(row) = tombstone_rows.try_next().await? {
-        push_snapshot_record(
-            &mut chunks,
-            &mut chunk_index,
-            "tombstone",
-            SnapshotRecord::Tombstone(TombstoneRecord {
-                entity_type: row.get("entity_type"),
-                entity_id: row.get("entity_id"),
-                deleted_at: row.get("deleted_at"),
-            }),
-        );
+        writer
+            .push(
+                sink,
+                "tombstone",
+                SnapshotRecord::Tombstone(TombstoneRecord {
+                    entity_type: row.get("entity_type"),
+                    entity_id: row.get("entity_id"),
+                    deleted_at: row.get("deleted_at"),
+                }),
+            )
+            .await?;
     }
+    drop(tombstone_rows);
 
-    let cursors = load_cursors(db).await?;
+    writer.flush(sink).await?;
+    Ok(())
+}
 
-    let total_chunks = chunks.len() as i64;
+/// Collecting sink used by [`build_snapshot`] (tests and callers that want the
+/// whole payload set in memory).
+struct CollectSink {
+    chunks: Vec<SnapshotChunkPayload>,
+}
 
-    // Content hash computed over the full chunk set.
-    let content_hash = hash_snapshot_records(&chunks)?;
+#[async_trait::async_trait]
+impl SnapshotSink for CollectSink {
+    async fn chunk(&mut self, chunk: SnapshotChunkPayload) -> anyhow::Result<()> {
+        self.chunks.push(chunk);
+        Ok(())
+    }
+}
+
+/// Build a full snapshot payload set (BEGIN + ordered homogeneous chunks + END)
+/// from the local SQLite database. This is deterministic for a given DB state:
+/// same records in, same chunks and content hash out. It materializes every
+/// chunk; the daemon's live path uses the streaming two-pass variant instead.
+pub async fn build_snapshot(
+    db: &SqlitePool,
+    identity: &NodeIdentity,
+) -> anyhow::Result<(
+    SnapshotBeginPayload,
+    Vec<SnapshotChunkPayload>,
+    SnapshotEndPayload,
+)> {
     let snapshot_id = uuid::Uuid::new_v4().to_string();
-
-    for chunk in &mut chunks {
-        chunk.snapshot_id = snapshot_id.clone();
-    }
-
-    // Monotonic per-node snapshot counter (snapshot #1, #2, ...). Read from a
-    // dedicated SQLite counter table so restarts don't reuse a sequence number.
     let snapshot_sequence = bump_snapshot_counter(db).await?;
+
+    let mut conn = db.acquire().await?;
+    let mut tx = conn.begin().await?;
+    let mut sink = CollectSink { chunks: Vec::new() };
+    emit_chunks(&mut tx, &snapshot_id, &mut sink).await?;
+    let cursors = load_cursors_conn(&mut tx).await?;
+    tx.commit().await?;
+
+    let chunks = sink.chunks;
+    let total_chunks = chunks.len() as i64;
+    let content_hash = hash_snapshot_records(&chunks)?;
 
     let signature = identity.sign(content_hash.as_bytes());
     let signature_hex = hex::encode(signature.to_bytes());
@@ -337,7 +409,7 @@ pub async fn build_snapshot(
 
 /// Next monotonic per-node snapshot sequence number. Persisted in SQLite so
 /// concurrent snapshot attempts on the same node can't double-assign a number.
-async fn bump_snapshot_counter(db: &SqlitePool) -> anyhow::Result<i64> {
+pub async fn bump_snapshot_counter(db: &SqlitePool) -> anyhow::Result<i64> {
     // A single upsert with `RETURNING` is atomic: a separate follow-up SELECT
     // would let two concurrent callers read the same value (the old comment
     // claimed an atomicity the two-statement version did not have).
@@ -507,5 +579,57 @@ mod tests {
                 .all(|c| c.records.len() <= SNAPSHOT_CHUNK_MAX_RECORDS)
         );
         assert!(chunks.iter().all(|c| c.record_type == "file_version"));
+    }
+
+    #[tokio::test]
+    async fn two_passes_on_one_transaction_are_identical() {
+        let dir = tempdir().unwrap();
+        let pool = db::open(dir.path()).await.unwrap();
+
+        // Seed across record types so both passes exercise every chunk source.
+        for i in 0..3 {
+            let fid = format!("f-{i}");
+            sqlx::query(
+                "INSERT INTO files (file_id, created_at, updated_at) VALUES (?, 'now', 'now')",
+            )
+            .bind(&fid)
+            .execute(&pool)
+            .await
+            .unwrap();
+            sqlx::query(
+                "INSERT INTO file_versions (file_id, version_number, version_hash, shard_count, created_at) VALUES (?, 1, 'h', 1, 'now')",
+            )
+            .bind(&fid)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        sqlx::query(
+            "INSERT INTO folders (folder_id, created_at, updated_at) VALUES ('d1','now','now')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // The streaming path runs both passes over one read transaction; verify
+        // the second pass sees exactly the chunks the first hashed.
+        let mut conn = pool.acquire().await.unwrap();
+        let mut tx = conn.begin().await.unwrap();
+        let mut first = CollectSink { chunks: Vec::new() };
+        emit_chunks(&mut tx, "snap", &mut first).await.unwrap();
+        let mut second = CollectSink { chunks: Vec::new() };
+        emit_chunks(&mut tx, "snap", &mut second).await.unwrap();
+        drop(tx);
+
+        assert_eq!(
+            serde_json::to_value(&first.chunks).unwrap(),
+            serde_json::to_value(&second.chunks).unwrap(),
+            "passes must emit identical chunks"
+        );
+        assert_eq!(
+            hash_snapshot_records(&first.chunks).unwrap(),
+            hash_snapshot_records(&second.chunks).unwrap()
+        );
+        assert!(!first.chunks.is_empty());
     }
 }

@@ -1,9 +1,11 @@
 # Storage Node Audit — Fix Plan
 
-Status: Phases 1-16 implemented and committed (one commit per phase). All audit
-findings are addressed; the ADR-0003 conflict flow is complete end-to-end
-(Phases 12/13/15); and the relay now preserves conflicted names across a rebuild
-(Phase 16). Only optional/design-level follow-ups remain (see Deferred).
+Status: Phases 1-17 implemented and committed (one commit per phase). All audit
+findings are addressed; the ADR-0003 conflict flow is complete end-to-end; the
+relay preserves conflicted names (Phase 16); and M8 true streaming now sends a
+snapshot in O(chunk) memory over one read transaction (Phase 17). Remaining:
+mobile inbox + resolve, and shard-hash relay persistence (both chosen for
+implementation; see Deferred for anything not yet done).
 
 Source audit: `services/storage-node/` (Rust, ~13.7k LOC). Baseline at plan time:
 `cargo fmt --check` clean, `cargo clippy --all-targets` clean, `cargo test` 168 passed.
@@ -263,6 +265,19 @@ format). Each phase is committed separately.
   snapshot `FileVersionRecord` carries it, staging/promote copy it, and
   `GET /files` returns it.
 
+## Phase 17 — M8 true snapshot streaming (commit: `fix(storage-node): phase 17 ...`)
+
+### 17.1 Two-pass over one read transaction (`sync/snapshot.rs`, `sync/client.rs`)
+- Factor chunk emission into `emit_chunks(conn, snapshot_id, sink)` with a
+  `SnapshotSink` trait; `ChunkWriter` groups records exactly as before (so the
+  hash is unchanged). `build_snapshot` (tests) collects via a `CollectSink`.
+- `stream_snapshot` acquires one connection + read transaction, hashes in pass 1,
+  sends in pass 2, and heartbeats between chunks — bounding memory to one chunk
+  while keeping the relay's reassembly hash consistent.
+
+### 17.2 Test
+- `two_passes_on_one_transaction_are_identical` pins identical chunks/hash.
+
 ## Verification (each phase)
 
 - `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`.
@@ -273,15 +288,6 @@ format). Each phase is committed separately.
 
 ## Deferred / needs investigation
 
-- **ADR-0003 mobile conflict inbox** — the web inbox and in-place resolution
-  ship (Phases 13/15); the mobile app is still a scaffold and would render from
-  the same `CatalogEntry` data model.
-- **M8 true streaming** — chunks are still all held before BEGIN (which carries
-  the final content hash), so a rebuild still holds O(chunks) metadata; Phase 11
-  removed the O(records) intermediate buffers and fixed the liveness block. A
-  genuine O(chunk) stream would need a two-pass scan or a protocol change to
-  BEGIN/chunk ordering.
-- **Relay-rebuild caveat for #22** — `file_version_shard_hashes` remains
-  node-local and is not carried in node→relay snapshots; the relay does not
-  verify shards, and existing nodes keep their authenticated hashes, so this is
-  low value. `conflicted_name` is now preserved (Phase 16).
+- **Mobile conflict inbox + resolve** — chosen for implementation; see below.
+- **`file_version_shard_hashes` relay persistence** — chosen for implementation;
+  see below.

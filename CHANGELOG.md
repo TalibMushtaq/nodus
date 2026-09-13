@@ -1,5 +1,12 @@
 # Changelog
 
+## [2026-09-13] - Storage node M8: streaming snapshot in O(chunk) memory
+
+**What changed:** `sync/snapshot.rs` factors chunk emission into `emit_chunks(conn, snapshot_id, &mut dyn SnapshotSink)` (with `ChunkWriter` preserving the exact homogeneous split and `hash_chunk`), so `build_snapshot` (tests) collects via a `CollectSink` while the daemon streams. `sync/client.rs::stream_snapshot` now acquires one connection + SQLite read transaction, hashes chunks in a first pass, sends the identical chunks in a second pass, and heartbeats between them — instead of materializing the whole snapshot. New `load_cursors_conn`; `bump_snapshot_counter` is now public for the streaming path.
+**Why:** Audit M8: the snapshot was fully materialized before sending and its one-pass build could not provide BEGIN's content hash while streaming. The read transaction makes the two passes observe the same rows, so the relay's reassembly hash stays consistent while peak memory drops to one chunk.
+**Impact:** `services/storage-node/src/sync/{snapshot.rs,client.rs,types.rs}`. New test `two_passes_on_one_transaction_are_identical`. Verified `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` (204 lib + 185 bin + 2 integration).
+**Follow-ups:** Mobile conflict inbox + resolve and shard-hash relay persistence are next (both approved).
+
 ## [2026-09-13] - Relay preserves conflicted names across a rebuild
 
 **What changed:** New relay migration `015_conflicted_name` adds `conflicted_name` to `file_versions` and `rebuild_file_versions`. `snapshot.go`'s `FileVersionRecord` carries it and `stageRebuildChunk` stages it; `promote.go` copies it into the live table; `files.go` `GET /files` returns it (new `conflicted_name` field on `FileVersionResponse`). The storage node already emits it in snapshots (Phase 12).

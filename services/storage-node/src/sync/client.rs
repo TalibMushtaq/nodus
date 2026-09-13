@@ -1,5 +1,5 @@
 use futures_util::{SinkExt, StreamExt};
-use sqlx::{Row, SqlitePool};
+use sqlx::{Acquire, Row, SqlitePool};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio_tungstenite::connect_async;
@@ -12,7 +12,8 @@ use super::snapshot::is_rebuild_required_for;
 use super::types::{
     BatchAckPayload, EventBatchPayload, NodeAuthChallengePayload, NodeAuthResponsePayload,
     NodeAuthResultPayload, PairingTokenPushPayload, PendingNotifyPayload, ProtocolEnvelope,
-    RegisterPayload, ShardAckPayload, SyncCursor, SyncHelloPayload, SyncStatusPayload,
+    RegisterPayload, ShardAckPayload, SnapshotBeginPayload, SnapshotChunkPayload,
+    SnapshotEndPayload, SyncCursor, SyncHelloPayload, SyncStatusPayload,
 };
 use crate::identity::NodeIdentity;
 use crate::store::ObjectStore;
@@ -875,34 +876,110 @@ impl SyncClient {
     /// SNAPSHOT_BEGIN, then each homogeneous chunk (up to 1000 records), then
     /// SNAPSHOT_END with the final content hash.
     ///
-    /// A long rebuild can occupy the writer for many seconds, during which the
-    /// caller's select loop cannot fire its heartbeat arm. This method sends a
-    /// heartbeat itself on the same cadence so the Relay does not mark the node
-    /// offline mid-snapshot.
+    /// Two passes over one SQLite read transaction: the first computes the
+    /// content hash and chunk count (needed in BEGIN), the second transmits the
+    /// identical chunks. Holding the transaction makes the two passes observe
+    /// the same rows — a concurrent write between them would otherwise make the
+    /// Relay's reassembly hash check fail — while bounding memory to one chunk
+    /// instead of materializing the whole snapshot. A heartbeat is sent between
+    /// chunks so a long rebuild cannot make the Relay mark the node offline.
     async fn stream_snapshot<W>(&self, write: &mut W) -> anyhow::Result<()>
     where
-        W: futures_util::Sink<Message> + Unpin,
+        W: futures_util::Sink<Message> + Unpin + Send,
         W::Error: std::error::Error + Send + Sync + 'static,
     {
-        let (begin, chunks, end) =
-            super::snapshot::build_snapshot(&self.db, &self.identity).await?;
+        // Sink for the hashing pass: folds each chunk into the running hash.
+        struct HashSink<'a> {
+            hasher: &'a mut blake3::Hasher,
+            count: &'a mut i64,
+        }
 
-        let begin_env = ProtocolEnvelope::new("snapshot_begin", serde_json::to_value(begin)?);
-        Self::send_json(write, &begin_env).await?;
-
-        let mut last_ping = std::time::Instant::now();
-        for chunk in chunks {
-            let chunk_env = ProtocolEnvelope::new("snapshot_chunk", serde_json::to_value(chunk)?);
-            Self::send_json(write, &chunk_env).await?;
-            if last_ping.elapsed() >= HEARTBEAT_INTERVAL {
-                Self::send_heartbeat(write, &self.identity.node_id).await?;
-                last_ping = std::time::Instant::now();
+        #[async_trait::async_trait]
+        impl super::snapshot::SnapshotSink for HashSink<'_> {
+            async fn chunk(&mut self, chunk: SnapshotChunkPayload) -> anyhow::Result<()> {
+                super::snapshot::hash_chunk(self.hasher, &chunk)?;
+                *self.count += 1;
+                Ok(())
             }
         }
 
+        // Sink for the transmit pass: sends each chunk and paces heartbeats.
+        struct SendSink<'a, W> {
+            write: &'a mut W,
+            node_id: &'a str,
+            last_ping: std::time::Instant,
+        }
+
+        #[async_trait::async_trait]
+        impl<W> super::snapshot::SnapshotSink for SendSink<'_, W>
+        where
+            W: futures_util::Sink<Message> + Unpin + Send,
+            W::Error: std::error::Error + Send + Sync + 'static,
+        {
+            async fn chunk(&mut self, chunk: SnapshotChunkPayload) -> anyhow::Result<()> {
+                let env = ProtocolEnvelope::new("snapshot_chunk", serde_json::to_value(chunk)?);
+                SyncClient::send_json(&mut *self.write, &env).await?;
+                if self.last_ping.elapsed() >= HEARTBEAT_INTERVAL {
+                    SyncClient::send_heartbeat(&mut *self.write, self.node_id).await?;
+                    self.last_ping = std::time::Instant::now();
+                }
+                Ok(())
+            }
+        }
+
+        let snapshot_id = uuid::Uuid::new_v4().to_string();
+        let snapshot_sequence = super::snapshot::bump_snapshot_counter(&self.db).await?;
+
+        let mut conn = self.db.acquire().await?;
+        let mut tx = conn.begin().await?;
+
+        // Pass 1: content hash + chunk count over a stable read snapshot.
+        let mut hasher = blake3::Hasher::new();
+        let mut total_chunks: i64 = 0;
+        {
+            let mut sink = HashSink {
+                hasher: &mut hasher,
+                count: &mut total_chunks,
+            };
+            super::snapshot::emit_chunks(&mut tx, &snapshot_id, &mut sink).await?;
+        }
+        let content_hash = hasher.finalize().to_hex().to_string();
+        let cursors = super::snapshot::load_cursors_conn(&mut tx).await?;
+
+        let signature = self.identity.sign(content_hash.as_bytes());
+        let signature_hex = hex::encode(signature.to_bytes());
+        let begin = SnapshotBeginPayload {
+            snapshot_id: snapshot_id.clone(),
+            node_id: self.identity.node_id.clone(),
+            snapshot_sequence,
+            total_chunks,
+            content_hash: content_hash.clone(),
+            signature: signature_hex.clone(),
+            data_schema_version: super::snapshot::SNAPSHOT_DATA_SCHEMA_VERSION.to_string(),
+            cursors,
+        };
+        let begin_env = ProtocolEnvelope::new("snapshot_begin", serde_json::to_value(begin)?);
+        Self::send_json(write, &begin_env).await?;
+
+        // Pass 2: transmit the same chunks (the read transaction pins the rows).
+        {
+            let mut sink = SendSink {
+                write,
+                node_id: &self.identity.node_id,
+                last_ping: std::time::Instant::now(),
+            };
+            super::snapshot::emit_chunks(&mut tx, &snapshot_id, &mut sink).await?;
+        }
+
+        let end = SnapshotEndPayload {
+            snapshot_id,
+            final_hash: content_hash,
+            signature: signature_hex,
+        };
         let end_env = ProtocolEnvelope::new("snapshot_end", serde_json::to_value(end)?);
         Self::send_json(write, &end_env).await?;
 
+        tx.commit().await?;
         Ok(())
     }
 }
