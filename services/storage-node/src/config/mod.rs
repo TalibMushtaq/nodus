@@ -8,9 +8,40 @@ use directories::BaseDirs;
 use serde::{Deserialize, Serialize};
 
 pub const CONFIG_FILE: &str = "config.toml";
+/// Journal recording an in-flight data-directory move. Lives in `nodus_dir`
+/// (not under either data dir) so it survives a crash regardless of where the
+/// move stopped, letting boot detect and resolve a half-completed relocation
+/// instead of silently creating an empty database at the stale path.
+pub const MIGRATION_JOURNAL: &str = "migration.json";
 /// Reserved fixed subdirectory (§11) holding the node keypair; the single
 /// reference for the reserved name so identity code and config code agree.
 pub const IDENTITY_DIR: &str = "identity";
+
+/// Returns the host when `raw` is a plaintext transport (`http`/`ws`) to a
+/// non-loopback host. Loopback is exempt so a local dev relay keeps working.
+///
+/// Shared by bootstrap pairing (the pairing code is a credential) and the
+/// daemon link (challenge signatures, metadata, and fetch tokens must not
+/// cross the wire in cleartext). Returning `Option` rather than a typed error
+/// keeps each caller free to map it to its own error type. Unparseable values
+/// yield `None` and are left to fail on connection instead of being
+/// mislabelled as insecure.
+pub fn insecure_plaintext_host(raw: &str) -> Option<String> {
+    let url = url::Url::parse(raw).ok()?;
+    let loopback = match url.host() {
+        Some(url::Host::Domain("localhost")) => true,
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+        _ => false,
+    };
+
+    let plaintext = matches!(url.scheme(), "http" | "ws");
+    if plaintext && !loopback {
+        Some(url.host_str().unwrap_or(raw).to_string())
+    } else {
+        None
+    }
+}
 
 /// Bootstrap config file contents. `relay_url` is optional so existing
 /// `config.toml` files without the key keep parsing; it is written only after
@@ -144,6 +175,11 @@ pub fn load_or_setup(
 ) -> Result<Config, ConfigError> {
     let nodus_dir = nodus_dir_os();
     let config_path = nodus_dir.join(CONFIG_FILE);
+
+    // Resolve any move the previous run left half-finished *before* trusting
+    // `config.toml`, so a crash can never strand the database and cause boot to
+    // create an empty one at the stale path.
+    recover_interrupted_migration(&nodus_dir, &config_path)?;
 
     // First-run detection: an existing config means a prior setup, so boot
     // from it without prompting — required so an unattended daemon restart
@@ -306,6 +342,144 @@ fn emit_nonblocking_warnings(data_dir: &Path) {
     }
 }
 
+/// On-disk record of a data-directory relocation in progress. `from` is the
+/// old location, `to` the new one; presence of this file at boot means the
+/// previous `change_data_dir` did not finish.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct MigrationJournal {
+    from: PathBuf,
+    to: PathBuf,
+}
+
+fn migration_journal_path(nodus_dir: &Path) -> PathBuf {
+    nodus_dir.join(MIGRATION_JOURNAL)
+}
+
+/// Write the journal (temp + rename + fsync) before touching either data dir.
+/// Durability matters here: a journal that is itself lost to a crash provides
+/// no protection for the move it was meant to guard.
+fn write_migration_journal(nodus_dir: &Path, from: &Path, to: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(nodus_dir)?;
+    let journal = MigrationJournal {
+        from: from.to_path_buf(),
+        to: to.to_path_buf(),
+    };
+    let serialized = serde_json::to_string(&journal)
+        .map_err(|e| std::io::Error::other(format!("serializing migration journal: {e}")))?;
+    write_file_durable(
+        nodus_dir,
+        &migration_journal_path(nodus_dir),
+        serialized.as_bytes(),
+    )
+}
+
+fn read_migration_journal(nodus_dir: &Path) -> std::io::Result<Option<MigrationJournal>> {
+    let path = migration_journal_path(nodus_dir);
+    match fs::read_to_string(&path) {
+        Ok(text) => serde_json::from_str(&text)
+            .map(Some)
+            .map_err(|e| std::io::Error::other(format!("parsing {}: {e}", path.display()))),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
+fn clear_migration_journal(nodus_dir: &Path) -> std::io::Result<()> {
+    match fs::remove_file(migration_journal_path(nodus_dir)) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
+/// Write `bytes` to `path` via a sibling temp file + rename, then fsync the
+/// directory entry. Shared by the migration journal and config rewrites so a
+/// crash cannot truncate either into an unreadable state.
+fn write_file_durable(dir: &Path, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let tmp = path.with_extension("tmp");
+    {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&tmp)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+    }
+    fs::rename(&tmp, path)?;
+    #[cfg(unix)]
+    {
+        fs::File::open(dir)?.sync_all()?;
+    }
+    Ok(())
+}
+
+/// Compare two configured paths leniently: canonicalize when both exist so
+/// `…/data` and `…/data/.` compare equal, otherwise fall back to spelling.
+fn paths_match(a: &Path, b: &Path) -> bool {
+    match (fs::canonicalize(a), fs::canonicalize(b)) {
+        (Ok(x), Ok(y)) => x == y,
+        _ => a == b,
+    }
+}
+
+/// Resolve a move that did not finish, before the config is read for boot.
+///
+/// The catastrophic failure this guards against: a previous move left the
+/// database at the new path while `config.toml` still named the old one; boot
+/// would then `create_if_missing` an empty DB and reconcile could later treat
+/// the real objects as orphans and delete them. Recovery prefers whichever
+/// location actually holds `nodus.db` and repoints the config there, so a
+/// crash can never turn a healthy backup into an empty one.
+fn recover_interrupted_migration(nodus_dir: &Path, config_path: &Path) -> Result<(), ConfigError> {
+    let Some(journal) = read_migration_journal(nodus_dir)? else {
+        return Ok(());
+    };
+    let from_db = journal.from.join("nodus.db").exists();
+    let to_db = journal.to.join("nodus.db").exists();
+    let configured = read_config_file(config_path)?.map(|c| c.data_dir);
+    // Preserve the relay pairing if we have to rewrite config.toml.
+    let relay = read_config_file(config_path)?.and_then(|c| c.relay_url);
+
+    if !from_db && to_db {
+        // Move completed (same-FS rename, or EXDEV copy) but the config flip
+        // did not. Point the config at the data that actually exists.
+        eprintln!(
+            "[config] recovering interrupted data move: using {} (database found there)",
+            journal.to.display()
+        );
+        write_config(nodus_dir, config_path, journal.to.clone(), relay)?;
+        clear_migration_journal(nodus_dir)?;
+        if journal.from.exists() {
+            let _ = fs::remove_dir_all(&journal.from);
+        }
+        return Ok(());
+    }
+
+    // Source still holds the database: the move did not complete. Keep it.
+    // If the config somehow points at the (DB-less) target, correct it.
+    if from_db {
+        if configured
+            .as_deref()
+            .is_some_and(|p| paths_match(p, &journal.to))
+        {
+            write_config(nodus_dir, config_path, journal.from.clone(), relay)?;
+        }
+        clear_migration_journal(nodus_dir)?;
+        return Ok(());
+    }
+
+    // Both contain a DB (or neither): nothing safe to auto-choose. If only the
+    // target has data, prefer it; otherwise drop the journal and let the normal
+    // config path decide.
+    if to_db {
+        write_config(nodus_dir, config_path, journal.to.clone(), relay)?;
+    }
+    clear_migration_journal(nodus_dir)?;
+    Ok(())
+}
+
 /// Interactively choose a new data directory and persist it to `config.toml`,
 /// preserving every existing key (notably `relay_url`). This is how an operator
 /// changes the backup location from the menu ("Change data location") instead
@@ -349,26 +523,124 @@ pub fn change_data_dir(current: &Path) -> std::io::Result<PathBuf> {
     // so the operator picks an empty target.
     ensure_migratable_target(&chosen)?;
 
-    let bytes = migrate_data_dir(current, &chosen)?;
+    // Journal + config-before-source-delete makes the move recoverable: the
+    // old location is only removed once `config.toml` durably names the new one.
+    let bytes = relocate_data_dir(current, &chosen, &nodus_dir, &config_path, existing_relay)?;
     if bytes > 0 {
         println!(
             "Moved {bytes} bytes of existing data to {}",
             chosen.display()
         );
     }
-    write_config(&nodus_dir, &config_path, chosen.clone(), existing_relay)?;
     Ok(chosen)
+}
+
+/// Move all node data from `from` to `to`, then record `to` as the new location
+/// and only then remove `from`. The ordering is the safety property: if the
+/// process dies between the data move and the config write, the boot-time
+/// journal recovery (see [`recover_interrupted_migration`]) repoints the config
+/// at whichever path holds the database.
+///
+/// On one filesystem the whole directory is renamed atomically. Across
+/// filesystems (`rename` returns `EXDEV`) the tree is copied with `nodus.db`
+/// last, and the source is kept until the config is durable. An existing
+/// non-empty target is merged into rather than clobbered.
+fn relocate_data_dir(
+    from: &Path,
+    to: &Path,
+    nodus_dir: &Path,
+    config_path: &Path,
+    relay_url: Option<String>,
+) -> std::io::Result<u64> {
+    if !from.exists() {
+        fs::create_dir_all(to)?;
+        write_config(nodus_dir, config_path, to.to_path_buf(), relay_url)?;
+        return Ok(0);
+    }
+
+    write_migration_journal(nodus_dir, from, to)?;
+
+    let bytes = if dir_absent_or_empty(to)? {
+        // Same-FS rename is atomic: no half-moved tree can exist, so the only
+        // recoverable gap is the config pointer (handled at boot).
+        match fs::rename(from, to) {
+            Ok(()) => entry_bytes(to)?,
+            Err(e) if e.kind() == std::io::ErrorKind::CrossesDevices => {
+                copy_data_tree_db_last(from, to)?
+            }
+            Err(e) => {
+                // A failed rename that is not a cross-device move leaves the
+                // source untouched; drop the journal so the next boot is normal.
+                clear_migration_journal(nodus_dir)?;
+                return Err(e);
+            }
+        }
+    } else {
+        // Target held unrelated files: merge-copy without clobbering them.
+        copy_data_tree_db_last(from, to)?
+    };
+
+    write_config(nodus_dir, config_path, to.to_path_buf(), relay_url)?;
+    clear_migration_journal(nodus_dir)?;
+    // Best-effort cleanup only after the config is durable; a failure here
+    // leaves a harmless duplicate rather than an unreachable database.
+    if from.exists() {
+        let _ = fs::remove_dir_all(from);
+    }
+    Ok(bytes)
+}
+
+/// True when `path` does not exist, or is an empty directory. Used to decide
+/// whether the whole-directory atomic rename can replace it.
+fn dir_absent_or_empty(path: &Path) -> std::io::Result<bool> {
+    if !path.exists() {
+        return Ok(true);
+    }
+    if !path.is_dir() {
+        return Ok(false);
+    }
+    Ok(fs::read_dir(path)?.next().is_none())
+}
+
+/// Copy `src`'s contents into `dst`, copying `nodus.db` (and its WAL/SHM
+/// sidecars) last. A crash mid-copy therefore never leaves a complete-looking
+/// database in the target before the object store has been copied.
+fn copy_data_tree_db_last(src: &Path, dst: &Path) -> std::io::Result<u64> {
+    fs::create_dir_all(dst)?;
+    let mut bytes = 0u64;
+    let mut db_entries = Vec::new();
+
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        if name.to_string_lossy().starts_with("nodus.db") {
+            db_entries.push(name);
+            continue;
+        }
+        let path = entry.path();
+        let kind = entry.file_type()?;
+        if kind.is_dir() {
+            bytes += copy_dir_all(&path, &dst.join(&name))?;
+        } else if kind.is_file() {
+            bytes += fs::copy(&path, dst.join(&name))?;
+        }
+    }
+
+    for name in db_entries {
+        bytes += fs::copy(src.join(&name), dst.join(&name))?;
+    }
+    Ok(bytes)
 }
 
 /// Move the contents of `old` (the node database, `objects/`, and `temp/`) into
 /// `new`, then remove the emptied `old` directory so the operator does not end
-/// up with twin backups. The caller must have no live SQLite pool on `old`:
-/// the menu closes its reporting pool first (`menu.rs`), and the daemon is not
-/// booted yet, so no writer races the rename. Returns the total bytes of file
-/// data moved.
+/// up with twin backups. Retained as a direct, journal-free helper for tests;
+/// `change_data_dir` now uses [`relocate_data_dir`], which adds the journal and
+/// writes the config before removing the source.
 ///
 /// `new` must already exist (the prompt creates/validates it); it is created as
 /// a belt-and-braces fallback so the helper stays callable in tests.
+#[cfg(test)]
 pub fn migrate_data_dir(old: &Path, new: &Path) -> std::io::Result<u64> {
     if !old.exists() {
         return Ok(0);
@@ -390,6 +662,7 @@ pub fn migrate_data_dir(old: &Path, new: &Path) -> std::io::Result<u64> {
 /// single filesystem; when the target is on a different disk (the common reason
 /// to change the backup location) it fails with `EXDEV` and we fall back to a
 /// recursive copy + delete. Returns the total bytes in moved files.
+#[cfg(test)]
 fn move_entry(src: &Path, dst: &Path) -> std::io::Result<u64> {
     match fs::rename(src, dst) {
         Ok(()) => entry_bytes(dst),
@@ -473,13 +746,41 @@ fn write_config(
     };
     let toml = toml::to_string(&cfg)
         .map_err(|e| std::io::Error::other(format!("serializing config: {e}")))?;
-    fs::write(config_path, toml)
+    // Temp + rename + fsync so a crash cannot truncate the config into an
+    // unparseable state (which would block the next boot). The relocation
+    // invariant depends on this being durable before the old data is removed.
+    write_file_durable(nodus_dir, config_path, toml.as_bytes())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    // --- insecure_plaintext_host ---
+
+    #[test]
+    fn insecure_plaintext_host_flags_public_http_and_ws() {
+        assert_eq!(
+            insecure_plaintext_host("http://nodus.example.com").as_deref(),
+            Some("nodus.example.com")
+        );
+        assert_eq!(
+            insecure_plaintext_host("ws://10.0.0.5:8080/ws").as_deref(),
+            Some("10.0.0.5")
+        );
+    }
+
+    #[test]
+    fn insecure_plaintext_host_allows_tls_and_loopback() {
+        assert!(insecure_plaintext_host("https://nodus.example.com").is_none());
+        assert!(insecure_plaintext_host("wss://nodus.example.com/ws").is_none());
+        assert!(insecure_plaintext_host("http://localhost:8080").is_none());
+        assert!(insecure_plaintext_host("http://127.0.0.1:8080").is_none());
+        assert!(insecure_plaintext_host("ws://[::1]:8080/ws").is_none());
+        // Unparseable input is left to fail on connection, not mislabelled.
+        assert!(insecure_plaintext_host("not-a-url").is_none());
+    }
 
     // --- expand_tilde ---
 
@@ -667,6 +968,83 @@ mod tests {
             !old.exists(),
             "old data dir should be removed after migration"
         );
+    }
+
+    /// Run the real relocation path (journal + config-before-source-delete)
+    /// against a throwaway `nodus_dir`.
+    fn run_relocate(old: &Path, new: &Path, relay: Option<&str>) -> (u64, PathBuf, PathBuf) {
+        let nodus = old.parent().unwrap().join(".nodus");
+        let config_path = nodus.join(CONFIG_FILE);
+        let bytes =
+            relocate_data_dir(old, new, &nodus, &config_path, relay.map(str::to_string)).unwrap();
+        (bytes, nodus, config_path)
+    }
+
+    #[test]
+    fn relocate_points_config_at_new_and_clears_journal() {
+        let dir = tempdir().unwrap();
+        let old = dir.path().join("old");
+        let new = dir.path().join("new");
+        seed_data_dir(&old);
+
+        let (bytes, nodus, config_path) = run_relocate(&old, &new, Some("https://r.example"));
+        assert!(bytes >= 5 + 5 + 7);
+        assert!(new.join("nodus.db").is_file());
+        assert!(new.join("objects/ab/abc123").is_file());
+        assert!(
+            !old.exists(),
+            "source is deleted only after the config is durable"
+        );
+
+        let cfg = read_config_file(&config_path).unwrap().unwrap();
+        assert_eq!(cfg.data_dir, new);
+        assert_eq!(cfg.relay_url.as_deref(), Some("https://r.example"));
+        assert!(!migration_journal_path(&nodus).exists());
+    }
+
+    #[test]
+    fn recovery_repoints_config_when_move_completed_before_config_write() {
+        let dir = tempdir().unwrap();
+        let old = dir.path().join("old");
+        let new = dir.path().join("new");
+        let nodus = dir.path().join(".nodus");
+        let config_path = nodus.join(CONFIG_FILE);
+
+        // Same-FS rename finished (old gone, new holds the DB) but the crash hit
+        // before the config flip: journal present, config still names old.
+        std::fs::create_dir_all(&new).unwrap();
+        std::fs::write(new.join("nodus.db"), b"db").unwrap();
+        write_config(&nodus, &config_path, old.clone(), None).unwrap();
+        write_migration_journal(&nodus, &old, &new).unwrap();
+
+        recover_interrupted_migration(&nodus, &config_path).unwrap();
+
+        let cfg = read_config_file(&config_path).unwrap().unwrap();
+        assert_eq!(cfg.data_dir, new, "config must follow the database");
+        assert!(!migration_journal_path(&nodus).exists());
+    }
+
+    #[test]
+    fn recovery_keeps_source_when_move_incomplete() {
+        let dir = tempdir().unwrap();
+        let old = dir.path().join("old");
+        let new = dir.path().join("new");
+        let nodus = dir.path().join(".nodus");
+        let config_path = nodus.join(CONFIG_FILE);
+        seed_data_dir(&old);
+
+        // Partial cross-device copy: target has objects but no database yet.
+        std::fs::create_dir_all(new.join("objects")).unwrap();
+        write_config(&nodus, &config_path, old.clone(), Some("https://r".into())).unwrap();
+        write_migration_journal(&nodus, &old, &new).unwrap();
+
+        recover_interrupted_migration(&nodus, &config_path).unwrap();
+
+        let cfg = read_config_file(&config_path).unwrap().unwrap();
+        assert_eq!(cfg.data_dir, old, "the source still owns the database");
+        assert_eq!(cfg.relay_url.as_deref(), Some("https://r"));
+        assert!(old.join("nodus.db").is_file());
+        assert!(!migration_journal_path(&nodus).exists());
     }
 
     /// The menu's "Change data location" closes its reporting pool before the

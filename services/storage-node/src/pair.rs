@@ -143,21 +143,10 @@ impl PairError {
 /// `http://[::1]:8080`) keeps working. Unparseable values are passed through so
 /// they fail on connection rather than being mislabelled as insecure.
 fn ensure_secure_transport(base: &str) -> Result<(), PairError> {
-    let Ok(url) = url::Url::parse(base) else {
-        return Ok(());
-    };
-    let loopback = match url.host() {
-        Some(url::Host::Domain("localhost")) => true,
-        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
-        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
-        _ => false,
-    };
-    if url.scheme() == "http" && !loopback {
-        return Err(PairError::InsecureRelay(
-            url.host_str().unwrap_or(base).to_string(),
-        ));
+    match config::insecure_plaintext_host(base) {
+        Some(host) => Err(PairError::InsecureRelay(host)),
+        None => Ok(()),
     }
-    Ok(())
 }
 
 /// Interactive input, abstracted so the flow can be tested without a TTY.

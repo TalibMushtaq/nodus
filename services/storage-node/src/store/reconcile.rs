@@ -15,7 +15,7 @@ use anyhow::Context;
 use walkdir::WalkDir;
 
 use super::layout;
-use super::write::ObjectStore;
+use super::write::{ObjectStore, fsync_dir};
 
 /// Summary report of actions performed during a reconciliation scan.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -349,23 +349,63 @@ pub fn submit_repairs(
 
 /// Write restored repair bytes to disk atomically and flip the object's row
 /// DEGRADED → STORED. The caller hash-verifies `bytes` before calling.
+///
+/// Mirrors `ObjectStore::put`'s durability protocol: a uniquely-named temp file
+/// is written and `sync_all`ed, renamed into place, then the destination
+/// directory is fsynced. Without the file sync a power loss could publish a
+/// zero-filled/torn file as `STORED`; without the directory sync the renamed
+/// entry itself could be lost after the row flips.
 async fn restore_object(store: &ObjectStore, object_id: &str, bytes: &[u8]) -> anyhow::Result<()> {
+    use std::io::Write;
+
     let dest = layout::object_path(store.data_dir(), object_id);
-    if let Some(parent) = dest.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("creating object directory {}", parent.display()))?;
+    let parent = dest
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("object path {} has no parent", dest.display()))?;
+    fs::create_dir_all(parent)
+        .with_context(|| format!("creating object directory {}", parent.display()))?;
+
+    // Temp lives in the destination directory so the rename stays on one
+    // filesystem and is atomic; `create_new` refuses to clobber a concurrent
+    // repair's temp file.
+    let tmp = parent.join(format!(
+        ".{}.repair-{}.tmp",
+        object_id,
+        uuid::Uuid::new_v4()
+    ));
+    let write_result = (|| -> std::io::Result<()> {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        Ok(())
+    })();
+    if let Err(e) = write_result {
+        let _ = fs::remove_file(&tmp);
+        return Err(e).with_context(|| format!("writing repair temp {}", tmp.display()));
     }
-    let tmp = dest.with_extension("repair.tmp");
-    fs::write(&tmp, bytes)?;
-    // Same-directory rename is atomic within the filesystem: a crash mid-way
-    // leaves either the old state (missing file) or the new file, never a
-    // torn write.
-    fs::rename(&tmp, &dest)?;
-    sqlx::query("UPDATE storage_objects SET status = 'STORED' WHERE object_id = ?")
-        .bind(object_id)
-        .execute(store.pool())
-        .await
-        .context("marking repaired object STORED")?;
+    if let Err(e) = fs::rename(&tmp, &dest) {
+        let _ = fs::remove_file(&tmp);
+        return Err(e).with_context(|| format!("renaming {} to {}", tmp.display(), dest.display()));
+    }
+    fsync_dir(parent).with_context(|| format!("syncing dir {}", parent.display()))?;
+
+    // Upsert rather than UPDATE: a blind UPDATE silently affects zero rows when
+    // the storage_objects row is absent, which would leave the restored file
+    // untracked (and deletable as an orphan).
+    sqlx::query(
+        "INSERT INTO storage_objects (object_id, size_bytes, status, created_at)
+         VALUES (?, ?, 'STORED', ?)
+         ON CONFLICT(object_id) DO UPDATE SET status = 'STORED'",
+    )
+    .bind(object_id)
+    .bind(bytes.len() as i64)
+    .bind(chrono::Utc::now().to_rfc3339())
+    .execute(store.pool())
+    .await
+    .context("marking repaired object STORED")?;
     Ok(())
 }
 
@@ -575,5 +615,49 @@ mod tests {
         );
         let receivers = submit_repairs(&manager, degraded, peers);
         assert_eq!(receivers.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn restore_object_writes_file_and_upserts_metadata() {
+        let dir = tempdir().unwrap();
+        let pool = create_test_db(dir.path()).await;
+        let store = ObjectStore::new(dir.path().to_path_buf(), pool.clone())
+            .await
+            .unwrap();
+
+        let bytes = b"repaired shard bytes";
+        let object_id = blake3::hash(bytes).to_hex().to_string();
+        let dest = layout::object_path(dir.path(), &object_id);
+
+        // Row deliberately absent: the old blind UPDATE would have affected
+        // zero rows and left the restored file untracked (orphan-eligible).
+        restore_object(&store, &object_id, bytes).await.unwrap();
+
+        assert_eq!(fs::read(&dest).unwrap(), bytes);
+        let (status,): (String,) =
+            sqlx::query_as("SELECT status FROM storage_objects WHERE object_id = ?")
+                .bind(&object_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(status, "STORED");
+
+        // A pre-existing DEGRADED row must also flip to STORED.
+        let object_id2 = blake3::hash(b"other").to_hex().to_string();
+        sqlx::query(
+            "INSERT INTO storage_objects (object_id, size_bytes, status, created_at) VALUES (?, 0, 'DEGRADED', 'now')",
+        )
+        .bind(&object_id2)
+        .execute(&pool)
+        .await
+        .unwrap();
+        restore_object(&store, &object_id2, b"other").await.unwrap();
+        let (status2,): (String,) =
+            sqlx::query_as("SELECT status FROM storage_objects WHERE object_id = ?")
+                .bind(&object_id2)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(status2, "STORED");
     }
 }

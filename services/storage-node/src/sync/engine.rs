@@ -378,6 +378,32 @@ pub(crate) async fn apply_remote_event_conn(
             }
         }
 
+        "TOMBSTONE_REMOVED" => {
+            // Restore (§17): drop the tombstone so retention GC no longer purges
+            // the entity's retained data. Previously this canonical event had no
+            // arm and fell through to `_`, so it was acked and the cursor
+            // advanced while the tombstone stayed — an offline restore was
+            // silently lost and GC purged the data at the 90-day deadline.
+            let entity_id = event
+                .payload
+                .get("entity_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let entity_type = event
+                .payload
+                .get("entity_type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("file");
+
+            if !entity_id.is_empty() {
+                sqlx::query("DELETE FROM tombstones WHERE entity_type = ? AND entity_id = ?")
+                    .bind(entity_type)
+                    .bind(entity_id)
+                    .execute(&mut *tx)
+                    .await?;
+            }
+        }
+
         _ => {}
     }
 
@@ -578,6 +604,49 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(tombstoned, 1);
+    }
+
+    #[tokio::test]
+    async fn test_tombstone_removed_deletes_tombstone() {
+        let dir = tempdir().unwrap();
+        let pool = db::open(dir.path()).await.unwrap();
+
+        let created = SyncEvent {
+            event_id: "evt-tomb-create".to_string(),
+            origin_id: "device-1".to_string(),
+            origin_sequence: 1,
+            event_type: "TOMBSTONE_CREATED".to_string(),
+            payload: serde_json::json!({ "entity_type": "file", "entity_id": "file-9" }),
+            timestamp: "2026-09-13T12:00:00Z".to_string(),
+        };
+        apply_remote_event(&pool, &created, "node-test")
+            .await
+            .unwrap();
+
+        let removed = SyncEvent {
+            event_id: "evt-tomb-removed".to_string(),
+            origin_id: "device-1".to_string(),
+            origin_sequence: 2,
+            event_type: "TOMBSTONE_REMOVED".to_string(),
+            payload: serde_json::json!({ "entity_type": "file", "entity_id": "file-9" }),
+            timestamp: "2026-09-13T12:05:00Z".to_string(),
+        };
+        assert_eq!(
+            apply_remote_event(&pool, &removed, "node-test")
+                .await
+                .unwrap(),
+            ApplyOutcome::Applied
+        );
+
+        // Restore must actually clear the row so retention GC does not purge
+        // the retained data at the original 90-day deadline.
+        let remaining: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM tombstones WHERE entity_type = 'file' AND entity_id = 'file-9'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(remaining, 0, "TOMBSTONE_REMOVED must delete the tombstone");
     }
 
     #[tokio::test]

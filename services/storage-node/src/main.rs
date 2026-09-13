@@ -359,6 +359,16 @@ fn resolve_daemon_relay(configured: Option<&str>) -> anyhow::Result<String> {
         );
     };
     let ws_url = sync::client::relay_ws_url(raw);
+    // The live session carries challenge signatures, file metadata, pairing
+    // tokens, and fetch tokens. Refuse cleartext to a non-loopback host so a
+    // misconfigured `http://`/`ws://` relay cannot silently downgrade the link;
+    // loopback stays allowed for local development.
+    if let Some(host) = config::insecure_plaintext_host(&ws_url) {
+        anyhow::bail!(
+            "refusing a plaintext relay link to {host}: use an https:// public \
+             origin or a loopback ws:// endpoint for development"
+        );
+    }
     match Url::parse(&ws_url) {
         Ok(url) if matches!(url.scheme(), "ws" | "wss") => Ok(ws_url),
         _ => anyhow::bail!(
@@ -397,6 +407,16 @@ mod tests {
         assert!(resolve_daemon_relay(Some("not-a-url")).is_err());
         assert!(resolve_daemon_relay(Some("nodus.example.com")).is_err());
         assert!(resolve_daemon_relay(Some("ftp://nodus.example.com")).is_err());
+    }
+
+    #[test]
+    fn resolve_daemon_relay_rejects_public_plaintext_but_allows_loopback() {
+        // A public http/ws relay would carry the session in cleartext.
+        assert!(resolve_daemon_relay(Some("http://nodus.example.com")).is_err());
+        assert!(resolve_daemon_relay(Some("ws://nodus.example.com/ws")).is_err());
+        // Loopback remains usable for local development.
+        assert!(resolve_daemon_relay(Some("ws://127.0.0.1:8080/ws")).is_ok());
+        assert!(resolve_daemon_relay(Some("http://localhost:8080")).is_ok());
     }
 
     #[test]

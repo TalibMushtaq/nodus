@@ -9,6 +9,23 @@ use sqlx::SqlitePool;
 
 use super::layout;
 
+/// Fsync a directory so a just-created or renamed directory entry survives a
+/// power loss. `sync_all` on the file only flushes the file's data/inode; the
+/// name that points at it lives in the parent directory and is not durable
+/// until that directory is synced. On Unix the directory is opened read-only and
+/// synced; other platforms have no portable equivalent, so this is best-effort.
+pub(crate) fn fsync_dir(dir: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        fs::File::open(dir)?.sync_all()?;
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = dir;
+    }
+    Ok(())
+}
+
 /// Content-addressed object store backed by on-disk files and SQLite metadata.
 #[derive(Clone)]
 pub struct ObjectStore {
@@ -109,6 +126,15 @@ impl ObjectStore {
                     dest.display()
                 )
             });
+        }
+        // Make the destination directory entry durable before the DB row is
+        // committed below; otherwise a crash can leave `STORED` metadata and no
+        // file. The source (temp/) is fsynced for the removal side of the move.
+        if let Some(parent) = dest.parent() {
+            fsync_dir(parent).with_context(|| format!("syncing dir {}", parent.display()))?;
+        }
+        if let Some(temp_parent) = temp_file_path.parent() {
+            let _ = fsync_dir(temp_parent);
         }
 
         // Commit metadata
@@ -218,6 +244,12 @@ impl ObjectStore {
                             let _ = fs::create_dir_all(parent);
                         }
                         if fs::rename(&path, &dest).is_ok() {
+                            // Same durability ordering as `put`: the renamed
+                            // entry must reach the directory before we claim
+                            // the object is STORED in SQLite.
+                            if let Some(parent) = dest.parent() {
+                                let _ = fsync_dir(parent);
+                            }
                             let now = chrono::Utc::now().to_rfc3339();
                             let size = bytes.len() as i64;
                             let _ = sqlx::query(
