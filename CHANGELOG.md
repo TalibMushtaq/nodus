@@ -1,5 +1,12 @@
 # Changelog
 
+## [2026-09-13] - Storage node audit phase 8: relay-buffer shard consistency guard (#22)
+
+**What changed:** `services/storage-node/src/sync/client.rs::record_shard_metadata` now consults `existing_shard_object` (covering both `shards` and `pending_shard_fetches`) before recording a relay-delivered shard. A slot already holding a *different* object id is rejected with a surfaced error ("refusing to overwrite") instead of being silently dropped by `ON CONFLICT DO NOTHING` and still acked `verified`; an identical re-delivery falls through so the pending→shards drain still runs. `fix.md` records the remaining protocol requirement.
+**Why:** Audit finding #22: the node has no authoritative per-shard hash for the *first* copy of a shard (the version event carries only the whole-version hash), so a compromised relay can plant bytes for a shard it is first to deliver. This phase closes the *overwrite* case — a relay cannot replace a shard the node already holds, and a conflict is now visible — but the first-copy guarantee needs a signed per-shard manifest.
+**Impact:** `sync/client.rs`, `fix.md`. New test `rejects_conflicting_relay_shard`. Verified `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` (196 lib + 178 bin + 2 integration).
+**Follow-ups:** REQUIREMENT (protocol, cross-language): add `shard_hashes: string[]` (BLAKE3 per shard, signed/emitted by the client) to `FILE_VERSION_ADDED` in `packages/protocol`, emitted by the TS clients, forwarded by the Go relay, and checked by the node against the buffer-fetched shard before recording. Until then, first-copy shards rely on the client's end-to-end integrity check at download time.
+
 ## [2026-09-13] - Storage node audit phase 7: WebRTC signaling signature binds the SDP/ICE payload
 
 **What changed:** `services/storage-node/src/webrtc/handler.rs` now signs and verifies `"{device_id}:{session_id}:{timestamp_ms}:{blake3(payload)}"` for `/nodus/webrtc/offer` (payload = `sdp`) and `/nodus/webrtc/ice` (payload = `candidate`); the receive-only SSE candidate stream keeps the payload-free `"{device}:{session}:{timestamp}"` message. `packages/webrtc-transport/src/signaling.ts` computes the same BLAKE3 hash (via the already-present `@noble/hashes`) for offer/answer/candidate and updates the `sign` callback doc. `docs/security/local-endpoints.md` documents the binding, and the WebRTC integration test plus a new TS unit test assert it.

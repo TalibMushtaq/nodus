@@ -1,10 +1,9 @@
 # Storage Node Audit — Fix Plan
 
-Status: Phases 1-5 implemented and committed (one commit per phase). Phases 6-8
-cover the remaining deferred/hardening items. #22 (relay buffer manifest
-cross-check) cannot be fully closed without a protocol change adding per-shard
-hashes to the version event; Phase 8 implements the feasible consistency guard
-and records the protocol requirement.
+Status: Phases 1-8 implemented and committed (one commit per phase). All audit
+findings are addressed except #22's *first-copy* guarantee, which requires a
+cross-language protocol addition (per-shard hashes on the version event) and is
+documented under Deferred.
 
 Source audit: `services/storage-node/` (Rust, ~13.7k LOC). Baseline at plan time:
 `cargo fmt --check` clean, `cargo clippy --all-targets` clean, `cargo test` 168 passed.

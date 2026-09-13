@@ -715,6 +715,29 @@ impl SyncClient {
         object_id: &str,
         size: i64,
     ) -> anyhow::Result<()> {
+        // The Relay is not trusted for shard identity: if this (file, version,
+        // shard) slot is already filled, the bytes must be identical. A
+        // differing relay-supplied object is rejected and surfaced (rather than
+        // silently ignored and still acked "verified"), so an operator sees the
+        // relay anomaly. Full protection for the *first* copy needs a signed
+        // per-shard manifest on FILE_VERSION_ADDED (see fix.md #22).
+        if let Some(existing) =
+            existing_shard_object(&self.db, &n.file_id, n.version_number, n.shard_index).await?
+        {
+            if existing != object_id {
+                anyhow::bail!(
+                    "relay shard conflict for {}:{}:{}: already stored object {existing}, \
+                     relay supplied {object_id}; refusing to overwrite",
+                    n.file_id,
+                    n.version_number,
+                    n.shard_index
+                );
+            }
+            // Identical re-delivery: fall through so the idempotent inserts and
+            // the pending→shards drain still run (the version row may have
+            // arrived since the original fetch).
+        }
+
         let has_version: Option<i64> = sqlx::query_scalar(
             "SELECT 1 FROM file_versions WHERE file_id = ? AND version_number = ?",
         )
@@ -845,6 +868,32 @@ async fn store_pairing_token(
     .await?;
 
     Ok(())
+}
+
+/// The object id already recorded for a shard slot, checking both the live
+/// `shards` table and the `pending_shard_fetches` landing zone. Used to refuse
+/// a relay-supplied shard that conflicts with one we already hold.
+async fn existing_shard_object(
+    db: &SqlitePool,
+    file_id: &str,
+    version_number: i64,
+    shard_index: i64,
+) -> anyhow::Result<Option<String>> {
+    let existing: Option<String> = sqlx::query_scalar(
+        "SELECT object_id FROM shards WHERE file_id = ? AND version_number = ? AND shard_index = ? \
+         UNION \
+         SELECT object_id FROM pending_shard_fetches WHERE file_id = ? AND version_number = ? AND shard_index = ? \
+         LIMIT 1",
+    )
+    .bind(file_id)
+    .bind(version_number)
+    .bind(shard_index)
+    .bind(file_id)
+    .bind(version_number)
+    .bind(shard_index)
+    .fetch_optional(db)
+    .await?;
+    Ok(existing)
 }
 
 /// Purge a tombstoned entity's local data. Returns `false` without touching
@@ -1211,5 +1260,67 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(shards, 1);
+    }
+
+    #[tokio::test]
+    async fn rejects_conflicting_relay_shard() {
+        let dir = tempdir().unwrap();
+        let pool = db::open(dir.path()).await.unwrap();
+        let store = ObjectStore::new(dir.path().join("objects"), pool.clone())
+            .await
+            .unwrap();
+        let client = SyncClient::new(
+            "ws://127.0.0.1:8080/ws".to_string(),
+            Arc::new(identity::load_or_generate(dir.path()).unwrap()),
+            pool.clone(),
+            Arc::new(store),
+            100,
+            None,
+        );
+
+        let n = PendingNotifyPayload {
+            file_id: "file-conflict".to_string(),
+            version_number: 1,
+            shard_index: 0,
+            buffer_id: "buf-1".to_string(),
+            fetch_token: "tok-1".to_string(),
+            from_device: "dev-1".to_string(),
+            hash: "h".to_string(),
+            size: 10,
+        };
+
+        sqlx::query("INSERT INTO storage_objects (object_id, size_bytes, status, created_at) VALUES ('obj-a', 1, 'STORED', 'now')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO files (file_id, created_at, updated_at) VALUES ('file-conflict', 'now', 'now')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO file_versions (file_id, version_number, version_hash, shard_count, created_at) VALUES ('file-conflict', 1, 'h', 1, 'now')")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        // First copy lands.
+        client.record_shard_metadata(&n, "obj-a", 1).await.unwrap();
+
+        // A later relay notify for the same slot with different bytes is a
+        // conflict: surface it rather than silently keeping a different object
+        // (or, worse, overwriting).
+        let err = client
+            .record_shard_metadata(&n, "obj-b", 1)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("refusing to overwrite"), "unexpected: {err}");
+
+        let stored: String = sqlx::query_scalar(
+            "SELECT object_id FROM shards WHERE file_id = 'file-conflict' AND version_number = 1 AND shard_index = 0",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(stored, "obj-a");
     }
 }
