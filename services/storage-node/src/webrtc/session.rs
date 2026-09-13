@@ -158,6 +158,16 @@ impl ChannelReceiveState {
     }
 }
 
+/// True only when a data-channel text frame is the explicit end-of-shard
+/// signal. Parses the JSON and requires boolean `shard_done: true`; a substring
+/// check would let a crafted `file_id` end the transfer prematurely.
+fn is_shard_done(text: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(text)
+        .ok()
+        .and_then(|v| v.get("shard_done").and_then(|b| b.as_bool()))
+        .unwrap_or(false)
+}
+
 pub struct WebRtcSession {
     #[allow(dead_code)]
     pub session_id: String,
@@ -293,7 +303,10 @@ impl WebRtcSession {
                                 Err(_) => return,
                             };
 
-                            if text.contains("\"shard_done\"") {
+                            // Parse the frame and check an explicit boolean:
+                            // substring matching would let a crafted `file_id`
+                            // containing "shard_done" end the transfer early.
+                            if is_shard_done(&text) {
                                 // Shard transmission finished, verify and commit
                                 let mut st = state.lock().await;
                                 let Some((metadata, chunks)) = st.take_done() else {
@@ -350,22 +363,60 @@ impl WebRtcSession {
 
                                 let save_res = async {
                                     let mut tx = db.begin().await?;
-                                    sqlx::query(
-                                        r#"
-                                        INSERT INTO shards (file_id, version_number, shard_index, object_id, size_bytes)
-                                        VALUES (?, ?, ?, ?, ?)
-                                        ON CONFLICT(file_id, version_number, shard_index) DO UPDATE SET
-                                            object_id = excluded.object_id,
-                                            size_bytes = excluded.size_bytes
-                                        "#,
+
+                                    // The file_versions row may not have synced
+                                    // yet (shard bytes can arrive before the
+                                    // version event). Staging in
+                                    // pending_shard_fetches keeps the object
+                                    // reachable instead of failing the shards FK
+                                    // and orphaning it; the engine's
+                                    // drain_pending_fetches moves it into
+                                    // `shards` when the version event arrives.
+                                    let version_exists: i64 = sqlx::query_scalar(
+                                        "SELECT COUNT(*) FROM file_versions WHERE file_id = ? AND version_number = ?",
                                     )
                                     .bind(&metadata.file_id)
                                     .bind(metadata.version_number)
-                                    .bind(metadata.shard_index)
-                                    .bind(&actual_hash)
-                                    .bind(size_bytes)
-                                    .execute(&mut *tx)
+                                    .fetch_one(&mut *tx)
                                     .await?;
+
+                                    if version_exists > 0 {
+                                        sqlx::query(
+                                            r#"
+                                            INSERT INTO shards (file_id, version_number, shard_index, object_id, size_bytes)
+                                            VALUES (?, ?, ?, ?, ?)
+                                            ON CONFLICT(file_id, version_number, shard_index) DO UPDATE SET
+                                                object_id = excluded.object_id,
+                                                size_bytes = excluded.size_bytes
+                                            "#,
+                                        )
+                                        .bind(&metadata.file_id)
+                                        .bind(metadata.version_number)
+                                        .bind(metadata.shard_index)
+                                        .bind(&actual_hash)
+                                        .bind(size_bytes)
+                                        .execute(&mut *tx)
+                                        .await?;
+                                    } else {
+                                        sqlx::query(
+                                            r#"
+                                            INSERT INTO pending_shard_fetches (file_id, version_number, shard_index, object_id, size_bytes, fetched_at)
+                                            VALUES (?, ?, ?, ?, ?, ?)
+                                            ON CONFLICT(file_id, version_number, shard_index) DO UPDATE SET
+                                                object_id = excluded.object_id,
+                                                size_bytes = excluded.size_bytes,
+                                                fetched_at = excluded.fetched_at
+                                            "#,
+                                        )
+                                        .bind(&metadata.file_id)
+                                        .bind(metadata.version_number)
+                                        .bind(metadata.shard_index)
+                                        .bind(&actual_hash)
+                                        .bind(size_bytes)
+                                        .bind(&now)
+                                        .execute(&mut *tx)
+                                        .await?;
+                                    }
 
                                     sqlx::query(
                                         r#"
@@ -734,6 +785,16 @@ mod tests {
         assert_eq!(m.file_id, "f1");
         assert_eq!(chunks, b"ab");
         assert!(st.take_done().is_none(), "second take is empty");
+    }
+
+    #[test]
+    fn shard_done_requires_explicit_boolean() {
+        assert!(is_shard_done(r#"{"shard_done":true}"#));
+        // The substring alone (e.g. inside a crafted file_id or as a string
+        // value) must not be accepted.
+        assert!(!is_shard_done(r#"{"file_id":"shard_done","size":1}"#));
+        assert!(!is_shard_done(r#"{"shard_done":"true"}"#));
+        assert!(!is_shard_done("not json"));
     }
 
     #[test]

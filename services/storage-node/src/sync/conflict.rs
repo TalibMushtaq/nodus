@@ -65,7 +65,15 @@ pub async fn next_free_version_number_conn(
             .bind(file_id)
             .fetch_one(&mut *conn)
             .await?;
-    Ok(max.map(|m| m + 1).unwrap_or(1))
+    // checked_add: version_number is attacker-influenced (it comes from a
+    // remote event), so a saturated MAX must fail rather than panic in debug or
+    // wrap to i64::MIN in release.
+    match max {
+        Some(m) => m.checked_add(1).ok_or_else(|| {
+            anyhow::anyhow!("version number overflow for file {file_id}: max is {m}")
+        }),
+        None => Ok(1),
+    }
 }
 
 /// Symmetrically flags every version on the incoming branch as conflicted,

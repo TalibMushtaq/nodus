@@ -455,20 +455,31 @@ impl SyncClient {
                             .and_then(|v| v.as_str())
                             .unwrap_or("")
                             .to_string();
-                        if !entity_id.is_empty() {
-                            if entity_type == "file" {
-                                crate::store::gc::purge_file(&self.object_store, &entity_id)
-                                    .await?;
-                            } else {
-                                crate::store::gc::purge_folder(&self.object_store, &entity_id)
-                                    .await?;
-                            }
+                        // Only purge entities we actually hold a tombstone for,
+                        // and only the two known types. A compromised relay must
+                        // not be able to delete a *live* file's shards by
+                        // sending an unmatched purge; the tombstone proves the
+                        // account deleted it (and prevents the restore path from
+                        // racing this purge).
+                        if purge_tombstoned_entity(
+                            &self.db,
+                            &self.object_store,
+                            &entity_type,
+                            &entity_id,
+                        )
+                        .await?
+                        {
                             let payload = serde_json::json!({
                                 "entity_type": entity_type,
                                 "entity_id": entity_id,
                                 "status": "purged",
                             });
                             Self::send_envelope(&mut write, "tombstone_ack", &payload).await?;
+                        } else {
+                            eprintln!(
+                                "[sync] ignoring purge_tombstone for {entity_type} \
+                                 {entity_id}: no matching local tombstone"
+                            );
                         }
                     }
                     // Restore: drop our tombstone so retained data is not purged
@@ -621,8 +632,18 @@ impl SyncClient {
                 crate::limits::MAX_SHARD_BYTES
             );
         }
-        let url = format!("{}?token={}", self.http_fetch_url, n.fetch_token);
-        let resp = self.http_client.get(&url).send().await?;
+        let resp = self
+            .http_client
+            .get(&self.http_fetch_url)
+            // Pass the token as a properly-encoded query pair rather than
+            // interpolating it into the URL (a `&`/`#` in the token would
+            // otherwise alter the request).
+            .query(&[("token", n.fetch_token.as_str())])
+            .send()
+            .await
+            // `without_url` keeps the single-use fetch token out of the error
+            // message, which is logged and echoed back to the Relay.
+            .map_err(|e| anyhow::Error::new(e.without_url()))?;
         if !resp.status().is_success() {
             anyhow::bail!("relay /buffer/fetch returned {}", resp.status());
         }
@@ -783,6 +804,37 @@ async fn store_pairing_token(
     Ok(())
 }
 
+/// Purge a tombstoned entity's local data. Returns `false` without touching
+/// anything when the id is empty, the type is unknown, or no matching
+/// tombstone exists — so a compromised relay cannot use `purge_tombstone` to
+/// delete a live file's shards. On `true`, the caller acks the Relay.
+pub(crate) async fn purge_tombstoned_entity(
+    db: &sqlx::SqlitePool,
+    store: &crate::store::ObjectStore,
+    entity_type: &str,
+    entity_id: &str,
+) -> anyhow::Result<bool> {
+    if entity_id.is_empty() || !matches!(entity_type, "file" | "folder") {
+        return Ok(false);
+    }
+    let has: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM tombstones WHERE entity_type = ? AND entity_id = ?",
+    )
+    .bind(entity_type)
+    .bind(entity_id)
+    .fetch_one(db)
+    .await?;
+    if has == 0 {
+        return Ok(false);
+    }
+    if entity_type == "file" {
+        crate::store::gc::purge_file(store, entity_id).await?;
+    } else {
+        crate::store::gc::purge_folder(store, entity_id).await?;
+    }
+    Ok(true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -802,6 +854,64 @@ mod tests {
         let resp = SyncClient::sign_auth_challenge(&id, &challenge);
         assert_eq!(resp.node_id, id.node_id);
         assert!(!resp.signature.is_empty());
+    }
+
+    #[tokio::test]
+    async fn purge_tombstoned_entity_requires_a_matching_tombstone() {
+        let dir = tempdir().unwrap();
+        let pool = db::open(dir.path()).await.unwrap();
+        let store = crate::store::ObjectStore::new(dir.path().to_path_buf(), pool.clone())
+            .await
+            .unwrap();
+
+        // A live file with real data but no tombstone.
+        let object_id = store.put(b"live shard").await.unwrap();
+        sqlx::query(
+            "INSERT INTO files (file_id, created_at, updated_at) VALUES ('f-live', 'now', 'now')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO file_versions (file_id, version_number, version_hash, shard_count, created_at) VALUES ('f-live', 1, 'h', 1, 'now')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO shards (file_id, version_number, shard_index, object_id, size_bytes) VALUES ('f-live', 1, 0, ?, 10)",
+        )
+        .bind(&object_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // No tombstone and an unknown type: refuse, leaving live data intact.
+        assert!(
+            !purge_tombstoned_entity(&pool, &store, "file", "f-live")
+                .await
+                .unwrap()
+        );
+        assert!(
+            !purge_tombstoned_entity(&pool, &store, "alien", "f-live")
+                .await
+                .unwrap()
+        );
+        assert!(store.exists(&object_id), "live data must survive");
+
+        // With a tombstone present, the purge proceeds and frees the object.
+        sqlx::query(
+            "INSERT INTO tombstones (entity_type, entity_id, deleted_at) VALUES ('file', 'f-live', 'now')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        assert!(
+            purge_tombstoned_entity(&pool, &store, "file", "f-live")
+                .await
+                .unwrap()
+        );
+        assert!(!store.exists(&object_id));
     }
 
     #[tokio::test]

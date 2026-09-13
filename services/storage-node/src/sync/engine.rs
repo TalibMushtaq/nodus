@@ -16,6 +16,20 @@ pub enum ApplyOutcome {
     },
 }
 
+/// A known event whose payload is deterministically malformed, so retrying can
+/// never succeed. `apply_incoming_batch` acks (skips) these instead of leaving
+/// them to block the origin's stream forever; transient errors are retried.
+#[derive(Debug)]
+pub struct MalformedEvent(pub String);
+
+impl std::fmt::Display for MalformedEvent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl std::error::Error for MalformedEvent {}
+
 /// Apply a single remote sync event idempotently to SQLite database.
 pub async fn apply_remote_event(
     db: &SqlitePool,
@@ -24,6 +38,25 @@ pub async fn apply_remote_event(
 ) -> anyhow::Result<ApplyOutcome> {
     let mut conn = db.acquire().await?;
     apply_remote_event_conn(&mut conn, event, local_node_id).await
+}
+
+/// True when a tombstone exists for `entity_type`/`entity_id`. Create/version
+/// projections consult this to avoid resurrecting a deleted entity (parity with
+/// the Relay, which filters these in `sync.go`). The event is still acknowledged
+/// and the cursor advances; only the projection is skipped.
+async fn has_tombstone_conn(
+    conn: &mut SqliteConnection,
+    entity_type: &str,
+    entity_id: &str,
+) -> anyhow::Result<bool> {
+    let count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM tombstones WHERE entity_type = ? AND entity_id = ?",
+    )
+    .bind(entity_type)
+    .bind(entity_id)
+    .fetch_one(&mut *conn)
+    .await?;
+    Ok(count > 0)
 }
 
 /// Connection variant of [`apply_remote_event`]: the idempotency check, the
@@ -92,7 +125,10 @@ pub(crate) async fn apply_remote_event_conn(
                 .and_then(|v| v.as_str());
             let encrypted_name = event.payload.get("encrypted_name").and_then(|v| v.as_str());
 
-            if !file_id.is_empty() {
+            // Anti-resurrection (matches the Relay): a create for a tombstoned
+            // file is acknowledged but not projected, so a long-offline device
+            // cannot revive a deleted file.
+            if !file_id.is_empty() && !has_tombstone_conn(&mut tx, "file", file_id).await? {
                 sqlx::query(
                     r#"
                     INSERT INTO files (file_id, parent_folder_id, encrypted_name, created_at, updated_at)
@@ -114,7 +150,33 @@ pub(crate) async fn apply_remote_event_conn(
         }
 
         "FILE_VERSION_ADDED" | "FILE_MODIFIED" => {
-            if let Ok(ver) = serde_json::from_value::<FileVersionPayload>(event.payload.clone()) {
+            'project_version: {
+                // A payload that cannot be parsed is deterministically bad: surface
+                // it as a malformed event so the batch acks/skips it rather than
+                // silently dropping it (the old `if let Ok` swallow) or retrying
+                // forever.
+                let ver = serde_json::from_value::<FileVersionPayload>(event.payload.clone())
+                    .map_err(|e| {
+                        anyhow::Error::new(MalformedEvent(format!(
+                            "invalid {} payload: {e}",
+                            event.event_type
+                        )))
+                    })?;
+                // The protocol requires version_number >= 1; a non-positive
+                // value is malformed input, not a valid version to project.
+                if ver.version_number < 1 {
+                    return Err(anyhow::Error::new(MalformedEvent(format!(
+                        "{} has non-positive version_number {}",
+                        event.event_type, ver.version_number
+                    ))));
+                }
+                // Anti-resurrection (matches the Relay): a version for a
+                // tombstoned file is acknowledged but not projected, so a
+                // long-offline device cannot revive a deleted file. The cursor
+                // still advances below; the event is deliberately dropped.
+                if has_tombstone_conn(&mut tx, "file", &ver.file_id).await? {
+                    break 'project_version;
+                }
                 // Ensure parent file row exists
                 sqlx::query(
                     r#"
@@ -260,7 +322,10 @@ pub(crate) async fn apply_remote_event_conn(
                 .and_then(|v| v.as_str());
             let encrypted_name = event.payload.get("encrypted_name").and_then(|v| v.as_str());
 
-            if !folder_id.is_empty() {
+            // Anti-resurrection: a create for a tombstoned folder is acked but
+            // not projected (docs `event-types.md`: offline devices must not
+            // resurrect deleted folders).
+            if !folder_id.is_empty() && !has_tombstone_conn(&mut tx, "folder", folder_id).await? {
                 sqlx::query(
                     r#"
                     INSERT INTO folders (folder_id, parent_folder_id, encrypted_name, created_at, updated_at)
@@ -493,7 +558,17 @@ pub async fn apply_incoming_batch(
                 applied_ids.push(event.event_id.clone());
             }
             Err(e) => {
-                eprintln!("failed to apply event {}: {}", event.event_id, e);
+                if e.downcast_ref::<MalformedEvent>().is_some() {
+                    // Deterministically bad payload: retrying cannot help and
+                    // would block every later event from this origin, so ack it
+                    // (skip) while logging for operators.
+                    eprintln!("[sync] skipping malformed event {}: {}", event.event_id, e);
+                    applied_ids.push(event.event_id.clone());
+                } else {
+                    // Transient (e.g. DB busy, FK race): leave it unacked so the
+                    // Relay resends the batch.
+                    eprintln!("failed to apply event {}: {}", event.event_id, e);
+                }
             }
         }
     }
@@ -647,6 +722,37 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(remaining, 0, "TOMBSTONE_REMOVED must delete the tombstone");
+    }
+
+    #[tokio::test]
+    async fn malformed_known_event_is_skipped_not_blocked() {
+        let dir = tempdir().unwrap();
+        let pool = db::open(dir.path()).await.unwrap();
+
+        // `version_number` must be an integer; a string fails deserialization.
+        let bad = SyncEvent {
+            event_id: "evt-bad".to_string(),
+            origin_id: "relay-1".to_string(),
+            origin_sequence: 1,
+            event_type: "FILE_VERSION_ADDED".to_string(),
+            payload: serde_json::json!({ "file_id": "f", "version_number": "nope" }),
+            timestamp: "2026-09-13T00:00:00Z".to_string(),
+        };
+
+        let err = apply_remote_event(&pool, &bad, "node-test")
+            .await
+            .unwrap_err();
+        assert!(err.downcast_ref::<MalformedEvent>().is_some());
+
+        // The batch acks/skips it, so a single poison event cannot block the
+        // origin's stream forever.
+        let batch = EventBatchPayload {
+            events: vec![bad.clone()],
+        };
+        let ack = apply_incoming_batch(&pool, &batch, "node-test")
+            .await
+            .unwrap();
+        assert_eq!(ack.applied_event_ids, vec!["evt-bad"]);
     }
 
     #[tokio::test]
