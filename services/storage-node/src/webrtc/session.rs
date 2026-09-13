@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, bail};
@@ -13,10 +14,28 @@ use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
 use webrtc::ice_transport::ice_server::RTCIceServer;
 use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::peer_connection::configuration::RTCConfiguration;
+use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 
 use crate::identity::NodeIdentity;
 use crate::store::ObjectStore;
+
+/// Hard cap on a single shard upload over a data channel. The paired device is
+/// cryptographically authenticated, but a compromised or buggy client must not
+/// be able to drive unbounded buffering on the node: the cap is enforced on
+/// every chunk *before* it is appended, and on the declared metadata size at
+/// metadata time.
+const MAX_SHARD_BYTES: usize = 64 * 1024 * 1024;
+
+/// If a shard transmission stalls (no frames at all) this long, the partially
+/// received state is dropped so a wedged channel can't pin memory or poison the
+/// next transmission on the same channel.
+const CHANNEL_STALL_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// Unused WebRTC sessions are reaped after this much wall time *without* an
+/// active peer connection. Sessions with live traffic (`touch`) or an active
+/// `Connected` transport are never pruned, regardless of how long they live.
+const SESSION_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ShardUploadPayload {
@@ -41,10 +60,93 @@ pub struct ShardAckPayload {
     pub error_message: Option<String>,
 }
 
-#[derive(Default)]
+/// Per-data-channel receive state for one inbound shard upload.
+///
+/// Kept behind a tokio mutex because the message handler and the staleness
+/// watcher touch it concurrently. All capacity decisions live here so the
+/// buffering rules are unit-testable without a live peer connection.
 struct ChannelReceiveState {
     metadata: Option<ShardUploadPayload>,
     chunks: Vec<u8>,
+    last_activity: Instant,
+}
+
+impl Default for ChannelReceiveState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[derive(Debug)]
+enum ShardReject {
+    /// Binary arrived before the channel advertised metadata.
+    MissingMetadata,
+    /// Declared size or accumulated bytes exceed the hard cap.
+    TooLarge,
+    /// Metadata carried an invalid size or non-hex hash.
+    InvalidMetadata,
+}
+
+impl ChannelReceiveState {
+    fn new() -> Self {
+        Self {
+            metadata: None,
+            chunks: Vec::new(),
+            last_activity: Instant::now(),
+        }
+    }
+
+    /// Store channel metadata after validating the *declared* size against the
+    /// cap. Any incoming shard that can't possibly fit is rejected here so we
+    /// never start buffering something we will refuse anyway.
+    fn on_metadata(&mut self, meta: ShardUploadPayload) -> Result<(), ShardReject> {
+        if meta.size < 0 || meta.size as usize > MAX_SHARD_BYTES {
+            return Err(ShardReject::TooLarge);
+        }
+        let hash_ok = meta.hash.len() == 64
+            && meta
+                .hash
+                .bytes()
+                .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
+        if !hash_ok {
+            return Err(ShardReject::InvalidMetadata);
+        }
+        self.chunks.clear();
+        self.metadata = Some(meta);
+        self.last_activity = Instant::now();
+        Ok(())
+    }
+
+    /// Append a binary chunk only if the running total stays within the cap.
+    /// The check happens *before* `extend_from_slice`, so memory growth is
+    /// bounded even for a peer that lies about the declared size.
+    fn on_binary(&mut self, data: &[u8]) -> Result<(), ShardReject> {
+        if self.metadata.is_none() {
+            return Err(ShardReject::MissingMetadata);
+        }
+        if self.chunks.len().saturating_add(data.len()) > MAX_SHARD_BYTES {
+            return Err(ShardReject::TooLarge);
+        }
+        self.chunks.extend_from_slice(data);
+        self.last_activity = Instant::now();
+        Ok(())
+    }
+
+    /// True when a transmission is mid-flight and has seen no frames recently.
+    fn is_stalled(&self, now: Instant) -> bool {
+        self.metadata.is_some() && now.duration_since(self.last_activity) > CHANNEL_STALL_TIMEOUT
+    }
+
+    /// Consume the completed transmission, if one is in flight.
+    fn take_done(&mut self) -> Option<(ShardUploadPayload, Vec<u8>)> {
+        let meta = self.metadata.take()?;
+        Some((meta, std::mem::take(&mut self.chunks)))
+    }
+
+    fn clear(&mut self) {
+        self.metadata = None;
+        self.chunks.clear();
+    }
 }
 
 pub struct WebRtcSession {
@@ -53,7 +155,10 @@ pub struct WebRtcSession {
     pub device_id: String,
     pub peer_connection: Arc<RTCPeerConnection>,
     pub ice_tx: broadcast::Sender<String>,
-    pub created_at: Instant,
+    /// Monotonic millis of the last observed activity (signaling or channel
+    /// traffic). The manager's reaper uses this to distinguish an idle session
+    /// from an actively transferring one.
+    pub last_active_ms: Arc<AtomicU64>,
 }
 
 impl WebRtcSession {
@@ -97,14 +202,40 @@ impl WebRtcSession {
         let db_clone = db.clone();
         let store_clone = store.clone();
         let identity_clone = identity.clone();
+        let last_active = Arc::new(AtomicU64::new(now_millis()));
+        let channel_last_active = last_active.clone();
 
         peer_connection.on_data_channel(Box::new(move |dc: Arc<RTCDataChannel>| {
             let db = db_clone.clone();
             let store = store_clone.clone();
             let identity = identity_clone.clone();
+            let session_last_active = channel_last_active.clone();
 
             Box::pin(async move {
-                let state = Arc::new(Mutex::new(ChannelReceiveState::default()));
+                let state = Arc::new(Mutex::new(ChannelReceiveState::new()));
+
+                // ONE staleness watcher per channel (not per frame): flips the
+                // shared state back to idle when a transmission stalls. It exits
+                // once the data channel reports close. `last_activity` moves with
+                // the traffic, so a slow-but-live transfer is never cleared.
+                let watcher_state = state.clone();
+                let dc_watcher = dc.clone();
+                tokio::spawn(async move {
+                    let mut tick = tokio::time::interval(Duration::from_secs(30));
+                    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                    loop {
+                        tick.tick().await;
+                        if dc_watcher.ready_state() == (webrtc::data_channel::data_channel_state::RTCDataChannelState::Closed)
+                        {
+                            return;
+                        }
+                        let mut st = watcher_state.lock().await;
+                        if st.is_stalled(Instant::now()) {
+                            eprintln!("[webrtc] clearing stalled shard transfer on channel");
+                            st.clear();
+                        }
+                    }
+                });
 
                 let state_clone = state.clone();
                 let dc_clone = dc.clone();
@@ -115,8 +246,14 @@ impl WebRtcSession {
                     let db = db.clone();
                     let store = store.clone();
                     let identity = identity.clone();
+                    let session_last_active = session_last_active.clone();
 
                     Box::pin(async move {
+                        // Any traffic counts as session activity (#4: a long
+                        // running, actively transferring session must outlive
+                        // a naive created-at TTL).
+                        session_last_active.store(now_millis(), Ordering::Relaxed);
+
                         if msg.is_string {
                             let text = match String::from_utf8(msg.data.to_vec()) {
                                 Ok(t) => t,
@@ -126,12 +263,10 @@ impl WebRtcSession {
                             if text.contains("\"shard_done\"") {
                                 // Shard transmission finished, verify and commit
                                 let mut st = state.lock().await;
-                                let metadata = match st.metadata.take() {
-                                    Some(m) => m,
-                                    None => return,
+                                let Some((metadata, chunks)) = st.take_done() else {
+                                    return;
                                 };
-                                let chunks = std::mem::take(&mut st.chunks);
-                                drop(st);
+                                let size_bytes = chunks.len() as i64;
 
                                 let actual_hash = blake3::hash(&chunks).to_hex().to_string();
                                 if actual_hash != metadata.hash {
@@ -170,7 +305,6 @@ impl WebRtcSession {
                                 }
 
                                 // 2 & 3. Commit metadata to SQLite shards table and sync_outbox atomically
-                                let size_bytes = chunks.len() as i64;
                                 let now = chrono::Utc::now().to_rfc3339();
                                 let event_id = uuid::Uuid::new_v4().to_string();
                                 let outbox_payload = serde_json::json!({
@@ -246,26 +380,43 @@ impl WebRtcSession {
                                 if let Ok(ack_json) = serde_json::to_string(&ack) {
                                     let _ = dc.send_text(ack_json).await;
                                 }
-                            } else if let Ok(meta) = serde_json::from_str::<ShardUploadPayload>(&text) {
+                            } else if let Ok(meta) =
+                                serde_json::from_str::<ShardUploadPayload>(&text)
+                            {
+                                // Metadata frame for a new transmission. A
+                                // rejected frame clears stale state so the next
+                                // attempt starts clean.
                                 let mut st = state.lock().await;
-                                st.metadata = Some(meta);
-                                st.chunks.clear();
-
-                                // Spawn timeout task to clear state if transmission stalls
-                                let state_timeout = state.clone();
-                                tokio::spawn(async move {
-                                    tokio::time::sleep(Duration::from_secs(300)).await;
-                                    let mut st = state_timeout.lock().await;
-                                    if st.metadata.is_some() {
-                                        st.metadata = None;
-                                        st.chunks.clear();
+                                match st.on_metadata(meta.clone()) {
+                                    Ok(()) => {}
+                                    Err(_) => {
+                                        st.clear();
+                                        // Fields parsed far enough for an ack:
+                                        // the sender sees the failure and aborts.
+                                        let ack = ShardAckPayload {
+                                            file_id: meta.file_id,
+                                            version_number: meta.version_number,
+                                            shard_index: meta.shard_index,
+                                            status: "failed".into(),
+                                            transfer_id: meta.transfer_id,
+                                            error_message: Some(
+                                                "shard rejected: exceeds size cap or invalid metadata".into(),
+                                            ),
+                                        };
+                                        if let Ok(ack_json) = serde_json::to_string(&ack) {
+                                            let _ = dc.send_text(ack_json).await;
+                                        }
                                     }
-                                });
+                                }
                             }
                         } else {
                             // Binary chunk received
                             let mut st = state.lock().await;
-                            st.chunks.extend_from_slice(&msg.data);
+                            if st.on_binary(&msg.data).is_err() {
+                                // Garbage before metadata or a cap violation:
+                                // drop the transmission rather than buffer it.
+                                st.clear();
+                            }
                         }
                     })
                 }));
@@ -277,8 +428,13 @@ impl WebRtcSession {
             device_id,
             peer_connection,
             ice_tx,
-            created_at: Instant::now(),
+            last_active_ms: last_active,
         })
+    }
+
+    /// Record activity so the reaper never prunes a live session.
+    pub fn touch(&self) {
+        self.last_active_ms.store(now_millis(), Ordering::Relaxed);
     }
 
     pub async fn handle_offer(&self, sdp: &str) -> anyhow::Result<String> {
@@ -327,6 +483,24 @@ impl WebRtcSession {
     }
 }
 
+fn now_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Decide whether a session should be pruned by the reaper.
+///
+/// A session stays alive while it has been active recently (`last_active_ms`
+/// within `SESSION_IDLE_TIMEOUT`) *or* while its peer connection is live
+/// (`Connected`). A never-gathered or failed session goes stale on its own once
+/// activity stops — this is what keeps an abandoned iced-out session from
+/// lingering forever rather than at a fixed created-at TTL.
+fn should_prune(last_active_ms: u64, now_ms: u64, connected: bool) -> bool {
+    now_ms.saturating_sub(last_active_ms) > SESSION_IDLE_TIMEOUT.as_millis() as u64 && !connected
+}
+
 /// WebRtcManager manages active WebRTC sessions and handles lifecycle/TTL.
 #[derive(Clone)]
 pub struct WebRtcManager {
@@ -354,7 +528,9 @@ impl WebRtcManager {
             telemetry,
         };
 
-        // Spawn reaper task to clean up abandoned sessions after 5 minutes
+        // Reaper: prune sessions once they are idle AND no longer connected.
+        // `created_at` is deliberately not used — a session that is actively
+        // transferring buckets of shards must not be torn down on a fixed TTL.
         let sessions_clone = manager.sessions.clone();
         let telemetry_clone = manager.telemetry.clone();
         tokio::spawn(async move {
@@ -363,15 +539,18 @@ impl WebRtcManager {
                 interval.tick().await;
                 let mut lock = sessions_clone.write().await;
                 let before = lock.len();
-                lock.retain(|_, session| session.created_at.elapsed() < Duration::from_secs(300));
+                let now = now_millis();
+                lock.retain(|_, session| {
+                    let active = session.last_active_ms.load(Ordering::Relaxed);
+                    let connected = session.peer_connection.connection_state()
+                        == RTCPeerConnectionState::Connected;
+                    !should_prune(active, now, connected)
+                });
                 // Publishing on every tick also heals a count drift if a
                 // session ever ends without an explicit prune.
                 telemetry_clone.set_direct_active(lock.len() as u32);
                 if lock.len() != before {
-                    eprintln!(
-                        "[webrtc] pruned {} abandoned session(s)",
-                        before - lock.len()
-                    );
+                    eprintln!("[webrtc] pruned {} idle session(s)", before - lock.len());
                 }
             }
         });
@@ -379,19 +558,28 @@ impl WebRtcManager {
         manager
     }
 
+    /// Return the live session for `session_id`, creating it exactly once.
+    ///
+    /// Single-flight by construction: the check, create, and insert all happen
+    /// while holding the map's write lock, so concurrent callers serialize and
+    /// every one of them observes the same `Arc`. Creation is local-only (peer
+    /// connection + closures), so the brief write-lock hold is acceptable.
     pub async fn get_or_create_session(
         &self,
         session_id: &str,
         device_id: &str,
     ) -> anyhow::Result<Arc<WebRtcSession>> {
-        {
-            let lock = self.sessions.read().await;
-            if let Some(sess) = lock.get(session_id) {
-                if sess.device_id != device_id {
-                    bail!("device_id mismatch for existing session");
-                }
+        let mut lock = self.sessions.write().await;
+        if let Some(sess) = lock.get(session_id) {
+            if sess.device_id != device_id {
+                bail!("device_id mismatch for existing session");
+            }
+            // Reuse the live connection; only a Failed transport warrants a
+            // replacement (the client's next offer would fail on a dead one).
+            if sess.peer_connection.connection_state() != RTCPeerConnectionState::Failed {
                 return Ok(sess.clone());
             }
+            lock.remove(session_id);
         }
 
         let session = Arc::new(
@@ -405,7 +593,6 @@ impl WebRtcManager {
             .await?,
         );
 
-        let mut lock = self.sessions.write().await;
         // First client for this session id: record it as a direct (internet)
         // connection in shell telemetry and refresh the live count.
         self.telemetry.direct_session_started();
@@ -417,5 +604,152 @@ impl WebRtcManager {
     pub async fn get_session(&self, session_id: &str) -> Option<Arc<WebRtcSession>> {
         let lock = self.sessions.read().await;
         lock.get(session_id).cloned()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn meta(size: i64) -> ShardUploadPayload {
+        ShardUploadPayload {
+            file_id: "f1".into(),
+            version_number: 1,
+            shard_index: 0,
+            hash: blake3::hash(b"x").to_hex().to_string(),
+            size,
+            transfer_id: "t1".into(),
+            target_node: None,
+            source_device: None,
+        }
+    }
+
+    #[test]
+    fn binary_before_metadata_is_rejected() {
+        let mut st = ChannelReceiveState::new();
+        assert!(matches!(
+            st.on_binary(b"0001020304").unwrap_err(),
+            ShardReject::MissingMetadata
+        ));
+    }
+
+    #[test]
+    fn declared_size_over_cap_rejected_at_metadata() {
+        let mut st = ChannelReceiveState::new();
+        assert!(matches!(
+            st.on_metadata(meta((MAX_SHARD_BYTES + 1) as i64))
+                .unwrap_err(),
+            ShardReject::TooLarge
+        ));
+        assert!(
+            st.metadata.is_none(),
+            "rejected metadata must not be stored"
+        );
+    }
+
+    #[test]
+    fn invalid_hash_rejected() {
+        let mut st = ChannelReceiveState::new();
+        let mut m = meta(1);
+        m.hash = "..not-hex..".into();
+        assert!(matches!(
+            st.on_metadata(m).unwrap_err(),
+            ShardReject::InvalidMetadata
+        ));
+    }
+
+    #[test]
+    fn chunk_cap_is_enforced_before_append() {
+        let mut st = ChannelReceiveState::new();
+        st.on_metadata(meta(MAX_SHARD_BYTES as i64)).unwrap();
+        let bulk = vec![0u8; MAX_SHARD_BYTES];
+        assert!(st.on_binary(&bulk).is_ok());
+        assert_eq!(st.chunks.len(), MAX_SHARD_BYTES);
+        // One more byte must be refused without growing the buffer.
+        assert!(matches!(
+            st.on_binary(&[1]).unwrap_err(),
+            ShardReject::TooLarge
+        ));
+        assert_eq!(st.chunks.len(), MAX_SHARD_BYTES);
+    }
+
+    #[test]
+    fn done_consumes_and_resets_state() {
+        let mut st = ChannelReceiveState::new();
+        st.on_metadata(meta(2)).unwrap();
+        st.on_binary(b"ab").unwrap();
+        let (m, chunks) = st.take_done().unwrap();
+        assert_eq!(m.file_id, "f1");
+        assert_eq!(chunks, b"ab");
+        assert!(st.take_done().is_none(), "second take is empty");
+    }
+
+    #[test]
+    fn stall_is_only_detected_mid_transmission() {
+        let mut st = ChannelReceiveState::new();
+        // No metadata yet: not stalled.
+        assert!(!st.is_stalled(Instant::now() + Duration::from_secs(3600)));
+        st.on_metadata(meta(1)).unwrap();
+        let future = Instant::now() + CHANNEL_STALL_TIMEOUT + Duration::from_secs(1);
+        assert!(st.is_stalled(future));
+        // Recent binary traffic resets the stall window.
+        let mut st2 = ChannelReceiveState::new();
+        st2.on_metadata(meta(1)).unwrap();
+        st2.on_binary(b"z").unwrap();
+        assert!(!st2.is_stalled(Instant::now() + Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn reaper_only_prunes_idle_and_disconnected() {
+        let now = now_millis();
+        let idle_past = now - SESSION_IDLE_TIMEOUT.as_millis() as u64 - 1;
+        // Idle + not connected -> prune.
+        assert!(should_prune(idle_past, now, false));
+        // Idle but the transport is still connected -> keep (long transfers).
+        assert!(!should_prune(idle_past, now, true));
+        // Recently active -> keep regardless of connection state.
+        assert!(!should_prune(now, now, false));
+    }
+
+    #[tokio::test]
+    async fn get_or_create_is_single_flight() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::db::open(dir.path()).await.unwrap();
+        let store = Arc::new(
+            ObjectStore::new(dir.path().to_path_buf(), db.clone())
+                .await
+                .unwrap(),
+        );
+        let identity = Arc::new(crate::identity::load_or_generate(dir.path()).unwrap());
+        let manager = WebRtcManager::new(
+            db.clone(),
+            store,
+            identity,
+            crate::telemetry::Telemetry::new(),
+        );
+
+        // 8 concurrent callers for the same session id must all end up holding
+        // the same Arc — exactly one peer connection is ever created.
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let m = manager.clone();
+            handles.push(tokio::spawn(async move {
+                m.get_or_create_session("sess-single-flight", "dev-1")
+                    .await
+                    .expect("session creation succeeds")
+            }));
+        }
+        let mut sessions = Vec::new();
+        for h in handles {
+            sessions.push(h.await.unwrap());
+        }
+        for s in &sessions[1..] {
+            assert!(
+                Arc::ptr_eq(&sessions[0], s),
+                "concurrent get_or_create must return the same Arc"
+            );
+        }
+        let stored = manager.get_session("sess-single-flight").await.unwrap();
+        assert_eq!(stored.device_id, "dev-1");
     }
 }

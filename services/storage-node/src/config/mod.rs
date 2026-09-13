@@ -8,10 +8,8 @@ use directories::BaseDirs;
 use serde::{Deserialize, Serialize};
 
 pub const CONFIG_FILE: &str = "config.toml";
-/// Reserved fixed subdirectory (see §11) that will hold the node keypair when
-/// the identity module lands in Phase 5. Kept here as the single reference for
-/// the reserved name so identity code and config code agree on it.
-#[allow(dead_code)]
+/// Reserved fixed subdirectory (§11) holding the node keypair; the single
+/// reference for the reserved name so identity code and config code agree.
 pub const IDENTITY_DIR: &str = "identity";
 
 /// Bootstrap config file contents. `relay_url` is optional so existing

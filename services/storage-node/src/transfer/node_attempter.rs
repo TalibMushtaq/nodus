@@ -23,10 +23,12 @@ pub struct NodePathAttempter {
     http: reqwest::Client,
 }
 
-/// How long a single mDNS peer lookup may take before Path A gives up. LAN
-/// multicast is fast; a fixed budget keeps one stuck repair from holding the
-/// pool semaphore forever (the next reconciliation scan retries it).
-const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(2);
+/// Total budget for one direct peer shard fetch (#9): covers the whole
+/// exchange including the body read. A shard is at most `MAX_SHARD_BYTES` on
+/// this node and the peer is on the LAN, so 30 s of silence means the peer is
+/// wedged — fail the attempt and let the executor fall through to another
+/// path / the next reconciliation scan.
+const PEER_FETCH_TIMEOUT: Duration = Duration::from_secs(30);
 
 impl NodePathAttempter {
     pub fn new(db: SqlitePool, store: Arc<ObjectStore>, identity: Arc<NodeIdentity>) -> Self {
@@ -35,8 +37,13 @@ impl NodePathAttempter {
             store,
             identity,
             // Fresh client per attempter: pooled, cheap, and isolates DNS/header
-            // state from the manager's own Relay-fetch client.
-            http: reqwest::Client::new(),
+            // state from the manager's own Relay-fetch client. The timeout
+            // bounds the whole peer exchange (#9) so a wedged peer can't pin a
+            // repair slot of the shared concurrency pool.
+            http: reqwest::Client::builder()
+                .timeout(PEER_FETCH_TIMEOUT)
+                .build()
+                .expect("reqwest client build cannot fail"),
         }
     }
 }

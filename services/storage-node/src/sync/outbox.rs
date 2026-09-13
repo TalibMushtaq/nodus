@@ -84,6 +84,24 @@ pub async fn mark_events_synced(db: &SqlitePool, event_ids: &[String]) -> anyhow
     Ok(())
 }
 
+/// Purge outbox rows the Relay has acknowledged and whose `created_at` predates
+/// `grace_before` (an RFC3339 instant), keeping `sync_outbox` from growing
+/// without bound (#15). `grace_before` is a timestamp so the caller controls
+/// the retention window; RFC3339 strings compare lexicographically.
+pub async fn sweep_synced_outbox(db: &SqlitePool, grace_before: &str) -> anyhow::Result<u64> {
+    let res = sqlx::query(
+        r#"
+        DELETE FROM sync_outbox
+        WHERE synced = 1 AND created_at < ?
+        "#,
+    )
+    .bind(grace_before)
+    .execute(db)
+    .await?;
+
+    Ok(res.rows_affected())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -129,5 +147,66 @@ mod tests {
         let pending_after = drain_unsynced_events(&pool, 500).await.unwrap();
         assert_eq!(pending_after.len(), 1);
         assert_eq!(pending_after[0].event_id, "evt-2");
+    }
+
+    #[tokio::test]
+    async fn test_sweep_only_removes_old_acked_events() {
+        let dir = tempdir().unwrap();
+        let pool = db::open(dir.path()).await.unwrap();
+        let now = chrono::Utc::now();
+
+        let old = SyncEvent {
+            event_id: "evt-old-acked".to_string(),
+            origin_id: "node-1".to_string(),
+            origin_sequence: 1,
+            event_type: "FILE_CREATED".to_string(),
+            payload: serde_json::json!({ "file_id": "f1" }),
+            timestamp: (now - chrono::Duration::days(2)).to_rfc3339(),
+        };
+        let fresh_acked = SyncEvent {
+            event_id: "evt-fresh-acked".to_string(),
+            origin_id: "node-1".to_string(),
+            origin_sequence: 2,
+            event_type: "FILE_CREATED".to_string(),
+            payload: serde_json::json!({ "file_id": "f2" }),
+            timestamp: now.to_rfc3339(),
+        };
+        let unsynced = SyncEvent {
+            event_id: "evt-old-unsynced".to_string(),
+            origin_id: "node-1".to_string(),
+            origin_sequence: 3,
+            event_type: "FILE_CREATED".to_string(),
+            payload: serde_json::json!({ "file_id": "f3" }),
+            timestamp: (now - chrono::Duration::days(2)).to_rfc3339(),
+        };
+
+        insert_outbox_event(&pool, &old).await.unwrap();
+        insert_outbox_event(&pool, &fresh_acked).await.unwrap();
+        insert_outbox_event(&pool, &unsynced).await.unwrap();
+
+        // Ack the two events that were successfully relayed; leave #3 pending.
+        mark_events_synced(
+            &pool,
+            &["evt-old-acked".to_string(), "evt-fresh-acked".to_string()],
+        )
+        .await
+        .unwrap();
+
+        let grace = (now - chrono::Duration::days(1)).to_rfc3339();
+        let removed = sweep_synced_outbox(&pool, &grace).await.unwrap();
+
+        // Only the acked row older than the grace period goes away.
+        assert_eq!(removed, 1);
+        let remaining: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sync_outbox")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(remaining, 2);
+        let remaining_ids: Vec<String> =
+            sqlx::query_scalar("SELECT event_id FROM sync_outbox ORDER BY origin_sequence")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(remaining_ids, vec!["evt-fresh-acked", "evt-old-unsynced"]);
     }
 }

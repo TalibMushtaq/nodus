@@ -1,12 +1,13 @@
 use futures_util::{SinkExt, StreamExt};
 use sqlx::{Row, SqlitePool};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
 use url::Url;
 
 use super::engine::{apply_incoming_batch, drain_pending_fetches};
-use super::outbox::{drain_unsynced_events, mark_events_synced};
+use super::outbox::{drain_unsynced_events, mark_events_synced, sweep_synced_outbox};
 use super::snapshot::is_rebuild_required_for;
 use super::types::{
     BatchAckPayload, EventBatchPayload, NodeAuthChallengePayload, NodeAuthResponsePayload,
@@ -159,6 +160,40 @@ fn append_ws_path(url: &mut Url) {
     }
 }
 
+/// Interval at which an *established* session flushes locally-created outbox
+/// events to the Relay. The pre-session drain only covers events produced
+/// before connect; without this, events created mid-session would sit in the
+/// outbox until the next reconnect (#7).
+const OUTBOX_FLUSH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Interval at which acknowledged outbox rows are swept (#15). Held well below
+/// the flush cadence so the purge never competes with event delivery.
+const OUTBOX_SWEEP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// Acknowledged outbox rows younger than this are retained: the Relay ack may
+/// still be in flight on the same session, and re-sending a just-acked event
+/// is safer than silently dropping one the Relay never received.
+const OUTBOX_SWEEP_GRACE: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+
+/// How long one WebSocket connect to the Relay may take (#9). A black-holed
+/// relay IP has no kernel-level fast failure; without an explicit budget the
+/// sync retry loop in `main.rs` would stall on a single dial instead of cycling
+/// back into its 5 s reconnect cadence. Matches the operator-side pairing HTTP
+/// budget (`main.rs` uses the same 15 s).
+const RELAY_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Total budget for one Relay buffer fetch: request, response, and body read
+/// (`reqwest` `timeout` covers the whole exchange). A shard is at most
+/// `MAX_SHARD_BYTES` on this node; 30 s also matches the WebRTC ack budget.
+const RELAY_FETCH_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Budget for one WebSocket send (#9). A TCP socket that has silently wedged
+/// (packets blackholed after connect) would otherwise block the sink forever,
+/// pinning the whole session read loop and, with it, the reconnect cadence in
+/// `main.rs`. 30 s exceeds any legitimate message (max ~1000-record snapshot
+/// chunk) while still failing deterministically.
+const WS_WRITE_TIMEOUT: Duration = Duration::from_secs(30);
+
 pub struct SyncClient {
     pub relay_url: String,
     pub identity: Arc<NodeIdentity>,
@@ -188,8 +223,13 @@ impl SyncClient {
             identity,
             db,
             object_store,
+            // Bound the buffer fetch (#9): a stalled Relay should fail this
+            // shard and let the session continue, not pin the read loop.
+            http_client: reqwest::Client::builder()
+                .timeout(RELAY_FETCH_TIMEOUT)
+                .build()
+                .expect("reqwest client build cannot fail"),
             batch_size,
-            http_client: reqwest::Client::new(),
             on_connected,
         }
     }
@@ -238,7 +278,20 @@ impl SyncClient {
 
     /// Perform a single sync exchange run over WebSocket.
     pub async fn run_sync_session(&self) -> anyhow::Result<()> {
-        let (ws_stream, _) = connect_async(&self.relay_url).await?;
+        // Bound the dial itself (#9): tokio_tungstenite has no connect timeout,
+        // and a black-holed relay has no kernel fast-fail, so without this the
+        // main loop's reconnect cadence is held hostage by one stuck connect.
+        // `connect_async` completes only when the HTTP->WS handshake finishes,
+        // so this covers DNS, TCP connect, and the upgrade in one budget.
+        let (ws_stream, _) =
+            tokio::time::timeout(RELAY_CONNECT_TIMEOUT, connect_async(&self.relay_url))
+                .await
+                .map_err(|_| {
+                    anyhow::anyhow!(
+                        "relay websocket connect timed out after {RELAY_CONNECT_TIMEOUT:?}"
+                    )
+                })?
+                .map_err(|e| anyhow::anyhow!("relay websocket connect failed: {e}"))?;
         let (mut write, mut read) = ws_stream.split();
 
         // 1. Wait for auth challenge
@@ -252,9 +305,7 @@ impl SyncClient {
                     let resp = Self::sign_auth_challenge(&self.identity, &challenge);
                     let resp_env =
                         ProtocolEnvelope::new("node_auth_response", serde_json::to_value(resp)?);
-                    write
-                        .send(Message::Text(serde_json::to_string(&resp_env)?.into()))
-                        .await?;
+                    Self::send_json(&mut write, &resp_env).await?;
                 } else if env.msg_type == "node_auth_result" {
                     let result: NodeAuthResultPayload = serde_json::from_value(env.payload)?;
                     if result.status == "ok" {
@@ -287,9 +338,7 @@ impl SyncClient {
         // 2. Send SYNC_HELLO
         let hello = Self::build_sync_hello(&self.db, &self.identity.node_id).await?;
         let hello_env = ProtocolEnvelope::new("sync_hello", serde_json::to_value(hello)?);
-        write
-            .send(Message::Text(serde_json::to_string(&hello_env)?.into()))
-            .await?;
+        Self::send_json(&mut write, &hello_env).await?;
 
         // 2b. Register with the Relay. The Relay only scans for RELAY_BUFFERED
         // shards after a `register` envelope, so this is what triggers
@@ -302,18 +351,14 @@ impl SyncClient {
             capabilities: vec!["node".to_string()],
         };
         let reg_env = ProtocolEnvelope::new("register", serde_json::to_value(&reg)?);
-        write
-            .send(Message::Text(serde_json::to_string(&reg_env)?.into()))
-            .await?;
+        Self::send_json(&mut write, &reg_env).await?;
 
         // 3. Drain local outbox
         let unsynced = drain_unsynced_events(&self.db, self.batch_size as i64).await?;
         if !unsynced.is_empty() {
             let batch = EventBatchPayload { events: unsynced };
             let batch_env = ProtocolEnvelope::new("event_batch", serde_json::to_value(batch)?);
-            write
-                .send(Message::Text(serde_json::to_string(&batch_env)?.into()))
-                .await?;
+            Self::send_json(&mut write, &batch_env).await?;
         }
 
         // 4. Read loop for incoming batches, SYNC_STATUS, and ACKs
@@ -326,6 +371,10 @@ impl SyncClient {
         // client and the 2-minute online window (NODE_ONLINE_WINDOW_MS).
         let mut heartbeat = tokio::time::interval(std::time::Duration::from_secs(30));
         heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut outbox_flush = tokio::time::interval(OUTBOX_FLUSH_INTERVAL);
+        outbox_flush.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut outbox_sweep = tokio::time::interval(OUTBOX_SWEEP_INTERVAL);
+        outbox_sweep.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             tokio::select! {
                 maybe_msg = read.next() => {
@@ -345,16 +394,20 @@ impl SyncClient {
                         let batch: EventBatchPayload = serde_json::from_value(env.payload)?;
                         let ack =
                             apply_incoming_batch(&self.db, &batch, &self.identity.node_id).await?;
+                        let applied_ids = ack.applied_event_ids.clone();
                         let ack_env =
                             ProtocolEnvelope::new("batch_ack", serde_json::to_value(ack)?);
-                        write
-                            .send(Message::Text(serde_json::to_string(&ack_env)?.into()))
-                            .await?;
+                        Self::send_json(&mut write, &ack_env).await?;
 
-                        // Tombstones in this batch are applied but the data is
-                        // retained (so restore works); tell the Relay so the UI
-                        // can show per-node delete progress.
+                        // Tombstones whose event actually applied are reported
+                        // as deleted (the data itself is retained so restore
+                        // works; the ack drives the UI's per-node progress).
+                        // A rejected event must not be acked as deleted, or the
+                        // Relay would consider the purge confirmed early (#11).
                         for ev in &batch.events {
+                            if !applied_ids.iter().any(|id| id == &ev.event_id) {
+                                continue;
+                            }
                             if let Some((entity_type, entity_id)) = tombstone_entity(ev) {
                                 let payload = serde_json::json!({
                                     "entity_type": entity_type,
@@ -456,10 +509,46 @@ impl SyncClient {
                     }))
                     .await?;
                 }
+                _ = outbox_flush.tick() => {
+                    // Local events created after the pre-session drain are
+                    // flushed here, so a long-lived session keeps delivering
+                    // instead of waiting for the next reconnect (#7).
+                    let unsynced = drain_unsynced_events(&self.db, self.batch_size as i64).await?;
+                    if !unsynced.is_empty() {
+                        let batch = EventBatchPayload { events: unsynced };
+                        let batch_env =
+                            ProtocolEnvelope::new("event_batch", serde_json::to_value(batch)?);
+                        Self::send_json(&mut write, &batch_env).await?;
+                    }
+                }
+                _ = outbox_sweep.tick() => {
+                    // Rate-limited purge of acknowledged outbox rows; the grace
+                    // window covers acks still in flight on this session (#15).
+                    let grace = (chrono::Utc::now()
+                        - chrono::Duration::seconds(OUTBOX_SWEEP_GRACE.as_secs() as i64))
+                        .to_rfc3339();
+                    sweep_synced_outbox(&self.db, &grace).await?;
+                }
             }
         }
 
         Ok(())
+    }
+
+    /// Serialize and send a protocol envelope under a finite deadline (#9).
+    /// The conn-bounded write below is the one true choke point every outbound
+    /// message flows through, so a wedged socket fails the session instead of
+    /// hanging it.
+    async fn send_json<W>(write: &mut W, env: &ProtocolEnvelope) -> anyhow::Result<()>
+    where
+        W: futures_util::Sink<Message> + Unpin,
+        W::Error: std::error::Error + Send + Sync + 'static,
+    {
+        let msg = Message::Text(serde_json::to_string(env)?.into());
+        tokio::time::timeout(WS_WRITE_TIMEOUT, write.send(msg))
+            .await
+            .map_err(|_| anyhow::anyhow!("websocket send timed out after {WS_WRITE_TIMEOUT:?}"))?
+            .map_err(|e| anyhow::anyhow!("websocket send failed: {e}"))
     }
 
     /// Send a typed protocol envelope over the WebSocket writer.
@@ -473,10 +562,7 @@ impl SyncClient {
         W::Error: std::error::Error + Send + Sync + 'static,
     {
         let env = ProtocolEnvelope::new(msg_type, payload.clone());
-        write
-            .send(Message::Text(serde_json::to_string(&env)?.into()))
-            .await?;
-        Ok(())
+        Self::send_json(write, &env).await
     }
 
     /// Phase 10: consume a pending_notify — fetch the shard bytes from the
@@ -634,21 +720,15 @@ impl SyncClient {
             super::snapshot::build_snapshot(&self.db, &self.identity).await?;
 
         let begin_env = ProtocolEnvelope::new("snapshot_begin", serde_json::to_value(begin)?);
-        write
-            .send(Message::Text(serde_json::to_string(&begin_env)?.into()))
-            .await?;
+        Self::send_json(write, &begin_env).await?;
 
         for chunk in chunks {
             let chunk_env = ProtocolEnvelope::new("snapshot_chunk", serde_json::to_value(chunk)?);
-            write
-                .send(Message::Text(serde_json::to_string(&chunk_env)?.into()))
-                .await?;
+            Self::send_json(write, &chunk_env).await?;
         }
 
         let end_env = ProtocolEnvelope::new("snapshot_end", serde_json::to_value(end)?);
-        write
-            .send(Message::Text(serde_json::to_string(&end_env)?.into()))
-            .await?;
+        Self::send_json(write, &end_env).await?;
 
         Ok(())
     }

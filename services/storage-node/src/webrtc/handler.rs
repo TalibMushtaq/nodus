@@ -2,13 +2,13 @@ use std::convert::Infallible;
 
 use axum::Json;
 use axum::extract::{Query, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::sse::{Event, Sse};
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use tokio_stream::wrappers::BroadcastStream;
 
-use crate::local::server::{LocalError, LocalState};
+use crate::local::server::{LocalError, LocalState, verify_signed_caller, verify_signed_query};
 
 #[derive(Deserialize)]
 pub struct OfferRequest {
@@ -34,40 +34,79 @@ pub struct IceCandidateRequest {
 pub struct IceQuery {
     pub session_id: String,
     pub device_id: String,
+    /// Unix millis the signature was created at (SSE cannot set headers, so
+    /// the three `X-Nodus-*` values ride in the query string).
+    pub timestamp: i64,
+    /// Hex-encoded Ed25519 signature over `"{device_id}:{session_id}:{timestamp}"`.
+    pub signature: String,
+}
+
+/// Enforce the signed-device auth for one WebRTC signaling message. The device
+/// proves possession of its pairing key per message; the body's `device_id`
+/// must equal the authenticated caller so a signature can't be replayed across
+/// sessions or devices.
+async fn verify_webrtc_caller(
+    state: &LocalState,
+    headers: &HeaderMap,
+    device_id: &str,
+    session_id: &str,
+) -> Result<(), (StatusCode, Json<LocalError>)> {
+    let timestamp = headers
+        .get("x-nodus-timestamp")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<i64>().ok())
+        .ok_or_else(|| unauthorized_err("missing or invalid X-Nodus-Timestamp header"))?;
+
+    // The message binds device, session, and time; verify_signed_caller also
+    // enforces the timestamp freshness window from the same header.
+    let message = format!("{device_id}:{session_id}:{timestamp}");
+    let caller = verify_signed_caller(&state.db, headers, message.as_bytes())
+        .await
+        .map_err(to_unauthorized)?;
+
+    if caller.caller_id != device_id {
+        return Err(unauthorized_err(
+            "signed caller does not match request device_id",
+        ));
+    }
+    // WebRTC signaling is a device capability: refuse node-signed requests even
+    // if the key verifies, so a trusted peer can't drive client sessions.
+    if !caller.is_device {
+        return Err(unauthorized_err(
+            "signaling requires a paired device identity",
+        ));
+    }
+    Ok(())
+}
+
+fn unauthorized_err(message: &str) -> (StatusCode, Json<LocalError>) {
+    (
+        StatusCode::UNAUTHORIZED,
+        Json(LocalError {
+            error: "unauthorized".into(),
+            message: message.into(),
+        }),
+    )
+}
+
+fn to_unauthorized(e: LocalError) -> (StatusCode, Json<LocalError>) {
+    (
+        StatusCode::UNAUTHORIZED,
+        Json(LocalError {
+            error: e.error,
+            message: e.message,
+        }),
+    )
 }
 
 pub async fn handle_offer(
     State(state): State<LocalState>,
+    headers: HeaderMap,
     Json(body): Json<OfferRequest>,
 ) -> Result<Json<OfferResponse>, (StatusCode, Json<LocalError>)> {
-    // 1. Verify device exists and is not revoked
-    let exists: Option<String> = sqlx::query_scalar(
-        "SELECT device_id FROM devices WHERE device_id = ? AND revoked_at IS NULL",
-    )
-    .bind(&body.device_id)
-    .fetch_optional(&state.db)
-    .await
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(LocalError {
-                error: "db_error".into(),
-                message: format!("database error: {e}"),
-            }),
-        )
-    })?;
+    verify_webrtc_caller(&state, &headers, &body.device_id, &body.session_id).await?;
 
-    if exists.is_none() {
-        return Err((
-            StatusCode::UNAUTHORIZED,
-            Json(LocalError {
-                error: "unauthorized".into(),
-                message: "device is not paired or has been revoked".into(),
-            }),
-        ));
-    }
-
-    // 2. Get or create WebRTC session
+    // Get or create WebRTC session (single-flight in the manager).
     let session = state
         .webrtc_manager
         .get_or_create_session(&body.session_id, &body.device_id)
@@ -81,8 +120,9 @@ pub async fn handle_offer(
                 }),
             )
         })?;
+    session.touch();
 
-    // 3. Process SDP offer and generate answer
+    // Process SDP offer and generate answer
     let answer_sdp = session.handle_offer(&body.sdp).await.map_err(|e| {
         (
             StatusCode::BAD_REQUEST,
@@ -101,8 +141,11 @@ pub async fn handle_offer(
 
 pub async fn handle_ice_candidate(
     State(state): State<LocalState>,
+    headers: HeaderMap,
     Json(body): Json<IceCandidateRequest>,
 ) -> Result<StatusCode, (StatusCode, Json<LocalError>)> {
+    verify_webrtc_caller(&state, &headers, &body.device_id, &body.session_id).await?;
+
     let session = match state.webrtc_manager.get_session(&body.session_id).await {
         Some(s) => s,
         None => {
@@ -125,6 +168,7 @@ pub async fn handle_ice_candidate(
             }),
         ));
     }
+    session.touch();
 
     session
         .add_ice_candidate(&body.candidate)
@@ -149,32 +193,29 @@ pub async fn stream_ice_candidates(
     Sse<impl futures_util::Stream<Item = Result<Event, Infallible>>>,
     (StatusCode, Json<LocalError>),
 > {
-    // 1. Verify device exists and is not revoked
-    let exists: Option<String> = sqlx::query_scalar(
-        "SELECT device_id FROM devices WHERE device_id = ? AND revoked_at IS NULL",
+    // SSE cannot send headers, so the signature arrives via query params. Same
+    // freshness window and same Ed25519 message shape as the POST endpoints.
+    let message = format!(
+        "{}:{}:{}",
+        query.device_id, query.session_id, query.timestamp
+    );
+    verify_signed_query(
+        &state.db,
+        &query.device_id,
+        query.timestamp,
+        &query.signature,
+        message.as_bytes(),
     )
-    .bind(&query.device_id)
-    .fetch_optional(&state.db)
     .await
     .map_err(|e| {
         (
-            StatusCode::INTERNAL_SERVER_ERROR,
+            StatusCode::UNAUTHORIZED,
             Json(LocalError {
-                error: "db_error".into(),
-                message: format!("database error: {e}"),
+                error: e.error,
+                message: e.message,
             }),
         )
     })?;
-
-    if exists.is_none() {
-        return Err((
-            StatusCode::UNAUTHORIZED,
-            Json(LocalError {
-                error: "unauthorized".into(),
-                message: "device is not paired or has been revoked".into(),
-            }),
-        ));
-    }
 
     let session = match state.webrtc_manager.get_session(&query.session_id).await {
         Some(s) => s,
@@ -200,6 +241,7 @@ pub async fn stream_ice_candidates(
     };
 
     let rx = session.subscribe_ice();
+    session.touch();
     let stream = BroadcastStream::new(rx).filter_map(|res| async move {
         match res {
             Ok(candidate_json) => {

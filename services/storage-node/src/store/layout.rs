@@ -27,7 +27,6 @@ pub fn object_path(data_dir: &Path, hash_hex: &str) -> PathBuf {
 
 /// Returns a unique temp path for an in-progress atomic write.
 /// Layout: `<data_dir>/temp/<id>`
-#[allow(dead_code)]
 pub fn temp_path(data_dir: &Path, id: &str) -> PathBuf {
     temp_dir(data_dir).join(id)
 }

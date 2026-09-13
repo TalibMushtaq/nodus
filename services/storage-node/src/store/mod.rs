@@ -11,8 +11,9 @@ pub mod layout;
 pub mod reconcile;
 pub mod write;
 
-#[allow(unused_imports)]
-pub use gc::{GcConfig, GcReport, run_gc, spawn_gc_task};
-#[allow(unused_imports)]
-pub use reconcile::{ReconcileReport, run_reconciliation, spawn_reconcile_task};
+// Only the entry points `main.rs` drives through the top-level path are
+// re-exported here; `GcReport`/`run_gc` and `ReconcileReport`/`run_reconciliation`
+// stay module-local (their spawn wrappers are the crate's callers).
+pub use gc::{GcConfig, spawn_gc_task};
+pub use reconcile::spawn_reconcile_task;
 pub use write::ObjectStore;

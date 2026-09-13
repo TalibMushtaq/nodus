@@ -50,6 +50,7 @@ async fn load_file_version_records(db: &SqlitePool) -> anyhow::Result<Vec<FileVe
             fv.file_id,
             fv.version_number,
             fv.parent_version_id,
+            fv.conflict_status,
             fv.version_hash,
             fv.shard_count,
             f.created_at,
@@ -75,7 +76,10 @@ async fn load_file_version_records(db: &SqlitePool) -> anyhow::Result<Vec<FileVe
             file_id: row.get("file_id"),
             version_number: row.get("version_number"),
             parent_version_id,
-            conflict_status: None,
+            conflict_status: row
+                .try_get::<Option<String>, _>("conflict_status")
+                .ok()
+                .flatten(),
             version_hash,
             shard_count,
             encrypted_name: row

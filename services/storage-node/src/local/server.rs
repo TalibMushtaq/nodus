@@ -28,7 +28,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use base64::Engine;
 use serde::{Deserialize, Serialize};
-use sqlx::sqlite::SqlitePool;
+use sqlx::sqlite::{SqliteConnection, SqlitePool};
 use tower_http::cors::CorsLayer;
 
 use crate::identity::NodeIdentity;
@@ -193,7 +193,13 @@ pub async fn spawn(
             super::auth::CHALLENGE_RATE_LIMIT,
         )),
         relay_http_base: relay_http,
-        http: reqwest::Client::new(),
+        // Bound the Relay pairing-verify call (#9): a black-holed relay IP
+        // would otherwise hang this LAN request well past anything the client
+        // is still waiting for. 15 s matches run_pair's own redeem budget.
+        http: reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(15))
+            .build()
+            .expect("reqwest client build cannot fail"),
         telemetry: telemetry.clone(),
     };
 
@@ -339,9 +345,48 @@ async fn handle_shard_fetch(
     Path(object_id): Path<String>,
     headers: HeaderMap,
 ) -> Result<(StatusCode, Vec<u8>), LocalError> {
+    // The caller controls this string and the signature binds it verbatim, so
+    // validate it BEFORE path construction: a malformed id (e.g. `..` segments
+    // or absolute paths) must never reach `object_path` and read files outside
+    // `objects/` under data_dir.
+    validate_object_id(&object_id)?;
+
     // Phase 14 F2b: the same endpoint serves two caller kinds. A Storage Node
     // pulls shards for repair (node-signed), and a paired client device
     // downloads a stored shard (device-signed). Exactly one identity header.
+    let (caller, _is_device, timestamp, _signature) = parse_signed_headers(&headers)?;
+
+    // The signed message binds caller, target object, and time together, so a
+    // captured signature can't be replayed against a different object.
+    let message = format!("{caller}:{object_id}:{timestamp}");
+    verify_signed_caller(&state.db, &headers, message.as_bytes()).await?;
+
+    // Presence check only: the requester hash-verifies against the object_id
+    // it asked for, so corrupt local content fails verification there (and is
+    // DEGRADED here after the next reconciliation scan anyway).
+    let path = crate::store::layout::object_path(state.store.data_dir(), &object_id);
+    let bytes = tokio::fs::read(&path).await.map_err(|_| LocalError {
+        error: "not_found".into(),
+        message: "object not present on this node".into(),
+    })?;
+    Ok((StatusCode::OK, bytes))
+}
+
+fn unauthorized(message: &str) -> LocalError {
+    LocalError {
+        error: "unauthorized".into(),
+        message: message.to_string(),
+    }
+}
+
+/// The verifiable identity carried by a stateless signed request. Both node
+/// (trusted peer) and paired-device callers authenticate through this path.
+pub struct VerifiedCaller {
+    pub caller_id: String,
+    pub is_device: bool,
+}
+
+fn parse_signed_headers(headers: &HeaderMap) -> Result<(String, bool, i64, String), LocalError> {
     let device_caller = headers
         .get("x-nodus-device-id")
         .and_then(|v| v.to_str().ok());
@@ -364,58 +409,102 @@ async fn handle_shard_fetch(
         .get("x-nodus-signature")
         .and_then(|v| v.to_str().ok())
         .ok_or_else(|| unauthorized("missing X-Nodus-Signature header"))?;
+    Ok((caller, is_device, timestamp, signature.to_string()))
+}
 
+async fn resolve_caller_pubkey(
+    db: &SqlitePool,
+    caller: &str,
+    is_device: bool,
+) -> Result<Vec<u8>, LocalError> {
+    let row: Option<(Vec<u8>,)> = if is_device {
+        sqlx::query_as(
+            "SELECT public_key_bytes FROM devices WHERE device_id = ? AND status = 'ACTIVE'",
+        )
+        .bind(caller)
+        .fetch_optional(db)
+        .await
+        .map_err(internal_err)?
+    } else {
+        sqlx::query_as("SELECT public_key_bytes FROM trusted_nodes WHERE node_id = ?")
+            .bind(caller)
+            .fetch_optional(db)
+            .await
+            .map_err(internal_err)?
+    };
+    row.map(|(pubkey,)| pubkey).ok_or_else(|| {
+        unauthorized(if is_device {
+            "caller is not an active device"
+        } else {
+            "caller is not a trusted node"
+        })
+    })
+}
+
+/// Verify a stateless `X-Nodus-*` signed request against the live identity
+/// tables. Shared by the shard-fetch endpoint and WebRTC signaling so every
+/// local writable endpoint enforces the same device/node cryptographic trust
+/// model. `message` is the exact byte string the caller signed.
+pub async fn verify_signed_caller(
+    db: &SqlitePool,
+    headers: &HeaderMap,
+    message: &[u8],
+) -> Result<VerifiedCaller, LocalError> {
+    let (caller, is_device, timestamp, signature) = parse_signed_headers(headers)?;
     if (chrono::Utc::now().timestamp_millis() - timestamp).abs() > NODE_AUTH_FRESHNESS_MS {
         return Err(unauthorized(
             "request timestamp is outside the freshness window",
         ));
     }
-
-    let row: Option<(Vec<u8>,)> = if is_device {
-        sqlx::query_as(
-            "SELECT public_key_bytes FROM devices WHERE device_id = ? AND status = 'ACTIVE'",
-        )
-        .bind(&caller)
-        .fetch_optional(&state.db)
-        .await
-        .map_err(internal_err)?
-    } else {
-        sqlx::query_as("SELECT public_key_bytes FROM trusted_nodes WHERE node_id = ?")
-            .bind(&caller)
-            .fetch_optional(&state.db)
-            .await
-            .map_err(internal_err)?
-    };
-    let Some((pubkey,)) = row else {
-        return Err(unauthorized(if is_device {
-            "caller is not an active device"
-        } else {
-            "caller is not a trusted node"
-        }));
-    };
-
-    // The signed message binds caller, target object, and time together, so a
-    // captured signature can't be replayed against a different object.
-    let message = format!("{caller}:{object_id}:{timestamp}");
-    if let Err(e) = verify_signature(&pubkey, message.as_bytes(), signature) {
-        return Err(unauthorized(&format!("signature verification failed: {e}")));
-    }
-
-    // Presence check only: the requester hash-verifies against the object_id
-    // it asked for, so corrupt local content fails verification there (and is
-    // DEGRADED here after the next reconciliation scan anyway).
-    let path = crate::store::layout::object_path(state.store.data_dir(), &object_id);
-    let bytes = tokio::fs::read(&path).await.map_err(|_| LocalError {
-        error: "not_found".into(),
-        message: "object not present on this node".into(),
-    })?;
-    Ok((StatusCode::OK, bytes))
+    let pubkey = resolve_caller_pubkey(db, &caller, is_device).await?;
+    verify_signature(&pubkey, message, &signature)
+        .map_err(|e| unauthorized(&format!("signature verification failed: {e}")))?;
+    Ok(VerifiedCaller {
+        caller_id: caller,
+        is_device,
+    })
 }
 
-fn unauthorized(message: &str) -> LocalError {
-    LocalError {
-        error: "unauthorized".into(),
-        message: message.to_string(),
+/// Headerless counterpart for SSE endpoints: browser `EventSource` cannot set
+/// custom headers, so the three `X-Nodus-*` values arrive as query parameters.
+pub async fn verify_signed_query(
+    db: &SqlitePool,
+    caller: &str,
+    timestamp_ms: i64,
+    signature: &str,
+    message: &[u8],
+) -> Result<VerifiedCaller, LocalError> {
+    if (chrono::Utc::now().timestamp_millis() - timestamp_ms).abs() > NODE_AUTH_FRESHNESS_MS {
+        return Err(unauthorized(
+            "request timestamp is outside the freshness window",
+        ));
+    }
+    let pubkey = resolve_caller_pubkey(db, caller, true).await?;
+    verify_signature(&pubkey, message, signature)
+        .map_err(|e| unauthorized(&format!("signature verification failed: {e}")))?;
+    Ok(VerifiedCaller {
+        caller_id: caller.to_string(),
+        is_device: true,
+    })
+}
+
+/// Object ids are BLAKE3 digests stored as lowercase hex by `ObjectStore::put`
+/// and namespaced under `objects/` in `layout.rs`. Reject anything that is not
+/// exactly 64 lowercase hex chars before it can reach path construction — a
+/// signed-but-compromised peer could otherwise read arbitrary files under
+/// `data_dir` by signing a traversal id.
+fn validate_object_id(object_id: &str) -> Result<(), LocalError> {
+    let valid = object_id.len() == 64
+        && object_id
+            .bytes()
+            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
+    if valid {
+        Ok(())
+    } else {
+        Err(LocalError {
+            error: "invalid_object_id".into(),
+            message: "object id must be a 64-character lowercase hex digest".into(),
+        })
     }
 }
 
@@ -570,16 +659,39 @@ async fn redeem_from_local(
         });
     }
 
-    // Mark consumed *before* storing the device so a crash mid-pair cannot
-    // leave a token reusable.
-    sqlx::query("UPDATE pairing_sessions SET consumed_at = ? WHERE token = ?")
-        .bind(now_iso())
-        .bind(&req.token)
-        .execute(&state.db)
-        .await
-        .map_err(internal_err)?;
+    // Consume the token atomically: the guarded UPDATE (WHERE consumed_at IS
+    // NULL) is the single source of truth, so two racing redemptions of the
+    // same token cannot both win even though the pre-checks above saw it
+    // unconsumed. The device insert shares the same transaction so a failure
+    // mid-pair leaves the token reusable rather than half-paired (#8).
+    let mut tx = state.db.begin().await.map_err(internal_err)?;
+    let consumed = sqlx::query(
+        "UPDATE pairing_sessions SET consumed_at = ? WHERE token = ? AND consumed_at IS NULL",
+    )
+    .bind(now_iso())
+    .bind(&req.token)
+    .execute(&mut *tx)
+    .await
+    .map_err(internal_err)?
+    .rows_affected();
 
-    store_device(state, req, pubkey_bytes, session.account_id).await
+    if consumed != 1 {
+        return Err(LocalError {
+            error: "token_consumed".into(),
+            message: "this pairing token was already used".into(),
+        });
+    }
+
+    let confirm = store_device_conn(
+        &mut tx,
+        &state.identity.node_id,
+        req,
+        pubkey_bytes,
+        session.account_id,
+    )
+    .await?;
+    tx.commit().await.map_err(internal_err)?;
+    Ok(confirm)
 }
 
 /// Insert (or re-activate) the device in the `devices` table. Idempotent on the
@@ -587,6 +699,27 @@ async fn redeem_from_local(
 /// is the intended rotate-a-key path.
 async fn store_device(
     state: &LocalState,
+    req: &PairRequest,
+    pubkey_bytes: &[u8],
+    account_id: &str,
+) -> Result<Json<PairConfirm>, LocalError> {
+    let mut conn = state.db.acquire().await.map_err(internal_err)?;
+    store_device_conn(
+        &mut conn,
+        &state.identity.node_id,
+        req,
+        pubkey_bytes,
+        account_id,
+    )
+    .await
+}
+
+/// Connection variant of [`store_device`]: runs on the caller's transaction so
+/// the device insert is atomic with token consumption (#8). A failure
+/// mid-pair must leave the token reusable rather than half-paired.
+async fn store_device_conn(
+    conn: &mut SqliteConnection,
+    node_id: &str,
     req: &PairRequest,
     pubkey_bytes: &[u8],
     account_id: &str,
@@ -607,12 +740,12 @@ async fn store_device(
     .bind(pubkey_bytes)
     .bind(&now)
     .bind(&now)
-    .execute(&state.db)
+    .execute(&mut *conn)
     .await
     .map_err(internal_err)?;
 
     Ok(Json(PairConfirm {
-        node_id: state.identity.node_id.clone(),
+        node_id: node_id.to_string(),
         account_id: account_id.to_string(),
         device_id: req.device_id.clone(),
         device_public_key: device_pubkey_hex,
@@ -1174,6 +1307,64 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn test_shard_fetch_rejects_non_object_id_paths() {
+        let (app, db, _identity, dir) = setup_test_server().await;
+
+        let peer_key = SigningKey::from_bytes(&[33u8; 32]);
+        let peer_pubkey = peer_key.verifying_key().to_bytes();
+        let peer_id = "repair-peer-path-traversal";
+        let store = crate::store::ObjectStore::new(dir.path().to_path_buf(), db.clone())
+            .await
+            .unwrap();
+        // Seed a trusted node *and* a real object so we can prove the validator
+        // is what blocks bad ids (not merely the auth/trust checks).
+        let object_id = seed_peer_and_object(
+            &db,
+            &store,
+            peer_id,
+            peer_pubkey,
+            b"bytes that must never leak",
+        )
+        .await;
+
+        // Control: a genuine id still serves after validation is introduced.
+        let ok = app
+            .clone()
+            .oneshot(signed_fetch_request(peer_id, &peer_key, &object_id))
+            .await
+            .unwrap();
+        assert_eq!(ok.status(), StatusCode::OK);
+
+        // Non-hex or wrong-case ids are rejected before touching the filesystem.
+        for bad in ["not-an-object-id", &"DEADBEEF".repeat(8)] {
+            let resp = app
+                .clone()
+                .oneshot(signed_fetch_request(peer_id, &peer_key, bad))
+                .await
+                .unwrap();
+            assert_eq!(
+                resp.status(),
+                StatusCode::BAD_REQUEST,
+                "non-hex/wrong-length id `{bad}` must be rejected"
+            );
+        }
+
+        // Percent-encoded traversal: even if a client could decode it into a
+        // path segment, the id itself is not a 64-hex digest, so it must never
+        // produce a 200 (200 only happens if bytes were read from disk).
+        let traversal = "%2E%2E%2F%2E%2E%2Fnodus.db";
+        let resp = app
+            .oneshot(signed_fetch_request(peer_id, &peer_key, traversal))
+            .await
+            .unwrap();
+        assert_ne!(
+            resp.status(),
+            StatusCode::OK,
+            "traversal object id must not reach the filesystem"
+        );
+    }
+
     // ── Phase 14 F2b: paired-device download ─────────────────────────────
 
     #[tokio::test]
@@ -1263,5 +1454,97 @@ mod tests {
             .unwrap();
         let resp = app.oneshot(both).await.unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    // ── #8: atomic token consumption under concurrency ────────────────────
+
+    #[tokio::test]
+    async fn test_pair_concurrent_redeem_single_winner() {
+        let (app, db, identity, _dir) = setup_test_server().await;
+
+        let device_key = SigningKey::from_bytes(&[77u8; 32]);
+        let device_pubkey = device_key.verifying_key().to_bytes();
+        let device_pubkey_b64 = base64::engine::general_purpose::STANDARD.encode(device_pubkey);
+        let token = "test-race-token-1";
+        let device_id = "device-race-1";
+        let expires_at = (chrono::Utc::now() + chrono::Duration::minutes(15)).to_rfc3339();
+
+        sqlx::query(
+            "INSERT INTO pairing_sessions (token, device_public_key, node_id, issued_at, expires_at, account_id)
+             VALUES (?, ?, ?, 'now', ?, 'acct-race-1')"
+        )
+        .bind(token)
+        .bind(&device_pubkey[..])
+        .bind(&identity.node_id)
+        .bind(&expires_at)
+        .execute(&db)
+        .await
+        .unwrap();
+
+        let pair_body = serde_json::json!({
+            "node_id": identity.node_id,
+            "token": token,
+            "device_public_key": device_pubkey_b64,
+            "device_id": device_id,
+        });
+        let body = serde_json::to_vec(&pair_body).unwrap();
+
+        // N=8 racing redemptions of the same token from the same device.
+        let handles: Vec<_> = (0..8)
+            .map(|_| {
+                let app = app.clone();
+                let body = body.clone();
+                tokio::spawn(async move {
+                    let req = Request::builder()
+                        .uri("/nodus/pair")
+                        .method("POST")
+                        .header("content-type", "application/json")
+                        .body(Body::from(body))
+                        .unwrap();
+                    let resp = app.oneshot(req).await.unwrap();
+                    let status = resp.status();
+                    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+                    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+                    (status, json["error"].as_str().map(String::from))
+                })
+            })
+            .collect();
+
+        let results: Vec<_> = futures_util::future::join_all(handles)
+            .await
+            .into_iter()
+            .map(|r| r.unwrap())
+            .collect();
+
+        // Exactly one redemption wins; every other request sees the consumed
+        // token (guarded UPDATE ... AND consumed_at IS NULL is the arbiter).
+        let winners = results
+            .iter()
+            .filter(|(status, _)| *status == StatusCode::OK)
+            .count();
+        assert_eq!(winners, 1, "exactly one concurrent redemption may win");
+        for (status, err) in &results {
+            if *status != StatusCode::OK {
+                assert_eq!(*status, StatusCode::BAD_REQUEST);
+                assert_eq!(err.as_deref(), Some("token_consumed"));
+            }
+        }
+
+        // The session is consumed exactly once and the device is stored once.
+        let consumed_at: Option<String> =
+            sqlx::query_scalar("SELECT consumed_at FROM pairing_sessions WHERE token = ?")
+                .bind(token)
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert!(consumed_at.is_some(), "token must end consumed");
+
+        let device_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM devices WHERE device_id = ?")
+                .bind(device_id)
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert_eq!(device_count, 1, "device row must be inserted exactly once");
     }
 }

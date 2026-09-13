@@ -1,5 +1,33 @@
 # Changelog
 
+## [2026-09-13] - Storage node: every network operation now has a finite timeout (#9)
+
+**What changed:** `services/storage-node/src/sync/client.rs` wraps the Relay WebSocket dial in `tokio::time::timeout(RELAY_CONNECT_TIMEOUT=15s)` (tokio_tungstenite has no connect timeout of its own), routes every outbound WS message — auth response, sync_hello, register, event_batch, batch_ack, heartbeat, and the snapshot_begin/chunk/end stream — through a new bounded `send_json` helper (`WS_WRITE_TIMEOUT=30s`), and builds `http_client` for the Relay buffer fetch with `RELAY_FETCH_TIMEOUT=30s`. `services/storage-node/src/transfer/node_attempter.rs` builds the direct peer shard-fetch client with `PEER_FETCH_TIMEOUT=30s`. `services/storage-node/src/local/server.rs` builds `LocalState.http`, used for the Relay pairing-verify fallback, with a 15 s timeout.
+**Why:** A black-holed relay IP or wedged peer has no kernel-level fast-fail, so an unbounded connect/send/fetch could pin the main loop's 5 s reconnect cadence, the live session read loop, or a repair slot of the shared transfer concurrency pool indefinitely. Each site now fails deterministically and lets the caller retry on its existing cadence.
+**Impact:** No behavior change on healthy links; timeouts surface as session errors → reconnect. `connect_async` is no longer a direct call site (the timeout wrapper is the only dial path).
+**Follow-ups:** Relay-side parity for the fork-conflict flagging (see entry below) remains a separate follow-up.
+
+## [2026-09-13] - Storage node: device pairing redemption and registration are now race-safe (#8)
+
+**What changed:** `services/storage-node/src/local/server.rs` splits `store_device` into a pool wrapper and a connection-level `store_device_conn(&mut SqliteConnection, ...)`, and `redeem_from_local` now performs the guarded consume (`UPDATE ... AND consumed_at IS NULL`) plus device insert within one transaction. `services/storage-node/src/db.rs` sets `busy_timeout(5s)` on the pool. `services/storage-node/src/pair.rs` adds `test_pair_concurrent_redeem_single_winner`, racing N=8 redemptions against one token.
+**Why:** Concurrent redemptions (or a redemption racing an ingest) could previously double-insert the device row or persist a token that was already consumed, breaking the pair-once guarantee.
+**Impact:** `local/server.rs`, `pair.rs`, `db.rs`; the 5 pairing tests pass, including the new 8-way race that asserts exactly one winner and one device row.
+**Follow-ups:** None.
+
+## [2026-09-13] - Storage node: fork collisions now preserve both file versions and flag the branch (#10)
+
+**What changed:** New migration `services/storage-node/migrations/20260913000001_file_versions_conflict_status.sql` adds `file_versions.conflict_status TEXT NOT NULL DEFAULT 'none' CHECK (conflict_status IN ('none','flagged','resolved'))`, mirroring the Relay. `sync/conflict.rs` gains `SlotOccupant`, `existing_slot_conn`, `next_free_version_number_conn`, `mark_branch_flagged_conn`, and `is_fork_occupant`. `sync/engine.rs` FILE_VERSION_ADDED/FILE_MODIFIED now, when the claimed `(file_id, version_number)` slot is held by different content (`parent_version_id` or `version_hash` differs), renumbers the incoming version to `MAX+1` (preserve both), marks the occupant's branch and the incoming version `flagged`, inserts with that flag, migrates `pending_shard_fetches` rows to the new number before draining, and returns `ApplyOutcome::Conflicted{sibling_version}`. Identical parent+hash is treated as an idempotent upsert. `sync/snapshot.rs` now emits `conflict_status` in the version records it streams. Tests: `test_slot_occupancy_renumber_and_branch_flagging`, `test_apply_event_fork_collision_preserves_both`, and an extended `test_apply_event_conflict_detection` asserting the survivor/flagged flags.
+**Why:** Two writers can claim the same `(file_id, version_number)`; the previous code overwrote the incumbent's row on snapshot ingestion (effectively tombstoning the winning version) or silently dropped the conflict, losing data on one side of the fork.
+**Impact:** `conflict.rs`, `engine.rs`, `snapshot.rs`, migration, plus tests. `cargo test` (149 + 165 lib + 2 integration), `clippy --all-targets -- -D warnings`, and `fmt --check` are green.
+**Follow-ups:** REQUIRES FOLLOW-UP — the Relay (`services/relay/internal/handler/sync.go`) should set `conflict_status='flagged'` symmetrically when it detects a renumbered-version collision during snapshot ingestion, so the flag is consistent across relay/node.
+
+## [2026-09-13] - Storage node: dead code removal
+
+**What changed:** Removed re-exports with no callers from `services/storage-node/src/store/mod.rs` (`GcReport`, `run_gc`, `ReconcileReport`, `run_reconciliation` stay module-local; only `GcConfig`/`spawn_gc_task` and `spawn_reconcile_task` are re-exported, dropping the `#[allow(unused_imports)]` hints). Removed stale `#[allow(dead_code)]` on items that are in fact used: `config::IDENTITY_DIR`, `NodeIdentity::signing_key` / `NodeIdentity::sign`, `layout::temp_path`, and `ObjectStore::{put,get,exists,delete}`. Removed the unused `DISCOVERY_TIMEOUT` const in `transfer/node_attempter.rs` (mDNS discovery has its own 2 s timeout in `local/mdns.rs`).
+**Why:** These suppressions and dead names misled readers (and the planned dead-code sweep) about what is actually reachable; each item was grep-verified against its callers before the suppression was dropped.
+**Impact:** None functionally; verified clean with `cargo clippy --all-targets -- -D warnings` in both test and non-test build configurations.
+**Follow-ups:** None.
+
 ## [2026-09-13] - Relay delivers buffered shards when a storage node reconnects
 
 **What changed:** The Relay now actually runs `checkAndDeliverPendingShards` when a connected storage node sends `register`. The function — which scans the DB for shards still in `RELAY_BUFFERED` for that node, re-issues a fresh single-use fetch token, and pushes a `pending_notify` to the node's socket — existed but had **no caller**, and the `register` handler rejected storage nodes outright (it required an `account_id` match, but nodes omit that field; the account is bound at pairing). The handler now lets nodes through (identity from the signed auth response, not the envelope) and triggers delivery on their register.

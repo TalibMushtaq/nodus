@@ -7,5 +7,7 @@ pub mod types;
 
 pub use client::SyncClient;
 pub use engine::{ApplyOutcome, apply_incoming_batch, apply_remote_event};
-pub use outbox::{drain_unsynced_events, insert_outbox_event, mark_events_synced};
+pub use outbox::{
+    drain_unsynced_events, insert_outbox_event, mark_events_synced, sweep_synced_outbox,
+};
 pub use types::*;

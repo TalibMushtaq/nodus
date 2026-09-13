@@ -29,15 +29,14 @@ pub struct NodeIdentity {
     pub node_id: String,
     /// Ed25519 public key (32 bytes). Exposed for pairing / trust verification.
     pub public_key: VerifyingKey,
-    /// Full signing key, kept in memory for signing snapshots and challenges.
-    /// Zeroized on drop.
-    #[allow(dead_code)]
+    /// Full signing key, kept in memory for signing challenges (and snapshots
+    /// if a later phase calls for it). Zeroized on drop.
     signing_key: SigningKey,
 }
 
 impl NodeIdentity {
-    /// Sign `message` with the node's private key (for Phase 9 / Phase 11).
-    #[allow(dead_code)]
+    /// Sign `message` with the node's private key (used for the Relay auth
+    /// challenge response and node-to-node verification).
     pub fn sign(&self, message: &[u8]) -> ed25519_dalek::Signature {
         use ed25519_dalek::Signer;
         self.signing_key.sign(message)

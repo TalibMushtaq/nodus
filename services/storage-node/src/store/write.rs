@@ -49,7 +49,6 @@ impl ObjectStore {
     /// 4. `sync_all` the temp file for durability.
     /// 5. Atomically rename the temp file to `<data_dir>/objects/<ab>/<hash>`.
     /// 6. Insert or update `storage_objects` in SQLite to 'STORED'.
-    #[allow(dead_code)]
     pub async fn put(&self, bytes: &[u8]) -> anyhow::Result<String> {
         let hash_hex = blake3::hash(bytes).to_hex().to_string();
         let dest = layout::object_path(&self.data_dir, &hash_hex);
@@ -135,7 +134,6 @@ impl ObjectStore {
     /// Read raw bytes for an object by its BLAKE3 hash.
     ///
     /// Verifies content hash upon reading. If mismatched, marks status in SQLite as DEGRADED.
-    #[allow(dead_code)]
     pub async fn get(&self, hash_hex: &str) -> anyhow::Result<Vec<u8>> {
         let dest = layout::object_path(&self.data_dir, hash_hex);
         if !dest.exists() {
@@ -165,13 +163,11 @@ impl ObjectStore {
     }
 
     /// Check if an object exists on disk at its content-addressed path.
-    #[allow(dead_code)]
     pub fn exists(&self, hash_hex: &str) -> bool {
         layout::object_path(&self.data_dir, hash_hex).exists()
     }
 
     /// Delete an object from disk and remove its row from `storage_objects`.
-    #[allow(dead_code)]
     pub async fn delete(&self, hash_hex: &str) -> anyhow::Result<()> {
         let dest = layout::object_path(&self.data_dir, hash_hex);
         if dest.exists() {

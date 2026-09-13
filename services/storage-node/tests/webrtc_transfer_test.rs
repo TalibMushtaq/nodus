@@ -3,6 +3,7 @@ use std::time::Duration;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
+use ed25519_dalek::{Signer, SigningKey};
 use http_body_util::BodyExt;
 use tempfile::tempdir;
 use tower::ServiceExt;
@@ -15,6 +16,29 @@ use storage_node::store::ObjectStore;
 use storage_node::webrtc::WebRtcManager;
 use webrtc::api::APIBuilder;
 use webrtc::peer_connection::configuration::RTCConfiguration;
+
+/// Signed `POST` request: every WebRTC signaling call must prove device
+/// possession with a fresh signature over `"{device_id}:{session_id}:{timestamp}"`.
+fn signed_post(
+    path: &str,
+    body: serde_json::Value,
+    device_id: &str,
+    session_id: &str,
+    key: &SigningKey,
+) -> Request<Body> {
+    let timestamp = chrono::Utc::now().timestamp_millis();
+    let message = format!("{device_id}:{session_id}:{timestamp}");
+    let signature = hex::encode(key.sign(message.as_bytes()).to_bytes());
+    Request::builder()
+        .uri(path)
+        .method("POST")
+        .header("content-type", "application/json")
+        .header("x-nodus-device-id", device_id)
+        .header("x-nodus-timestamp", timestamp.to_string())
+        .header("x-nodus-signature", signature)
+        .body(Body::from(serde_json::to_vec(&body).unwrap()))
+        .unwrap()
+}
 
 #[tokio::test]
 async fn test_webrtc_offer_and_ice_endpoint_roundtrip() {
@@ -36,11 +60,14 @@ async fn test_webrtc_offer_and_ice_endpoint_roundtrip() {
     let nonces = Arc::new(NonceStore::default());
     let challenge_limiter = Arc::new(RateLimiter::new(Duration::from_secs(10), 100));
 
-    // Register a trusted device in database
+    // Register a trusted device with the key the requests below sign with.
+    let device_key = SigningKey::from_bytes(&[42u8; 32]);
+    let device_pubkey = device_key.verifying_key().to_bytes();
     sqlx::query(
         "INSERT INTO devices (device_id, public_key_bytes, status, created_at)
-         VALUES ('dev-trusted-1', X'0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20', 'ACTIVE', 'now')",
+         VALUES ('dev-trusted-1', ?, 'ACTIVE', 'now')",
     )
+    .bind(&device_pubkey[..])
     .execute(&db)
     .await
     .unwrap();
@@ -75,20 +102,20 @@ async fn test_webrtc_offer_and_ice_endpoint_roundtrip() {
         .await
         .unwrap();
 
-    // 1. Post Offer to /nodus/webrtc/offer
+    // 1. Post a SIGNED Offer to /nodus/webrtc/offer
     let offer_body = serde_json::json!({
         "session_id": "sess-test-01",
         "device_id": "dev-trusted-1",
         "sdp": offer.sdp,
     });
 
-    let req = Request::builder()
-        .uri("/nodus/webrtc/offer")
-        .method("POST")
-        .header("content-type", "application/json")
-        .body(Body::from(serde_json::to_vec(&offer_body).unwrap()))
-        .unwrap();
-
+    let req = signed_post(
+        "/nodus/webrtc/offer",
+        offer_body,
+        "dev-trusted-1",
+        "sess-test-01",
+        &device_key,
+    );
     let resp = app.clone().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 
@@ -98,37 +125,52 @@ async fn test_webrtc_offer_and_ice_endpoint_roundtrip() {
     let answer_sdp = json["sdp"].as_str().unwrap();
     assert!(answer_sdp.contains("v=0"));
 
-    // 2. Post ICE candidate to /nodus/webrtc/ice
+    // 2. Post a SIGNED ICE candidate to /nodus/webrtc/ice
     let ice_body = serde_json::json!({
         "session_id": "sess-test-01",
         "device_id": "dev-trusted-1",
         "candidate": "candidate:1 1 UDP 2130706431 127.0.0.1 50000 typ host",
     });
 
-    let req_ice = Request::builder()
-        .uri("/nodus/webrtc/ice")
-        .method("POST")
-        .header("content-type", "application/json")
-        .body(Body::from(serde_json::to_vec(&ice_body).unwrap()))
-        .unwrap();
-
+    let req_ice = signed_post(
+        "/nodus/webrtc/ice",
+        ice_body,
+        "dev-trusted-1",
+        "sess-test-01",
+        &device_key,
+    );
     let resp_ice = app.clone().oneshot(req_ice).await.unwrap();
     assert_eq!(resp_ice.status(), StatusCode::OK);
 
-    // 3. Test unauthorized device rejected
-    let unauth_body = serde_json::json!({
+    // 3. An unsigned offer is rejected outright (previously accepted).
+    let unsigned_body = serde_json::json!({
+        "session_id": "sess-test-01",
+        "device_id": "dev-trusted-1",
+        "sdp": offer.sdp,
+    });
+    let unsigned = Request::builder()
+        .uri("/nodus/webrtc/offer")
+        .method("POST")
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(&unsigned_body).unwrap()))
+        .unwrap();
+    let resp_unsigned = app.clone().oneshot(unsigned).await.unwrap();
+    assert_eq!(resp_unsigned.status(), StatusCode::UNAUTHORIZED);
+
+    // 4. Unknown device even with a valid signature is rejected.
+    let stranger_key = SigningKey::from_bytes(&[77u8; 32]);
+    let stranger_body = serde_json::json!({
         "session_id": "sess-test-02",
         "device_id": "dev-unknown-attacker",
         "sdp": offer.sdp,
     });
-
-    let req_unauth = Request::builder()
-        .uri("/nodus/webrtc/offer")
-        .method("POST")
-        .header("content-type", "application/json")
-        .body(Body::from(serde_json::to_vec(&unauth_body).unwrap()))
-        .unwrap();
-
+    let req_unauth = signed_post(
+        "/nodus/webrtc/offer",
+        stranger_body,
+        "dev-unknown-attacker",
+        "sess-test-02",
+        &stranger_key,
+    );
     let resp_unauth = app.oneshot(req_unauth).await.unwrap();
     assert_eq!(resp_unauth.status(), StatusCode::UNAUTHORIZED);
 }

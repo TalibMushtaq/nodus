@@ -1,6 +1,9 @@
-use sqlx::SqlitePool;
+use sqlx::{Connection, SqliteConnection, SqlitePool};
 
-use super::conflict::{detect_branch_conflict, generate_conflicted_filename};
+use super::conflict::{
+    detect_branch_conflict_conn, existing_slot_conn, generate_conflicted_filename,
+    is_fork_occupant, mark_branch_flagged_conn, next_free_version_number_conn,
+};
 use super::types::{BatchAckPayload, EventBatchPayload, FileVersionPayload, SyncEvent};
 
 #[derive(Debug, PartialEq, Eq)]
@@ -19,6 +22,22 @@ pub async fn apply_remote_event(
     event: &SyncEvent,
     local_node_id: &str,
 ) -> anyhow::Result<ApplyOutcome> {
+    let mut conn = db.acquire().await?;
+    apply_remote_event_conn(&mut conn, event, local_node_id).await
+}
+
+/// Connection variant of [`apply_remote_event`]: the idempotency check, the
+/// `sync_events` insert, every domain projection and the cursor update all run
+/// inside ONE transaction, so a mid-projection failure (e.g. an unfulfillable
+/// shard FK) rolls the whole event back instead of leaving partial rows that a
+/// later retry would skip as AlreadyApplied (#6).
+pub(crate) async fn apply_remote_event_conn(
+    conn: &mut SqliteConnection,
+    event: &SyncEvent,
+    local_node_id: &str,
+) -> anyhow::Result<ApplyOutcome> {
+    let mut tx = conn.begin().await?;
+
     // 1. Idempotency check: see if (origin_id, origin_sequence) or event_id is already in sync_events
     let existing = sqlx::query(
         r#"
@@ -31,7 +50,7 @@ pub async fn apply_remote_event(
     .bind(&event.origin_id)
     .bind(event.origin_sequence)
     .bind(&event.event_id)
-    .fetch_optional(db)
+    .fetch_optional(&mut *tx)
     .await?;
 
     if existing.is_some() {
@@ -54,7 +73,7 @@ pub async fn apply_remote_event(
     .bind(&event.event_type)
     .bind(&payload_str)
     .bind(&event.timestamp)
-    .execute(db)
+    .execute(&mut *tx)
     .await?;
 
     let mut outcome = ApplyOutcome::Applied;
@@ -89,7 +108,7 @@ pub async fn apply_remote_event(
                 .bind(encrypted_name)
                 .bind(&event.timestamp)
                 .bind(&event.timestamp)
-                .execute(db)
+                .execute(&mut *tx)
                 .await?;
             }
         }
@@ -107,44 +126,100 @@ pub async fn apply_remote_event(
                 .bind(&ver.file_id)
                 .bind(&event.timestamp)
                 .bind(&event.timestamp)
-                .execute(db)
+                .execute(&mut *tx)
                 .await?;
 
-                // Check for conflict
-                let conflict_sibling = detect_branch_conflict(
-                    db,
+                // ── Preserve-both conflict handling (#10) ─────────────────
+                // The claimed (file_id, version_number) slot may already be
+                // occupied by a genuinely different version: two branches both
+                // picked the same number offline, either from different parents
+                // or by both editing the same parent into the same number. A
+                // naive upsert would overwrite (lose) the earlier sibling. Keep
+                // both: give the incoming version a fresh MAX+1 slot and mark
+                // both versions flagged, mirroring the Relay's symmetric
+                // flagging so the conflicted state survives on the node.
+                let occupant =
+                    existing_slot_conn(&mut tx, &ver.file_id, ver.version_number).await?;
+
+                let fork_collision = occupant.as_ref().is_some_and(|o| is_fork_occupant(o, &ver));
+
+                let sibling_conflict = detect_branch_conflict_conn(
+                    &mut tx,
                     &ver.file_id,
                     ver.parent_version_id,
                     ver.version_number,
                 )
                 .await?;
 
-                let is_flagged =
-                    ver.conflict_status.as_deref() == Some("flagged") || conflict_sibling.is_some();
+                let is_flagged = ver.conflict_status.as_deref() == Some("flagged")
+                    || sibling_conflict.is_some()
+                    || fork_collision;
+
+                // Symmetric flagging: the whole branch set gets flagged, and a
+                // fork-collided occupant (living on a different parent) is
+                // flagged individually.
+                if is_flagged {
+                    mark_branch_flagged_conn(&mut tx, &ver.file_id, ver.parent_version_id).await?;
+                    if fork_collision {
+                        sqlx::query(
+                            "UPDATE file_versions SET conflict_status = 'flagged' WHERE file_id = ? AND version_number = ?",
+                        )
+                        .bind(&ver.file_id)
+                        .bind(ver.version_number)
+                        .execute(&mut *tx)
+                        .await?;
+                    }
+                }
+
+                let effective_number = if fork_collision {
+                    next_free_version_number_conn(&mut tx, &ver.file_id).await?
+                } else {
+                    ver.version_number
+                };
+
+                let stored_status = if is_flagged {
+                    "flagged"
+                } else {
+                    ver.conflict_status.as_deref().unwrap_or("none")
+                };
 
                 sqlx::query(
                     r#"
-                    INSERT INTO file_versions (file_id, version_number, parent_version_id, version_hash, shard_count, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    INSERT INTO file_versions (file_id, version_number, parent_version_id, conflict_status, version_hash, shard_count, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(file_id, version_number) DO UPDATE SET
                         parent_version_id = excluded.parent_version_id,
+                        conflict_status = excluded.conflict_status,
                         version_hash = excluded.version_hash,
                         shard_count = excluded.shard_count
                     "#,
                 )
                 .bind(&ver.file_id)
-                .bind(ver.version_number)
+                .bind(effective_number)
                 .bind(ver.parent_version_id)
+                .bind(stored_status)
                 .bind(&ver.version_hash)
                 .bind(ver.shard_count)
                 .bind(&event.timestamp)
-                .execute(db)
+                .execute(&mut *tx)
                 .await?;
 
                 // Phase 10: shards fetched from the Relay buffer can arrive
                 // before this version event. Now that the FK target exists,
-                // drain matching pending rows into shards.
-                drain_pending_fetches(db, &ver.file_id, ver.version_number).await?;
+                // drain matching pending rows into shards. A fork-colliding
+                // version was renumbered, so its pending shards (keyed on the
+                // claimed number) follow it to the new slot first.
+                if fork_collision && effective_number != ver.version_number {
+                    sqlx::query(
+                        "UPDATE pending_shard_fetches SET version_number = ? WHERE file_id = ? AND version_number = ?",
+                    )
+                    .bind(effective_number)
+                    .bind(&ver.file_id)
+                    .bind(ver.version_number)
+                    .execute(&mut *tx)
+                    .await?;
+                }
+                drain_pending_fetches_conn(&mut tx, &ver.file_id, effective_number).await?;
 
                 if is_flagged {
                     let base_name = ver
@@ -158,7 +233,13 @@ pub async fn apply_remote_event(
 
                     outcome = ApplyOutcome::Conflicted {
                         conflicted_filename: conflicted_name,
-                        sibling_version: conflict_sibling.unwrap_or(0),
+                        sibling_version: if fork_collision {
+                            // The sibling we preserved it next to is the
+                            // forkl-collided version that already held the slot.
+                            ver.version_number
+                        } else {
+                            sibling_conflict.unwrap_or(0)
+                        },
                     };
                 }
             }
@@ -195,7 +276,7 @@ pub async fn apply_remote_event(
                 .bind(encrypted_name)
                 .bind(&event.timestamp)
                 .bind(&event.timestamp)
-                .execute(db)
+                .execute(&mut *tx)
                 .await?;
             }
         }
@@ -216,7 +297,7 @@ pub async fn apply_remote_event(
                 )
                 .bind(folder_id)
                 .bind(&event.timestamp)
-                .execute(db)
+                .execute(&mut *tx)
                 .await?;
             }
         }
@@ -264,7 +345,7 @@ pub async fn apply_remote_event(
                 .bind(recipient_kind)
                 .bind(encrypted_key)
                 .bind(&event.timestamp)
-                .execute(db)
+                .execute(&mut *tx)
                 .await?;
             }
         }
@@ -292,7 +373,7 @@ pub async fn apply_remote_event(
                 .bind(entity_type)
                 .bind(entity_id)
                 .bind(&event.timestamp)
-                .execute(db)
+                .execute(&mut *tx)
                 .await?;
             }
         }
@@ -313,10 +394,12 @@ pub async fn apply_remote_event(
     .bind(&event.origin_id)
     .bind(event.origin_sequence)
     .bind(&event.timestamp)
-    .execute(db)
+    .execute(&mut *tx)
     .await?;
 
     let _ = local_node_id;
+
+    tx.commit().await?;
     Ok(outcome)
 }
 
@@ -326,6 +409,18 @@ pub async fn apply_remote_event(
 /// rows are no-ops and duplicates collapse via ON CONFLICT DO NOTHING.
 pub(crate) async fn drain_pending_fetches(
     db: &SqlitePool,
+    file_id: &str,
+    version_number: i64,
+) -> anyhow::Result<()> {
+    let mut conn = db.acquire().await?;
+    drain_pending_fetches_conn(&mut conn, file_id, version_number).await
+}
+
+/// Connection variant of [`drain_pending_fetches`]: runs on the caller's
+/// transaction so the drain is atomic with the version projection that
+/// triggered it (#6).
+pub(crate) async fn drain_pending_fetches_conn(
+    conn: &mut SqliteConnection,
     file_id: &str,
     version_number: i64,
 ) -> anyhow::Result<()> {
@@ -340,7 +435,7 @@ pub(crate) async fn drain_pending_fetches(
     )
     .bind(file_id)
     .bind(version_number)
-    .execute(db)
+    .execute(&mut *conn)
     .await?;
 
     // Whatever was not drained (e.g. duplicate shard_index already present)
@@ -348,7 +443,7 @@ pub(crate) async fn drain_pending_fetches(
     sqlx::query("DELETE FROM pending_shard_fetches WHERE file_id = ? AND version_number = ?")
         .bind(file_id)
         .bind(version_number)
-        .execute(db)
+        .execute(&mut *conn)
         .await?;
 
     Ok(())
@@ -362,8 +457,11 @@ pub async fn apply_incoming_batch(
 ) -> anyhow::Result<BatchAckPayload> {
     let mut applied_ids = Vec::with_capacity(batch.events.len());
 
+    // One connection for the whole batch; each event still commits atomically
+    // (see apply_remote_event_conn).
+    let mut conn = db.acquire().await?;
     for event in &batch.events {
-        match apply_remote_event(db, event, local_node_id).await {
+        match apply_remote_event_conn(&mut conn, event, local_node_id).await {
             Ok(_) => {
                 // Both Applied and AlreadyApplied are considered successful delivery
                 applied_ids.push(event.event_id.clone());
@@ -388,6 +486,7 @@ pub async fn apply_incoming_batch(
 mod tests {
     use super::*;
     use crate::db;
+    use sqlx::Row;
     use tempfile::tempdir;
 
     #[tokio::test]
@@ -615,6 +714,191 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(count, 3); // Versions 1, 2, 3 all exist!
+
+        // #10: the conflicted state must persist on the node — the earlier
+        // sibling (2) and the incoming (3) are symmetrically flagged, matching
+        // the Relay's behavior, so a later snapshot/rebuild keeps the flag.
+        let flags: Vec<String> = sqlx::query_scalar(
+            "SELECT conflict_status FROM file_versions WHERE file_id = 'f-diverge' ORDER BY version_number",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(flags, vec!["none", "flagged", "flagged"]); // 1 clean; 2 & 3 flagged
+    }
+
+    #[tokio::test]
+    async fn test_apply_event_fork_collision_preserves_both() {
+        let dir = tempdir().unwrap();
+        let pool = db::open(dir.path()).await.unwrap();
+
+        // Base version 1.
+        let evt_base = SyncEvent {
+            event_id: "evt-base".to_string(),
+            origin_id: "node-1".to_string(),
+            origin_sequence: 1,
+            event_type: "FILE_VERSION_ADDED".to_string(),
+            payload: serde_json::json!({
+                "file_id": "f-fork",
+                "version_number": 1,
+                "parent_version_id": null,
+                "shard_count": 1,
+                "version_hash": "hash_base",
+                "encrypted_name": "notes.txt"
+            }),
+            timestamp: "2026-09-04T10:00:00Z".to_string(),
+        };
+        assert_eq!(
+            apply_remote_event(&pool, &evt_base, "node-1")
+                .await
+                .unwrap(),
+            ApplyOutcome::Applied
+        );
+
+        // Device A offline: versions 2 (parent 1) then 4 (parent 2).
+        for evt in [
+            SyncEvent {
+                event_id: "evt-a2".to_string(),
+                origin_id: "device-a".to_string(),
+                origin_sequence: 1,
+                event_type: "FILE_VERSION_ADDED".to_string(),
+                payload: serde_json::json!({
+                    "file_id": "f-fork",
+                    "version_number": 2,
+                    "parent_version_id": 1,
+                    "shard_count": 1,
+                    "version_hash": "hash_a2",
+                    "encrypted_name": "notes.txt"
+                }),
+                timestamp: "2026-09-04T11:00:00Z".to_string(),
+            },
+            SyncEvent {
+                event_id: "evt-a4".to_string(),
+                origin_id: "device-a".to_string(),
+                origin_sequence: 2,
+                event_type: "FILE_VERSION_ADDED".to_string(),
+                payload: serde_json::json!({
+                    "file_id": "f-fork",
+                    "version_number": 4,
+                    "parent_version_id": 2,
+                    "shard_count": 1,
+                    "version_hash": "hash_a4",
+                    "encrypted_name": "notes.txt"
+                }),
+                timestamp: "2026-09-04T12:00:00Z".to_string(),
+            },
+        ] {
+            assert_eq!(
+                apply_remote_event(&pool, &evt, "node-1").await.unwrap(),
+                ApplyOutcome::Applied
+            );
+        }
+
+        // A shard for A's version 4 already has a pending fetch that must track
+        // the version onto its slot.
+        sqlx::query(
+            "INSERT INTO storage_objects (object_id, size_bytes, status, created_at) VALUES ('obj-fork', 64, 'STORED', 'now')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            r#"
+            INSERT INTO pending_shard_fetches
+                (file_id, version_number, shard_index, object_id, size_bytes, fetched_at)
+            VALUES ('f-fork', 4, 0, 'obj-fork', 64, 'now')
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // Device B reuses version 4 from the same parent (2) with different
+        // content — the canonical offline fork. It must NOT overwrite A's 4.
+        let evt_b4 = SyncEvent {
+            event_id: "evt-b4".to_string(),
+            origin_id: "device-b".to_string(),
+            origin_sequence: 1,
+            event_type: "FILE_VERSION_ADDED".to_string(),
+            payload: serde_json::json!({
+                "file_id": "f-fork",
+                "version_number": 4,
+                "parent_version_id": 2,
+                "shard_count": 1,
+                "version_hash": "hash_b4",
+                "encrypted_name": "notes.txt"
+            }),
+            timestamp: "2026-09-04T12:30:00Z".to_string(),
+        };
+        let res = apply_remote_event(&pool, &evt_b4, "node-1").await.unwrap();
+        match res {
+            ApplyOutcome::Conflicted {
+                conflicted_filename,
+                sibling_version,
+            } => {
+                assert!(conflicted_filename.contains("conflicted copy"));
+                assert_eq!(sibling_version, 4);
+            }
+            other => panic!("expected Conflicted outcome, got {:?}", other),
+        }
+
+        // Both branches survive: A's 4 (hash_a4) and B's copy renumbered to 5.
+        let rows = sqlx::query(
+            "SELECT version_number, parent_version_id, version_hash, conflict_status FROM file_versions WHERE file_id = 'f-fork' ORDER BY version_number",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        let versions: Vec<(i64, Option<i64>, String, String)> = rows
+            .iter()
+            .map(|r| {
+                (
+                    r.get::<i64, _>("version_number"),
+                    r.get::<Option<i64>, _>("parent_version_id"),
+                    r.get::<String, _>("version_hash"),
+                    r.get::<String, _>("conflict_status"),
+                )
+            })
+            .collect();
+        assert_eq!(versions.len(), 4);
+        assert_eq!(
+            versions[2],
+            (4, Some(2), "hash_a4".into(), "flagged".into())
+        );
+        assert_eq!(
+            versions[3],
+            (5, Some(2), "hash_b4".into(), "flagged".into())
+        );
+
+        // The pending shard for the incoming version followed it to slot 5.
+        let shards = sqlx::query(
+            "SELECT version_number FROM shards WHERE file_id = 'f-fork' ORDER BY version_number",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(shards.len(), 1);
+        assert_eq!(shards[0].get::<i64, _>("version_number"), 5);
+
+        let pending: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pending_shard_fetches WHERE file_id = 'f-fork'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(pending, 0);
+
+        // Re-delivery stays idempotent.
+        assert_eq!(
+            apply_remote_event(&pool, &evt_b4, "node-1").await.unwrap(),
+            ApplyOutcome::AlreadyApplied
+        );
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM file_versions WHERE file_id = 'f-fork'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(count, 4);
     }
 
     #[tokio::test]
@@ -676,5 +960,98 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(pending_count, 0);
+    }
+
+    #[tokio::test]
+    async fn test_projection_failure_rolls_back_whole_event() {
+        let dir = tempdir().unwrap();
+        let pool = db::open(dir.path()).await.unwrap();
+
+        // A shard sits in the pending landing zone, but the storage object it
+        // references does not exist. When the version event arrives, the drain
+        // INSERT...SELECT hits the shards.object_id FK and fails mid-event.
+        sqlx::query(
+            r#"
+            INSERT INTO pending_shard_fetches
+                (file_id, version_number, shard_index, object_id, size_bytes, fetched_at)
+            VALUES ('file-atomic', 1, 0, 'obj-missing', 10, 'now')
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let event = SyncEvent {
+            event_id: "evt-atomic".to_string(),
+            origin_id: "relay-origin".to_string(),
+            origin_sequence: 1,
+            event_type: "FILE_VERSION_ADDED".to_string(),
+            payload: serde_json::json!({
+                "file_id": "file-atomic",
+                "version_number": 1,
+                "parent_version_id": null,
+                "shard_count": 1,
+                "version_hash": "hash_v1"
+            }),
+            timestamp: "2026-09-05T10:00:00Z".to_string(),
+        };
+
+        // The projection fails, so the whole event must roll back: no files
+        // row, no file_versions row, no sync_events entry, no cursor.
+        assert!(apply_remote_event(&pool, &event, "node-1").await.is_err());
+
+        let files: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM files WHERE file_id = 'file-atomic'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(files, 0);
+
+        let versions: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM file_versions WHERE file_id = 'file-atomic'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(versions, 0);
+
+        let events: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM sync_events WHERE event_id = 'evt-atomic'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(events, 0);
+
+        let cursors: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM sync_cursors WHERE peer_id = 'relay-origin'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(cursors, 0);
+
+        // Healing the root cause lets the same event apply cleanly on retry —
+        // the rollback did not "burn" the idempotency check.
+        sqlx::query(
+            "INSERT INTO storage_objects (object_id, size_bytes, status, created_at) VALUES ('obj-missing', 10, 'STORED', 'now')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let res = apply_remote_event(&pool, &event, "node-1").await.unwrap();
+        assert_eq!(res, ApplyOutcome::Applied);
+
+        let versions: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM file_versions WHERE file_id = 'file-atomic'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(versions, 1);
+
+        let shards: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM shards WHERE file_id = 'file-atomic'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(shards, 1);
     }
 }
