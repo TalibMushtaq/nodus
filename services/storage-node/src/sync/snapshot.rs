@@ -12,9 +12,8 @@ use sqlx::{Acquire, Row, SqliteConnection, SqlitePool};
 
 use super::types::{
     FileVersionRecord, FolderKeyEnvelopeRecord, FolderRecord, KeyEnvelopeRecord,
-    RebuildRequiredPayload, ShardHashRecord,
-    SnapshotBeginPayload, SnapshotChunkPayload, SnapshotEndPayload, SnapshotRecord, SyncCursor,
-    TombstoneRecord,
+    RebuildRequiredPayload, ShardHashRecord, SnapshotBeginPayload, SnapshotChunkPayload,
+    SnapshotEndPayload, SnapshotRecord, SyncCursor, TombstoneRecord,
 };
 use crate::identity::NodeIdentity;
 
