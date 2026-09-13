@@ -87,12 +87,14 @@ pub async fn mark_events_synced(db: &SqlitePool, event_ids: &[String]) -> anyhow
 /// Purge outbox rows the Relay has acknowledged and whose `created_at` predates
 /// `grace_before` (an RFC3339 instant), keeping `sync_outbox` from growing
 /// without bound (#15). `grace_before` is a timestamp so the caller controls
-/// the retention window; RFC3339 strings compare lexicographically.
+/// the retention window. Compared through SQLite's `datetime()` rather than as
+/// raw strings: RFC3339 instants may mix `Z`/`+00:00` and fractional seconds,
+/// which do not order correctly lexicographically.
 pub async fn sweep_synced_outbox(db: &SqlitePool, grace_before: &str) -> anyhow::Result<u64> {
     let res = sqlx::query(
         r#"
         DELETE FROM sync_outbox
-        WHERE synced = 1 AND created_at < ?
+        WHERE synced = 1 AND datetime(created_at) < datetime(?)
         "#,
     )
     .bind(grace_before)
@@ -208,5 +210,50 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(remaining_ids, vec!["evt-fresh-acked", "evt-old-unsynced"]);
+    }
+
+    #[tokio::test]
+    async fn sweep_compares_timezone_normalized() {
+        let dir = tempdir().unwrap();
+        let pool = db::open(dir.path()).await.unwrap();
+
+        // `19:00-05:00` is exactly `00:00Z`, i.e. NOT older than the grace
+        // instant. Lexicographic comparison would see "2026-09-11..." <
+        // "2026-09-12..." and wrongly delete it; `datetime()` normalizes.
+        let at_grace = SyncEvent {
+            event_id: "evt-at-grace".to_string(),
+            origin_id: "node-1".to_string(),
+            origin_sequence: 1,
+            event_type: "FILE_CREATED".to_string(),
+            payload: serde_json::json!({ "file_id": "f1" }),
+            timestamp: "2026-09-11T19:00:00-05:00".to_string(),
+        };
+        let older = SyncEvent {
+            event_id: "evt-older".to_string(),
+            origin_id: "node-1".to_string(),
+            origin_sequence: 2,
+            event_type: "FILE_CREATED".to_string(),
+            payload: serde_json::json!({ "file_id": "f2" }),
+            timestamp: "2026-09-10T00:00:00Z".to_string(),
+        };
+        insert_outbox_event(&pool, &at_grace).await.unwrap();
+        insert_outbox_event(&pool, &older).await.unwrap();
+        mark_events_synced(
+            &pool,
+            &["evt-at-grace".to_string(), "evt-older".to_string()],
+        )
+        .await
+        .unwrap();
+
+        let removed = sweep_synced_outbox(&pool, "2026-09-12T00:00:00Z")
+            .await
+            .unwrap();
+        assert_eq!(removed, 1, "only the genuinely older row is swept");
+        let remaining: Vec<String> =
+            sqlx::query_scalar("SELECT event_id FROM sync_outbox ORDER BY origin_sequence")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(remaining, vec!["evt-at-grace"]);
     }
 }

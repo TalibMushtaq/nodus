@@ -308,6 +308,13 @@ impl SyncClient {
                         continue;
                     }
                 };
+                if !schema_major_compatible(&env.schema_version) {
+                    eprintln!(
+                        "[sync] ignoring envelope with incompatible schema_version {}",
+                        env.schema_version
+                    );
+                    continue;
+                }
                 if env.msg_type == "node_auth_challenge" {
                     let challenge: NodeAuthChallengePayload = serde_json::from_value(env.payload)?;
                     let resp = Self::sign_auth_challenge(&self.identity, &challenge);
@@ -402,6 +409,13 @@ impl SyncClient {
                                 continue;
                             }
                         };
+                        if !schema_major_compatible(&env.schema_version) {
+                            eprintln!(
+                                "[sync] ignoring envelope with incompatible schema_version {}",
+                                env.schema_version
+                            );
+                            continue;
+                        }
                         match env.msg_type.as_str() {
                     "sync_status" => {
                         let _status: SyncStatusPayload = serde_json::from_value(env.payload)?;
@@ -457,7 +471,7 @@ impl SyncClient {
                     // even if the device scans the QR while the Relay is down.
                     "pairing_token_push" => {
                         let push: PairingTokenPushPayload = serde_json::from_value(env.payload)?;
-                        store_pairing_token(&self.db, &push).await?;
+                        store_pairing_token(&self.db, &push, &self.identity.node_id).await?;
                     }
                     // Relay asked us to permanently remove a tombstoned entity.
                     // Free the data, then ack so the Relay can finalize the
@@ -796,8 +810,17 @@ impl SyncClient {
 async fn store_pairing_token(
     db: &SqlitePool,
     push: &PairingTokenPushPayload,
+    local_node_id: &str,
 ) -> anyhow::Result<()> {
     use base64::Engine;
+
+    // The Relay may push tokens for several nodes over the account's sockets;
+    // drop any aimed at a different node id so this node never stores (or
+    // accidentally redeems) another node's token. `local/server.rs` re-checks
+    // at redemption, but not writing it at all is the stronger guarantee.
+    if push.node_id != local_node_id {
+        return Ok(());
+    }
 
     let device_pubkey =
         match base64::engine::general_purpose::STANDARD.decode(&push.device_public_key) {
@@ -853,6 +876,19 @@ pub(crate) async fn purge_tombstoned_entity(
         crate::store::gc::purge_folder(store, entity_id).await?;
     }
     Ok(true)
+}
+
+/// True when an inbound envelope's `schema_version` shares this node's major
+/// version (currently `1`). The wire strings are `"1.0.0"` for both the relay
+/// and the node, independent of the package protocol version; a different major
+/// means a surface we must not try to parse. An unparseable version is treated
+/// as incompatible (fail closed).
+fn schema_major_compatible(version: &str) -> bool {
+    version
+        .split('.')
+        .next()
+        .and_then(|major| major.parse::<u32>().ok())
+        == Some(1)
 }
 
 #[cfg(test)]
@@ -932,6 +968,46 @@ mod tests {
                 .unwrap()
         );
         assert!(!store.exists(&object_id));
+    }
+
+    #[tokio::test]
+    async fn store_pairing_token_ignores_other_nodes() {
+        use base64::Engine;
+
+        let dir = tempdir().unwrap();
+        let pool = db::open(dir.path()).await.unwrap();
+
+        let push = |node_id: &str, token: &str| PairingTokenPushPayload {
+            node_id: node_id.to_string(),
+            token: token.to_string(),
+            device_public_key: base64::engine::general_purpose::STANDARD.encode([1u8; 32]),
+            expires_at: (chrono::Utc::now() + chrono::Duration::minutes(15)).to_rfc3339(),
+            account_id: "acct-1".to_string(),
+        };
+
+        // A token addressed to a different node must never be stored here.
+        store_pairing_token(&pool, &push("other-node", "tok-other"), "my-node")
+            .await
+            .unwrap();
+        store_pairing_token(&pool, &push("my-node", "tok-mine"), "my-node")
+            .await
+            .unwrap();
+
+        let tokens: Vec<String> =
+            sqlx::query_scalar("SELECT token FROM pairing_sessions ORDER BY token")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(tokens, vec!["tok-mine"]);
+    }
+
+    #[test]
+    fn schema_major_compatibility() {
+        assert!(schema_major_compatible("1.0.0"));
+        assert!(schema_major_compatible("1.5"));
+        assert!(!schema_major_compatible("2.0.0"));
+        assert!(!schema_major_compatible(""));
+        assert!(!schema_major_compatible("not-a-version"));
     }
 
     #[tokio::test]

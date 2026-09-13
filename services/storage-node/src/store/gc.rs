@@ -174,18 +174,21 @@ pub async fn purge_file(store: &ObjectStore, file_id: &str) -> anyhow::Result<()
         .context("deleting file row for purge")?;
 
     for (object_id,) in object_ids {
-        let (ref_count,): (i64,) =
-            sqlx::query_as("SELECT COUNT(*) FROM shards WHERE object_id = ?")
-                .bind(&object_id)
-                .fetch_one(pool)
-                .await
-                .context("counting remaining shard references during purge")?;
-        if ref_count == 0 {
-            sqlx::query("DELETE FROM storage_objects WHERE object_id = ?")
-                .bind(&object_id)
-                .execute(pool)
-                .await
-                .context("deleting storage_objects row during purge")?;
+        // Single conditional DELETE: the refcount check and the delete happen in
+        // one statement, so a concurrent shard insert cannot slip between them
+        // and leave us deleting a now-referenced row. Only a one-row delete
+        // authorizes removing the file.
+        let deleted = sqlx::query(
+            "DELETE FROM storage_objects WHERE object_id = ? \
+             AND NOT EXISTS (SELECT 1 FROM shards WHERE object_id = ?)",
+        )
+        .bind(&object_id)
+        .bind(&object_id)
+        .execute(pool)
+        .await
+        .context("deleting unreferenced storage_objects row during purge")?
+        .rows_affected();
+        if deleted == 1 {
             let dest = layout::object_path(data_dir, &object_id)?;
             if dest.exists() {
                 // A silent unlink failure would leak disk with no trace; log it
@@ -282,23 +285,23 @@ async fn prune_version(
 
     report.versions_pruned += 1;
 
-    // 3. For each object_id, check if still referenced by ANY shard in DB
+    // 3. For each object_id, atomically delete only if no shard still
+    // references it. A single conditional DELETE cannot interleave with a
+    // concurrent `record_shard_metadata` insert (which the FK would otherwise
+    // let race the check).
     for (object_id,) in object_ids {
-        let (ref_count,): (i64,) =
-            sqlx::query_as("SELECT COUNT(*) FROM shards WHERE object_id = ?")
-                .bind(&object_id)
-                .fetch_one(pool)
-                .await
-                .context("counting remaining shard references")?;
+        let deleted = sqlx::query(
+            "DELETE FROM storage_objects WHERE object_id = ? \
+             AND NOT EXISTS (SELECT 1 FROM shards WHERE object_id = ?)",
+        )
+        .bind(&object_id)
+        .bind(&object_id)
+        .execute(pool)
+        .await
+        .context("deleting unreferenced storage_objects row")?
+        .rows_affected();
 
-        if ref_count == 0 {
-            // No other version references this physical object; delete it
-            sqlx::query("DELETE FROM storage_objects WHERE object_id = ?")
-                .bind(&object_id)
-                .execute(pool)
-                .await
-                .context("deleting unreferenced storage_objects row")?;
-
+        if deleted == 1 {
             let dest = layout::object_path(data_dir, &object_id)?;
             if dest.exists() {
                 // A silent unlink failure would leak disk with no trace; log it
