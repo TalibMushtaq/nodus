@@ -34,6 +34,10 @@ pub struct ReconcileReport {
 ///
 /// This function does not block normal operations (designed to be run in a spawned task).
 pub async fn run_reconciliation(store: &ObjectStore) -> anyhow::Result<ReconcileReport> {
+    // Hold the maintenance lock for the whole scan: ingest must not publish or
+    // dedup an object while we are deciding it is missing/corrupt, and the
+    // orphan sweep must not race a `put`'s rename-then-DB ordering.
+    let _guard = store.lock_maintenance().await;
     let mut report = ReconcileReport::default();
     let data_dir = store.data_dir();
     let pool = store.pool();
@@ -46,7 +50,7 @@ pub async fn run_reconciliation(store: &ObjectStore) -> anyhow::Result<Reconcile
             .context("fetching storage_objects for reconciliation")?;
 
     for (object_id,) in rows {
-        let path = layout::object_path(data_dir, &object_id);
+        let path = layout::object_path(data_dir, &object_id)?;
         if !path.exists() {
             // Marked STORED in DB, missing on disk -> DEGRADED
             sqlx::query("UPDATE storage_objects SET status = 'DEGRADED' WHERE object_id = ?")
@@ -356,9 +360,12 @@ pub fn submit_repairs(
 /// zero-filled/torn file as `STORED`; without the directory sync the renamed
 /// entry itself could be lost after the row flips.
 async fn restore_object(store: &ObjectStore, object_id: &str, bytes: &[u8]) -> anyhow::Result<()> {
+    // Serialize with GC: a repair must not publish an object that GC is about
+    // to reap as unreferenced (the shard row may not exist yet at scan time).
+    let _guard = store.lock_maintenance().await;
     use std::io::Write;
 
-    let dest = layout::object_path(store.data_dir(), object_id);
+    let dest = layout::object_path(store.data_dir(), object_id)?;
     let parent = dest
         .parent()
         .ok_or_else(|| anyhow::anyhow!("object path {} has no parent", dest.display()))?;
@@ -464,7 +471,7 @@ mod tests {
         let hash = store.put(valid_data).await.unwrap();
 
         // Overwrite file with corrupt data
-        let dest = layout::object_path(dir.path(), &hash);
+        let dest = layout::object_path(dir.path(), &hash).unwrap();
         fs::write(&dest, b"tampered corrupt data").unwrap();
 
         let report = run_reconciliation(&store).await.unwrap();
@@ -490,7 +497,7 @@ mod tests {
 
         let orphan_data = b"orphan file content";
         let hash = blake3::hash(orphan_data).to_hex().to_string();
-        let dest = layout::object_path(dir.path(), &hash);
+        let dest = layout::object_path(dir.path(), &hash).unwrap();
         fs::create_dir_all(dest.parent().unwrap()).unwrap();
         fs::write(&dest, orphan_data).unwrap();
 
@@ -509,7 +516,7 @@ mod tests {
 
         let orphan_data = b"old orphan file content";
         let hash = blake3::hash(orphan_data).to_hex().to_string();
-        let dest = layout::object_path(dir.path(), &hash);
+        let dest = layout::object_path(dir.path(), &hash).unwrap();
         fs::create_dir_all(dest.parent().unwrap()).unwrap();
         fs::write(&dest, orphan_data).unwrap();
 
@@ -627,7 +634,7 @@ mod tests {
 
         let bytes = b"repaired shard bytes";
         let object_id = blake3::hash(bytes).to_hex().to_string();
-        let dest = layout::object_path(dir.path(), &object_id);
+        let dest = layout::object_path(dir.path(), &object_id).unwrap();
 
         // Row deliberately absent: the old blind UPDATE would have affected
         // zero rows and left the restored file untracked (orphan-eligible).

@@ -57,6 +57,9 @@ pub struct LocalState {
     pub webrtc_manager: Arc<crate::webrtc::WebRtcManager>,
     pub nonces: Arc<NonceStore>,
     pub challenge_limiter: Arc<RateLimiter>,
+    /// Separate limiter for `/nodus/webrtc/offer`: each accepted offer creates
+    /// a session, so it must not share the challenge budget.
+    pub offer_limiter: Arc<RateLimiter>,
     /// Derived Relay HTTP base (ws→http, /ws dropped), reused for the
     /// `/pairing/sessions/verify` fallback. `None` disables the fallback.
     pub relay_http_base: Option<String>,
@@ -191,6 +194,10 @@ pub async fn spawn(
         challenge_limiter: Arc::new(RateLimiter::new(
             super::auth::CHALLENGE_RATE_WINDOW,
             super::auth::CHALLENGE_RATE_LIMIT,
+        )),
+        offer_limiter: Arc::new(RateLimiter::new(
+            super::auth::WEBRTC_OFFER_RATE_WINDOW,
+            super::auth::WEBRTC_OFFER_RATE_LIMIT,
         )),
         relay_http_base: relay_http,
         // Bound the Relay pairing-verify call (#9): a black-holed relay IP
@@ -364,7 +371,13 @@ async fn handle_shard_fetch(
     // Presence check only: the requester hash-verifies against the object_id
     // it asked for, so corrupt local content fails verification there (and is
     // DEGRADED here after the next reconciliation scan anyway).
-    let path = crate::store::layout::object_path(state.store.data_dir(), &object_id);
+    let path =
+        crate::store::layout::object_path(state.store.data_dir(), &object_id).map_err(|e| {
+            LocalError {
+                error: "invalid_object_id".into(),
+                message: format!("{e}"),
+            }
+        })?;
     let bytes = tokio::fs::read(&path).await.map_err(|_| LocalError {
         error: "not_found".into(),
         message: "object not present on this node".into(),
@@ -494,11 +507,7 @@ pub async fn verify_signed_query(
 /// signed-but-compromised peer could otherwise read arbitrary files under
 /// `data_dir` by signing a traversal id.
 fn validate_object_id(object_id: &str) -> Result<(), LocalError> {
-    let valid = object_id.len() == 64
-        && object_id
-            .bytes()
-            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
-    if valid {
+    if crate::store::layout::is_valid_object_id(object_id) {
         Ok(())
     } else {
         Err(LocalError {
@@ -840,6 +849,10 @@ mod tests {
             webrtc_manager,
             nonces,
             challenge_limiter,
+            offer_limiter: Arc::new(RateLimiter::new(
+                Duration::from_secs(10),
+                super::super::auth::WEBRTC_OFFER_RATE_LIMIT,
+            )),
             relay_http_base: None,
             http: reqwest::Client::new(),
             telemetry: crate::telemetry::Telemetry::new(),

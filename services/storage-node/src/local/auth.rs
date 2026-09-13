@@ -22,6 +22,12 @@ pub const NONCE_TTL: Duration = Duration::from_secs(30);
 pub const CHALLENGE_RATE_LIMIT: usize = 10;
 /// Sliding window for the challenge endpoint rate limiter.
 pub const CHALLENGE_RATE_WINDOW: Duration = Duration::from_secs(10);
+/// Max WebRTC offer requests allowed per IP within the rate window. An offer
+/// creates a session (peer connection + per-channel buffers), so it needs its
+/// own limiter rather than sharing the challenge budget.
+pub const WEBRTC_OFFER_RATE_LIMIT: usize = 30;
+/// Sliding window for the WebRTC offer rate limiter.
+pub const WEBRTC_OFFER_RATE_WINDOW: Duration = Duration::from_secs(10);
 /// Hard cap on outstanding unconsumed nonces across all clients.
 pub const NONCE_OUTSTANDING_CAP: usize = 500;
 

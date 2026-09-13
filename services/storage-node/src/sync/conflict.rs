@@ -138,11 +138,9 @@ pub fn generate_conflicted_filename(
     origin_id: &str,
     timestamp: &str,
 ) -> String {
-    let short_origin = if origin_id.len() > 8 {
-        &origin_id[..8]
-    } else {
-        origin_id
-    };
+    // `origin_id` is remote/attacker-controlled; slice by characters, not
+    // bytes, so a multi-byte code point straddling index 8 cannot panic sync.
+    let short_origin: String = origin_id.chars().take(8).collect();
 
     let date_str = if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(timestamp) {
         dt.format("%Y-%m-%d").to_string()
@@ -181,6 +179,18 @@ mod tests {
         let name_no_ext =
             generate_conflicted_filename("notes", "node-12345678abcdef", "2026-09-04T12:00:00Z");
         assert_eq!(name_no_ext, "notes (conflicted copy node-123 2026-09-04)");
+    }
+
+    #[test]
+    fn conflicted_filename_handles_multibyte_origin_without_panicking() {
+        // `origin_id` is remote-controlled; a multi-byte char straddling byte 8
+        // previously panicked the sync task.
+        let name =
+            generate_conflicted_filename("document.pdf", "aaaaaaé12345", "2026-09-04T12:00:00Z");
+        assert!(
+            name.starts_with("document (conflicted copy aaaaaaé1 "),
+            "{name}"
+        );
     }
 
     #[tokio::test]

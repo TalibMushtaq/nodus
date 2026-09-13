@@ -1,7 +1,9 @@
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
 use axum::body::Body;
+use axum::extract::ConnectInfo;
 use axum::http::{Request, StatusCode};
 use ed25519_dalek::{Signer, SigningKey};
 use http_body_util::BodyExt;
@@ -29,7 +31,7 @@ fn signed_post(
     let timestamp = chrono::Utc::now().timestamp_millis();
     let message = format!("{device_id}:{session_id}:{timestamp}");
     let signature = hex::encode(key.sign(message.as_bytes()).to_bytes());
-    Request::builder()
+    let mut request = Request::builder()
         .uri(path)
         .method("POST")
         .header("content-type", "application/json")
@@ -37,7 +39,13 @@ fn signed_post(
         .header("x-nodus-timestamp", timestamp.to_string())
         .header("x-nodus-signature", signature)
         .body(Body::from(serde_json::to_vec(&body).unwrap()))
-        .unwrap()
+        .unwrap();
+    // The offer handler rate-limits by source IP, so it must see a peer
+    // address; `oneshot` bypasses the real server that would inject it.
+    request
+        .extensions_mut()
+        .insert(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 40000))));
+    request
 }
 
 #[tokio::test]
@@ -59,6 +67,7 @@ async fn test_webrtc_offer_and_ice_endpoint_roundtrip() {
     ));
     let nonces = Arc::new(NonceStore::default());
     let challenge_limiter = Arc::new(RateLimiter::new(Duration::from_secs(10), 100));
+    let offer_limiter = Arc::new(RateLimiter::new(Duration::from_secs(10), 100));
 
     // Register a trusted device with the key the requests below sign with.
     let device_key = SigningKey::from_bytes(&[42u8; 32]);
@@ -79,6 +88,7 @@ async fn test_webrtc_offer_and_ice_endpoint_roundtrip() {
         webrtc_manager,
         nonces,
         challenge_limiter,
+        offer_limiter,
         relay_http_base: None,
         http: reqwest::Client::new(),
         telemetry,
@@ -148,12 +158,15 @@ async fn test_webrtc_offer_and_ice_endpoint_roundtrip() {
         "device_id": "dev-trusted-1",
         "sdp": offer.sdp,
     });
-    let unsigned = Request::builder()
+    let mut unsigned = Request::builder()
         .uri("/nodus/webrtc/offer")
         .method("POST")
         .header("content-type", "application/json")
         .body(Body::from(serde_json::to_vec(&unsigned_body).unwrap()))
         .unwrap();
+    unsigned
+        .extensions_mut()
+        .insert(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 40001))));
     let resp_unsigned = app.clone().oneshot(unsigned).await.unwrap();
     assert_eq!(resp_unsigned.status(), StatusCode::UNAUTHORIZED);
 

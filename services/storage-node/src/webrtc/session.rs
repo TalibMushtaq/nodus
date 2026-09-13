@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, bail};
@@ -18,19 +18,28 @@ use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 
 use crate::identity::NodeIdentity;
+use crate::limits::MAX_SHARD_BYTES;
 use crate::store::ObjectStore;
-
-/// Hard cap on a single shard upload over a data channel. The paired device is
-/// cryptographically authenticated, but a compromised or buggy client must not
-/// be able to drive unbounded buffering on the node: the cap is enforced on
-/// every chunk *before* it is appended, and on the declared metadata size at
-/// metadata time.
-const MAX_SHARD_BYTES: usize = 64 * 1024 * 1024;
 
 /// If a shard transmission stalls (no frames at all) this long, the partially
 /// received state is dropped so a wedged channel can't pin memory or poison the
 /// next transmission on the same channel.
 const CHANNEL_STALL_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// Maximum concurrent WebRTC sessions across all devices. Bounds the aggregate
+/// memory/fd cost of a device that opens many sessions (each session is a live
+/// peer connection plus per-channel buffers).
+const MAX_SESSIONS: usize = 64;
+/// Maximum concurrent sessions for a single paired device, so one compromised
+/// device cannot monopolise the global budget.
+const MAX_SESSIONS_PER_DEVICE: usize = 8;
+/// Maximum data channels one peer connection may open. Each channel buffers up
+/// to `MAX_SHARD_BYTES`, so without this a single authenticated device could
+/// drive N × 64 MiB by opening channels in a loop.
+const MAX_CHANNELS_PER_CONNECTION: usize = 16;
+/// Absolute session lifetime, applied even to `Connected` sessions so a device
+/// cannot hold a live session (and its memory) forever.
+const MAX_SESSION_LIFETIME: Duration = Duration::from_secs(24 * 3600);
 
 /// Unused WebRTC sessions are reaped after this much wall time *without* an
 /// active peer connection. Sessions with live traffic (`touch`) or an active
@@ -159,6 +168,10 @@ pub struct WebRtcSession {
     /// traffic). The manager's reaper uses this to distinguish an idle session
     /// from an actively transferring one.
     pub last_active_ms: Arc<AtomicU64>,
+    /// Wall-clock creation time (millis). The reaper applies
+    /// `MAX_SESSION_LIFETIME` regardless of activity so a `Connected` session
+    /// cannot be held open forever.
+    pub created_at_ms: u64,
 }
 
 impl WebRtcSession {
@@ -185,6 +198,8 @@ impl WebRtcSession {
         );
 
         let (ice_tx, _) = broadcast::channel(64);
+        let channel_count = Arc::new(AtomicUsize::new(0));
+        let created_at_ms = now_millis();
 
         // Setup local ICE candidate listener
         let ice_tx_clone = ice_tx.clone();
@@ -204,14 +219,29 @@ impl WebRtcSession {
         let identity_clone = identity.clone();
         let last_active = Arc::new(AtomicU64::new(now_millis()));
         let channel_last_active = last_active.clone();
+        let channel_count_cb = channel_count.clone();
 
         peer_connection.on_data_channel(Box::new(move |dc: Arc<RTCDataChannel>| {
             let db = db_clone.clone();
             let store = store_clone.clone();
             let identity = identity_clone.clone();
             let session_last_active = channel_last_active.clone();
+            let channels = channel_count_cb.clone();
 
             Box::pin(async move {
+                // Bound channels per connection: each may buffer a full shard,
+                // so an authenticated device must not be able to open channels
+                // in a loop and multiply its memory budget.
+                if channels.fetch_add(1, Ordering::SeqCst) + 1 > MAX_CHANNELS_PER_CONNECTION {
+                    channels.fetch_sub(1, Ordering::SeqCst);
+                    eprintln!(
+                        "[webrtc] rejecting data channel: per-connection limit of \
+                         {MAX_CHANNELS_PER_CONNECTION} reached"
+                    );
+                    let _ = dc.close().await;
+                    return;
+                }
+                let channels_on_close = channels.clone();
                 let state = Arc::new(Mutex::new(ChannelReceiveState::new()));
 
                 // ONE staleness watcher per channel (not per frame): flips the
@@ -227,6 +257,9 @@ impl WebRtcSession {
                         tick.tick().await;
                         if dc_watcher.ready_state() == (webrtc::data_channel::data_channel_state::RTCDataChannelState::Closed)
                         {
+                            // Release the slot so a closed channel does not
+                            // permanently consume the per-connection budget.
+                            channels_on_close.fetch_sub(1, Ordering::SeqCst);
                             return;
                         }
                         let mut st = watcher_state.lock().await;
@@ -429,6 +462,7 @@ impl WebRtcSession {
             peer_connection,
             ice_tx,
             last_active_ms: last_active,
+            created_at_ms,
         })
     }
 
@@ -495,10 +529,13 @@ fn now_millis() -> u64 {
 /// A session stays alive while it has been active recently (`last_active_ms`
 /// within `SESSION_IDLE_TIMEOUT`) *or* while its peer connection is live
 /// (`Connected`). A never-gathered or failed session goes stale on its own once
-/// activity stops — this is what keeps an abandoned iced-out session from
-/// lingering forever rather than at a fixed created-at TTL.
-fn should_prune(last_active_ms: u64, now_ms: u64, connected: bool) -> bool {
-    now_ms.saturating_sub(last_active_ms) > SESSION_IDLE_TIMEOUT.as_millis() as u64 && !connected
+/// activity stops. Independently, `MAX_SESSION_LIFETIME` bounds even a
+/// connected session's total age, so a device cannot pin memory/fds forever.
+fn should_prune(created_ms: u64, last_active_ms: u64, now_ms: u64, connected: bool) -> bool {
+    let idle = now_ms.saturating_sub(last_active_ms) > SESSION_IDLE_TIMEOUT.as_millis() as u64
+        && !connected;
+    let too_old = now_ms.saturating_sub(created_ms) > MAX_SESSION_LIFETIME.as_millis() as u64;
+    idle || too_old
 }
 
 /// WebRtcManager manages active WebRTC sessions and handles lifecycle/TTL.
@@ -544,7 +581,7 @@ impl WebRtcManager {
                     let active = session.last_active_ms.load(Ordering::Relaxed);
                     let connected = session.peer_connection.connection_state()
                         == RTCPeerConnectionState::Connected;
-                    !should_prune(active, now, connected)
+                    !should_prune(session.created_at_ms, active, now, connected)
                 });
                 // Publishing on every tick also heals a count drift if a
                 // session ever ends without an explicit prune.
@@ -580,6 +617,21 @@ impl WebRtcManager {
                 return Ok(sess.clone());
             }
             lock.remove(session_id);
+        }
+
+        // Cap creation: global and per-device. Both bounds are necessary — a
+        // global cap alone lets one device starve others, and a per-device cap
+        // alone does not bound the total. The whole check runs under the map's
+        // write lock, so concurrent offers cannot both slip past the limit.
+        if lock.len() >= MAX_SESSIONS {
+            bail!("WebRTC session limit reached ({MAX_SESSIONS} concurrent sessions)");
+        }
+        let device_sessions = lock.values().filter(|s| s.device_id == device_id).count();
+        if device_sessions >= MAX_SESSIONS_PER_DEVICE {
+            bail!(
+                "per-device WebRTC session limit reached \
+                 ({MAX_SESSIONS_PER_DEVICE} concurrent sessions)"
+            );
         }
 
         let session = Arc::new(
@@ -703,12 +755,22 @@ mod tests {
     fn reaper_only_prunes_idle_and_disconnected() {
         let now = now_millis();
         let idle_past = now - SESSION_IDLE_TIMEOUT.as_millis() as u64 - 1;
+        let created = now - 1000;
         // Idle + not connected -> prune.
-        assert!(should_prune(idle_past, now, false));
+        assert!(should_prune(created, idle_past, now, false));
         // Idle but the transport is still connected -> keep (long transfers).
-        assert!(!should_prune(idle_past, now, true));
+        assert!(!should_prune(created, idle_past, now, true));
         // Recently active -> keep regardless of connection state.
-        assert!(!should_prune(now, now, false));
+        assert!(!should_prune(now, now, now, false));
+    }
+
+    #[test]
+    fn reaper_prunes_connected_session_past_absolute_lifetime() {
+        // Even a connected, recently-active session is reaped once it exceeds
+        // MAX_SESSION_LIFETIME, so a device cannot pin memory/fds forever.
+        let now = now_millis();
+        let too_old = now - MAX_SESSION_LIFETIME.as_millis() as u64 - 1;
+        assert!(should_prune(too_old, now, now, true));
     }
 
     #[tokio::test]

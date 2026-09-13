@@ -1,6 +1,7 @@
 mod config;
 mod db;
 mod identity;
+mod limits;
 mod local;
 mod menu;
 mod pair;

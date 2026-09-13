@@ -65,12 +65,15 @@ pub fn format_bytes(bytes: i64) -> String {
     }
 }
 
-/// First `len` chars of an id, ellipsized when longer.
+/// First `len` chars of an id, ellipsized when longer. Counts characters, not
+/// bytes: `encrypted_name` is opaque client-supplied text and a multi-byte
+/// code point crossing the byte index would otherwise panic the CLI listing.
 fn short(id: &str, len: usize) -> String {
-    if id.len() <= len {
-        id.to_string()
+    let truncated: String = id.chars().take(len).collect();
+    if id.chars().count() > len {
+        format!("{truncated}…")
     } else {
-        format!("{}…", &id[..len])
+        truncated
     }
 }
 
@@ -78,7 +81,7 @@ fn short(id: &str, len: usize) -> String {
 /// conveys "there is a name here" without pretending it is readable.
 fn name_hint(encrypted_name: &Option<String>) -> String {
     match encrypted_name {
-        Some(name) if !name.is_empty() => format!("{}…", short(name, 12)),
+        Some(name) if !name.is_empty() => short(name, 12),
         _ => "—".to_string(),
     }
 }
@@ -352,5 +355,20 @@ mod tests {
         assert_eq!(format_bytes(1536), "1.5 KB");
         assert_eq!(format_bytes(10 * 1024 * 1024), "10 MB");
         assert_eq!(format_bytes(-1), "—");
+    }
+
+    #[test]
+    fn short_handles_multibyte_ids_without_panicking() {
+        // A multi-byte code point straddling the byte index must not panic;
+        // `encrypted_name` is opaque client-supplied text.
+        let id = "é".repeat(20);
+        let out = short(&id, 12);
+        assert_eq!(out.chars().filter(|c| *c == 'é').count(), 12);
+        assert!(out.ends_with('…'));
+
+        // Short ids are returned whole, with no ellipsis.
+        assert_eq!(short("abc", 12), "abc");
+        assert_eq!(name_hint(&Some("short".into())), "short");
+        assert_eq!(name_hint(&None), "—");
     }
 }

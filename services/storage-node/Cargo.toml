@@ -29,7 +29,7 @@ tokio-tungstenite = { version = "0.26", features = ["rustls-tls-native-roots"] }
 # over plain HTTP; no TLS needed for the default local deployment). `json`
 # enables the Phase 11 pairing-verify fallback request body. `rustls-tls-native-roots`
 # enables the S5 HTTPS pairing-code redeem.
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-native-roots"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-native-roots", "stream"] }
 # URL parsing for deriving the Relay's HTTP fetch endpoint from its WS URL.
 url = "2"
 axum = "0.8"

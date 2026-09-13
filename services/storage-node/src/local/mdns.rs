@@ -42,7 +42,9 @@ impl MdnsAdvertiser {
         let responder = libmdns::Responder::new();
 
         let pk_fp = super::auth::public_key_fingerprint(public_key_bytes);
-        let instance = format!("nodus-node-{}", &node_id[..node_id.len().min(12)]);
+        // Character-count, not byte-slice: a non-ASCII node_id must not panic.
+        let short_id: String = node_id.chars().take(12).collect();
+        let instance = format!("nodus-node-{short_id}");
 
         let txt_node = format!("node_id={node_id}");
         let txt_v = "v=1".to_string();

@@ -31,6 +31,14 @@ pub(crate) fn fsync_dir(dir: &Path) -> std::io::Result<()> {
 pub struct ObjectStore {
     data_dir: PathBuf,
     pool: SqlitePool,
+    /// Serializes destructive maintenance (GC and reconciliation) against
+    /// ingest mutations. Without it, GC can pass its `COUNT(*)` refcount check
+    /// for an unreferenced object and delete the file/row while a concurrent
+    /// `put` is publishing that same content, leaving a `STORED` row with no
+    /// file. Writers take this lock for the duration of their critical section;
+    /// GC/reconcile hold it for a whole pass so no new reference can appear
+    /// between a refcount check and the delete it authorizes.
+    maintenance: std::sync::Arc<tokio::sync::Mutex<()>>,
 }
 
 impl ObjectStore {
@@ -44,7 +52,19 @@ impl ObjectStore {
         fs::create_dir_all(&temp_dir)
             .with_context(|| format!("creating temp dir: {}", temp_dir.display()))?;
 
-        Ok(Self { data_dir, pool })
+        Ok(Self {
+            data_dir,
+            pool,
+            maintenance: std::sync::Arc::new(tokio::sync::Mutex::new(())),
+        })
+    }
+
+    /// Acquire the maintenance lock. Writers hold the returned guard across
+    /// their file+metadata mutation; GC and reconciliation hold it across a
+    /// whole pass. The critical sections never call back into a lock-taking
+    /// store method, so the non-reentrant mutex cannot self-deadlock.
+    pub async fn lock_maintenance(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.maintenance.lock().await
     }
 
     /// Returns a reference to the store data directory.
@@ -67,8 +87,11 @@ impl ObjectStore {
     /// 5. Atomically rename the temp file to `<data_dir>/objects/<ab>/<hash>`.
     /// 6. Insert or update `storage_objects` in SQLite to 'STORED'.
     pub async fn put(&self, bytes: &[u8]) -> anyhow::Result<String> {
+        // Serialize with GC/reconcile so an object cannot be reaped between the
+        // `dest.exists()` dedup check and the metadata upsert.
+        let _guard = self.lock_maintenance().await;
         let hash_hex = blake3::hash(bytes).to_hex().to_string();
-        let dest = layout::object_path(&self.data_dir, &hash_hex);
+        let dest = layout::object_path(&self.data_dir, &hash_hex)?;
         let now = chrono::Utc::now().to_rfc3339();
         let size = bytes.len() as i64;
 
@@ -161,7 +184,7 @@ impl ObjectStore {
     ///
     /// Verifies content hash upon reading. If mismatched, marks status in SQLite as DEGRADED.
     pub async fn get(&self, hash_hex: &str) -> anyhow::Result<Vec<u8>> {
-        let dest = layout::object_path(&self.data_dir, hash_hex);
+        let dest = layout::object_path(&self.data_dir, hash_hex)?;
         if !dest.exists() {
             bail!("object {} does not exist on disk", hash_hex);
         }
@@ -190,12 +213,19 @@ impl ObjectStore {
 
     /// Check if an object exists on disk at its content-addressed path.
     pub fn exists(&self, hash_hex: &str) -> bool {
-        layout::object_path(&self.data_dir, hash_hex).exists()
+        // A malformed id can never address a real object, so report "absent"
+        // rather than panicking or probing an out-of-tree path.
+        layout::object_path(&self.data_dir, hash_hex)
+            .map(|p| p.exists())
+            .unwrap_or(false)
     }
 
     /// Delete an object from disk and remove its row from `storage_objects`.
     pub async fn delete(&self, hash_hex: &str) -> anyhow::Result<()> {
-        let dest = layout::object_path(&self.data_dir, hash_hex);
+        // Same lock as GC: this removes a file and row, so it must not overlap
+        // a repair re-fetch or GC's refcount decision for the same object.
+        let _guard = self.lock_maintenance().await;
+        let dest = layout::object_path(&self.data_dir, hash_hex)?;
         if dest.exists() {
             fs::remove_file(&dest)
                 .with_context(|| format!("removing object file {}", dest.display()))?;
@@ -235,7 +265,7 @@ impl ObjectStore {
             if path.is_file() {
                 if let Ok(bytes) = fs::read(&path) {
                     let hash_hex = blake3::hash(&bytes).to_hex().to_string();
-                    let dest = layout::object_path(&self.data_dir, &hash_hex);
+                    let dest = layout::object_path(&self.data_dir, &hash_hex)?;
 
                     if dest.exists() {
                         let _ = fs::remove_file(&path);
@@ -283,10 +313,37 @@ impl ObjectStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
     use tempfile::tempdir;
 
     async fn create_test_db(data_dir: &Path) -> SqlitePool {
         crate::db::open(data_dir).await.unwrap()
+    }
+
+    /// Writers and maintenance (GC/reconcile) must be mutually exclusive, or GC
+    /// can reap an object between `put`'s dedup check and its metadata upsert.
+    #[tokio::test]
+    async fn put_blocks_while_maintenance_lock_held() {
+        let dir = tempdir().unwrap();
+        let pool = create_test_db(dir.path()).await;
+        let store = ObjectStore::new(dir.path().to_path_buf(), pool)
+            .await
+            .unwrap();
+
+        let guard = store.lock_maintenance().await;
+        let writer = store.clone();
+        let handle = tokio::spawn(async move { writer.put(b"serialized payload").await });
+
+        // Give the writer a chance to run; it must be blocked on the lock.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            !handle.is_finished(),
+            "put must wait for the maintenance lock"
+        );
+
+        drop(guard);
+        let hash = handle.await.unwrap().unwrap();
+        assert!(store.exists(&hash));
     }
 
     #[tokio::test]
@@ -417,7 +474,7 @@ mod tests {
         let hash = store.put(data).await.unwrap();
 
         // Tamper with file
-        let dest = layout::object_path(dir.path(), &hash);
+        let dest = layout::object_path(dir.path(), &hash).unwrap();
         fs::write(&dest, b"tampered corrupt").unwrap();
 
         let res = store.get(&hash).await;

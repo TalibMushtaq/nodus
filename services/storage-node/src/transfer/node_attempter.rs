@@ -108,24 +108,9 @@ impl PathAttempt for NodePathAttempter {
                 };
 
                 let status = resp.status();
-                let body = match resp.bytes().await {
-                    Ok(b) => b,
-                    Err(e) => {
-                        return TransferResult {
-                            path,
-                            duration_ms: started.elapsed().as_millis() as u64,
-                            transfer_id: request.transfer_id.clone(),
-                            bytes_transferred: 0,
-                            success: false,
-                            error: Some(format!("reading shard response from {addr} failed: {e}")),
-                            data: Vec::new(),
-                            object_id: request.object_id.clone(),
-                        };
-                    }
-                };
 
-                // The repair loop hash-verifies the payload against the
-                // object_id; a non-2xx means the peer said no, not "bad bytes".
+                // A non-2xx means the peer said no, not "bad bytes"; check it
+                // before reading so an error page is never buffered.
                 if !status.is_success() {
                     return TransferResult {
                         path,
@@ -139,6 +124,31 @@ impl PathAttempt for NodePathAttempter {
                     };
                 }
 
+                // Stream with a hard cap. The peer IP came from spoofable mDNS,
+                // so an on-link attacker advertising this node_id must not be
+                // able to stream an unbounded body and OOM the node. The repair
+                // loop still hash-verifies the payload against `object_id`.
+                let body =
+                    match crate::limits::read_body_capped(resp, crate::limits::MAX_SHARD_BYTES)
+                        .await
+                    {
+                        Ok(b) => b,
+                        Err(e) => {
+                            return TransferResult {
+                                path,
+                                duration_ms: started.elapsed().as_millis() as u64,
+                                transfer_id: request.transfer_id.clone(),
+                                bytes_transferred: 0,
+                                success: false,
+                                error: Some(format!(
+                                    "reading shard response from {addr} failed: {e}"
+                                )),
+                                data: Vec::new(),
+                                object_id: request.object_id.clone(),
+                            };
+                        }
+                    };
+
                 TransferResult {
                     path,
                     duration_ms: started.elapsed().as_millis() as u64,
@@ -146,7 +156,7 @@ impl PathAttempt for NodePathAttempter {
                     bytes_transferred: body.len(),
                     success: true,
                     error: None,
-                    data: body.to_vec(),
+                    data: body,
                     object_id: request.object_id.clone(),
                 }
             }

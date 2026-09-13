@@ -46,6 +46,9 @@ pub struct GcReport {
 
 /// Run a single garbage collection cycle against the given `ObjectStore`.
 pub async fn run_gc(store: &ObjectStore, cfg: &GcConfig) -> anyhow::Result<GcReport> {
+    // Hold the maintenance lock for the whole pass so no `put`/repair can add a
+    // reference between a refcount check and the file/row deletion it authorizes.
+    let _guard = store.lock_maintenance().await;
     let mut report = GcReport::default();
     let pool = store.pool();
     let now = Utc::now();
@@ -158,7 +161,7 @@ pub async fn purge_file(store: &ObjectStore, file_id: &str) -> anyhow::Result<()
                 .execute(pool)
                 .await
                 .context("deleting storage_objects row during purge")?;
-            let dest = layout::object_path(data_dir, &object_id);
+            let dest = layout::object_path(data_dir, &object_id)?;
             if dest.exists() {
                 let _ = fs::remove_file(&dest);
             }
@@ -223,7 +226,7 @@ async fn prune_version(
                 .await
                 .context("deleting unreferenced storage_objects row")?;
 
-            let dest = layout::object_path(data_dir, &object_id);
+            let dest = layout::object_path(data_dir, &object_id)?;
             if dest.exists() {
                 let _ = fs::remove_file(&dest);
             }
@@ -504,7 +507,11 @@ mod tests {
         assert_eq!(files.0, 0);
         assert_eq!(versions.0, 0);
         assert_eq!(objects.0, 0);
-        assert!(!layout::object_path(dir.path(), &object_id).exists());
+        assert!(
+            !layout::object_path(dir.path(), &object_id)
+                .unwrap()
+                .exists()
+        );
     }
 
     #[tokio::test]

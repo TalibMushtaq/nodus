@@ -611,12 +611,24 @@ impl SyncClient {
     /// metadata (falling back to the pending landing zone when the
     /// file_versions row hasn't synced yet).
     async fn fetch_verify_store(&self, n: &PendingNotifyPayload) -> anyhow::Result<()> {
+        // Reject an implausible declared size before any network I/O: a relay
+        // (or MITM) must not be able to make us allocate arbitrarily. `size` is
+        // i64 on the wire, so a negative value is also invalid.
+        if n.size <= 0 || n.size as usize > crate::limits::MAX_SHARD_BYTES {
+            anyhow::bail!(
+                "relay declared shard size {} outside (0, {}]",
+                n.size,
+                crate::limits::MAX_SHARD_BYTES
+            );
+        }
         let url = format!("{}?token={}", self.http_fetch_url, n.fetch_token);
         let resp = self.http_client.get(&url).send().await?;
         if !resp.status().is_success() {
             anyhow::bail!("relay /buffer/fetch returned {}", resp.status());
         }
-        let bytes = resp.bytes().await?;
+        // Stream with a hard cap: a compromised relay could otherwise send an
+        // unbounded (chunked) body and OOM the node before the hash check runs.
+        let bytes = crate::limits::read_body_capped(resp, crate::limits::MAX_SHARD_BYTES).await?;
 
         // The Relay already verified this digest on upload, but the node never
         // trusts the wire, so recompute before persisting anything.

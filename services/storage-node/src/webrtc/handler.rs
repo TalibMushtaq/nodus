@@ -1,7 +1,8 @@
 use std::convert::Infallible;
+use std::net::SocketAddr;
 
 use axum::Json;
-use axum::extract::{Query, State};
+use axum::extract::{ConnectInfo, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::sse::{Event, Sse};
 use futures_util::StreamExt;
@@ -100,10 +101,23 @@ fn to_unauthorized(e: LocalError) -> (StatusCode, Json<LocalError>) {
 }
 
 pub async fn handle_offer(
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     State(state): State<LocalState>,
     headers: HeaderMap,
     Json(body): Json<OfferRequest>,
 ) -> Result<Json<OfferResponse>, (StatusCode, Json<LocalError>)> {
+    // An accepted offer creates a session (peer connection + channel buffers),
+    // so rate-limit session creation per source IP before doing any work.
+    if !state.offer_limiter.check_and_record(addr.ip()).await {
+        return Err((
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(LocalError {
+                error: "rate_limited".into(),
+                message: "too many WebRTC offers; try again shortly".into(),
+            }),
+        ));
+    }
+
     verify_webrtc_caller(&state, &headers, &body.device_id, &body.session_id).await?;
 
     // Get or create WebRTC session (single-flight in the manager).
