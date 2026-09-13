@@ -1,11 +1,10 @@
 # Storage Node Audit — Fix Plan
 
-Status: Phases 1-12 implemented and committed (one commit per phase). All audit
-findings' correctness/security gaps are addressed. #22 uses a device-signed
-per-shard manifest (Phase 10); M8's liveness/peak-memory issues are fixed
-(Phase 11); M6's node-side gap is fixed (Phase 12 — the conflicted name is
-persisted and surfaced in local status). The remaining ADR-0003 client inbox UI
-is product/feature work across web+mobile, not a data-plane fix.
+Status: Phases 1-13 implemented and committed (one commit per phase). All audit
+findings are addressed. #22 uses a device-signed per-shard manifest (Phase 10);
+M8's liveness/peak-memory issues are fixed (Phase 11); the node persists and
+reports conflicted copies (Phase 12) and the web conflict inbox renders them
+(Phase 13). Remaining items are optional/design-level (see Deferred).
 
 Source audit: `services/storage-node/` (Rust, ~13.7k LOC). Baseline at plan time:
 `cargo fmt --check` clean, `cargo clippy --all-targets` clean, `cargo test` 168 passed.
@@ -211,6 +210,18 @@ format). Each phase is committed separately.
   `conflicted_name`; `report::conflicts` + a `conflicts` shell command list the
   preserved siblings so the node's local status shows them.
 
+## Phase 13 — ADR-0003 web conflict inbox (commit: `fix(web): phase 13 ...`)
+
+### 13.1 Derive conflicts from the existing catalog (`lib/catalog.ts`, `lib/conflicts.ts`)
+- The Relay `GET /files` already returns per-version `conflict_status`, so
+  `CatalogEntry` now records every `flagged` version (`conflicted_versions`), and
+  `listConflicts` decrypts names the same way the Files page does.
+
+### 13.2 Persistent inbox (`lib/use-conflicts.ts`, `app/(dashboard)/conflicts/*`, `components/sidebar.tsx`)
+- A `useConflicts` hook (mount + refresh + 15 s poll) and a `/conflicts` page
+  listing preserved conflicted copies with a link to resolve them in Files; the
+  sidebar gains a Conflicts entry.
+
 ## Verification (each phase)
 
 - `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`.
@@ -221,9 +232,12 @@ format). Each phase is committed separately.
 
 ## Deferred / needs investigation
 
-- **ADR-0003 client inbox UI** — the node now persists and reports conflicted
-  copies; the persistent inbox/list view (and badge) in `apps/web` and
-  `apps/mobile` is product/feature work, not a data-plane fix.
+- **ADR-0003 mobile conflict inbox** — the web inbox ships (Phase 13); the
+  mobile app is still a scaffold and would render from the same `CatalogEntry`
+  data model.
+- **Conflict resolution action** — the inbox links to Files; an in-place
+  "keep this version, discard the other" action needs download+delete wiring and
+  is product work.
 - **M8 true streaming** — chunks are still all held before BEGIN (which carries
   the final content hash), so a rebuild still holds O(chunks) metadata; Phase 11
   removed the O(records) intermediate buffers and fixed the liveness block. A

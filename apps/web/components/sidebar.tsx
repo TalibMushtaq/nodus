@@ -16,11 +16,12 @@ import { useNodeStatus } from "../lib/use-node-status";
 // usePathname rather than client-side state, so the browser's back button
 // works and deep-linking is preserved.
 
-type NavPage = "overview" | "files" | "devices" | "activity" | "security" | "settings" | "tombstones";
+type NavPage = "overview" | "files" | "conflicts" | "devices" | "activity" | "security" | "settings" | "tombstones";
 
 const navItems: { id: NavPage; label: string; icon: IconName }[] = [
   { id: "overview", label: "Overview", icon: "overview" },
   { id: "files", label: "Files", icon: "files" },
+  { id: "conflicts", label: "Conflicts", icon: "copy" },
   { id: "tombstones", label: "Tombstone", icon: "trash" },
   { id: "devices", label: "Devices", icon: "devices" },
   { id: "activity", label: "Activity", icon: "activity" },

@@ -103,8 +103,25 @@ describe("web local DB", () => {
     expect(toCatalogEntry(allStored).storage_status).toBe("stored");
   });
 
-  it("caches the folder tree", async () => {
-    await upsertFolders([
+  it("captures flagged versions for the conflict inbox", () => {
+    const file: RelayFile = {
+      file_id: "file-conflict",
+      parent_folder_id: null,
+      encrypted_name: "cipher",
+      created_at: "2026-09-12T00:00:00Z",
+      updated_at: "2026-09-12T00:00:00Z",
+      versions: [
+        { version_number: 1, shard_count: 1, version_hash: "vh1", conflict_status: "none", created_at: "2026-09-12T00:00:00Z" },
+        { version_number: 2, shard_count: 1, version_hash: "vh2", conflict_status: "flagged", created_at: "2026-09-12T00:00:00Z" },
+        { version_number: 3, shard_count: 1, version_hash: "vh3", conflict_status: "resolved", created_at: "2026-09-12T00:00:00Z" },
+      ],
+      locations: [],
+    };
+    // Only `flagged` versions are conflicts; `resolved` ones are not.
+    expect(toCatalogEntry(file).conflicted_versions).toEqual([2]);
+  });
+
+  it("caches the folder tree", async () => {    await upsertFolders([
       { folder_id: "dir-1", parent_folder_id: null, encrypted_name: "enc", created_at: "2026-09-12T00:00:00Z", updated_at: "2026-09-12T00:00:00Z" },
     ]);
     const folders = await getCachedFolders();

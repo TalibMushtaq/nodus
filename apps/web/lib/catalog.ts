@@ -47,6 +47,12 @@ export interface CatalogEntry {
   shard_count: number | null;
   version_hash: string | null;
   conflict_status: string | null;
+  /**
+   * Version numbers whose `conflict_status` is `flagged` (ADR-0003). The latest
+   * version's status alone is not enough: a preserved sibling can be any
+   * version, so the inbox needs every flagged version.
+   */
+  conflicted_versions: number[];
   /** Rollup of the latest version's location statuses. */
   storage_status: "stored" | "buffered" | "transferring" | "unknown" | null;
   /** Per-shard locations (all versions) — the download path's manifest. */
@@ -88,6 +94,10 @@ export function toCatalogEntry(file: RelayFile): CatalogEntry {
     shard_count: latest?.shard_count ?? null,
     version_hash: latest?.version_hash ?? null,
     conflict_status: latest?.conflict_status ?? null,
+    conflicted_versions: file.versions
+      .filter((v) => v.conflict_status === "flagged")
+      .map((v) => v.version_number)
+      .sort((a, b) => a - b),
     storage_status: summarizeStorageStatus(file, latest),
     locations: file.locations,
     cached_at: new Date().toISOString(),

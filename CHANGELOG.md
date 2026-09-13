@@ -1,5 +1,12 @@
 # Changelog
 
+## [2026-09-13] - Web conflict inbox (ADR-0003, audit M6 client side)
+
+**What changed:** `apps/web/lib/catalog.ts` now records every version whose Relay `conflict_status` is `flagged` in a new `CatalogEntry.conflicted_versions` (the latest-version status alone missed preserved siblings). New `apps/web/lib/conflicts.ts` (`listConflicts` + decrypted display names) and `apps/web/lib/use-conflicts.ts` (mount + refresh + 15 s poll) derive the inbox from the cached catalog — no new endpoint, since `GET /files` already returns per-version `conflict_status`. New `app/(dashboard)/conflicts/page.tsx` + `conflicts-client.tsx` render a persistent list with a "Resolve in Files" link, and `components/sidebar.tsx` gains a Conflicts entry.
+**Why:** Audit M6 / ADR-0003: conflicts must be surfaced via a persistent inbox/list view, not a transient banner. Phase 12 made the node persist and report conflicted copies; this phase renders them in the web client.
+**Impact:** `apps/web/lib/{catalog,conflicts,use-conflicts}.ts`, `apps/web/app/(dashboard)/conflicts/*`, `apps/web/components/sidebar.tsx`, `apps/web/lib/__tests__/{local-db,file-view}.test.ts`. New test: `captures flagged versions for the conflict inbox`. Verified `pnpm --filter web test` (135), `pnpm --filter web check-types`, `pnpm --filter web lint`.
+**Follow-ups:** The mobile inbox (scaffold app) and an in-place resolve action (keep/discard a version) remain; the inbox links to Files for resolution today.
+
 ## [2026-09-13] - Storage node audit phase 12: persist and surface conflicted copies (M6)
 
 **What changed:** Migration `20260914000003_file_version_conflicted_name.sql` adds `file_versions.conflicted_name`. `services/storage-node/src/sync/engine.rs` now writes the `generate_conflicted_filename` value computed on a fork collision instead of discarding it, and `sync/types.rs` / `sync/snapshot.rs` carry it as an optional `conflicted_name` in snapshot `file_version` records. The protocol `snapshot.ts` `FileVersionRecordSchema` gained the optional field (schemas regenerated). `report.rs` gains `ConflictRow` + `conflicts()` + `print_conflicts()`, and the interactive shell adds a `conflicts` command (and help entry) listing preserved siblings.
