@@ -208,6 +208,10 @@ pub struct FileVersionRecord {
     pub encrypted_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_folder_id: Option<String>,
+    /// ADR-0003 sibling name computed when this version was flagged as a
+    /// conflict; carried in snapshots so a rebuilt Relay keeps it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub conflicted_name: Option<String>,
 }
 
 /// A folder row captured in a snapshot chunk. Folder metadata is otherwise

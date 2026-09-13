@@ -442,12 +442,26 @@ pub(crate) async fn apply_remote_event_conn(
                 if is_flagged {
                     let base_name = ver
                         .encrypted_name
+                        .clone()
                         .unwrap_or_else(|| format!("{}.nodus", ver.file_id));
                     let conflicted_name = generate_conflicted_filename(
                         &base_name,
                         &event.origin_id,
                         &event.timestamp,
                     );
+
+                    // Persist the ADR-0003 sibling name instead of discarding it:
+                    // local status can surface the conflict, and a snapshot
+                    // carries it to a rebuilt Relay.
+                    sqlx::query(
+                        "UPDATE file_versions SET conflicted_name = ? \
+                         WHERE file_id = ? AND version_number = ?",
+                    )
+                    .bind(&conflicted_name)
+                    .bind(&ver.file_id)
+                    .bind(effective_number)
+                    .execute(&mut *tx)
+                    .await?;
 
                     outcome = ApplyOutcome::Conflicted {
                         conflicted_filename: conflicted_name,
@@ -1367,6 +1381,21 @@ mod tests {
         assert_eq!(
             versions[3],
             (5, Some(2), "hash_b4".into(), "flagged".into())
+        );
+
+        // The ADR-0003 conflicted name is persisted on the preserved sibling,
+        // not merely returned in the outcome.
+        let conflicted: Option<String> = sqlx::query_scalar(
+            "SELECT conflicted_name FROM file_versions WHERE file_id = 'f-fork' AND version_number = 5",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert!(
+            conflicted
+                .as_deref()
+                .is_some_and(|n| n.contains("conflicted copy")),
+            "conflicted_name must be persisted, got {conflicted:?}"
         );
 
         // The pending shard for the incoming version followed it to slot 5.

@@ -30,6 +30,8 @@ export const FileVersionRecordSchema = z.object({
   shard_count: z.number().int().min(1),
   encrypted_name: z.string().nullable().optional(),
   parent_folder_id: z.string().nullable().optional(),
+  /** ADR-0003 sibling name persisted for a preserved conflicted copy. */
+  conflicted_name: z.string().nullable().optional(),
 });
 
 export type FileVersionRecord = z.infer<typeof FileVersionRecordSchema>;

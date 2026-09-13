@@ -1,5 +1,12 @@
 # Changelog
 
+## [2026-09-13] - Storage node audit phase 12: persist and surface conflicted copies (M6)
+
+**What changed:** Migration `20260914000003_file_version_conflicted_name.sql` adds `file_versions.conflicted_name`. `services/storage-node/src/sync/engine.rs` now writes the `generate_conflicted_filename` value computed on a fork collision instead of discarding it, and `sync/types.rs` / `sync/snapshot.rs` carry it as an optional `conflicted_name` in snapshot `file_version` records. The protocol `snapshot.ts` `FileVersionRecordSchema` gained the optional field (schemas regenerated). `report.rs` gains `ConflictRow` + `conflicts()` + `print_conflicts()`, and the interactive shell adds a `conflicts` command (and help entry) listing preserved siblings.
+**Why:** Audit finding M6 / ADR-0003: the node computed the conflicted-copy sibling name and threw it away, so a conflict was never persisted or surfaced. The node now retains and reports it; the persistent client inbox UI (web/mobile) is separate product work.
+**Impact:** `services/storage-node/{migrations,sync/engine.rs,sync/types.rs,sync/snapshot.rs,report.rs,shell.rs}`, `packages/protocol/{src/messages/snapshot.ts,schemas}`. New tests: `conflicts_lists_preserved_siblings`, and the fork test now asserts `conflicted_name` is persisted. Verified `cargo fmt/clippy/test` (201 lib + 182 bin + 2 integration), `pnpm test:ts` (15/15 tasks), protocol lint/check-types, Go `gofmt/build/vet/test`.
+**Follow-ups:** The ADR-0003 client-side persistent inbox/list view in `apps/web` and `apps/mobile` remains. A relay built from a node snapshot does not persist `conflicted_name` (node-local data), same caveat as the #22 manifest table.
+
 ## [2026-09-13] - Storage node audit phase 11: snapshot send liveness and lower peak memory (M8)
 
 **What changed:** `services/storage-node/src/sync/client.rs` adds a shared `send_heartbeat(node_id)` helper and uses it in the idle select loop; `stream_snapshot` now sends a heartbeat on the 30 s cadence between chunks, so a long Relay rebuild can no longer make the Relay mark the node offline mid-snapshot. `services/storage-node/src/sync/snapshot.rs::build_snapshot` builds homogeneous chunks directly from the SQL row streams via `push_snapshot_record` instead of first loading every table into per-type `Vec`s; the four now-unused `load_*` loaders were removed. Chunk order, the 1000-record cap, and the malformed-row skip rule are unchanged, so the content hash is byte-identical.

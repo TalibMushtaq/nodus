@@ -82,6 +82,16 @@
                     "type": "null"
                   }
                 ]
+              },
+              "conflicted_name": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
               }
             },
             "required": [

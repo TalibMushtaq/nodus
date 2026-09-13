@@ -1,10 +1,11 @@
 # Storage Node Audit — Fix Plan
 
-Status: Phases 1-11 implemented and committed (one commit per phase). All audit
-findings are addressed. #22 uses a device-signed per-shard manifest (Phase 10);
-M8's liveness issue is fixed and its peak materialization reduced (Phase 11).
-The remaining M6 (conflicted-copy surfacing) is product/feature work, not a
-correctness/security fix, and stays documented under Deferred.
+Status: Phases 1-12 implemented and committed (one commit per phase). All audit
+findings' correctness/security gaps are addressed. #22 uses a device-signed
+per-shard manifest (Phase 10); M8's liveness/peak-memory issues are fixed
+(Phase 11); M6's node-side gap is fixed (Phase 12 — the conflicted name is
+persisted and surfaced in local status). The remaining ADR-0003 client inbox UI
+is product/feature work across web+mobile, not a data-plane fix.
 
 Source audit: `services/storage-node/` (Rust, ~13.7k LOC). Baseline at plan time:
 `cargo fmt --check` clean, `cargo clippy --all-targets` clean, `cargo test` 168 passed.
@@ -198,6 +199,18 @@ format). Each phase is committed separately.
   first, halving peak metadata memory. Chunk order, 1000-record cap, and skip
   rules are unchanged, so the content hash is byte-identical.
 
+## Phase 12 — M6 node-side conflict persistence (commit: `fix(storage-node): phase 12 ...`)
+
+### 12.1 Persist the ADR-0003 sibling name (`sync/engine.rs`, migration)
+- Migration `20260914000003_file_version_conflicted_name.sql` adds
+  `file_versions.conflicted_name`; the fork path writes the computed
+  `generate_conflicted_filename` value instead of discarding it.
+
+### 12.2 Carry it in snapshots and surface it locally (`sync/snapshot.rs`, `report.rs`, `shell.rs`)
+- `FileVersionRecord` / protocol snapshot schema gain an optional
+  `conflicted_name`; `report::conflicts` + a `conflicts` shell command list the
+  preserved siblings so the node's local status shows them.
+
 ## Verification (each phase)
 
 - `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`.
@@ -208,16 +221,15 @@ format). Each phase is committed separately.
 
 ## Deferred / needs investigation
 
-- **M6 conflicted-copy UX (ADR-0003)** — `generate_conflicted_filename` is still
-  computed and discarded; surfacing it needs a client-visible conflicted-copy
-  record, a feature beyond this audit.
+- **ADR-0003 client inbox UI** — the node now persists and reports conflicted
+  copies; the persistent inbox/list view (and badge) in `apps/web` and
+  `apps/mobile` is product/feature work, not a data-plane fix.
 - **M8 true streaming** — chunks are still all held before BEGIN (which carries
   the final content hash), so a rebuild still holds O(chunks) metadata; Phase 11
   removed the O(records) intermediate buffers and fixed the liveness block. A
   genuine O(chunk) stream would need a two-pass scan or a protocol change to
   BEGIN/chunk ordering.
-- **Relay-rebuild caveat for #22** — `file_version_shard_hashes` is node-local
-  and not carried in node→relay snapshots, so a relay rebuilt from scratch won't
-  re-serve old manifests to newly paired nodes. Existing nodes keep their
-  authenticated hashes; a newly paired node trusts the relay for initial data as
-  before. Carrying manifests in snapshots is a possible follow-up.
+- **Relay-rebuild caveat for #22 and conflicted_name** — `file_version_shard_hashes`
+  and `conflicted_name` are node-local and not persisted by the relay's snapshot
+  ingestion, so a relay rebuilt from scratch won't re-serve them. Existing nodes
+  keep their copies; carrying these in relay snapshots is a possible follow-up.

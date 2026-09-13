@@ -171,6 +171,57 @@ pub async fn folders(pool: &SqlitePool) -> anyhow::Result<Vec<FolderRow>> {
         .collect())
 }
 
+/// One preserved side of a version fork (ADR-0003). The `conflicted_name` is
+/// the opaque client-supplied sibling name; the node stores it but cannot read
+/// it, so the listing shows a short hint.
+#[derive(Debug, PartialEq, Eq)]
+pub struct ConflictRow {
+    pub file_id: String,
+    pub version_number: i64,
+    pub conflicted_name: String,
+}
+
+pub async fn conflicts(pool: &SqlitePool) -> anyhow::Result<Vec<ConflictRow>> {
+    let rows = sqlx::query_as::<_, (String, i64, String)>(
+        "SELECT file_id, version_number, conflicted_name FROM file_versions \
+         WHERE conflicted_name IS NOT NULL \
+         ORDER BY file_id ASC, version_number ASC",
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(file_id, version_number, conflicted_name)| ConflictRow {
+            file_id,
+            version_number,
+            conflicted_name,
+        })
+        .collect())
+}
+
+pub async fn print_conflicts(pool: &SqlitePool) -> anyhow::Result<()> {
+    let rows = conflicts(pool).await?;
+    println!();
+    if rows.is_empty() {
+        println!("No unresolved conflicted copies on this node.");
+        println!();
+        return Ok(());
+    }
+    println!("Conflicted copies ({})", rows.len());
+    println!("  {:<14} {:>5}  NAME (encrypted)", "FILE ID", "VER");
+    for row in rows {
+        println!(
+            "  {:<14} {:>5}  {}",
+            short(&row.file_id, 14),
+            row.version_number,
+            short(&row.conflicted_name, 32)
+        );
+    }
+    println!();
+    println!("Preserved siblings of a version fork; the client resolves them (ADR-0003).");
+    Ok(())
+}
+
 pub async fn print_summary(pool: &SqlitePool) -> anyhow::Result<()> {
     let s = summary(pool).await?;
     println!();
@@ -370,5 +421,29 @@ mod tests {
         assert_eq!(short("abc", 12), "abc");
         assert_eq!(name_hint(&Some("short".into())), "short");
         assert_eq!(name_hint(&None), "—");
+    }
+
+    #[tokio::test]
+    async fn conflicts_lists_preserved_siblings() {
+        let dir = tempdir().unwrap();
+        let pool = db::open(dir.path()).await.unwrap();
+        seed(&pool).await;
+
+        // No conflict names yet.
+        assert!(conflicts(&pool).await.unwrap().is_empty());
+
+        sqlx::query(
+            "UPDATE file_versions SET conflicted_name = 'doc (conflicted copy dev 2026-09-13).pdf' \
+             WHERE file_id = 'file-1' AND version_number = 2",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let rows = conflicts(&pool).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].file_id, "file-1");
+        assert_eq!(rows[0].version_number, 2);
+        assert!(rows[0].conflicted_name.contains("conflicted copy"));
     }
 }

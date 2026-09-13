@@ -11,6 +11,7 @@
 //!   storage     object / file / folder totals (this node)
 //!   files       list stored files (ciphertext names)
 //!   folders     list stored folders
+//!   conflicts   list preserved conflicted copies (ADR-0003)
 //!   devices     paired clients + last authentication
 //!   test        live connectivity checks (relay HTTP + WS, local HTTP, storage)
 //!   quit        stop the node  (Ctrl+C or EOF also work)
@@ -65,6 +66,7 @@ pub async fn run(shell: Shell) -> anyhow::Result<()> {
             "storage" | "summary" => report::print_summary(&shell.db).await?,
             "files" => report::print_files(&shell.db).await?,
             "folders" => report::print_folders(&shell.db).await?,
+            "conflicts" => report::print_conflicts(&shell.db).await?,
             "devices" => devices(&shell).await?,
             "test" | "diag" => test(&shell).await?,
             "quit" | "stop" | "exit" => {
@@ -85,6 +87,7 @@ fn print_help() {
     println!("  storage     object / file / folder totals stored on this node");
     println!("  files       list stored files (names are ciphertext, by design)");
     println!("  folders     list stored folders");
+    println!("  conflicts   list preserved conflicted copies awaiting resolution");
     println!("  devices     paired clients and last authentication");
     println!("  test        live connectivity checks (relay HTTP + WS, local HTTP, storage)");
     println!("  quit        stop the node (Ctrl+C or EOF also work)");

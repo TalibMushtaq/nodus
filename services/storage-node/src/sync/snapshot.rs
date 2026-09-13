@@ -156,7 +156,8 @@ pub async fn build_snapshot(
             fv.shard_count,
             f.created_at,
             f.encrypted_name,
-            f.parent_folder_id
+            f.parent_folder_id,
+            fv.conflicted_name
         FROM file_versions fv
         JOIN files f ON f.file_id = fv.file_id
         ORDER BY fv.file_id ASC, fv.version_number ASC
@@ -198,6 +199,10 @@ pub async fn build_snapshot(
                     .flatten(),
                 parent_folder_id: row
                     .try_get::<Option<String>, _>("parent_folder_id")
+                    .ok()
+                    .flatten(),
+                conflicted_name: row
+                    .try_get::<Option<String>, _>("conflicted_name")
                     .ok()
                     .flatten(),
             }),
