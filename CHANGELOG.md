@@ -1,5 +1,19 @@
 # Changelog
 
+## [2026-09-13] - Relay matches the node's preserve-both fork handling (#10/#12 parity)
+
+**What changed:** `services/relay/internal/handler/sync.go` FILE_VERSION_ADDED/FILE_MODIFIED now resolve the incoming version against its claimed `(file_id, version_number)` slot before inserting. A vacant slot inserts as claimed; an occupant with the same `parent_version_id` and `version_hash` is treated as a benign re-delivery; any other occupant (different parent or hash) is a real fork — the incoming event is renumbered to `MAX(version_number)+1`, `conflict_status` is set to `'flagged'`, and the incumbent's branch (`parent_version_id` + `version_hash`) is flagged too. The fork decision is extracted into the pure `isVersionSlotFork` helper. This closes the `REQUIRES FOLLOW-UP` noted in the node-side #10 entry, where the Relay's `ON CONFLICT DO UPDATE` would overwrite the incumbent and disagree with the node on the next snapshot.
+**Why:** The node preserves both sides of a fork by renumbering and flagging; if the Relay silently overwrote the incumbent at the claimed number, the two projections diverged and the fork resurfaced on every sync (and one writer's version was lost on the account-wide copy).
+**Impact:** `services/relay/internal/handler/sync.go`, new unit test `TestIsVersionSlotForkNodeParity` (`sync_device_batch_test.go`, 7 cases incl. nil-parent matching). Verified: `gofmt`, `go build`, `go vet`, and the new DB-free test pass. DB-backed ingestion tests still require `TEST_DATABASE_URL`/`TEST_REDIS_URL` and were not run here.
+**Follow-ups:** None.
+
+## [2026-09-13] - Safe data-location move: close the reporting pool before renaming (#23)
+
+**What changed:** `services/storage-node/src/menu.rs` now `pool.close().await`s its reporting pool before calling `change_data_dir`, then reopens at whichever location is now current (new path on success, old path if the move aborted). `migrate_data_dir`'s doc comment no longer claims "no live writer" unconditionally — it states the caller must have no live pool. New test `migrate_moves_a_real_wal_database_intact` writes to a real WAL-mode DB, closes it, moves the dir, reopens, and reads the row back.
+**Why:** The menu opens its reporting pool on `nodus.db` up front (menu.rs:48); "Change data location" then renamed the directory while that pool held the DB (and its `-wal`/`-shm` sidecars) open. Renaming under a live WAL connection can split the DB from its sidecars, and the spent pool's fd follows the inode into the new directory, so the later `boot_daemon` opens a second pool against the same data. Closing first lets SQLite checkpoint and release the WAL; the per-entry `rename` remains atomic on one filesystem, with the existing `EXDEV` copy+delete fallback across disks.
+**Impact:** `services/storage-node/src/menu.rs`, `config/mod.rs` (comment + test). Verified: `cargo test` (150 + 166 lib + 2 integration), `clippy --all-targets -- -D warnings`, `fmt --check`.
+**Follow-ups:** None.
+
 ## [2026-09-13] - Storage node: every network operation now has a finite timeout (#9)
 
 **What changed:** `services/storage-node/src/sync/client.rs` wraps the Relay WebSocket dial in `tokio::time::timeout(RELAY_CONNECT_TIMEOUT=15s)` (tokio_tungstenite has no connect timeout of its own), routes every outbound WS message — auth response, sync_hello, register, event_batch, batch_ack, heartbeat, and the snapshot_begin/chunk/end stream — through a new bounded `send_json` helper (`WS_WRITE_TIMEOUT=30s`), and builds `http_client` for the Relay buffer fetch with `RELAY_FETCH_TIMEOUT=30s`. `services/storage-node/src/transfer/node_attempter.rs` builds the direct peer shard-fetch client with `PEER_FETCH_TIMEOUT=30s`. `services/storage-node/src/local/server.rs` builds `LocalState.http`, used for the Relay pairing-verify fallback, with a 15 s timeout.
