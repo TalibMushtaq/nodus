@@ -1,9 +1,10 @@
 # Storage Node Audit — Fix Plan
 
-Status: Phases 1-5 implemented and committed (one commit per phase). #4
-signaling-signature binding remains deferred (needs protocol 1.6 + TS clients);
-#22 (relay buffer manifest cross-check) needs a node-side signed manifest that
-does not exist yet; #11 shipped as "Err + skip malformed known events".
+Status: Phases 1-5 implemented and committed (one commit per phase). Phases 6-8
+cover the remaining deferred/hardening items. #22 (relay buffer manifest
+cross-check) cannot be fully closed without a protocol change adding per-shard
+hashes to the version event; Phase 8 implements the feasible consistency guard
+and records the protocol requirement.
 
 Source audit: `services/storage-node/` (Rust, ~13.7k LOC). Baseline at plan time:
 `cargo fmt --check` clean, `cargo clippy --all-targets` clean, `cargo test` 168 passed.
@@ -15,13 +16,20 @@ format). Each phase is committed separately.
 ## Decisions (recorded)
 
 - **Scope:** execute all phases in order.
-- **#4 (signaling signature binds SDP/ICE):** deferred — needs `CURRENT_SCHEMA_VERSION`
-  1.5 → 1.6 and coordinated `packages/webrtc-transport` / `packages/relay-client`
-  changes. Tracked below as a follow-up.
+- **#4 (signaling signature binds SDP/ICE):** Phase 7 — sign
+  `"{device}:{session}:{timestamp}:{blake3(payload)}"`. HTTP-only (not a wire
+  schema), so no relay protocol bump; mixed-version Path A fails 401 and falls
+  back to Path B/C, so the change is safe to roll out in one deploy.
 - **#11 (malformed known-type events):** return `Err` so the batch retries, with a
   bounded retry/skip so one poison event cannot block sync forever; unknown types
   stay acked for forward-compat.
 - **#13 (`transfer/webrtc_client.rs`):** broken and unreachable — delete it.
+- **#22 (relay buffer shard hash):** the node has no authoritative per-shard hash
+  to check against (the version event carries only the whole-version hash), so a
+  compromised relay can plant bytes for the *first* copy. Phase 8 adds a
+  consistency guard (never overwrite a known shard with a different object) and
+  documents the required protocol addition (`shard_hashes` on
+  `FILE_VERSION_ADDED`); full closure is a cross-language protocol change.
 
 ---
 
@@ -97,6 +105,43 @@ format). Each phase is committed separately.
   failures; `client.rs` capability string; configurable STUN; one malformed frame
   must not kill the session; `sync_status` implement or remove.
 
+## Phase 6 — Residual races & sync robustness (commit: `fix(storage-node): phase 6 ...`)
+
+### 6.1 #7 GC refcount+delete atomic (`store/gc.rs`)
+- Replace `SELECT COUNT(*)` then `DELETE storage_objects` with one conditional
+  `DELETE ... WHERE object_id = ? AND NOT EXISTS (SELECT 1 FROM shards ...)`;
+  remove the file only when exactly one row was deleted.
+
+### 6.2 #M2 `store_pairing_token` enforces the push's target node (`sync/client.rs`)
+- Ignore pushes whose `node_id` is not this node, matching the doc comment and
+  the local-redemption re-check.
+
+### 6.3 #M10 envelope `schema_version` compatibility (`sync/client.rs`)
+- Reject an inbound envelope whose major version is not 1 (log + skip the frame),
+  rather than silently parsing a forward-incompatible surface.
+
+### 6.4 #L3 outbox timestamp ordering (`sync/outbox.rs`)
+- Compare timestamps with SQLite `datetime(...)` so mixed `Z`/`+00:00`/fractional
+  RFC3339 forms order correctly.
+
+## Phase 7 — #4 signaling signature binds SDP/ICE (commit: `fix(storage-node): phase 7 ...`)
+
+- Rust `webrtc/handler.rs`: sign/verify `"{device}:{session}:{timestamp}:{blake3(payload)}"`
+  for the offer (`sdp`) and ICE candidate endpoints; the SSE receive stream keeps
+  the payload-free message.
+- TS `packages/webrtc-transport/src/signaling.ts`: compute the same BLAKE3 hash
+  (already depends on `@noble/hashes`) for offer/answer/candidate; SSE unchanged.
+- Update `tests/webrtc_transfer_test.rs` and the signing doc comment; verify
+  `pnpm test` for the TS package.
+
+## Phase 8 — #22 relay-buffer integrity (commit: `fix(storage-node): phase 8 ...`)
+
+- Never overwrite a known `(file_id, version_number, shard_index)` shard with a
+  different object id from a relay `pending_notify`; log and reject on conflict.
+- Document in `fix.md` and the changelog that full verification requires a signed
+  per-shard manifest (`shard_hashes`) on `FILE_VERSION_ADDED` — a cross-language
+  protocol change, not implementable node-side alone.
+
 ## Verification (each phase)
 
 - `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`.
@@ -107,7 +152,10 @@ format). Each phase is committed separately.
 
 ## Deferred / needs investigation
 
-- **#4** signaling signature must bind SDP/ICE (protocol 1.6 + TS clients).
-- **#22** relay buffer metadata manifest cross-check — verify a node-side signed
-  manifest of expected shard hashes exists before committing.
-- **#11** bounded-skip semantics should be agreed with the relay's retry behavior.
+- **#22 full closure** — requires `shard_hashes` on `FILE_VERSION_ADDED` across
+  protocol, TS clients, Go relay, and node (Phase 8 records this).
+- **M6 conflicted-copy UX (ADR-0003)** — `generate_conflicted_filename` is still
+  computed and discarded; surfacing it needs a client-visible conflicted-copy
+  record, a feature beyond this audit.
+- **M8 snapshot streaming** — snapshots are still fully materialized before
+  sending; a streaming rewrite is a larger change.
