@@ -299,7 +299,15 @@ impl SyncClient {
         while let Some(msg_res) = read.next().await {
             let msg = msg_res?;
             if let Message::Text(text) = msg {
-                let env: ProtocolEnvelope = serde_json::from_str(&text)?;
+                // One malformed frame must not tear down the whole session; a
+                // relay glitch would otherwise force a reconnect storm.
+                let env: ProtocolEnvelope = match serde_json::from_str(&text) {
+                    Ok(env) => env,
+                    Err(e) => {
+                        eprintln!("[sync] ignoring malformed relay frame: {e}");
+                        continue;
+                    }
+                };
                 if env.msg_type == "node_auth_challenge" {
                     let challenge: NodeAuthChallengePayload = serde_json::from_value(env.payload)?;
                     let resp = Self::sign_auth_challenge(&self.identity, &challenge);
@@ -348,7 +356,11 @@ impl SyncClient {
             device_id: None,
             node_id: self.identity.node_id.clone(),
             public_key: hex::encode(self.identity.public_key.to_bytes()),
-            capabilities: vec!["node".to_string()],
+            // Catalog capability names (`message-catalog.md`): a storage node
+            // stores shards and runs the sync protocol. The Relay currently
+            // ignores these on node register, but advertising a non-catalog
+            // value was wrong.
+            capabilities: vec!["storage".to_string(), "sync".to_string()],
         };
         let reg_env = ProtocolEnvelope::new("register", serde_json::to_value(&reg)?);
         Self::send_json(&mut write, &reg_env).await?;
@@ -381,7 +393,15 @@ impl SyncClient {
                     let Some(msg_res) = maybe_msg else { break };
                     let msg = msg_res?;
                     if let Message::Text(text) = msg {
-                        let env: ProtocolEnvelope = serde_json::from_str(&text)?;
+                        // Tolerate a single malformed frame rather than ending
+                        // the session (and the whole sync cycle) on it.
+                        let env: ProtocolEnvelope = match serde_json::from_str(&text) {
+                            Ok(env) => env,
+                            Err(e) => {
+                                eprintln!("[sync] ignoring malformed relay frame: {e}");
+                                continue;
+                            }
+                        };
                         match env.msg_type.as_str() {
                     "sync_status" => {
                         let _status: SyncStatusPayload = serde_json::from_value(env.payload)?;

@@ -18,4 +18,3 @@ pub mod node_attempter;
 pub mod pool;
 pub mod queue;
 pub mod types;
-pub mod webrtc_client;

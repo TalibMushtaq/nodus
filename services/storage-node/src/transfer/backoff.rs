@@ -6,9 +6,13 @@ use rand::Rng;
 ///
 /// Identical formula and shape to the TS side (see spec §"Backoff & Retry").
 pub fn backoff_delay(attempt: u32, base_ms: u64, jitter_ms: u64) -> u64 {
-    let exponential = base_ms * 2u64.saturating_pow(attempt);
+    // `saturating_pow` bounds the shift, but the multiplication and the jitter
+    // addition can still overflow (both base_ms and jitter_ms are
+    // env-configurable); saturate every step so a huge/exhausted attempt
+    // delays once instead of wrapping (or panicking in debug).
+    let exponential = base_ms.saturating_mul(2u64.saturating_pow(attempt));
     let jitter = rand::thread_rng().gen_range(0..=jitter_ms);
-    exponential + jitter
+    exponential.saturating_add(jitter)
 }
 
 /// Sleep for the calculated backoff delay.
@@ -38,5 +42,11 @@ mod tests {
             assert!(d >= 500);
             assert!(d <= 800);
         }
+    }
+
+    #[test]
+    fn backoff_saturates_instead_of_overflowing() {
+        // Massive base/jitter/attempt must clamp, not wrap or panic.
+        assert_eq!(backoff_delay(64, u64::MAX, u64::MAX), u64::MAX);
     }
 }

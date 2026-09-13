@@ -135,7 +135,12 @@ impl Telemetry {
     }
 
     pub fn snapshot(&self) -> Snapshot {
-        let inner = self.0.lock().expect("telemetry mutex poisoned");
+        // Tolerate a poisoned lock: telemetry is observability-only, and
+        // propagating a panic from one writer would take down every reader.
+        let inner = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         Snapshot {
             link: inner.link.clone(),
             last_error: inner.last_error.clone(),
@@ -151,7 +156,10 @@ impl Telemetry {
     }
 
     fn with_inner(&self, f: impl FnOnce(&mut TelemetryInner)) {
-        let mut inner = self.0.lock().expect("telemetry mutex poisoned");
+        let mut inner = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         f(&mut inner);
     }
 }

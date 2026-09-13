@@ -188,7 +188,15 @@ pub async fn purge_file(store: &ObjectStore, file_id: &str) -> anyhow::Result<()
                 .context("deleting storage_objects row during purge")?;
             let dest = layout::object_path(data_dir, &object_id)?;
             if dest.exists() {
-                let _ = fs::remove_file(&dest);
+                // A silent unlink failure would leak disk with no trace; log it
+                // so repeated failures are visible (reconcile reclaims it as an
+                // orphan after the grace period once the permissions are fixed).
+                if let Err(e) = fs::remove_file(&dest) {
+                    eprintln!(
+                        "[gc] warning: failed to remove object file {}: {e}",
+                        dest.display()
+                    );
+                }
             }
         }
     }
@@ -293,7 +301,15 @@ async fn prune_version(
 
             let dest = layout::object_path(data_dir, &object_id)?;
             if dest.exists() {
-                let _ = fs::remove_file(&dest);
+                // A silent unlink failure would leak disk with no trace; log it
+                // so repeated failures are visible (reconcile reclaims it as an
+                // orphan after the grace period once the permissions are fixed).
+                if let Err(e) = fs::remove_file(&dest) {
+                    eprintln!(
+                        "[gc] warning: failed to remove object file {}: {e}",
+                        dest.display()
+                    );
+                }
             }
             report.objects_deleted += 1;
         }

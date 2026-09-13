@@ -1,5 +1,10 @@
 # Storage Node Audit — Fix Plan
 
+Status: Phases 1-5 implemented and committed (one commit per phase). #4
+signaling-signature binding remains deferred (needs protocol 1.6 + TS clients);
+#22 (relay buffer manifest cross-check) needs a node-side signed manifest that
+does not exist yet; #11 shipped as "Err + skip malformed known events".
+
 Source audit: `services/storage-node/` (Rust, ~13.7k LOC). Baseline at plan time:
 `cargo fmt --check` clean, `cargo clippy --all-targets` clean, `cargo test` 168 passed.
 

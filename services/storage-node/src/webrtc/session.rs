@@ -193,11 +193,22 @@ impl WebRtcSession {
         identity: Arc<NodeIdentity>,
     ) -> anyhow::Result<Self> {
         let api = APIBuilder::new().build();
-        let config = RTCConfiguration {
-            ice_servers: vec![RTCIceServer {
-                urls: vec!["stun:stun.l.google.com:19302".to_string()],
+        // STUN is only needed to discover a server-reflexive candidate for
+        // non-LAN peers; an offline-first deployment can point this at a local
+        // server (or `NODUS_STUN_URL=""` to disable) rather than leaking its
+        // public address to a third party by defaulting to Google.
+        let stun_url = std::env::var("NODUS_STUN_URL")
+            .unwrap_or_else(|_| "stun:stun.l.google.com:19302".to_string());
+        let ice_servers = if stun_url.trim().is_empty() {
+            Vec::new()
+        } else {
+            vec![RTCIceServer {
+                urls: vec![stun_url],
                 ..Default::default()
-            }],
+            }]
+        };
+        let config = RTCConfiguration {
+            ice_servers,
             ..Default::default()
         };
 
