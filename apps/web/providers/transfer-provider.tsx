@@ -11,6 +11,7 @@ import { useWebRtcCapabilities } from "../lib/use-capabilities";
 import { createBrowserAttemptPath } from "../lib/transfer/attempt-path";
 import { IndexedDBLocalQueue } from "../lib/transfer/local-queue";
 import { IndexedDBPathCache } from "../lib/transfer/path-cache";
+import { identityPrivateKey, signDeviceMessage } from "@repo/relay-client";
 import { useAuth } from "./auth-provider";
 import { useWs } from "./ws-provider";
 
@@ -60,6 +61,8 @@ export function TransferProvider({ children }: { children: ReactNode }) {
         localQueue: queue,
         deviceId: device.device_id,
         sourceDevice: device.device_id,
+        // Path A requires proving device identity to the node per message.
+        signLocal: (message) => signDeviceMessage(identityPrivateKey(device), message),
       });
       queueRef.current = queue;
       setManager(new TransferManager(attemptPath, undefined, cache, queue));

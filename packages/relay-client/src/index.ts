@@ -18,6 +18,7 @@ export {
   deriveDeviceId,
   identityPrivateKey,
   identityPublicKey,
+  signDeviceMessage,
 } from "./device-identity.js";
 export type { StoredDeviceIdentity } from "./device-identity.js";
 

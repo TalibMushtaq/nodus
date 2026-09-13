@@ -44,6 +44,18 @@ export function identityPublicKey(id: StoredDeviceIdentity): Uint8Array {
   return base64Decode(id.public_key);
 }
 
+/**
+ * Sign a UTF-8 message with this device's Ed25519 key, hex-encoded.
+ *
+ * Used for the stateless `X-Nodus-*` request signature (shard fetch + local
+ * WebRTC signaling): the signing key stays on the device and the node verifies
+ * against the public key recorded at pairing time.
+ */
+export function signDeviceMessage(privateSeed: Uint8Array, message: string): string {
+  const signature = ed25519.sign(new TextEncoder().encode(message), privateSeed);
+  return toHex(signature);
+}
+
 function toHex(bytes: Uint8Array): string {
   return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 }

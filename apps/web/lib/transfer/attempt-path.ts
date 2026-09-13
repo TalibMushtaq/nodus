@@ -22,6 +22,12 @@ export interface BrowserAttemptPathDeps {
   deviceId: string;
   sourceDevice?: string;
   /**
+   * Stateless-signing callback for local WebRTC signaling (`signDeviceMessage`
+   * over the device private key). Without it the node rejects Path A signaling
+   * (401) and the fallback chain advances to relay/buffer paths.
+   */
+  signLocal?: (message: string) => string | Promise<string>;
+  /**
    * Relay-signaling channel factory (Path B). Optional: callers without a live
    * Relay WS client omit it, and Path B then throws so the chain falls to C.
    */
@@ -54,6 +60,7 @@ async function resolveLocalChannel(request: ShardTransferRequest, deps: BrowserA
   return createLocalSignalingChannel({
     baseUrl: `http://${host}:${NODUS_LOCAL_PORT}`,
     deviceId: deps.deviceId,
+    sign: deps.signLocal,
   });
 }
 

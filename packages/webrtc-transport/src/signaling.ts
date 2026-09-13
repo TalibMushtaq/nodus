@@ -14,6 +14,31 @@ export interface LocalSignalingOptions {
   sessionId?: string;
   deviceId?: string;
   timeoutMs?: number;
+  /**
+   * Optional per-message signing callback. When provided, every signaling
+   * request is authenticated with the same stateless `X-Nodus-*` scheme the
+   * shard-fetch path uses: the callback receives
+   * `"{device_id}:{session_id}:{timestamp_ms}"` and returns a hex Ed25519
+   * signature (e.g. from `signDeviceMessage/identityPrivateKey`). Without a
+   * signer the node rejects signaling with 401, so a caller that needs direct
+   * transfers MUST supply one.
+   */
+  sign?: (message: string) => string | Promise<string>;
+}
+
+/** Build the signed `X-Nodus-*` header triplet for one message. */
+async function signedHeaders(
+  deviceId: string,
+  sessionId: string,
+  sign: NonNullable<LocalSignalingOptions["sign"]>,
+): Promise<Record<string, string>> {
+  const timestamp = Date.now();
+  const signature = await sign(`${deviceId}:${sessionId}:${timestamp}`);
+  return {
+    "x-nodus-device-id": deviceId,
+    "x-nodus-timestamp": String(timestamp),
+    "x-nodus-signature": signature,
+  };
 }
 
 export function createLocalSignalingChannel(opts: LocalSignalingOptions): SignalingChannel {
@@ -27,22 +52,36 @@ export function createLocalSignalingChannel(opts: LocalSignalingOptions): Signal
   let onIceCandidateCb: ((candidate: string) => void) | null = null;
   let sseSource: EventSource | null = null;
 
-  // Start receiving ICE candidates via SSE if EventSource is available
-  if (typeof EventSource !== "undefined") {
-    const sseUrl = `${baseUrl}/nodus/webrtc/ice-candidates?session_id=${encodeURIComponent(sessionId)}&device_id=${encodeURIComponent(deviceId)}`;
-    try {
-      sseSource = new EventSource(sseUrl);
-      sseSource.addEventListener("candidate", (event) => {
-        if (event.data) {
-          onIceCandidateCb?.(event.data);
-        }
-      });
-      sseSource.onerror = () => {
-        // SSE error or reconnection attempt
-      };
-    } catch {
-      // EventSource failed to instantiate (e.g. non-browser environment)
-    }
+  // Start receiving ICE candidates via SSE if EventSource is available.
+  // EventSource cannot set request headers, so the signature rides in the
+  // query string when a signer is present (the node accepts that exactly for
+  // this endpoint). Note EventSource auto-reconnect replays the same URL, so a
+  // signature older than the freshness window would 401 on reconnect — in
+  // practice candidates flow within seconds of the offer, which is fine.
+  if (typeof EventSource !== "undefined" && opts.sign) {
+    const params = new URLSearchParams({ session_id: sessionId, device_id: deviceId });
+    void (async () => {
+      try {
+        const timestamp = Date.now();
+        const signature = await opts.sign!(`${deviceId}:${sessionId}:${timestamp}`);
+        params.set("timestamp", String(timestamp));
+        params.set("signature", signature);
+        if (abortController.signal.aborted) return;
+        const sseUrl = `${baseUrl}/nodus/webrtc/ice-candidates?${params.toString()}`;
+        sseSource = new EventSource(sseUrl);
+        sseSource.addEventListener("candidate", (event) => {
+          if (event.data) {
+            onIceCandidateCb?.(event.data);
+          }
+        });
+        sseSource.onerror = () => {
+          // SSE error or reconnection attempt
+        };
+      } catch {
+        // Signing failed (no identity): signaling keeps working for callers
+        // that don't need direct-path candidates.
+      }
+    })();
   }
 
   return {
@@ -60,9 +99,13 @@ export function createLocalSignalingChannel(opts: LocalSignalingOptions): Signal
     },
 
     async sendOffer(sdp: string): Promise<void> {
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (opts.sign) {
+        Object.assign(headers, await signedHeaders(deviceId, sessionId, opts.sign));
+      }
       const res = await fetch(`${baseUrl}/nodus/webrtc/offer`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify({
           session_id: sessionId,
           device_id: deviceId,
@@ -83,9 +126,13 @@ export function createLocalSignalingChannel(opts: LocalSignalingOptions): Signal
     },
 
     async sendAnswer(sdp: string): Promise<void> {
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (opts.sign) {
+        Object.assign(headers, await signedHeaders(deviceId, sessionId, opts.sign));
+      }
       const res = await fetch(`${baseUrl}/nodus/webrtc/answer`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify({
           session_id: sessionId,
           device_id: deviceId,
@@ -100,9 +147,13 @@ export function createLocalSignalingChannel(opts: LocalSignalingOptions): Signal
     },
 
     async sendIceCandidate(candidate: string): Promise<void> {
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (opts.sign) {
+        Object.assign(headers, await signedHeaders(deviceId, sessionId, opts.sign));
+      }
       const res = await fetch(`${baseUrl}/nodus/webrtc/ice`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify({
           session_id: sessionId,
           device_id: deviceId,
