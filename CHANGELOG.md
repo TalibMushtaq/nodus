@@ -1,5 +1,12 @@
 # Changelog
 
+## [2026-09-13] - Folder permanent delete now reaches Storage Nodes
+
+**What changed:** The Relay's `owningNodes` returned no nodes for folders (only files have a per-node `file_locations` row), so `PurgeTombstone`/`RestoreTombstone` finalized folders Relay-side and never sent the node a control — the node's `folders` row survived a permanent folder delete (files inside could still be removed by their own purges). `owningNodes` now takes the account id and, for folders, returns every `ACTIVE` storage node of the account; `pendingPurgesForNode` re-delivers requested folder purges to every active node (UNION with the existing file query). Folder purges therefore wait for node acks like file purges and remove the node's folder row (recursively deleting any remaining child files/folders). The DB test now covers a folder.
+**Why:** Dependent on the previous fix — nodes now stay fresh, but folder purges were still never propagated, so "Delete permanently" left the folder in the node's catalogue/objects.
+**Impact:** `services/relay/internal/handler/tombstones.go`, `conflicts_integration_test.go`. Verified `gofmt/build/vet` and the full DB-backed suite (`TEST_DATABASE_URL`/`TEST_REDIS_URL`), including `TestPendingPurgesForNode`.
+**Follow-ups:** Restart the Relay (and node) to pick this up.
+
 ## [2026-09-13] - Fix permanent delete stalling on a stale node ("no matching local tombstone")
 
 **What changed:** A connected Storage Node only pulled events on its initial `sync_hello`, so it never learned of deletes that happened later in the session; when the Relay then sent `purge_tombstone`, the node's (Phase 3.1) guard correctly refused because it had no local tombstone, and the purge waited forever for its ack. Two fixes: (1) the node's sync read loop now re-sends `sync_hello` every 30 s (`SYNC_PULL_INTERVAL`, via a new `send_sync_hello` helper) so it pulls events missed since the session started; (2) the Relay's `HandleSyncHello` now calls `redeliverPendingPurges`, re-sending `purge_tombstone` for every tombstone with `purge_requested_at` set whose file the node holds — queued after the missing-events batch on the same connection, so the node applies the tombstone before the purge control. The pending-purge query is extracted as `pendingPurgesForNode` and covered by a DB test.

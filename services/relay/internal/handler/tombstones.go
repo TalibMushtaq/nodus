@@ -175,7 +175,7 @@ func PurgeTombstone(pool *db.Pool, h *hub.Hub) http.HandlerFunc {
 			return
 		}
 
-		nodes, err := owningNodes(r.Context(), pool, entityType, entityID)
+		nodes, err := owningNodes(r.Context(), pool, accountID, entityType, entityID)
 		if err != nil {
 			respondError(w, http.StatusInternalServerError, "failed to resolve owning nodes")
 			return
@@ -219,7 +219,7 @@ func RestoreTombstone(pool *db.Pool, h *hub.Hub) http.HandlerFunc {
 			return
 		}
 
-		nodes, err := owningNodes(r.Context(), pool, entityType, entityID)
+		nodes, err := owningNodes(r.Context(), pool, accountID, entityType, entityID)
 		if err != nil {
 			respondError(w, http.StatusInternalServerError, "failed to resolve owning nodes")
 			return
@@ -290,7 +290,7 @@ func maybeFinalizePurge(ctx context.Context, pool *db.Pool, accountID, entityTyp
 		return nil
 	}
 
-	nodes, err := owningNodes(ctx, pool, entityType, entityID)
+	nodes, err := owningNodes(ctx, pool, accountID, entityType, entityID)
 	if err != nil {
 		return err
 	}
@@ -348,13 +348,33 @@ func finalizeTombstonePurge(ctx context.Context, pool *db.Pool, accountID, entit
 	return tx.Commit(ctx)
 }
 
-// owningNodes lists the storage nodes that hold a file's shards (none for a
-// folder or a local-only file).
-func owningNodes(ctx context.Context, pool *db.Pool, entityType, entityID string) ([]string, error) {
-	if entityType != "file" {
-		return nil, nil
+// owningNodes lists the storage nodes whose data a purge/restore must reach.
+// Files are tracked per node in `file_locations`; folders have no such table,
+// so every active node of the account is asked (an unmatched node no-ops but
+// still acks, which keeps the purge accounting consistent and removes the
+// node's folder row).
+func owningNodes(ctx context.Context, pool *db.Pool, accountID, entityType, entityID string) ([]string, error) {
+	if entityType == "file" {
+		rows, err := pool.Query(ctx, `SELECT DISTINCT node_id FROM file_locations WHERE file_id=$1`, entityID)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		nodes := make([]string, 0)
+		for rows.Next() {
+			var nodeID string
+			if err := rows.Scan(&nodeID); err != nil {
+				return nil, err
+			}
+			nodes = append(nodes, nodeID)
+		}
+		return nodes, rows.Err()
 	}
-	rows, err := pool.Query(ctx, `SELECT DISTINCT node_id FROM file_locations WHERE file_id=$1`, entityID)
+
+	rows, err := pool.Query(ctx, `
+		SELECT node_id FROM storage_nodes
+		WHERE account_id = $1 AND status = 'ACTIVE'
+	`, accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -427,8 +447,10 @@ type purgeEntity struct {
 	EntityID   string
 }
 
-// pendingPurgesForNode lists files whose purge was requested and that the node
-// holds shards for. Only files need node purges (folders finalize Relay-side).
+// pendingPurgesForNode lists entities whose purge was requested and whose
+// control this node should (re)receive: files the node holds shards for, and
+// every folder of the account (folders have no per-node location, so each
+// active node is asked to drop its folder row).
 func pendingPurgesForNode(ctx context.Context, pool *db.Pool, accountID, nodeID string) ([]purgeEntity, error) {
 	rows, err := pool.Query(ctx, `
 		SELECT DISTINCT t.entity_type, t.entity_id
@@ -436,6 +458,13 @@ func pendingPurgesForNode(ctx context.Context, pool *db.Pool, accountID, nodeID 
 		JOIN file_locations fl ON fl.file_id = t.entity_id AND fl.node_id = $2
 		WHERE t.account_id = $1
 		  AND t.entity_type = 'file'
+		  AND t.purge_requested_at IS NOT NULL
+		UNION
+		SELECT DISTINCT t.entity_type, t.entity_id
+		FROM tombstones t
+		JOIN storage_nodes n ON n.account_id = t.account_id AND n.node_id = $2 AND n.status = 'ACTIVE'
+		WHERE t.account_id = $1
+		  AND t.entity_type = 'folder'
 		  AND t.purge_requested_at IS NOT NULL
 	`, accountID, nodeID)
 	if err != nil {

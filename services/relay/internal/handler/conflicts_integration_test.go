@@ -97,9 +97,27 @@ func TestPendingPurgesForNode(t *testing.T) {
 	`, account, purging, retained)
 	require.NoError(t, err)
 
+	// A folder with a requested purge is delivered to every active node, since
+	// folders have no per-node location table.
+	folder := "folder-purging-" + suffix
+	_, err = pool.Exec(ctx, `
+		INSERT INTO tombstones (account_id, entity_type, entity_id, deleted_at, purge_after, purge_requested_at)
+		VALUES ($1, 'folder', $2, NOW(), NOW() + INTERVAL '90 days', NOW())
+	`, account, folder)
+	require.NoError(t, err)
+
 	entities, err := pendingPurgesForNode(ctx, pool, account, node)
 	require.NoError(t, err)
-	require.Len(t, entities, 1)
-	require.Equal(t, purging, entities[0].EntityID)
-	require.Equal(t, "file", entities[0].EntityType)
+	require.Len(t, entities, 2)
+	byType := map[string]string{}
+	for _, e := range entities {
+		byType[e.EntityType] = e.EntityID
+	}
+	require.Equal(t, purging, byType["file"])
+	require.Equal(t, folder, byType["folder"])
+
+	// The relay asks the active node to purge the folder too.
+	nodes, err := owningNodes(ctx, pool, account, "folder", folder)
+	require.NoError(t, err)
+	require.Contains(t, nodes, node)
 }
