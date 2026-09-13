@@ -70,6 +70,15 @@ async fn load_file_version_records(db: &SqlitePool) -> anyhow::Result<Vec<FileVe
         let version_hash: String = row.get("version_hash");
         let shard_count: i64 = row.get("shard_count");
         if version_hash.is_empty() || shard_count <= 0 {
+            // A malformed row would be silently absent from a rebuild; surface
+            // it so the operator can investigate rather than losing a version.
+            eprintln!(
+                "[snapshot] omitting file_version {}:{} from snapshot: version_hash={:?} shard_count={}",
+                row.get::<String, _>("file_id"),
+                row.get::<i64, _>("version_number"),
+                version_hash,
+                shard_count
+            );
             continue;
         }
         records.push(FileVersionRecord {

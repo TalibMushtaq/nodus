@@ -1,5 +1,12 @@
 # Changelog
 
+## [2026-09-13] - Storage node audit phase 9: remaining contained correctness/concurrency items
+
+**What changed:** `sync/engine.rs::apply_remote_event_conn` now checks `rows_affected()` of the `sync_events` insert and returns `AlreadyApplied` when it is a no-op, so two connections racing past the deferred idempotency `SELECT` cannot both run projections. `webrtc/session.rs` no longer holds the sessions-map `RwLock` across `WebRtcSession::new(..).await`: a per-session-id `creating` mutex serializes construction, the session is built outside the global lock, and a final insert-time re-check (plus the global/per-device caps) runs under a brief write lock. The data-channel receive handler releases `ChannelReceiveState` before hashing/`store.put`/the SQLite transaction/acks, so slow disk I/O no longer blocks the next frame or the stall watcher. `sync/snapshot.rs` logs a `file_version` it omits from a rebuild (empty hash / non-positive shard count) instead of dropping it silently.
+**Why:** Remaining contained findings from the storage-node audit: (M9) the idempotency insert result was ignored (TOCTOU under concurrent apply); (M7) the global sessions write lock was held across an `await`, blocking readers/reaper/other creations; (M8) the channel-state mutex was held across I/O; (L1) a malformed version vanished from a snapshot with no trace.
+**Impact:** `sync/engine.rs`, `sync/snapshot.rs`, `webrtc/session.rs`, `fix.md`. Verified `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` (196 lib + 178 bin + 2 integration), including the single-flight WebRTC test.
+**Follow-ups:** Deferred items remain: #22 first-copy per-shard manifest (protocol), ADR-0003 conflicted-copy surfacing (feature), and the snapshot streaming rewrite (perf).
+
 ## [2026-09-13] - Storage node phase 8 lint follow-up
 
 **What changed:** Collapsed the nested `if let`/`if` in `sync/client.rs::record_shard_metadata` into a let-chain so `cargo clippy --all-targets -- -D warnings` is clean.

@@ -93,7 +93,7 @@ pub(crate) async fn apply_remote_event_conn(
     let payload_str = serde_json::to_string(&event.payload)?;
 
     // 2. Insert into sync_events log
-    sqlx::query(
+    let inserted = sqlx::query(
         r#"
         INSERT INTO sync_events (event_id, origin_id, origin_sequence, event_type, payload, timestamp)
         VALUES (?, ?, ?, ?, ?, ?)
@@ -107,7 +107,16 @@ pub(crate) async fn apply_remote_event_conn(
     .bind(&payload_str)
     .bind(&event.timestamp)
     .execute(&mut *tx)
-    .await?;
+    .await?
+    .rows_affected();
+
+    // Two connections can both pass the deferred SELECT above and race here;
+    // the loser's insert is a no-op. It must not then re-run the projections
+    // (which could renumber a fork sibling or otherwise double-apply), so treat
+    // a no-op insert as already applied.
+    if inserted == 0 {
+        return Ok(ApplyOutcome::AlreadyApplied);
+    }
 
     let mut outcome = ApplyOutcome::Applied;
 

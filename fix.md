@@ -1,9 +1,9 @@
 # Storage Node Audit — Fix Plan
 
-Status: Phases 1-8 implemented and committed (one commit per phase). All audit
-findings are addressed except #22's *first-copy* guarantee, which requires a
-cross-language protocol addition (per-shard hashes on the version event) and is
-documented under Deferred.
+Status: Phases 1-9 implemented and committed (one commit per phase). All audit
+findings are addressed except #22's *first-copy* guarantee (needs a cross-language
+protocol addition: per-shard hashes on the version event) and the M6/M8 feature
+work, documented under Deferred.
 
 Source audit: `services/storage-node/` (Rust, ~13.7k LOC). Baseline at plan time:
 `cargo fmt --check` clean, `cargo clippy --all-targets` clean, `cargo test` 168 passed.
@@ -140,6 +140,26 @@ format). Each phase is committed separately.
 - Document in `fix.md` and the changelog that full verification requires a signed
   per-shard manifest (`shard_hashes`) on `FILE_VERSION_ADDED` — a cross-language
   protocol change, not implementable node-side alone.
+
+## Phase 9 — Remaining contained audit items (commit: `fix(storage-node): phase 9 ...`)
+
+### 9.1 Engine idempotency TOCTOU (`sync/engine.rs`)
+- Check `rows_affected()` of the `sync_events` insert; a concurrent double-apply
+  that hits `ON CONFLICT DO NOTHING` must return `AlreadyApplied` and skip
+  projections (the deferred SELECT is not enough under two connections).
+
+### 9.2 WeRTC manager: don't hold the map lock across session creation (`webrtc/session.rs`)
+- Serialize creation per session id with a per-id mutex, create the peer
+  connection outside the global `RwLock`, then insert; the single-flight test
+  must still observe one shared `Arc`.
+
+### 9.3 WeRTC channel: don't hold the receive mutex across I/O (`webrtc/session.rs`)
+- Take the lock only to validate/consume state, then verify/persist/ack outside
+  it so a slow disk cannot block the channel or the stall watcher.
+
+### 9.4 Snapshot: log omitted versions (`sync/snapshot.rs`)
+- A `file_version` with an empty hash / non-positive shard count is omitted from
+  a rebuild; log it rather than dropping it silently.
 
 ## Verification (each phase)
 

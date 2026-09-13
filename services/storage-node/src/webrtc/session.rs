@@ -318,9 +318,15 @@ impl WebRtcSession {
                             // substring matching would let a crafted `file_id`
                             // containing "shard_done" end the transfer early.
                             if is_shard_done(&text) {
-                                // Shard transmission finished, verify and commit
-                                let mut st = state.lock().await;
-                                let Some((metadata, chunks)) = st.take_done() else {
+                                // Consume the transmission and release the
+                                // channel-state lock immediately: hashing,
+                                // `store.put`, the SQLite transaction, and the
+                                // ack must not block the next frame or the stall
+                                // watcher on a slow disk.
+                                let Some((metadata, chunks)) = ({
+                                    let mut st = state.lock().await;
+                                    st.take_done()
+                                }) else {
                                     return;
                                 };
                                 let size_bytes = chunks.len() as i64;
@@ -480,28 +486,34 @@ impl WebRtcSession {
                             {
                                 // Metadata frame for a new transmission. A
                                 // rejected frame clears stale state so the next
-                                // attempt starts clean.
-                                let mut st = state.lock().await;
-                                match st.on_metadata(meta.clone()) {
-                                    Ok(()) => {}
-                                    Err(_) => {
-                                        st.clear();
-                                        // Fields parsed far enough for an ack:
-                                        // the sender sees the failure and aborts.
-                                        let ack = ShardAckPayload {
-                                            file_id: meta.file_id,
-                                            version_number: meta.version_number,
-                                            shard_index: meta.shard_index,
-                                            status: "failed".into(),
-                                            transfer_id: meta.transfer_id,
-                                            error_message: Some(
-                                                "shard rejected: exceeds size cap or invalid metadata".into(),
-                                            ),
-                                        };
-                                        if let Ok(ack_json) = serde_json::to_string(&ack) {
-                                            let _ = dc.send_text(ack_json).await;
+                                // attempt starts clean. The lock is released
+                                // before the failure ack is sent.
+                                let rejected = {
+                                    let mut st = state.lock().await;
+                                    match st.on_metadata(meta.clone()) {
+                                        Ok(()) => None,
+                                        Err(_) => {
+                                            st.clear();
+                                            // Fields parsed far enough for an
+                                            // ack: the sender sees the failure
+                                            // and aborts.
+                                            Some(ShardAckPayload {
+                                                file_id: meta.file_id,
+                                                version_number: meta.version_number,
+                                                shard_index: meta.shard_index,
+                                                status: "failed".into(),
+                                                transfer_id: meta.transfer_id,
+                                                error_message: Some(
+                                                    "shard rejected: exceeds size cap or invalid metadata".into(),
+                                                ),
+                                            })
                                         }
                                     }
+                                };
+                                if let Some(ack) = rejected
+                                    && let Ok(ack_json) = serde_json::to_string(&ack)
+                                {
+                                    let _ = dc.send_text(ack_json).await;
                                 }
                             }
                         } else {
@@ -604,6 +616,11 @@ fn should_prune(created_ms: u64, last_active_ms: u64, now_ms: u64, connected: bo
 #[derive(Clone)]
 pub struct WebRtcManager {
     sessions: Arc<RwLock<HashMap<String, Arc<WebRtcSession>>>>,
+    /// Per-session-id creation mutexes. Serializes peer-connection construction
+    /// for one id without holding the global `sessions` write lock across the
+    /// `WebRtcSession::new(..).await` (which previously blocked every reader,
+    /// the reaper, and other session creations).
+    creating: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
     db: SqlitePool,
     store: Arc<ObjectStore>,
     identity: Arc<NodeIdentity>,
@@ -621,6 +638,7 @@ impl WebRtcManager {
     ) -> Self {
         let manager = Self {
             sessions: Arc::new(RwLock::new(HashMap::new())),
+            creating: Arc::new(Mutex::new(HashMap::new())),
             db,
             store,
             identity,
@@ -659,41 +677,36 @@ impl WebRtcManager {
 
     /// Return the live session for `session_id`, creating it exactly once.
     ///
-    /// Single-flight by construction: the check, create, and insert all happen
-    /// while holding the map's write lock, so concurrent callers serialize and
-    /// every one of them observes the same `Arc`. Creation is local-only (peer
-    /// connection + closures), so the brief write-lock hold is acceptable.
+    /// Creation is single-flight per session id via `creating`, and the
+    /// peer-connection construction happens *outside* the global map lock so it
+    /// cannot block readers, the reaper, or other sessions' creation. A final
+    /// insert-time re-check guarantees one stored `Arc` even if two callers
+    /// race past the fast path.
     pub async fn get_or_create_session(
         &self,
         session_id: &str,
         device_id: &str,
     ) -> anyhow::Result<Arc<WebRtcSession>> {
-        let mut lock = self.sessions.write().await;
-        if let Some(sess) = lock.get(session_id) {
-            if sess.device_id != device_id {
-                bail!("device_id mismatch for existing session");
-            }
-            // Reuse the live connection; only a Failed transport warrants a
-            // replacement (the client's next offer would fail on a dead one).
-            if sess.peer_connection.connection_state() != RTCPeerConnectionState::Failed {
-                return Ok(sess.clone());
-            }
-            lock.remove(session_id);
+        if let Some(existing) = self.reusable_session(session_id, device_id).await? {
+            return Ok(existing);
         }
 
-        // Cap creation: global and per-device. Both bounds are necessary — a
-        // global cap alone lets one device starve others, and a per-device cap
-        // alone does not bound the total. The whole check runs under the map's
-        // write lock, so concurrent offers cannot both slip past the limit.
-        if lock.len() >= MAX_SESSIONS {
-            bail!("WebRTC session limit reached ({MAX_SESSIONS} concurrent sessions)");
-        }
-        let device_sessions = lock.values().filter(|s| s.device_id == device_id).count();
-        if device_sessions >= MAX_SESSIONS_PER_DEVICE {
-            bail!(
-                "per-device WebRTC session limit reached \
-                 ({MAX_SESSIONS_PER_DEVICE} concurrent sessions)"
-            );
+        // Serialize construction for this id. The entry is removed after a
+        // successful create so the map cannot grow with churned session ids;
+        // a waiter holding a now-detached mutex simply re-checks and reuses.
+        let creation_lock = {
+            let mut creating = self.creating.lock().await;
+            creating
+                .entry(session_id.to_string())
+                .or_insert_with(|| Arc::new(Mutex::new(())))
+                .clone()
+        };
+        let _permit = creation_lock.lock().await;
+
+        // Another caller may have created it while we waited for the permit.
+        if let Some(existing) = self.reusable_session(session_id, device_id).await? {
+            self.creating.lock().await.remove(session_id);
+            return Ok(existing);
         }
 
         let session = Arc::new(
@@ -707,12 +720,62 @@ impl WebRtcManager {
             .await?,
         );
 
+        // Cap creation at insert time (global + per-device) so concurrent
+        // creators for different ids cannot exceed the bound. A rejected
+        // session is dropped, releasing its peer connection.
+        let mut lock = self.sessions.write().await;
+        if let Some(existing) = lock.get(session_id) {
+            let existing = existing.clone();
+            drop(lock);
+            self.creating.lock().await.remove(session_id);
+            return Ok(existing);
+        }
+        if lock.len() >= MAX_SESSIONS {
+            drop(lock);
+            self.creating.lock().await.remove(session_id);
+            bail!("WebRTC session limit reached ({MAX_SESSIONS} concurrent sessions)");
+        }
+        let device_sessions = lock.values().filter(|s| s.device_id == device_id).count();
+        if device_sessions >= MAX_SESSIONS_PER_DEVICE {
+            drop(lock);
+            self.creating.lock().await.remove(session_id);
+            bail!(
+                "per-device WebRTC session limit reached \
+                 ({MAX_SESSIONS_PER_DEVICE} concurrent sessions)"
+            );
+        }
+
         // First client for this session id: record it as a direct (internet)
         // connection in shell telemetry and refresh the live count.
         self.telemetry.direct_session_started();
         lock.insert(session_id.to_string(), session.clone());
         self.telemetry.set_direct_active(lock.len() as u32);
+        drop(lock);
+        self.creating.lock().await.remove(session_id);
         Ok(session)
+    }
+
+    /// The reusable session for `(session_id, device_id)`, if any. Performs the
+    /// device check and the Failed-transport replacement under the map's write
+    /// lock, but does no `await` while holding it.
+    async fn reusable_session(
+        &self,
+        session_id: &str,
+        device_id: &str,
+    ) -> anyhow::Result<Option<Arc<WebRtcSession>>> {
+        let mut lock = self.sessions.write().await;
+        if let Some(sess) = lock.get(session_id) {
+            if sess.device_id != device_id {
+                bail!("device_id mismatch for existing session");
+            }
+            // Reuse the live connection; only a Failed transport warrants a
+            // replacement (the client's next offer would fail on a dead one).
+            if sess.peer_connection.connection_state() != RTCPeerConnectionState::Failed {
+                return Ok(Some(sess.clone()));
+            }
+            lock.remove(session_id);
+        }
+        Ok(None)
     }
 
     pub async fn get_session(&self, session_id: &str) -> Option<Arc<WebRtcSession>> {
