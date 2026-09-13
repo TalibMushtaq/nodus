@@ -44,8 +44,9 @@ pub async fn run_interactive(cli: &Cli) -> anyhow::Result<()> {
     }
 
     // Open the local DB once for the reporting actions. This also initializes
-    // `nodus.db` if "Run the node" has not created it yet.
-    let pool = db::open(&cfg.data_dir)
+    // `nodus.db` if "Run the node" has not created it yet. Reassigned after a
+    // data-location move, so it must stay mutable.
+    let mut pool = db::open(&cfg.data_dir)
         .await
         .context("opening node database")?;
 
@@ -75,14 +76,32 @@ pub async fn run_interactive(cli: &Cli) -> anyhow::Result<()> {
                 // the node uses on setup, so the operator never hand-edits
                 // config.toml. The new path is persisted (relay pair preserved)
                 // and this menu's in-memory config tracks it for the next boot.
+                //
+                // The move renames `nodus.db` and its `-wal`/`-shm` sidecars
+                // while this menu's reporting pool still holds the file open in
+                // WAL mode; renaming under a live connection can split the DB
+                // from its sidecars or let the old pool's fd follow the inode
+                // into the new dir. Close the pool first so SQLite checkpoints
+                // and releases the WAL, then reopen at whichever location is
+                // now current. `close()` takes `&self`, so reassigning `pool`
+                // drops the spent handle.
+                pool.close().await;
                 match crate::config::change_data_dir(&cfg.data_dir) {
                     Ok(new_dir) => {
                         cfg.data_dir = new_dir;
+                        pool = db::open(&cfg.data_dir)
+                            .await
+                            .context("reopening node database after move")?;
                         println!();
                         println!("Data location updated to {}", cfg.data_dir.display());
                         println!("Choose \"Run the node\" to boot against the new location.");
                     }
                     Err(err) => {
+                        // The move aborted before the config rewrite, so the old
+                        // location is still authoritative; reopen there.
+                        pool = db::open(&cfg.data_dir)
+                            .await
+                            .context("reopening node database")?;
                         println!();
                         println!("Data location unchanged: {err}");
                     }

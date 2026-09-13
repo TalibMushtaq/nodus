@@ -362,8 +362,10 @@ pub fn change_data_dir(current: &Path) -> std::io::Result<PathBuf> {
 
 /// Move the contents of `old` (the node database, `objects/`, and `temp/`) into
 /// `new`, then remove the emptied `old` directory so the operator does not end
-/// up with twin backups. The menu runs before the daemon boots, so there is no
-/// live writer racing the move. Returns the total bytes of file data moved.
+/// up with twin backups. The caller must have no live SQLite pool on `old`:
+/// the menu closes its reporting pool first (`menu.rs`), and the daemon is not
+/// booted yet, so no writer races the rename. Returns the total bytes of file
+/// data moved.
 ///
 /// `new` must already exist (the prompt creates/validates it); it is created as
 /// a belt-and-braces fallback so the helper stays callable in tests.
@@ -665,6 +667,40 @@ mod tests {
             !old.exists(),
             "old data dir should be removed after migration"
         );
+    }
+
+    /// The menu's "Change data location" closes its reporting pool before the
+    /// move. Verify a real WAL-mode database survives that exact sequence:
+    /// write, clean close (SQLite checkpoints/releases the WAL), move the dir,
+    /// reopen at the new path, and read the row back. A move under a live pool
+    /// would risk renaming `nodus.db` away from its `-wal`/`-shm` sidecars.
+    #[tokio::test]
+    async fn migrate_moves_a_real_wal_database_intact() {
+        let dir = tempdir().unwrap();
+        let old = dir.path().join("old");
+        let new = dir.path().join("new");
+
+        let pool = crate::db::open(&old).await.unwrap();
+        sqlx::query("CREATE TABLE marker (value TEXT NOT NULL)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO marker (value) VALUES ('survives-the-move')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool.close().await;
+
+        migrate_data_dir(&old, &new).unwrap();
+        assert!(new.join("nodus.db").is_file());
+
+        let reopened = crate::db::open(&new).await.unwrap();
+        let value: String = sqlx::query_scalar("SELECT value FROM marker")
+            .fetch_one(&reopened)
+            .await
+            .unwrap();
+        assert_eq!(value, "survives-the-move");
+        reopened.close().await;
     }
 
     #[test]
