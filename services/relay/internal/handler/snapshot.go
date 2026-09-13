@@ -61,6 +61,8 @@ type FileVersionRecord struct {
 	ShardCount      int64   `json:"shard_count"`
 	EncryptedName   *string `json:"encrypted_name,omitempty"`
 	ParentFolderID  *string `json:"parent_folder_id,omitempty"`
+	// ADR-0003 sibling name the node computed for a preserved conflicted copy.
+	ConflictedName *string `json:"conflicted_name,omitempty"`
 }
 
 // FolderRecord is a folder row captured in a snapshot chunk (Phase 14 F1).
@@ -363,14 +365,15 @@ func stageRebuildChunk(ctx context.Context, pool *db.Pool, accountID string, chu
 				conflictStatus = *r.ConflictStatus
 			}
 			if _, err := tx.Exec(ctx, `
-				INSERT INTO rebuild_file_versions (file_id, account_id, version_number, parent_version_id, conflict_status, version_hash, shard_count, created_at)
-				VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+				INSERT INTO rebuild_file_versions (file_id, account_id, version_number, parent_version_id, conflict_status, version_hash, shard_count, conflicted_name, created_at)
+				VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
 				ON CONFLICT (account_id, file_id, version_number) DO UPDATE SET
 					parent_version_id = EXCLUDED.parent_version_id,
 					conflict_status = EXCLUDED.conflict_status,
 					version_hash = EXCLUDED.version_hash,
-					shard_count = EXCLUDED.shard_count
-			`, r.FileID, accountID, r.VersionNumber, r.ParentVersionID, conflictStatus, r.VersionHash, r.ShardCount); err != nil {
+					shard_count = EXCLUDED.shard_count,
+					conflicted_name = EXCLUDED.conflicted_name
+			`, r.FileID, accountID, r.VersionNumber, r.ParentVersionID, conflictStatus, r.VersionHash, r.ShardCount, r.ConflictedName); err != nil {
 				return err
 			}
 		}

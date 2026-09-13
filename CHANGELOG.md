@@ -1,5 +1,12 @@
 # Changelog
 
+## [2026-09-13] - Relay preserves conflicted names across a rebuild
+
+**What changed:** New relay migration `015_conflicted_name` adds `conflicted_name` to `file_versions` and `rebuild_file_versions`. `snapshot.go`'s `FileVersionRecord` carries it and `stageRebuildChunk` stages it; `promote.go` copies it into the live table; `files.go` `GET /files` returns it (new `conflicted_name` field on `FileVersionResponse`). The storage node already emits it in snapshots (Phase 12).
+**Why:** Closes the relay-rebuild data-loss caveat: a relay rebuilt from a node snapshot previously dropped the ADR-0003 sibling names even though the node preserved them.
+**Impact:** `services/relay/internal/{db/migrations/015_conflicted_name.*,handler/snapshot.go,handler/promote.go,handler/files.go}`. Verified `gofmt`, `go build ./...`, `go vet ./...`, `go test ./...`; the DB-backed snapshot/promote integration tests run under `TEST_DATABASE_URL`.
+**Follow-ups:** `file_version_shard_hashes` stays node-local (the relay does not verify shards); the mobile conflict inbox and M8 true streaming remain optional.
+
 ## [2026-09-13] - In-place conflict resolution across the stack (ADR-0003)
 
 **What changed:** New `CONFLICT_RESOLVED { file_id }` sync event. **Protocol** (`event-types.ts` + regenerated schemas): `ConflictResolvedPayloadSchema`, exported from `index.ts`. **Relay** (`sync.go`): `deviceAllowedEventType` admits it and `applySingleEventTx` sets `conflict_status = 'resolved'` on the file's `flagged` versions. **Storage node** (`sync/engine.rs`): the same update runs in the event transaction, and `report::conflicts` now filters `conflict_status = 'flagged'` so resolved conflicts leave the local listing. **Web**: `conflictResolvedEvent` builder; the Conflicts inbox gains a **Resolve** button that emits the event via the serialized event-batch hook and revalidates. Version data is retained — resolution is an acknowledgement, not a deletion.

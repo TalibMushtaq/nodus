@@ -1,9 +1,9 @@
 # Storage Node Audit — Fix Plan
 
-Status: Phases 1-15 implemented and committed (one commit per phase). All audit
-findings are addressed, and the ADR-0003 conflict flow is now complete
-end-to-end (node persistence in Phase 12, web inbox + in-place resolution in
-Phases 13/15). Only optional/design-level follow-ups remain (see Deferred).
+Status: Phases 1-16 implemented and committed (one commit per phase). All audit
+findings are addressed; the ADR-0003 conflict flow is complete end-to-end
+(Phases 12/13/15); and the relay now preserves conflicted names across a rebuild
+(Phase 16). Only optional/design-level follow-ups remain (see Deferred).
 
 Source audit: `services/storage-node/` (Rust, ~13.7k LOC). Baseline at plan time:
 `cargo fmt --check` clean, `cargo clippy --all-targets` clean, `cargo test` 168 passed.
@@ -256,6 +256,13 @@ format). Each phase is committed separately.
   that emits the event (serialized via the existing event-batch hook) and
   revalidates. Mobile remains a scaffold.
 
+## Phase 16 — Preserve conflicted names across a relay rebuild (commit: `fix(relay): phase 16 ...`)
+
+### 16.1 Relay schema + ingestion (`internal/db/migrations/015_*`, `snapshot.go`, `promote.go`)
+- Add `conflicted_name` to `file_versions` and `rebuild_file_versions`; the
+  snapshot `FileVersionRecord` carries it, staging/promote copy it, and
+  `GET /files` returns it.
+
 ## Verification (each phase)
 
 - `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`.
@@ -274,7 +281,7 @@ format). Each phase is committed separately.
   removed the O(records) intermediate buffers and fixed the liveness block. A
   genuine O(chunk) stream would need a two-pass scan or a protocol change to
   BEGIN/chunk ordering.
-- **Relay-rebuild caveat for #22 and conflicted_name** — `file_version_shard_hashes`
-  and `conflicted_name` are node-local and not persisted by the relay's snapshot
-  ingestion, so a relay rebuilt from scratch won't re-serve them. Existing nodes
-  keep their copies; carrying these in relay snapshots is a possible follow-up.
+- **Relay-rebuild caveat for #22** — `file_version_shard_hashes` remains
+  node-local and is not carried in node→relay snapshots; the relay does not
+  verify shards, and existing nodes keep their authenticated hashes, so this is
+  low value. `conflicted_name` is now preserved (Phase 16).

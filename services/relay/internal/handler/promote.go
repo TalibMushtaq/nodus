@@ -130,8 +130,8 @@ func promoteRebuild(ctx context.Context, pool *db.Pool, sess *rebuildSession) er
 		return fmt.Errorf("insert live key_envelopes: %w", err)
 	}
 	if _, err := tx.Exec(ctx, `
-		INSERT INTO file_versions (file_id, version_number, parent_version_id, conflict_status, version_hash, shard_count, created_at)
-		SELECT file_id, version_number, parent_version_id, conflict_status, version_hash, shard_count, created_at
+		INSERT INTO file_versions (file_id, version_number, parent_version_id, conflict_status, version_hash, shard_count, conflicted_name, created_at)
+		SELECT file_id, version_number, parent_version_id, conflict_status, version_hash, shard_count, conflicted_name, created_at
 		FROM rebuild_file_versions
 		WHERE account_id = $1
 	`, acct); err != nil {

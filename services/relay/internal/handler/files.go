@@ -10,10 +10,13 @@ import (
 
 // FileVersionResponse is one file_versions row.
 type FileVersionResponse struct {
-	VersionNumber  int       `json:"version_number"`
-	ShardCount     int       `json:"shard_count"`
-	VersionHash    string    `json:"version_hash"`
-	ConflictStatus string    `json:"conflict_status"`
+	VersionNumber  int    `json:"version_number"`
+	ShardCount     int    `json:"shard_count"`
+	VersionHash    string `json:"version_hash"`
+	ConflictStatus string `json:"conflict_status"`
+	// ADR-0003 sibling name for a preserved conflicted copy, when known (set by
+	// a node's rebuild snapshot; null for versions projected from events).
+	ConflictedName *string   `json:"conflicted_name"`
 	CreatedAt      time.Time `json:"created_at"`
 }
 
@@ -98,7 +101,7 @@ func ListFiles(pool *db.Pool) http.HandlerFunc {
 		}
 
 		versionRows, err := pool.Query(r.Context(), `
-			SELECT fv.file_id, fv.version_number, fv.shard_count, fv.version_hash, fv.conflict_status, fv.created_at
+			SELECT fv.file_id, fv.version_number, fv.shard_count, fv.version_hash, fv.conflict_status, fv.conflicted_name, fv.created_at
 			FROM file_versions fv
 			JOIN files f ON f.file_id = fv.file_id
 			WHERE f.account_id = $1
@@ -113,7 +116,7 @@ func ListFiles(pool *db.Pool) http.HandlerFunc {
 				fileID  string
 				version FileVersionResponse
 			)
-			if err := versionRows.Scan(&fileID, &version.VersionNumber, &version.ShardCount, &version.VersionHash, &version.ConflictStatus, &version.CreatedAt); err != nil {
+			if err := versionRows.Scan(&fileID, &version.VersionNumber, &version.ShardCount, &version.VersionHash, &version.ConflictStatus, &version.ConflictedName, &version.CreatedAt); err != nil {
 				versionRows.Close()
 				respondError(w, http.StatusInternalServerError, "failed to scan file version")
 				return
