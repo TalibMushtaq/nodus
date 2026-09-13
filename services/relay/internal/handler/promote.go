@@ -137,9 +137,12 @@ func promoteRebuild(ctx context.Context, pool *db.Pool, sess *rebuildSession) er
 	`, acct); err != nil {
 		return fmt.Errorf("insert live file_versions: %w", err)
 	}
+	// `rebuild_tombstones` predates the trash window (migration 014), so it has
+	// no purge_after. Derive it from deleted_at exactly as the live tombstone
+	// path does, or the NOT NULL constraint rejects the promote.
 	if _, err := tx.Exec(ctx, `
-		INSERT INTO tombstones (account_id, entity_type, entity_id, deleted_at)
-		SELECT account_id, entity_type, entity_id, deleted_at
+		INSERT INTO tombstones (account_id, entity_type, entity_id, deleted_at, purge_after)
+		SELECT account_id, entity_type, entity_id, deleted_at, deleted_at + INTERVAL '90 days'
 		FROM rebuild_tombstones
 		WHERE account_id = $1
 	`, acct); err != nil {

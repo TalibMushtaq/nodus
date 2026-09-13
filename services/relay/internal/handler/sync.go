@@ -740,9 +740,11 @@ func applySingleEventTx(
 	case "FOLDER_DELETED":
 		var data FolderEventData
 		if err := json.Unmarshal(item.Payload, &data); err == nil && data.FolderID != "" {
+			// purge_after is NOT NULL since migration 014; derive it from the
+			// delete timestamp exactly like the file-tombstone path below.
 			if _, err := tx.Exec(ctx, `
-				INSERT INTO tombstones (account_id, entity_type, entity_id, deleted_at)
-				VALUES ($1, 'folder', $2, $3)
+				INSERT INTO tombstones (account_id, entity_type, entity_id, deleted_at, purge_after)
+				VALUES ($1, 'folder', $2, $3, $3::timestamptz + INTERVAL '90 days')
 				ON CONFLICT (account_id, entity_type, entity_id) DO NOTHING
 			`, accountID, data.FolderID, t); err != nil {
 				return false
