@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -128,6 +129,22 @@ type KeyEnvelopeEventData struct {
 	RecipientID   string `json:"recipient_id"`
 	RecipientKind string `json:"recipient_kind"`
 	EncryptedKey  string `json:"encrypted_key"`
+}
+
+// isVersionSlotFork decides whether an incoming FILE_VERSION_ADDED/FILE_MODIFIED
+// is a real fork against the incumbent claimed slot, or a benign re-delivery
+// of identical content (node-parity #10/#12).
+//   - occupy a vacant slot → not a fork
+//   - same parent AND same version_hash → identical content, not a fork
+//   - anything else (different parent or different hash) → fork: the caller
+//     renumbers the incoming to MAX+1 and flags both branches.
+func isVersionSlotFork(occupied bool, occupantParent *int, occupantHash string, incomingParent *int, incomingHash string) bool {
+	if !occupied {
+		return false
+	}
+	sameParent := (occupantParent == nil) == (incomingParent == nil) &&
+		(occupantParent == nil || *occupantParent == *incomingParent)
+	return occupantHash != incomingHash || !sameParent
 }
 
 func sendEnvelope(c *hub.Client, msgType string, payload any) error {
@@ -822,6 +839,49 @@ func applySingleEventTx(
 				}
 			}
 
+			// Node-parity preserve-both (#10/#12): the `ON CONFLICT (file_id,
+			// version_number) DO UPDATE` below used to silently overwrite an
+			// incumbent version when an incoming event claimed its slot with
+			// different content, losing one side of the fork. The node renumbers
+			// the incoming event to MAX+1 and flags both sides instead; if the
+			// Relay kept overwriting, node and Relay snapshots would disagree and
+			// the fork would resurface on every sync. Claim a vacant slot as-is,
+			// treat an identical parent+hash as a benign re-delivery, and only
+			// renumber when the occupant genuinely differs.
+			versionNumber := data.VersionNumber
+			var occupantParent *int
+			var occupantHash string
+			switch err := tx.QueryRow(ctx, `
+				SELECT parent_version_id, version_hash FROM file_versions
+				WHERE file_id = $1 AND version_number = $2
+			`, data.FileID, data.VersionNumber).Scan(&occupantParent, &occupantHash); err {
+			case sql.ErrNoRows:
+				// Vacant slot: insert at the claimed number.
+			case nil:
+				if !isVersionSlotFork(true, occupantParent, occupantHash, data.ParentVersionID, data.VersionHash) {
+					// Identical content re-delivery: keep the slot, flag unchanged.
+					break
+				}
+				var maxNumber int
+				if err := tx.QueryRow(ctx, `
+					SELECT COALESCE(MAX(version_number), 0) FROM file_versions WHERE file_id = $1
+				`, data.FileID).Scan(&maxNumber); err != nil {
+					return false
+				}
+				versionNumber = maxNumber + 1
+				conflictStatus = "flagged"
+				// Flag the incumbent's branch (same parent + hash) so both sides
+				// of the fork carry the flag, matching the node's projection.
+				if _, err := tx.Exec(ctx, `
+					UPDATE file_versions SET conflict_status = 'flagged'
+					WHERE file_id = $1 AND parent_version_id IS NOT DISTINCT FROM $2 AND version_hash = $3
+				`, data.FileID, occupantParent, occupantHash); err != nil {
+					return false
+				}
+			default:
+				return false
+			}
+
 			insertVersion := `
 				INSERT INTO file_versions (file_id, version_number, parent_version_id, conflict_status, version_hash, shard_count, created_at)
 				VALUES ($1, $2, $3, $4, $5, $6, $7)
@@ -831,7 +891,7 @@ func applySingleEventTx(
 					version_hash = EXCLUDED.version_hash,
 					shard_count = EXCLUDED.shard_count
 			`
-			if _, err := tx.Exec(ctx, insertVersion, data.FileID, data.VersionNumber, data.ParentVersionID, conflictStatus, data.VersionHash, data.ShardCount, t); err != nil {
+			if _, err := tx.Exec(ctx, insertVersion, data.FileID, versionNumber, data.ParentVersionID, conflictStatus, data.VersionHash, data.ShardCount, t); err != nil {
 				return false
 			}
 		}

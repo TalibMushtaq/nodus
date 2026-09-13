@@ -27,6 +27,36 @@ func TestDeviceAllowedEventType(t *testing.T) {
 	}
 }
 
+func TestIsVersionSlotForkNodeParity(t *testing.T) {
+	h1 := "hash-of-first-writer"
+	h2 := "hash-of-renumbered-writer"
+	p1, p2 := 1, 2
+
+	cases := []struct {
+		name           string
+		occupied       bool
+		occupantParent *int
+		occupantHash   string
+		incomingParent *int
+		incomingHash   string
+		want           bool
+	}{
+		{"vacant slot is not a fork", false, nil, "", &p1, h1, false},
+		{"identical content and parent is a benign re-delivery", true, &p1, h1, &p1, h1, false},
+		{"nil parent matches nil parent with same hash", true, nil, h1, nil, h1, false},
+		{"same parent, different hash is a fork", true, &p1, h1, &p1, h2, true},
+		{"same hash, different parent is a fork", true, &p1, h1, &p2, h1, true},
+		{"nil vs set parent with same hash is a fork", true, nil, h1, &p1, h1, true},
+		{"set vs nil parent with same hash is a fork", true, &p1, h1, nil, h1, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want,
+				isVersionSlotFork(tc.occupied, tc.occupantParent, tc.occupantHash, tc.incomingParent, tc.incomingHash))
+		})
+	}
+}
+
 // deviceBatchFixture wires a scratch account and returns a helper that builds a
 // FILE_CREATED event for it. Kept local to this file so the integration tests
 // don't depend on the shared ingestion harness.
