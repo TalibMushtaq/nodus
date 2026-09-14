@@ -83,6 +83,8 @@ interface UploadContextValue {
   tasks: UploadTask[];
   activeId: string | null;
   speedBps: number;
+  /** True when the active upload has made no byte progress for ~2s. */
+  stalled: boolean;
   setTasks: Dispatch<SetStateAction<UploadTask[]>>;
   setActiveId: (id: string | null) => void;
   /** Push byte/shard progress for one task (also feeds the speed sampler). */
@@ -98,9 +100,12 @@ export function UploadProvider({ children }: { children: ReactNode }) {
   const [tasks, setTasks] = useState<UploadTask[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [speedBps, setSpeedBps] = useState(0);
+  const [stalled, setStalled] = useState(false);
   // Latest plaintext byte count reported for the active task; the sampler
   // below turns consecutive readings into a transfer rate.
   const liveBytesRef = useRef(0);
+  // Consecutive sampler ticks with no byte progress (4 × 500ms ≈ 2s).
+  const stallTicksRef = useRef(0);
 
   const reportProgress = useCallback((id: string, event: UploadProgressEvent) => {
     liveBytesRef.current = event.completedBytes;
@@ -132,40 +137,77 @@ export function UploadProvider({ children }: { children: ReactNode }) {
   // sampler effect) so the effect never calls setState synchronously.
   const beginTask = useCallback((id: string | null) => {
     liveBytesRef.current = 0;
+    stallTicksRef.current = 0;
     setSpeedBps(0);
+    setStalled(false);
     setActiveId(id);
   }, []);
 
-  // Sample the live byte counter every 500ms to derive a transfer rate. Kept
-  // here rather than in the upload loop so it keeps running across navigation.
+  // Whether the active task is actually moving bytes. During the measure pass
+  // `completedBytes` advances at hashing speed, so a rate sampled then is a
+  // hashing throughput, not an upload speed.
+  const activeUploading =
+    tasks.find((task) => task.id === activeId)?.phase === "uploading";
+
+  // Sample the live byte counter every 500ms to derive a transfer rate. Only
+  // while uploading, and starting from the current counter so the first tick
+  // measures network throughput rather than the tail of the hashing pass. Kept
+  // here rather than in the upload loop so it survives navigation.
   useEffect(() => {
-    if (!activeId) return;
-    let lastBytes = 0;
+    if (!activeId || !activeUploading) return;
+    let lastBytes = liveBytesRef.current;
     let lastAt = Date.now();
     const timer = setInterval(() => {
       const now = Date.now();
       const bytes = liveBytesRef.current;
       const seconds = (now - lastAt) / 1000;
       if (seconds > 0) {
-        const instant = Math.max(0, (bytes - lastBytes) / seconds);
-        // Exponential smoothing so the number does not jitter every tick.
-        setSpeedBps((previous) => (previous === 0 ? instant : previous * 0.5 + instant * 0.5));
+        const delta = bytes - lastBytes;
+        if (delta <= 0) {
+          // No progress this tick: a stalled transfer reads as 0, not as a
+          // value that decays toward zero forever.
+          setSpeedBps(0);
+          stallTicksRef.current += 1;
+        } else {
+          const instant = delta / seconds;
+          // Exponential smoothing so the number does not jitter every tick.
+          setSpeedBps((previous) => (previous === 0 ? instant : previous * 0.5 + instant * 0.5));
+          stallTicksRef.current = 0;
+        }
+        setStalled(stallTicksRef.current >= 4);
       }
       lastBytes = bytes;
       lastAt = now;
     }, 500);
     return () => clearInterval(timer);
-  }, [activeId]);
+  }, [activeId, activeUploading]);
 
   const value = useMemo<UploadContextValue>(
-    () => ({ tasks, activeId, speedBps, setTasks, setActiveId: beginTask, reportProgress, reportPath, dismiss }),
-    [tasks, activeId, speedBps, beginTask, reportProgress, reportPath, dismiss],
+    () => ({
+      tasks,
+      activeId,
+      // Never surface a stale hashing rate as an upload speed.
+      speedBps: activeUploading ? speedBps : 0,
+      stalled: activeUploading && stalled,
+      setTasks,
+      setActiveId: beginTask,
+      reportProgress,
+      reportPath,
+      dismiss,
+    }),
+    [tasks, activeId, speedBps, activeUploading, stalled, beginTask, reportProgress, reportPath, dismiss],
   );
 
   return (
     <UploadContext.Provider value={value}>
       {children}
-      <UploadQueue tasks={tasks} speedBps={speedBps} activeId={activeId} onDismiss={dismiss} />
+      <UploadQueue
+        tasks={tasks}
+        speedBps={activeUploading ? speedBps : 0}
+        stalled={activeUploading && stalled}
+        activeId={activeId}
+        onDismiss={dismiss}
+      />
     </UploadContext.Provider>
   );
 }
@@ -186,11 +228,13 @@ export function useUpload(): UploadContextValue {
 function UploadQueue({
   tasks,
   speedBps,
+  stalled,
   activeId,
   onDismiss,
 }: {
   tasks: UploadTask[];
   speedBps: number;
+  stalled: boolean;
   activeId: string | null;
   onDismiss: () => void;
 }) {
@@ -239,6 +283,10 @@ function UploadQueue({
   // misreported as "Uploading" while the measure pass holds.
   const activeTask = tasks.find((task) => task.id === activeId) ?? tasks.find((task) => task.status === "active");
   const activeVerb = activeTask ? UPLOAD_PHASE_TEXT[activeTask.phase] : "Uploading";
+  // Bytes only move over the network during the `uploading` phase. The measure
+  // pass advances `completedBytes` at BLAKE3 hashing speed, so reporting it as a
+  // transfer rate showed absurd "hundreds of MB/s before any upload" numbers.
+  const activeUploading = activeTask?.phase === "uploading";
   const heading = activeCount > 0
     ? `${activeVerb} ${activeCount} file${activeCount === 1 ? "" : "s"}`
     : errorCount > 0
@@ -266,8 +314,10 @@ function UploadQueue({
           <span className="text-xs font-medium text-foreground truncate">{heading}</span>
         </span>
         <span className="flex items-center gap-2 shrink-0">
-          {activeCount > 0 && speedBps > 0 ? (
-            <span className="text-[10px] font-mono text-muted-foreground">{formatBytes(speedBps)}/s</span>
+          {stalled ? (
+            <span className="text-[10px] font-mono text-muted-foreground">stalled</span>
+          ) : activeUploading && speedBps > 0 ? (
+            <span className="text-[10px] font-mono text-muted-foreground">↑ {formatBytes(speedBps)}/s</span>
           ) : (
             <span className="text-[10px] font-mono text-muted-foreground">{Math.round(overallPct)}%</span>
           )}
@@ -300,7 +350,10 @@ function UploadQueue({
                     {task.status === "active"
                       ? UPLOAD_PHASE_TEXT[task.phase]
                       : UPLOAD_STATUS_TEXT[task.status]}
-                    {active && speedBps > 0 ? ` · ${formatBytes(speedBps)}/s` : ""}
+                    {active && stalled ? " · stalled" : ""}
+                    {!stalled && active && task.phase === "uploading" && speedBps > 0
+                      ? ` · ↑ ${formatBytes(speedBps)}/s`
+                      : ""}
                   </span>
                 </div>
                 <div className="mt-1.5">

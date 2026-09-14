@@ -16,7 +16,10 @@ export function formatCountdown(totalSeconds: number): string {
 /** Human-readable byte size (binary units). Null/negative render as an em dash. */
 export function formatBytes(bytes: number | null | undefined): string {
   if (bytes == null || bytes < 0) return "—";
-  if (bytes < 1024) return `${bytes} B`;
+  // Round sub-KB values: this formatter also renders transfer *rates*, which
+  // decay through fractional bytes and would otherwise print full float
+  // precision (e.g. "0.007043314722762237 B/s").
+  if (bytes < 1024) return `${Math.round(bytes)} B`;
   const units = ["KB", "MB", "GB", "TB"];
   let value = bytes / 1024;
   let unit = 0;

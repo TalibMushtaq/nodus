@@ -30,6 +30,9 @@ describe("formatBytes", () => {
   it("scales through binary units", () => {
     expect(formatBytes(0)).toBe("0 B");
     expect(formatBytes(512)).toBe("512 B");
+    // Sub-KB values (e.g. a decaying transfer rate) must not print fractions.
+    expect(formatBytes(0.007043314722762237)).toBe("0 B");
+    expect(formatBytes(42.6)).toBe("43 B");
     expect(formatBytes(1536)).toBe("1.5 KB");
     expect(formatBytes(10 * 1024 * 1024)).toBe("10 MB");
     expect(formatBytes(3 * 1024 * 1024 * 1024)).toBe("3.0 GB");
