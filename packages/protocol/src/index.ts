@@ -61,6 +61,8 @@ export {
   type RegisterPayload,
   HeartbeatPayloadSchema,
   type HeartbeatPayload,
+  NodeStorageStatsSchema,
+  type NodeStorageStats,
   PingPayloadSchema,
   type PingPayload,
   PongPayloadSchema,

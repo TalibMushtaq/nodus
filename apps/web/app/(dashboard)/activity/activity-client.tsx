@@ -6,6 +6,7 @@ import { EmptyState } from "@repo/ui/primitives/empty-state";
 import { Button } from "@repo/ui/primitives/button";
 import { ConfirmDialog } from "@repo/ui/primitives/overlay";
 import { Icon } from "@repo/ui/primitives/icons";
+import { PathIndicator } from "@repo/ui/primitives/path-indicator";
 
 import {
   listTransfers,
@@ -168,6 +169,9 @@ export function ActivityClient() {
                     <div className="text-[10px] text-muted-foreground truncate">{entry.detail}</div>
                   )}
                 </div>
+                {/* Path is only present for entries logged after transfer-path
+                    capture shipped; older delete/restore rows have none. */}
+                {entry.path && <PathIndicator path={entry.path} />}
                 <OutcomeChip outcome={entry.outcome} />
                 <div className="text-[10px] font-mono text-muted-foreground shrink-0">{timeAgo(entry.at)}</div>
               </div>

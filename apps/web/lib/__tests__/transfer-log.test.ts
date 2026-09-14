@@ -44,6 +44,22 @@ describe("transfer log", () => {
     expect(await listTransfers()).toEqual([]);
   });
 
+  it("persists the transfer path set at start and on finish", async () => {
+    const started = await startTransfer({ kind: "upload", fileId: "f1", fileName: "a.txt", path: "local" });
+    expect(started.path).toBe("local");
+
+    // A finish with an explicit path overrides the start value...
+    await finishTransfer(started.id, "complete", "2 shards", "relay");
+    let rows = await listTransfers();
+    expect(rows[0]?.path).toBe("relay");
+
+    // ...while one that omits it preserves the recorded path.
+    const second = await startTransfer({ kind: "download", fileId: "f2", fileName: "b.txt", path: "local" });
+    await finishTransfer(second.id, "complete", "1 shard");
+    rows = await listTransfers();
+    expect(rows.find((row) => row.id === second.id)?.path).toBe("local");
+  });
+
   it("records one-shot delete/restore actions as completed entries", async () => {
     await logTransferAction({
       kind: "delete",

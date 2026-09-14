@@ -28,15 +28,19 @@ type dbQuerier interface {
 // overwriting the other account's public_key/status.
 func upsertDeviceForAccount(q dbQuerier, r *http.Request, deviceID, publicKey, accountID string) (*DeviceResponse, error) {
 	var dev DeviceResponse
+	// `last_seen_at` is stamped here as well as on the WS heartbeat so a device
+	// that just registered reads as active immediately, without waiting up to a
+	// minute for the presence write to catch up.
 	err := q.QueryRow(r.Context(), `
-		INSERT INTO devices (device_id, account_id, public_key, status)
-		VALUES ($1, $2, $3, 'ACTIVE')
+		INSERT INTO devices (device_id, account_id, public_key, status, last_seen_at)
+		VALUES ($1, $2, $3, 'ACTIVE', NOW())
 		ON CONFLICT (device_id) DO UPDATE SET
 			public_key = excluded.public_key,
 			status = 'ACTIVE',
-			revoked_at = NULL
+			revoked_at = NULL,
+			last_seen_at = NOW()
 		WHERE devices.account_id = excluded.account_id
-		RETURNING device_id, account_id, public_key, status, created_at, revoked_at, display_name
+		RETURNING device_id, account_id, public_key, status, created_at, revoked_at, display_name, last_seen_at
 	`, deviceID, accountID, publicKey).Scan(
 		&dev.DeviceID,
 		&dev.AccountID,
@@ -45,6 +49,7 @@ func upsertDeviceForAccount(q dbQuerier, r *http.Request, deviceID, publicKey, a
 		&dev.CreatedAt,
 		&dev.RevokedAt,
 		&dev.DisplayName,
+		&dev.LastSeenAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, errDeviceOwnedElsewhere
@@ -78,6 +83,9 @@ type DeviceResponse struct {
 	DisplayName *string    `json:"display_name,omitempty"`
 	CreatedAt   time.Time  `json:"created_at"`
 	RevokedAt   *time.Time `json:"revoked_at,omitempty"`
+	// Last WS heartbeat/registration. Nil for devices seen before presence was
+	// persisted, which the web client renders as "unknown" rather than "offline".
+	LastSeenAt *time.Time `json:"last_seen_at,omitempty"`
 }
 
 // RegisterDevice registers a new cryptographic device identity for the
@@ -122,7 +130,7 @@ func ListDevices(pool *db.Pool) http.HandlerFunc {
 		}
 
 		query := `
-			SELECT device_id, account_id, public_key, status, created_at, revoked_at, display_name
+			SELECT device_id, account_id, public_key, status, created_at, revoked_at, display_name, last_seen_at
 			FROM devices
 			WHERE account_id = $1
 			ORDER BY created_at ASC
@@ -146,6 +154,7 @@ func ListDevices(pool *db.Pool) http.HandlerFunc {
 				&dev.CreatedAt,
 				&dev.RevokedAt,
 				&dev.DisplayName,
+				&dev.LastSeenAt,
 			); err != nil {
 				respondError(w, http.StatusInternalServerError, "failed to scan device")
 				return

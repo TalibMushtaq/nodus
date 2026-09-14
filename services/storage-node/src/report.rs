@@ -7,7 +7,26 @@
 //! sizes, and counts rather than real names. That is the honest extent of what a
 //! storage node can report.
 
+use std::path::Path;
+
 use sqlx::{Row, SqlitePool};
+
+/// Filesystem used/total bytes for the node's data volume, as
+/// `(used_bytes, total_bytes)`.
+///
+/// The Overview's "storage used of total" means the node's disk, so this reads
+/// the volume rather than the catalogue: `stored_bytes` counts only the
+/// encrypted shards this node happens to hold and would understate actual disk
+/// usage. Returns `(0, 0)` when the volume cannot be queried so callers omit the
+/// figure instead of reporting a misleading "0 of 0".
+pub fn disk_usage(data_dir: &Path) -> (i64, i64) {
+    let total = fs2::total_space(data_dir).unwrap_or(0);
+    if total == 0 {
+        return (0, 0);
+    }
+    let available = fs2::available_space(data_dir).unwrap_or(0);
+    (total.saturating_sub(available) as i64, total as i64)
+}
 
 /// Object/shard/file totals for the storage summary.
 #[derive(Debug, PartialEq, Eq)]
@@ -397,6 +416,23 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].folder_id, "dir-1");
         assert_eq!(rows[0].encrypted_name.as_deref(), Some("enc-dir"));
+    }
+
+    #[test]
+    fn disk_usage_reports_used_and_total() {
+        let dir = tempdir().unwrap();
+        let (used, total) = disk_usage(dir.path());
+        // The filesystem must report a positive total for a real directory,
+        // with used never exceeding it.
+        assert!(total > 0, "tempdir volume should report a total");
+        assert!(used <= total, "used must not exceed total");
+    }
+
+    #[test]
+    fn disk_usage_of_missing_path_is_unknown() {
+        // A path that cannot be stat'd yields (0, 0) rather than a bogus total,
+        // so the heartbeat omits capacity instead of reporting "0 of 0".
+        assert_eq!(disk_usage(std::path::Path::new("/nonexistent/nodus/data")), (0, 0));
     }
 
     #[test]

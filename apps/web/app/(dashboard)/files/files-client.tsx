@@ -30,6 +30,7 @@ import {
 } from "../../../lib/download";
 import { buildFolderZip, triggerBlobDownload } from "../../../lib/folder-download";
 import { startTransfer, finishTransfer, logTransferAction } from "../../../lib/transfer-log";
+import { activityPathFromTransfer } from "../../../lib/overview";
 import { formatBytes, timeAgo } from "../../../lib/format";
 import {
   measurePlaintext,
@@ -475,6 +476,10 @@ export function FilesClient() {
   // the hook's single onProgress callback is routed to the active task.
   const liveBytesRef = useRef(0);
   const progressHandlerRef = useRef<((event: UploadProgressEvent) => void) | null>(null);
+  // Path the last shard actually used (local P2P / relay / buffer). Captured in
+  // transferPostShard and written to the activity log on completion, where the
+  // catalog no longer records how the bytes arrived.
+  const activePathRef = useRef<ReturnType<typeof activityPathFromTransfer>>(undefined);
 
   // Rename/delete/move dialog state. `mutating` disables the actions while a
   // metadata event is in flight so the same file cannot be changed twice.
@@ -566,6 +571,9 @@ export function FilesClient() {
         // Byte-level progress for whichever path runs (WebRTC or Relay XHR).
         onProgress: dto.onProgress,
       });
+      // Record the successful path even if a later shard fails, so the activity
+      // entry reflects how far the transfer actually got.
+      if (result.success) activePathRef.current = activityPathFromTransfer(result.path);
       if (!result.success) {
         throw new Error(result.error ?? "shard transfer failed");
       }
@@ -606,6 +614,7 @@ export function FilesClient() {
         const file = chosen[index]!;
         const task = tasks[index]!;
         liveBytesRef.current = 0;
+        activePathRef.current = undefined;
         setSpeedBps(0);
         setActiveUploadId(task.id);
         const updateTask = (patch: Partial<UploadTask>) => {
@@ -650,12 +659,12 @@ export function FilesClient() {
               ? { fileId: incomplete.fileId, versionNumber: incomplete.latestVersionNumber ?? 1 }
               : undefined;
             const result = await upload(file, targetNode, measured, target, currentFolderId);
-            await finishTransfer(log.id, "complete", `${result.shardCount} shards`);
+            await finishTransfer(log.id, "complete", `${result.shardCount} shards`, activePathRef.current);
             updateTask({ status: "done", completedBytes: file.size, completedShards: result.shardCount, totalShards: result.shardCount });
             refresh();
           } catch (err) {
             const message = err instanceof Error ? err.message : String(err);
-            await finishTransfer(log.id, "failed", message);
+            await finishTransfer(log.id, "failed", message, activePathRef.current);
             updateTask({ status: "error", error: message });
             setActionError(message);
           }
@@ -687,7 +696,14 @@ export function FilesClient() {
       if (!device || file.latestVersionNumber == null || file.shardCount == null) return;
       setDownloadingId(file.fileId);
       setActionError(null);
-      const log = await startTransfer({ kind: "download", fileId: file.fileId, fileName: file.name });
+      // Downloads fetch straight from a trusted LAN node, so the path is local
+      // P2P by construction; recorded so Activity can label it.
+      const log = await startTransfer({
+        kind: "download",
+        fileId: file.fileId,
+        fileName: file.name,
+        path: "local",
+      });
       try {
         const result = await downloadFile({
           fileId: file.fileId,
@@ -870,7 +886,14 @@ export function FilesClient() {
       setMutationError(null);
       setFolderDownloadId(folder.folderId);
       setFolderDownload({ name: folder.name, completed: 0, total: 0 });
-      const log = await startTransfer({ kind: "download", fileId: "", fileName: `${folder.name}.zip` });
+      // Folder archives fetch each file from a trusted LAN node, so the path is
+      // local P2P; recorded for the Activity view like single-file downloads.
+      const log = await startTransfer({
+        kind: "download",
+        fileId: "",
+        fileName: `${folder.name}.zip`,
+        path: "local",
+      });
       try {
         const archive = await buildFolderZip({
           folderName: folder.name,

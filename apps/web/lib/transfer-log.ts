@@ -11,6 +11,15 @@ import { STORE_TRANSFER_LOG, idbClear, idbDelete, idbGetAll, idbPut } from "./db
 export type TransferKind = "upload" | "download" | "delete" | "restore";
 export type TransferOutcome = "in-progress" | "complete" | "failed";
 
+/**
+ * How the bytes moved, in the UI's shared transfer-path vocabulary
+ * (`@repo/ui` PathIndicator). Stored with the entry because it cannot be
+ * reconstructed later from the catalog: a file that landed via the Relay
+ * buffer looks identical to one that went local P2P once it is NODE_STORED.
+ * Maps from the transfer-manager's `TransferPath` at write time.
+ */
+export type ActivityPath = "local" | "relay" | "buffered" | "offline";
+
 export interface TransferLogEntry {
   /** uuid — the store's primary key. */
   id: string;
@@ -20,6 +29,8 @@ export interface TransferLogEntry {
   outcome: TransferOutcome;
   /** Human-readable error/summary, when relevant. */
   detail?: string;
+  /** Transfer path, when the action moved bytes (uploads/downloads). */
+  path?: ActivityPath;
   /** ISO timestamp of the last update. */
   at: string;
 }
@@ -32,6 +43,7 @@ export async function startTransfer(entry: {
   kind: TransferKind;
   fileId: string;
   fileName: string;
+  path?: ActivityPath;
 }): Promise<TransferLogEntry> {
   const record: TransferLogEntry = {
     id: crypto.randomUUID(),
@@ -39,6 +51,7 @@ export async function startTransfer(entry: {
     fileId: entry.fileId,
     fileName: entry.fileName,
     outcome: "in-progress",
+    path: entry.path,
     at: new Date().toISOString(),
   };
   await idbPut(STORE_TRANSFER_LOG, record);
@@ -46,16 +59,27 @@ export async function startTransfer(entry: {
   return record;
 }
 
-/** Update the outcome/detail of an existing entry. */
+/**
+ * Update the outcome/detail of an existing entry. `path` is set on completion
+ * because the transfer-manager only reveals which path actually succeeded after
+ * the shards finish; omitting it preserves any path recorded at start.
+ */
 export async function finishTransfer(
   id: string,
   outcome: Exclude<TransferOutcome, "in-progress">,
   detail?: string,
+  path?: ActivityPath,
 ): Promise<void> {
   const rows = await idbGetAll<TransferLogEntry>(STORE_TRANSFER_LOG);
   const existing = rows.find((row) => row.id === id);
   if (!existing) return;
-  await idbPut(STORE_TRANSFER_LOG, { ...existing, outcome, detail, at: new Date().toISOString() });
+  await idbPut(STORE_TRANSFER_LOG, {
+    ...existing,
+    outcome,
+    detail,
+    path: path ?? existing.path,
+    at: new Date().toISOString(),
+  });
 }
 
 /**
@@ -68,6 +92,7 @@ export async function logTransferAction(entry: {
   fileName: string;
   outcome: Exclude<TransferOutcome, "in-progress">;
   detail?: string;
+  path?: ActivityPath;
 }): Promise<void> {
   await idbPut(STORE_TRANSFER_LOG, {
     id: crypto.randomUUID(),
@@ -76,6 +101,7 @@ export async function logTransferAction(entry: {
     fileName: entry.fileName,
     outcome: entry.outcome,
     detail: entry.detail,
+    path: entry.path,
     at: new Date().toISOString(),
   } satisfies TransferLogEntry);
   await trim();

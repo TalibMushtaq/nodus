@@ -604,8 +604,14 @@ impl SyncClient {
                     // Liveness ping (§13): the Relay keys the node's
                     // online/offline state off this envelope, and it writes
                     // `last_seen_at` at most once per minute. Payload matches
-                    // the protocol's HeartbeatPayloadSchema (id + RFC3339 ts).
-                    Self::send_heartbeat(&mut write, &self.identity.node_id).await?;
+                    // the protocol's HeartbeatPayloadSchema (id + RFC3339 ts,
+                    // plus this node's disk figures).
+                    Self::send_heartbeat(
+                        &mut write,
+                        &self.identity.node_id,
+                        self.heartbeat_storage(),
+                    )
+                    .await?;
                 }
                 _ = sync_pull.tick() => {
                     // Re-send SYNC_HELLO so the Relay re-delivers any events
@@ -670,22 +676,39 @@ impl SyncClient {
         Self::send_json(write, &env).await
     }
 
+    /// This node's disk figures for the heartbeat as `(used, total)`, or `None`
+    /// when the volume cannot be queried (see `report::disk_usage`). The Relay
+    /// stamps these onto the node row so the Overview can show "used of total"
+    /// without a direct browser→node connection.
+    fn heartbeat_storage(&self) -> Option<(i64, i64)> {
+        let (used, total) = crate::report::disk_usage(self.object_store.data_dir());
+        (total > 0).then_some((used, total))
+    }
+
     /// Send one liveness heartbeat (§13). Shared by the idle select loop and the
     /// snapshot stream, which can occupy the writer for a long rebuild.
-    async fn send_heartbeat<W>(write: &mut W, node_id: &str) -> anyhow::Result<()>
+    /// `storage` is present only for storage nodes and lets the Relay update the
+    /// node's capacity columns alongside `last_seen_at`.
+    async fn send_heartbeat<W>(
+        write: &mut W,
+        node_id: &str,
+        storage: Option<(i64, i64)>,
+    ) -> anyhow::Result<()>
     where
         W: futures_util::Sink<Message> + Unpin,
         W::Error: std::error::Error + Send + Sync + 'static,
     {
-        Self::send_envelope(
-            write,
-            "heartbeat",
-            &serde_json::json!({
-                "id": node_id,
-                "timestamp": chrono::Utc::now().to_rfc3339(),
-            }),
-        )
-        .await
+        let mut payload = serde_json::json!({
+            "id": node_id,
+            "timestamp": chrono::Utc::now().to_rfc3339(),
+        });
+        if let Some((used_bytes, total_bytes)) = storage {
+            payload["storage"] = serde_json::json!({
+                "used_bytes": used_bytes,
+                "total_bytes": total_bytes,
+            });
+        }
+        Self::send_envelope(write, "heartbeat", &payload).await
     }
 
     /// Send a `sync_hello` carrying this node's cursors so the Relay re-delivers
@@ -949,6 +972,9 @@ impl SyncClient {
             write: &'a mut W,
             node_id: &'a str,
             last_ping: std::time::Instant,
+            /// Disk figures captured once for the interim heartbeats; a rebuild
+            /// is short enough that re-stating per chunk would be wasteful.
+            storage: Option<(i64, i64)>,
         }
 
         #[async_trait::async_trait]
@@ -961,7 +987,7 @@ impl SyncClient {
                 let env = ProtocolEnvelope::new("snapshot_chunk", serde_json::to_value(chunk)?);
                 SyncClient::send_json(&mut *self.write, &env).await?;
                 if self.last_ping.elapsed() >= HEARTBEAT_INTERVAL {
-                    SyncClient::send_heartbeat(&mut *self.write, self.node_id).await?;
+                    SyncClient::send_heartbeat(&mut *self.write, self.node_id, self.storage).await?;
                     self.last_ping = std::time::Instant::now();
                 }
                 Ok(())
@@ -1008,6 +1034,7 @@ impl SyncClient {
                 write,
                 node_id: &self.identity.node_id,
                 last_ping: std::time::Instant::now(),
+                storage: self.heartbeat_storage(),
             };
             super::snapshot::emit_chunks(&mut tx, &snapshot_id, &mut sink).await?;
         }

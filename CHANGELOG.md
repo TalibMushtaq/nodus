@@ -1,5 +1,20 @@
 # Changelog
 
+## [2026-09-14] - Overview parity: topology, live stat cards, node capacity, device presence, activity paths
+
+**What changed:** The `/overview` page was rebuilt to match the `nodus-design` prototype: a network-topology panel, four headline stat cards (Storage used, Devices online, Pending shards, Tombstone window), Recent files and Recent activity panels, and a Devices mini-panel — all fed by real data. Three previously unpersisted figures were added so the numbers are honest.
+
+- **Relay:** migration `019_node_capacity_device_presence` adds `storage_nodes.used_bytes`/`total_bytes` and `devices.last_seen_at`; `NodeResponse` exposes the capacity fields and `DeviceResponse` exposes `last_seen_at`. The WS `heartbeat` branch now persists the node's `storage` stats and stamps `devices.last_seen_at` (both throttled to once a minute); device registration also stamps `last_seen_at` immediately. `handler/{node.go,node_registration.go,device.go,ws.go}` column lists/scans extended.
+- **Protocol:** `HeartbeatPayloadSchema` gains an optional `storage: { used_bytes, total_bytes }` object (`NodeStorageStatsSchema`); heartbeat JSON schema regenerated.
+- **Storage Node:** `fs2` reads the data volume; `report::disk_usage` computes `(used, total)` and every heartbeat carries `storage` (also during a long snapshot rebuild via the `SendSink`).
+- **Web:** `lib/pairing.ts` adds `used_bytes`/`total_bytes` to `RelayNode` and `last_seen_at` to `RelayDevice`; new `lib/overview.ts` pure selectors (`storageUsage`, `onlineCounts`/`isDeviceOnline`, `pendingShardCount`, `tombstoneWindow`, `recentFiles`, `recentActivity`, `activityPathFromTransfer`, `activityLabel`); `TransferLogEntry` gains an optional `path`, recorded on upload (transfer-manager path) and download (LAN node), and shown in Activity; new client `overview/overview-client.tsx` + server `overview/page.tsx` wrapper resolving `PUBLIC_RELAY_URL`.
+
+**Why:** The Overview previously showed three catalog counts and explicitly omitted the prototype's file-used/pending/conflict cards because they were mock-only. Node capacity lived only in the node's SQLite catalogue, device presence only in the in-memory/Redis hub (unreadable by the browser), and the transfer path was not logged at all — so the design's cards could not be shown truthfully.
+
+**Impact:** `services/relay` (`db/migrations/019_*`, `handler/{node.go,node_registration.go,device.go,ws.go}`, `handler/overview_fields_integration_test.go` (new)), `packages/protocol` (`src/messages/control.ts`, `src/index.ts`, generated `schemas/heartbeat.schema.json`), `services/storage-node` (`Cargo.toml`, `src/lib.rs`, `src/report.rs`, `src/sync/client.rs`), `apps/web` (`lib/{overview.ts(new),pairing.ts,transfer-log.ts}`, `lib/__tests__/{overview.test.ts(new),transfer-log.test.ts}`, `app/(dashboard)/overview/{page.tsx,overview-client.tsx}`, `app/(dashboard)/{activity/activity-client.tsx,files/files-client.tsx}`). Verified: `pnpm lint`, `pnpm check-types`, `pnpm test` (TS 168, Go, Rust 209 + integration), `@repo/protocol` tests (58).
+
+**Follow-ups:** Restart the Relay (migration 019) and the Storage Node to begin reporting capacity/presence; nodes paired before this change read "Capacity unknown" until their first stats heartbeat, and devices seen before it read "Not seen". Capacity is the node's whole data volume (filesystem used/total), not a per-account quota.
+
 ## [2026-09-13] - Name storage nodes and client devices
 
 **What changed:** The Devices page can now assign (or clear) a human-readable display name for each storage node and client device; the row shows the name with the short id beneath, and an empty name falls back to the id. Names are account-scoped metadata stored on the Relay.

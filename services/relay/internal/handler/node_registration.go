@@ -42,7 +42,7 @@ func (o nodeRegistrationOutcome) errorReason() string {
 // storageNodeSelectByID is shared by both the classification read and the
 // post-conflict re-read; the column order matches scanStorageNode.
 const storageNodeSelectByID = `
-	SELECT node_id, account_id, public_key, capabilities, status, is_primary, last_seen_at, created_at, display_name
+	SELECT node_id, account_id, public_key, capabilities, status, is_primary, last_seen_at, created_at, display_name, used_bytes, total_bytes
 	FROM storage_nodes
 	WHERE node_id = $1
 `
@@ -157,7 +157,7 @@ func insertStorageNode(
 		VALUES ($1, $2, $3, $4::jsonb, 'ACTIVE',
 		        CASE WHEN $5 THEN NOT EXISTS (SELECT 1 FROM storage_nodes WHERE account_id = $2)
 		             ELSE false END)
-		RETURNING node_id, account_id, public_key, capabilities, status, is_primary, last_seen_at, created_at, display_name
+		RETURNING node_id, account_id, public_key, capabilities, status, is_primary, last_seen_at, created_at, display_name, used_bytes, total_bytes
 	`
 	return scanStorageNode(tx.QueryRow(ctx, query, nodeID, accountID, publicKey, capabilities, allowPrimary))
 }
@@ -180,6 +180,8 @@ func scanStorageNode(row pgx.Row) (NodeResponse, error) {
 		&node.LastSeenAt,
 		&node.CreatedAt,
 		&node.DisplayName,
+		&node.UsedBytes,
+		&node.TotalBytes,
 	); err != nil {
 		return NodeResponse{}, err
 	}

@@ -30,6 +30,21 @@ export type RegisterPayload = z.infer<typeof RegisterPayloadSchema>;
 // ── Heartbeat ──────────────────────────────────────────────────────
 
 /**
+ * Disk figures a Storage Node includes in its heartbeat so the Relay can show
+ * "used of total" on the Overview without a direct browser→node connection
+ * (nodes are usually unreachable from the browser behind NAT). Optional and
+ * omitted by client devices, so older nodes keep heartbeating unchanged.
+ */
+export const NodeStorageStatsSchema = z.object({
+  /** Bytes currently occupied on the node's storage volume. */
+  used_bytes: z.number().int().nonnegative(),
+  /** Total capacity of that volume, or 0 when the node cannot determine it. */
+  total_bytes: z.number().int().nonnegative(),
+});
+
+export type NodeStorageStats = z.infer<typeof NodeStorageStatsSchema>;
+
+/**
  * Liveness ping, minimal payload. Drives Relay-side presence (§13 Redis
  * presence). The Relay marks a node/device as absent if no heartbeat
  * arrives within a configured window.
@@ -38,6 +53,8 @@ export const HeartbeatPayloadSchema = z.object({
   /** The node or device sending the heartbeat */
   id: z.union([AccountId, DeviceId, NodeId]),
   timestamp: z.string().datetime(),
+  /** Present only for storage nodes; absent for client devices. */
+  storage: NodeStorageStatsSchema.optional(),
 });
 
 export type HeartbeatPayload = z.infer<typeof HeartbeatPayloadSchema>;

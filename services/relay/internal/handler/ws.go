@@ -44,6 +44,13 @@ type RegisterPayload struct {
 type HeartbeatPayload struct {
 	ID        string `json:"id"`
 	Timestamp string `json:"timestamp"`
+	// Storage is present only for storage nodes. The Relay stamps these onto the
+	// node row so the Overview can show "used of total" without a direct
+	// browser→node connection (nodes are usually unreachable behind NAT).
+	Storage *struct {
+		UsedBytes  int64 `json:"used_bytes"`
+		TotalBytes int64 `json:"total_bytes"`
+	} `json:"storage,omitempty"`
 }
 
 type ShardAckPayload struct {
@@ -277,7 +284,25 @@ func handleIncomingEnvelope(
 		}
 		if c.NodeID != "" {
 			if pool != nil && time.Since(c.LastSeenAtSync) > time.Minute {
-				_, _ = pool.Exec(ctx, "UPDATE storage_nodes SET last_seen_at = NOW() WHERE node_id = $1", c.NodeID)
+				// Persist the capacity figures when the node supplies them; a
+				// node that cannot stat its volume sends none and keeps its
+				// last-known values rather than being reset to 0.
+				if hb.Storage != nil {
+					_, _ = pool.Exec(ctx,
+						"UPDATE storage_nodes SET last_seen_at = NOW(), used_bytes = $2, total_bytes = $3 WHERE node_id = $1",
+						c.NodeID, hb.Storage.UsedBytes, hb.Storage.TotalBytes)
+				} else {
+					_, _ = pool.Exec(ctx, "UPDATE storage_nodes SET last_seen_at = NOW() WHERE node_id = $1", c.NodeID)
+				}
+				c.LastSeenAtSync = time.Now()
+			}
+		} else if c.DeviceID != "" {
+			// Client devices have no capacity; heartbeat presence only. The
+			// Overview shows "last active" from this, and without it every
+			// device would read as "never seen". Throttled like nodes so a 30s
+			// heartbeat cadence does not write once per beat.
+			if pool != nil && time.Since(c.LastSeenAtSync) > time.Minute {
+				_, _ = pool.Exec(ctx, "UPDATE devices SET last_seen_at = NOW() WHERE device_id = $1", c.DeviceID)
 				c.LastSeenAtSync = time.Now()
 			}
 		}

@@ -15,6 +15,9 @@ export interface RelayNode {
   /** User-assigned label; absent until renamed. */
   display_name?: string | null;
   last_seen_at?: string | null;
+  /** Disk figures from the node's last heartbeat; 0 until it reports them. */
+  used_bytes?: number;
+  total_bytes?: number;
   created_at: string;
 }
 
@@ -29,6 +32,8 @@ export interface RelayDevice {
   display_name?: string | null;
   created_at: string;
   revoked_at?: string | null;
+  /** Last WS heartbeat/registration; absent for devices seen pre-presence. */
+  last_seen_at?: string | null;
 }
 
 /** Mirrors the Relay's pairing-code creation response (POST /pairing/codes). */

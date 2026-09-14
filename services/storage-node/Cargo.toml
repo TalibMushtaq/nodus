@@ -42,6 +42,9 @@ mdns = "3"
 base64 = "0.22"
 # Zeroizes the private-key read buffer; already in the tree via ed25519-dalek.
 zeroize = "1"
+# Reads the data volume's total/available space for the Overview "used of
+# total" figure reported in the node heartbeat. Thin statvfs wrapper.
+fs2 = "0.4"
 
 webrtc = "0.13"
 tokio-stream = { version = "0.1", features = ["sync"] }
