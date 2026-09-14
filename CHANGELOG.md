@@ -1,5 +1,18 @@
 # Changelog
 
+## [2026-09-14] - Upload rate display and stalled-transfer fallback
+
+**What changed:** Fixes for the upload widget's rate reporting and for a stall caused by retrying a dead direct path.
+
+- `formatBytes` now rounds sub-KB values: a tiny decaying rate no longer printed raw float precision (`0.007043314722762237 B`), it renders `0 B`. Regression test added.
+- The rate sampler reports `0` on any tick with no byte progress (instead of smoothing toward zero forever), and the rate is only computed/shown during the `uploading` phase, prefixed `↑`. During Hashing/Preparing the widget shows a percentage, so the whole-file hashing throughput is no longer shown as an upload speed.
+- The widget shows “stalled” when the active upload has made no progress for ~2 s, rather than a bogus number.
+- A failed direct (WebRTC) transfer now benches that `(path, node)` for 2 minutes — previously 30 s, and only for failures that never connected. A path that connected but whose shard acks failed was retried on every shard, so each attempt held a concurrency slot for a negotiation plus a 20 s ack timeout and the upload crawled.
+
+**Impact:** `apps/web/lib/format.ts`, `apps/web/lib/__tests__/format.test.ts`, `apps/web/providers/upload-provider.tsx`, `apps/web/lib/transfer/attempt-path.ts`, `apps/web/lib/transfer/webrtc-session.ts`. Verified: web typecheck/lint/test (194), web build.
+
+**Follow-ups:** The reported capture fell back to the Relay buffer, i.e. the browser↔node direct WebRTC path was not completing here (the Rust two-peer transport test passes). The bench stops the repeated stall, but Path B still needs browser-side debugging (ICE/NAT or a signaling detail).
+
 ## [2026-09-14] - Upload widget survives navigation; flat object layout
 
 **What changed:** Two fixes for large uploads, plus upload diagnostics.
