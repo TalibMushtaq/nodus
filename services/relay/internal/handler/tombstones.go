@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/TalibMushtaq/nodus/services/relay/internal/auth"
+	"github.com/TalibMushtaq/nodus/services/relay/internal/buffer"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/db"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/hub"
 	"github.com/google/uuid"
@@ -141,7 +142,7 @@ func tombstoneNodeStatuses(ctx context.Context, pool *db.Pool, accountID, entity
 // tombstone purge-requested, asks every owning node to remove the data, and
 // (when there are no owning nodes) finalizes immediately. The tombstone is
 // removed only once all owning nodes report `purged`.
-func PurgeTombstone(pool *db.Pool, h *hub.Hub) http.HandlerFunc {
+func PurgeTombstone(pool *db.Pool, h *hub.Hub, buf *buffer.Buffer) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		accountID, ok := auth.GetAccountID(r.Context())
 		if !ok {
@@ -190,7 +191,7 @@ func PurgeTombstone(pool *db.Pool, h *hub.Hub) http.HandlerFunc {
 		// No node holds the data (local-only file, or a folder): nothing to wait
 		// for, so finalize on the Relay immediately.
 		if len(nodes) == 0 {
-			if err := finalizeTombstonePurge(r.Context(), pool, accountID, entityType, entityID); err != nil {
+			if err := finalizeTombstonePurge(r.Context(), pool, buf, accountID, entityType, entityID); err != nil {
 				respondError(w, http.StatusInternalServerError, "failed to purge")
 				return
 			}
@@ -249,7 +250,7 @@ func RestoreTombstone(pool *db.Pool, h *hub.Hub) http.HandlerFunc {
 
 // ApplyTombstoneAck records a node's delete/purge progress and finalizes a
 // pending purge once every owning node has purged.
-func ApplyTombstoneAck(ctx context.Context, pool *db.Pool, accountID, nodeID, entityType, entityID, status string) error {
+func ApplyTombstoneAck(ctx context.Context, pool *db.Pool, buf *buffer.Buffer, accountID, nodeID, entityType, entityID, status string) error {
 	switch status {
 	case "deleted":
 		_, err := pool.Exec(ctx, `
@@ -268,7 +269,7 @@ func ApplyTombstoneAck(ctx context.Context, pool *db.Pool, accountID, nodeID, en
 		`, accountID, entityType, entityID, nodeID); err != nil {
 			return err
 		}
-		return maybeFinalizePurge(ctx, pool, accountID, entityType, entityID)
+		return maybeFinalizePurge(ctx, pool, buf, accountID, entityType, entityID)
 	default:
 		return nil
 	}
@@ -276,7 +277,7 @@ func ApplyTombstoneAck(ctx context.Context, pool *db.Pool, accountID, nodeID, en
 
 // maybeFinalizePurge removes the entity once a purge was requested and every
 // owning node has acked `purged`.
-func maybeFinalizePurge(ctx context.Context, pool *db.Pool, accountID, entityType, entityID string) error {
+func maybeFinalizePurge(ctx context.Context, pool *db.Pool, buf *buffer.Buffer, accountID, entityType, entityID string) error {
 	var requested bool
 	if err := pool.QueryRow(ctx, `
 		SELECT EXISTS(
@@ -310,11 +311,59 @@ func maybeFinalizePurge(ctx context.Context, pool *db.Pool, accountID, entityTyp
 			return nil
 		}
 	}
-	return finalizeTombstonePurge(ctx, pool, accountID, entityType, entityID)
+	return finalizeTombstonePurge(ctx, pool, buf, accountID, entityType, entityID)
+}
+
+// collectFileBufferIDs returns every non-null `buffer_id` referenced by the
+// entity's files (recursively, for a folder). The purge below deletes the
+// `file_locations` rows that carry these ids, after which the TTL sweep — which
+// only scans existing rows — can never see the files again. Without unlinking
+// them here, every shard still buffered at purge time leaks on disk forever.
+func collectFileBufferIDs(ctx context.Context, pool *db.Pool, entityType, entityID string) ([]string, error) {
+	var query string
+	if entityType == "file" {
+		query = `SELECT DISTINCT buffer_id FROM file_locations
+		         WHERE file_id = $1 AND buffer_id IS NOT NULL`
+	} else {
+		// Recursive folder walk: child folders plus the files directly under the
+		// folder or any descendant.
+		query = `WITH RECURSIVE sub AS (
+		             SELECT folder_id FROM folders WHERE folder_id = $1
+		             UNION ALL
+		             SELECT f.folder_id FROM folders f JOIN sub ON f.parent_folder_id = sub.folder_id
+		         )
+		         SELECT DISTINCT fl.buffer_id
+		         FROM file_locations fl
+		         JOIN files fi ON fi.file_id = fl.file_id
+		         WHERE fl.buffer_id IS NOT NULL
+		           AND (fi.file_id = $1 OR fi.parent_folder_id IN (SELECT folder_id FROM sub))`
+	}
+
+	rows, err := pool.Query(ctx, query, entityID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }
 
 // finalizeTombstonePurge deletes the entity's Relay-side data and the tombstone.
-func finalizeTombstonePurge(ctx context.Context, pool *db.Pool, accountID, entityType, entityID string) error {
+func finalizeTombstonePurge(ctx context.Context, pool *db.Pool, buf *buffer.Buffer, accountID, entityType, entityID string) error {
+	// Resolve the buffer files before the rows that reference them disappear.
+	bufferIDs, err := collectFileBufferIDs(ctx, pool, entityType, entityID)
+	if err != nil {
+		return err
+	}
+
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return err
@@ -347,7 +396,21 @@ func finalizeTombstonePurge(ctx context.Context, pool *db.Pool, accountID, entit
 	if _, err := tx.Exec(ctx, `DELETE FROM tombstone_node_status WHERE account_id=$1 AND entity_type=$2 AND entity_id=$3`, accountID, entityType, entityID); err != nil {
 		return err
 	}
-	return tx.Commit(ctx)
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+
+	// Unlink buffer files only after the rows are gone, so a failed commit can
+	// never strand a referenced-but-missing shard. Best-effort: a failure is
+	// logged and the orphan is reclaimable manually.
+	if buf != nil {
+		for _, id := range bufferIDs {
+			if err := buf.Delete(id); err != nil {
+				log.Printf("[tombstone] warning: failed to delete buffer file %s: %v", id, err)
+			}
+		}
+	}
+	return nil
 }
 
 // owningNodes lists the storage nodes whose data a purge/restore must reach.

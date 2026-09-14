@@ -352,7 +352,7 @@ func handleIncomingEnvelope(
 		if pool == nil || c.NodeID == "" || c.AccountID == "" {
 			return
 		}
-		if err := ApplyTombstoneAck(ctx, pool, c.AccountID, c.NodeID, ack.EntityType, ack.EntityID, ack.Status); err != nil {
+		if err := ApplyTombstoneAck(ctx, pool, buf, c.AccountID, c.NodeID, ack.EntityType, ack.EntityID, ack.Status); err != nil {
 			log.Printf("[tombstone] failed to apply ack from node=%s: %v", c.NodeID, err)
 		}
 	}

@@ -213,7 +213,7 @@ func main() {
 		mux.Handle("GET /folder-envelopes", auth.RequireAuth(sessionStore, cfg)(handler.ListFolderEnvelopes(pool)))
 		// Tombstone (soft-delete) view: list, permanent delete, restore.
 		mux.Handle("GET /tombstones", auth.RequireAuth(sessionStore, cfg)(handler.ListTombstones(pool)))
-		mux.Handle("DELETE /tombstones/{entity_type}/{entity_id}", auth.RequireAuth(sessionStore, cfg)(handler.PurgeTombstone(pool, wsHub)))
+		mux.Handle("DELETE /tombstones/{entity_type}/{entity_id}", auth.RequireAuth(sessionStore, cfg)(handler.PurgeTombstone(pool, wsHub, buf)))
 		mux.Handle("POST /tombstones/{entity_type}/{entity_id}/restore", auth.RequireAuth(sessionStore, cfg)(handler.RestoreTombstone(pool, wsHub)))
 		// ADR-0003 conflict resolution over HTTP (mobile has no session cookie
 		// for the WebSocket event path).
