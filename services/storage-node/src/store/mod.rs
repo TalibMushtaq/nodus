@@ -1,7 +1,7 @@
 //! Content-addressed object store module for Nodus Storage Node (Phase 6).
 //!
 //! Provides:
-//! - Content-addressed shard storage under `<data_dir>/objects/<prefix>/<hash>`
+//! - Content-addressed shard storage under `<data_dir>/objects/<hash>` (flat)
 //! - Atomic writes with sync-then-rename and crash recovery
 //! - Physical reconciliation scan (§21 / §21a)
 //! - Garbage collection job for version pruning and tombstone compaction (§29a)

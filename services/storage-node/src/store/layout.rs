@@ -24,7 +24,12 @@ pub fn is_valid_object_id(id: &str) -> bool {
 }
 
 /// Returns the on-disk path for a stored object given its hex BLAKE3 hash.
-/// Layout: `<data_dir>/objects/<ab>/<abcdef...>`
+/// Layout: `<data_dir>/objects/<abcdef...>` (flat).
+///
+/// The earlier two-level `<ab>/<hash>` layout put each shard in its own
+/// prefix directory (distinct hashes almost never share a prefix), which read
+/// as "a folder per shard". Objects now share the one `objects/` directory;
+/// `migrate_flat_layout` moves any existing bucketed objects on boot.
 ///
 /// Fails on anything that is not a 64-character lowercase hex digest: the
 /// caller controls the id and the path is later opened for read or unlink, so
@@ -34,9 +39,56 @@ pub fn object_path(data_dir: &Path, hash_hex: &str) -> anyhow::Result<PathBuf> {
     if !is_valid_object_id(hash_hex) {
         bail!("invalid object id {hash_hex:?}: expected a 64-character lowercase hex digest");
     }
-    // Safe: length is 64 and every byte is ASCII hex.
-    let prefix = &hash_hex[..2];
-    Ok(objects_dir(data_dir).join(prefix).join(hash_hex))
+    Ok(objects_dir(data_dir).join(hash_hex))
+}
+
+/// One-time migration from the legacy bucketed layout (`objects/<ab>/<hash>`)
+/// to the flat layout (`objects/<hash>`). Idempotent and cheap after the first
+/// run: once no 2-hex bucket directories remain, the scan is a single
+/// `read_dir`. Best-effort — a failure is logged rather than bricking startup,
+/// and any un-moved object is still reachable by hand.
+pub fn migrate_flat_layout(objects_dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(objects_dir) else {
+        return;
+    };
+    let mut migrated = 0usize;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        // Only touch 2-hex bucket dirs; any unexpected subdirectory is left be.
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.len() != 2 || !name.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
+            continue;
+        }
+        let Ok(inner) = std::fs::read_dir(&path) else {
+            continue;
+        };
+        for object in inner.flatten() {
+            let src = object.path();
+            if !src.is_file() {
+                continue;
+            }
+            let dest = objects_dir.join(object.file_name());
+            if dest.exists() {
+                // Same content-addressed hash already present: drop the copy.
+                let _ = std::fs::remove_file(&src);
+            } else if let Err(e) = std::fs::rename(&src, &dest) {
+                eprintln!(
+                    "[store] warning: failed to migrate object {}: {e}",
+                    src.display()
+                );
+                continue;
+            }
+            migrated += 1;
+        }
+        let _ = std::fs::remove_dir(&path);
+    }
+    if migrated > 0 {
+        println!("[store] migrated {migrated} object(s) to the flat objects/ layout");
+    }
 }
 
 /// Returns a unique temp path for an in-progress atomic write.
@@ -61,13 +113,27 @@ mod tests {
             )
             .unwrap(),
             PathBuf::from(
-                "/data/objects/ab/abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+                "/data/objects/abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
             )
         );
         assert_eq!(
             temp_path(base, "uuid-1234"),
             PathBuf::from("/data/temp/uuid-1234")
         );
+    }
+
+    #[test]
+    fn migrate_flat_layout_moves_bucketed_objects() {
+        let dir = tempfile::tempdir().unwrap();
+        let objects = objects_dir(dir.path());
+        let hash = format!("ab{}", "c".repeat(62));
+        std::fs::create_dir_all(objects.join("ab")).unwrap();
+        std::fs::write(objects.join("ab").join(&hash), b"bytes").unwrap();
+
+        migrate_flat_layout(&objects);
+
+        assert!(objects.join(&hash).exists(), "object must move to objects/");
+        assert!(!objects.join("ab").exists(), "empty bucket must be removed");
     }
 
     #[test]

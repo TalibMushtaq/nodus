@@ -61,6 +61,10 @@ impl ObjectStore {
         fs::create_dir_all(&temp_dir)
             .with_context(|| format!("creating temp dir: {}", temp_dir.display()))?;
 
+        // Move any objects written under the legacy bucketed layout into the
+        // flat directory before the store starts serving reads.
+        layout::migrate_flat_layout(&objects_dir);
+
         Ok(Self {
             data_dir,
             pool,
@@ -264,7 +268,7 @@ impl ObjectStore {
     ///
     /// Scans `<data_dir>/temp/`:
     /// - If the target content-addressed file already exists, deletes the temp file.
-    /// - If not, attempts to complete the rename to `<data_dir>/objects/<prefix>/<hash>`.
+    /// - If not, attempts to complete the rename to `<data_dir>/objects/<hash>`.
     ///   If corrupted or failed, removes the temp file.
     pub async fn recover_temp_writes(&self) -> anyhow::Result<()> {
         let temp_dir = layout::temp_dir(&self.data_dir);
