@@ -20,6 +20,7 @@ import { useUploader } from "../../../lib/use-uploader";
 import { useFileMutations } from "../../../lib/use-file-mutations";
 import { useFolderMutations } from "../../../lib/folder-mutations";
 import { useMounted } from "../../../lib/use-mounted";
+import { usePreferences } from "../../../lib/preferences";
 import type { ShardUpload, ShardUploadResult } from "../../../lib/buffer";
 import type { ShardTransferRequest } from "@repo/transfer-manager";
 import { listNodes, type RelayNode } from "../../../lib/pairing";
@@ -129,6 +130,18 @@ const UPLOAD_STATUS_COLOR: Record<UploadStatus, string> = {
 };
 
 /**
+ * What an *active* task is actually doing. The measure pass hashes the whole
+ * plaintext before any bytes move, so an 800 MB file can sit here for a while
+ * with no network activity — labelling it "Uploading" made that read as a hang.
+ */
+const UPLOAD_PHASE_TEXT: Record<UploadPhase, string> = {
+  measuring: "Hashing",
+  announcing: "Preparing",
+  uploading: "Uploading",
+  done: "Uploaded",
+};
+
+/**
  * Google-Drive-style upload progress: a floating card pinned to the bottom
  * right of the viewport. Expanded it lists each file with its own bar; the
  * header shows aggregate progress and collapses to a compact card. When every
@@ -187,8 +200,12 @@ function UploadQueue({
 
   if (tasks.length === 0) return null;
 
+  // The active task's phase decides the verb, so "Hashing a 800 MB file" is not
+  // misreported as "Uploading" while the measure pass holds.
+  const activeTask = tasks.find((task) => task.id === activeId) ?? tasks.find((task) => task.status === "active");
+  const activeVerb = activeTask ? UPLOAD_PHASE_TEXT[activeTask.phase] : "Uploading";
   const heading = activeCount > 0
-    ? `Uploading ${activeCount} file${activeCount === 1 ? "" : "s"}`
+    ? `${activeVerb} ${activeCount} file${activeCount === 1 ? "" : "s"}`
     : errorCount > 0
       ? `${errorCount} upload${errorCount === 1 ? "" : "s"} failed`
       : `Uploaded ${doneCount} file${doneCount === 1 ? "" : "s"}`;
@@ -242,7 +259,9 @@ function UploadQueue({
                 <div className="flex items-center justify-between gap-3">
                   <span className="text-xs font-medium text-foreground truncate">{task.name}</span>
                   <span className="text-[10px] shrink-0" style={{ color: UPLOAD_STATUS_COLOR[task.status] }}>
-                    {UPLOAD_STATUS_TEXT[task.status]}
+                    {task.status === "active"
+                      ? UPLOAD_PHASE_TEXT[task.phase]
+                      : UPLOAD_STATUS_TEXT[task.status]}
                     {active && speedBps > 0 ? ` · ${formatBytes(speedBps)}/s` : ""}
                   </span>
                 </div>
@@ -559,6 +578,10 @@ export function FilesClient() {
   // pass. `useMounted` returns the server snapshot during hydration, keeping both
   // renders identical, then flips to the client value.
   const mounted = useMounted();
+  // Shard size is a device preference; the uploader and the duplicate-check
+  // measurement must agree on it or the announced shard_count would drift.
+  const { preferences } = usePreferences();
+  const shardSizeBytes = preferences.shardSizeBytes;
   const [sortBy, setSortBy] = useState<SortKey>("modified");
   const [filterBy, setFilterBy] = useState<SyncStatus | "all">("all");
   const [nodes, setNodes] = useState<RelayNode[]>([]);
@@ -733,8 +756,10 @@ export function FilesClient() {
       setUploads((previous) => [...previous, ...tasks]);
       const skipped: string[] = [];
 
-      // Sequential on purpose: one 8MB shard is in memory at a time and the
-      // event-batch stream stays ordered.
+      // Files are uploaded one at a time so each one's event batches stay
+      // ordered and progress is attributable to a single task. Shards *within*
+      // a file run through the uploader's bounded pool, so a large file still
+      // overlaps its shard transfers.
       for (let index = 0; index < chosen.length; index += 1) {
         const file = chosen[index]!;
         const task = tasks[index]!;
@@ -760,7 +785,7 @@ export function FilesClient() {
           // Measure once so an exact-content duplicate is rejected before any
           // network work; the same result is handed to the uploader so the file
           // is not hashed a second time.
-          const measured: FileMeasurement = await measurePlaintext(file, onProgress);
+          const measured: FileMeasurement = await measurePlaintext(file, onProgress, shardSizeBytes);
 
           const duplicate = findStoredDuplicate(files, measured.versionHash);
           if (duplicate || sessionHashes.current.has(measured.versionHash)) {
@@ -783,7 +808,7 @@ export function FilesClient() {
             const target = incomplete
               ? { fileId: incomplete.fileId, versionNumber: incomplete.latestVersionNumber ?? 1 }
               : undefined;
-            const result = await upload(file, targetNode, measured, target, currentFolderId);
+            const result = await upload(file, targetNode, measured, target, currentFolderId, shardSizeBytes);
             await finishTransfer(log.id, "complete", `${result.shardCount} shards`, activePathRef.current);
             updateTask({ status: "done", completedBytes: file.size, completedShards: result.shardCount, totalShards: result.shardCount });
             refresh();
@@ -813,7 +838,7 @@ export function FilesClient() {
       // Allow re-selecting the same file in a later upload.
       if (fileInputRef.current) fileInputRef.current.value = "";
     },
-    [targetNode, upload, refresh, files, onProgress, currentFolderId],
+    [targetNode, upload, refresh, files, onProgress, currentFolderId, shardSizeBytes],
   );
 
   const handleDownload = useCallback(

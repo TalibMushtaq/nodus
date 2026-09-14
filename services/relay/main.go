@@ -128,7 +128,9 @@ func main() {
 	log.Printf("[relay] buffer: ready (directory: %s)", buf.Dir())
 
 	// 5. WebSocket Hub initialization
-	wsHub := hub.New(redisClient)
+	// WS frames carry shard bytes during relay-mediated downloads, so the read
+	// limit must cover the configured shard size (plus framing headroom).
+	wsHub := hub.New(redisClient, hub.WithMaxMessageSize(cfg.MaxShardBytes+1024*1024))
 	go wsHub.Run(ctx)
 	// Correlates manual ping HTTP requests with the pong the peer sends back
 	// over its WS connection (Devices page "Ping" action).
@@ -235,7 +237,7 @@ func main() {
 		// Phase 10: Path C relay buffer — client pushes shards here when the
 		// target Storage Node is offline; the node pulls them with a single-use
 		// token via /buffer/fetch (deliberately unauthenticated).
-		mux.Handle("POST /buffer/upload", auth.RequireAuth(sessionStore, cfg)(handler.BufferUpload(pool, redisClient, buf, wsHub)))
+		mux.Handle("POST /buffer/upload", auth.RequireAuth(sessionStore, cfg)(handler.BufferUpload(pool, redisClient, buf, wsHub, cfg.MaxShardBytes)))
 		// Design A: relay-mediated shard download fallback. Session-authenticated;
 		// FetchShard resolves the account from the session and only serves shards
 		// whose file belongs to that account.

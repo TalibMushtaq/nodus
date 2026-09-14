@@ -88,6 +88,20 @@ export default function SettingsPage() {
               <option value="20">20</option>
             </Select>
           </SettingRow>
+          <SettingRow
+            label="Shard size"
+            detail="Bigger shards mean fewer transfers; the storage node and relay must allow the size."
+          >
+            <Select
+              aria-label="Shard size"
+              value={String(preferences.shardSizeBytes)}
+              onChange={(e) => update({ shardSizeBytes: Number(e.target.value) })}
+            >
+              <option value={8 * 1024 * 1024}>8 MB</option>
+              <option value={16 * 1024 * 1024}>16 MB</option>
+              <option value={32 * 1024 * 1024}>32 MB</option>
+            </Select>
+          </SettingRow>
         </div>
       </Section>
 

@@ -32,6 +32,9 @@ func TestConfigDefaults(t *testing.T) {
 	if cfg.BufferTTL != 72*time.Hour {
 		t.Fatalf("expected default BufferTTL 72h, got %v", cfg.BufferTTL)
 	}
+	if cfg.MaxShardBytes != 8*1024*1024 {
+		t.Fatalf("expected default MaxShardBytes 8MiB, got %d", cfg.MaxShardBytes)
+	}
 }
 
 func TestConfigEnvOverrides(t *testing.T) {
@@ -41,6 +44,7 @@ func TestConfigEnvOverrides(t *testing.T) {
 	os.Setenv("SESSION_TOUCH_INTERVAL_MINUTES", "10")
 	os.Setenv("SESSION_COOKIE_SECURE", "false")
 	os.Setenv("BUFFER_TTL_HOURS", "48")
+	os.Setenv("MAX_SHARD_BYTES_MB", "32")
 	defer func() {
 		os.Unsetenv("PORT")
 		os.Unsetenv("SESSION_COOKIE_NAME")
@@ -48,6 +52,7 @@ func TestConfigEnvOverrides(t *testing.T) {
 		os.Unsetenv("SESSION_TOUCH_INTERVAL_MINUTES")
 		os.Unsetenv("SESSION_COOKIE_SECURE")
 		os.Unsetenv("BUFFER_TTL_HOURS")
+		os.Unsetenv("MAX_SHARD_BYTES_MB")
 	}()
 
 	cfg, err := config.Load()
@@ -72,5 +77,8 @@ func TestConfigEnvOverrides(t *testing.T) {
 	}
 	if cfg.BufferTTL != 48*time.Hour {
 		t.Fatalf("expected BufferTTL 48h, got %v", cfg.BufferTTL)
+	}
+	if cfg.MaxShardBytes != 32*1024*1024 {
+		t.Fatalf("expected MaxShardBytes 32MiB from env, got %d", cfg.MaxShardBytes)
 	}
 }

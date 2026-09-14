@@ -26,6 +26,12 @@ export interface UploadProgress {
   versionHash: string;
   /** FEK-encrypted filename (see @repo/core encryptName). */
   encryptedName: string;
+  /**
+   * Plaintext bytes per shard used for this upload. Persisted so a resume keeps
+   * the original boundaries even if the user changes the shard-size preference.
+   * Optional: records written before configurable shards lack it (8 MiB).
+   */
+  shardSizeBytes?: number;
   /** True once FILE_CREATED + FILE_VERSION_ADDED have been acknowledged. */
   announced: boolean;
   /** Shard indices confirmed RELAY_BUFFERED by a successful postShard. */

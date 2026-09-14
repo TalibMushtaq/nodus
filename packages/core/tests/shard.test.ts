@@ -35,6 +35,13 @@ function fromShards(shards: Shard[]): ShardMetadata[] {
 }
 
 describe("splitIntoShards", () => {
+  it("splits by a custom shard size and reconstructs", () => {
+    const original = bytesOf(2500, 3);
+    const shards = splitIntoShards(fileId, original, 1000);
+    expect(shards.map((s) => s.data.length)).toEqual([1000, 1000, 500]);
+    expectBytesEqual(reconstructFromShards(shards), original);
+  });
+
   it("splits a 0-byte file into exactly one 0-byte shard", () => {
     const shards = splitIntoShards(fileId, bytesOf(0));
     expect(shards).toHaveLength(1);

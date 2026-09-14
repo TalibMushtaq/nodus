@@ -73,9 +73,31 @@ export interface UploadFileOptions {
   shardCount?: number;
   /** Folder the file belongs to; null/undefined places it at the root. */
   parentFolderId?: string | null;
+  /**
+   * How many shards may be in flight at once. Shards are independent content-
+   * addressed objects, so overlapping them hides per-shard transport setup
+   * (WebRTC negotiation, HTTP headers, relay hop) instead of serializing it.
+   * Peak memory is bounded by this many shards. Defaults to
+   * `DEFAULT_SHARD_CONCURRENCY`.
+   */
+  shardConcurrency?: number;
+  /**
+   * Plaintext bytes per shard. Defaults to `SHARD_SIZE_BYTES` (8 MiB). On a
+   * resume the *stored* size wins, so a preference change mid-upload cannot
+   * shift shard boundaries under already-completed shards.
+   */
+  shardSizeBytes?: number;
   deps: UploadDeps;
   onProgress?: (event: UploadProgressEvent) => void;
 }
+
+/**
+ * Default number of shards uploaded concurrently. Kept in step with the
+ * transfer manager's own `maxConcurrency` (4) so the two pools do not fight:
+ * the manager limits *individual path attempts*, this limits a single file's
+ * outstanding shards. Four 8 MiB shards is ~64 MiB peak, acceptable in a tab.
+ */
+export const DEFAULT_SHARD_CONCURRENCY = 4;
 
 /** Result of one sequential read that hashes the plaintext and counts shards. */
 export interface FileMeasurement {
@@ -96,12 +118,14 @@ export interface FileMeasurement {
 export async function measurePlaintext(
   file: File,
   onProgress?: (event: UploadProgressEvent) => void,
+  shardSize: number = SHARD_SIZE_BYTES,
 ): Promise<FileMeasurement> {
+  const size = shardSize > 0 ? shardSize : SHARD_SIZE_BYTES;
   const hasher = createPlaintextHasher();
   let count = 0;
   let bytesRead = 0;
-  for (let offset = 0; offset < file.size; offset += SHARD_SIZE_BYTES) {
-    const chunk = new Uint8Array(await file.slice(offset, offset + SHARD_SIZE_BYTES).arrayBuffer());
+  for (let offset = 0; offset < file.size; offset += size) {
+    const chunk = new Uint8Array(await file.slice(offset, offset + size).arrayBuffer());
     hasher.update(chunk);
     count += 1;
     bytesRead += chunk.length;
@@ -180,6 +204,8 @@ export async function uploadFile(options: UploadFileOptions): Promise<UploadResu
   /** BLAKE3 hex of each uploaded packed shard, indexed by shard index. */
   let shardHashes: string[];
   let resumed = false;
+  /** Plaintext bytes per shard for THIS upload (see the resume note). */
+  let shardSize: number;
 
   if (existing && existingKey && existing.totalShards > 0) {
     // Resume. A complete record is a no-op so a retry after success is cheap.
@@ -196,15 +222,19 @@ export async function uploadFile(options: UploadFileOptions): Promise<UploadResu
     // Older progress records predate per-shard hashes; an empty list simply
     // means the manifest cannot be emitted for this resume.
     shardHashes = existing.shardHashes ? [...existing.shardHashes] : [];
+    // The stored size must win: the shard boundaries were fixed at announce
+    // time, so a changed preference cannot retroactively move them.
+    shardSize = existing.shardSizeBytes ?? SHARD_SIZE_BYTES;
     resumed = true;
   } else {
     fek = generateFileEncryptionKey();
+    shardSize = options.shardSizeBytes ?? SHARD_SIZE_BYTES;
     // Reuse a caller-supplied measurement (the Files UI measures once to dedupe)
     // so an accepted upload does not read the plaintext a second time.
     const measured =
       options.versionHash !== undefined && options.shardCount !== undefined
         ? { versionHash: options.versionHash, shardCount: options.shardCount }
-        : await measurePlaintext(file, onProgress);
+        : await measurePlaintext(file, onProgress, shardSize);
     totalShards = measured.shardCount;
     versionHash = measured.versionHash;
     encryptedName = encryptName(file.name, fek);
@@ -224,6 +254,7 @@ export async function uploadFile(options: UploadFileOptions): Promise<UploadResu
       encryptedName,
       announced: false,
       completedShards: [],
+      shardSizeBytes: shardSize,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     });
@@ -272,6 +303,7 @@ export async function uploadFile(options: UploadFileOptions): Promise<UploadResu
       encryptedName,
       announced: true,
       completedShards,
+      shardSizeBytes: shardSize,
       createdAt: existing?.createdAt ?? new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     });
@@ -281,61 +313,116 @@ export async function uploadFile(options: UploadFileOptions): Promise<UploadResu
   // file can decrypt. Runs on every attempt (including resume) for retryability.
   await deps.publishEnvelopes?.(fileId, fek);
 
-  // Pass 2: encrypt + upload the shards not already buffered.
+  // Pass 2: encrypt + upload the shards not already buffered. Shards are
+  // independent objects, so they run through a small bounded worker pool rather
+  // than strictly one-at-a-time: each shard spends most of its wall time on
+  // transport setup, and serializing ~100 of them turns an 800 MB upload into a
+  // negotiation chain. Peak memory stays bounded by `shardConcurrency` shards.
   const done = new Set(completedShards);
+  // Plaintext size of the shard at `index` (the last shard is the remainder; an
+  // empty file still has one zero-length shard).
+  const shardPlaintextSize = (index: number): number =>
+    Math.min(shardSize, Math.max(0, fileSize - index * shardSize));
+
   // Plaintext bytes already committed by a prior attempt, so a resumed upload's
   // progress starts where it left off instead of at zero.
-  let committedBytes = Math.min(done.size * SHARD_SIZE_BYTES, fileSize);
-  for (let index = 0; index < totalShards; index += 1) {
-    if (done.has(index)) continue;
-    const offset = index * SHARD_SIZE_BYTES;
-    const chunk = new Uint8Array(await file.slice(offset, Math.min(offset + SHARD_SIZE_BYTES, fileSize)).arrayBuffer());
-    const encrypted = encryptShard({ fileId: fileId as FileId, index: index as ShardIndex, data: chunk }, fek);
-    // The stored/uploaded blob is nonce||ciphertext; the nonce must travel with
-    // the bytes or the shard can never be decrypted again (F2b).
-    const packed = packEncryptedShard(encrypted);
-    const shardHash = hashShard(packed);
-
-    await deps.postShard({
-      fileId,
-      versionNumber,
-      shardIndex: index,
-      hash: shardHash,
-      // The Relay verifies the packed blob's length/hash, not the plaintext size.
-      size: packed.length,
-      targetNode,
-      transferId,
-      sourceDevice,
-      data: packed,
-      // In-shard byte progress. Path C (Relay XHR) and the WebRTC paths report
-      // it; Path D (deferred queue) cannot and simply omits it, so the bar
-      // advances by whole shards there.
-      onProgress: (sentBytes) => {
-        onProgress?.({
-          phase: "uploading",
-          fileId,
-          fileName: file.name,
-          completedBytes: Math.min(committedBytes + sentBytes, fileSize),
-          totalBytes: fileSize,
-          completedShards: done.size,
-          totalShards,
-        });
-      },
-    });
-    await deps.markShardComplete(fileId, versionNumber, index, shardHash);
-    shardHashes[index] = shardHash;
-    done.add(index);
-    committedBytes = Math.min(done.size * SHARD_SIZE_BYTES, fileSize);
+  let committedBytes = 0;
+  for (const index of done) committedBytes += shardPlaintextSize(index);
+  // Bytes reported by in-flight shards, summed into the bar so parallel shards
+  // don't make progress lurch or regress.
+  const inflight = new Map<number, number>();
+  const report = () => {
+    let sent = 0;
+    for (const bytes of inflight.values()) sent += bytes;
     onProgress?.({
       phase: "uploading",
       fileId,
       fileName: file.name,
-      completedBytes: committedBytes,
+      completedBytes: Math.min(committedBytes + sent, fileSize),
       totalBytes: fileSize,
       completedShards: done.size,
       totalShards,
     });
+  };
+
+  const pendingShards: number[] = [];
+  for (let index = 0; index < totalShards; index += 1) {
+    if (!done.has(index)) pendingShards.push(index);
   }
+
+  let cursor = 0;
+  // First failure wins; workers stop claiming new shards so the pool drains the
+  // in-flight ones (their completions are still recorded for resume) and then
+  // the error surfaces to the caller.
+  let abortError: unknown = null;
+
+  const worker = async (): Promise<void> => {
+    for (;;) {
+      if (abortError !== null) return;
+      const index = pendingShards[cursor];
+      if (index === undefined) return;
+      cursor += 1;
+
+      const offset = index * shardSize;
+      const chunk = new Uint8Array(
+        await file.slice(offset, Math.min(offset + shardSize, fileSize)).arrayBuffer(),
+      );
+      const encrypted = encryptShard({ fileId: fileId as FileId, index: index as ShardIndex, data: chunk }, fek);
+      // The stored/uploaded blob is nonce||ciphertext; the nonce must travel with
+      // the bytes or the shard can never be decrypted again (F2b).
+      const packed = packEncryptedShard(encrypted);
+      const shardHash = hashShard(packed);
+
+      inflight.set(index, 0);
+      report();
+      try {
+        await deps.postShard({
+          fileId,
+          versionNumber,
+          shardIndex: index,
+          hash: shardHash,
+          // The Relay verifies the packed blob's length/hash, not the plaintext size.
+          size: packed.length,
+          targetNode,
+          transferId,
+          sourceDevice,
+          data: packed,
+          // In-shard byte progress. Path C (Relay XHR) and the WebRTC paths report
+          // it; Path D (deferred queue) cannot and simply omits it, so the bar
+          // advances by whole shards there.
+          onProgress: (sentBytes) => {
+            inflight.set(index, sentBytes);
+            report();
+          },
+        });
+      } catch (err) {
+        // Drop this shard's in-flight bytes so the bar doesn't count a failure.
+        inflight.delete(index);
+        throw err;
+      }
+
+      await deps.markShardComplete(fileId, versionNumber, index, shardHash);
+      shardHashes[index] = shardHash;
+      inflight.delete(index);
+      done.add(index);
+      committedBytes += shardPlaintextSize(index);
+      report();
+    }
+  };
+
+  const concurrency = Math.max(
+    1,
+    Math.min(options.shardConcurrency ?? DEFAULT_SHARD_CONCURRENCY, pendingShards.length || 1),
+  );
+  const workers = Array.from({ length: concurrency }, async () => {
+    try {
+      await worker();
+    } catch (err) {
+      if (abortError === null) abortError = err;
+    }
+  });
+  await Promise.all(workers);
+  if (abortError !== null) throw abortError;
 
   // Publish the signed per-shard manifest once every shard is buffered (audit
   // #22). Runs on every attempt, including a resume, so a manifest lost to a

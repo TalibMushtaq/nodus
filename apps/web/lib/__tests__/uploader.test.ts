@@ -248,4 +248,50 @@ describe("uploadFile", () => {
     expect(events.at(-1)).toMatchObject({ phase: "done", completedBytes: 100, totalBytes: 100 });
     expect(events.some((e) => e.phase === "uploading" && e.completedBytes === 100)).toBe(true);
   });
+
+  it("honours a configured shard size", async () => {
+    const { deps, calls } = makeDeps();
+    const file = fakeFile(new Uint8Array(2500), "chunked.bin");
+
+    await uploadFile({
+      file,
+      originId: "device-A",
+      targetNode: "n1",
+      deps,
+      shardSizeBytes: 1000,
+    });
+
+    // 2500 bytes at 1000 B/shard → 3 shards, and the announced version event
+    // must agree with the bytes actually posted.
+    expect(calls.postShard.map((s) => s.shardIndex)).toEqual([0, 1, 2]);
+    const versionEvent = calls.events[0]!.find((e) => e.type === "FILE_VERSION_ADDED");
+    expect((versionEvent!.payload as { shard_count: number }).shard_count).toBe(3);
+  });
+
+  it("overlaps shard uploads up to the configured bound", async () => {
+    const { deps } = makeDeps();
+    const total = 3;
+    let inFlight = 0;
+    let maxInFlight = 0;
+    // A short delay lets the pool actually overlap: with the old serial loop
+    // maxInFlight would stay at 1 no matter the delay.
+    deps.postShard = async (dto) => {
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      inFlight -= 1;
+      return { buffer_id: `b-${dto.shardIndex}`, status: "RELAY_BUFFERED" };
+    };
+
+    const file = fakeFile(new Uint8Array(SHARD_SIZE_BYTES * total), "parallel.bin");
+    await uploadFile({
+      file,
+      originId: "device-A",
+      targetNode: "n1",
+      deps,
+      shardConcurrency: 2,
+    });
+
+    expect(maxInFlight).toBe(2);
+  });
 });

@@ -11,10 +11,13 @@ import (
 )
 
 const (
-	writeWait      = 10 * time.Second
-	pongWait       = 60 * time.Second
-	pingPeriod     = (pongWait * 9) / 10
-	maxMessageSize = 10 * 1024 * 1024 // 10MB (supports 8MB shard binary messages)
+	writeWait  = 10 * time.Second
+	pongWait   = 60 * time.Second
+	pingPeriod = (pongWait * 9) / 10
+	// defaultMaxMessageSize bounds a WebSocket frame (shard binary messages
+	// from node→relay during relay-mediated downloads). Overridable per Hub via
+	// WithMaxMessageSize to match a larger configured shard size.
+	defaultMaxMessageSize = 10 * 1024 * 1024 // 10MB (supports 8MB shard binary messages)
 	// Per-connection read throttle (Phase 14a audit V4): a token bucket bounds
 	// how fast a client's envelopes are processed. Without it an authenticated
 	// client could amplify Redis SETs (heartbeat) or DB writes (event_batch)
@@ -63,19 +66,39 @@ type Hub struct {
 	register   chan *Client
 	unregister chan *Client
 	rdb        *rdb.Client
+	// maxMessageSize caps an inbound WS frame; set from the Relay's configured
+	// shard size so larger shards can relay through.
+	maxMessageSize int64
+}
+
+// HubOption customizes a Hub at construction.
+type HubOption func(*Hub)
+
+// WithMaxMessageSize overrides the inbound WS frame cap.
+func WithMaxMessageSize(n int64) HubOption {
+	return func(h *Hub) {
+		if n > 0 {
+			h.maxMessageSize = n
+		}
+	}
 }
 
 // New creates a new Hub.
-func New(redisClient *rdb.Client) *Hub {
-	return &Hub{
-		clients:    make(map[string]*Client),
-		byAccount:  make(map[string]map[string]*Client),
-		byNode:     make(map[string]*Client),
-		byDevice:   make(map[string]*Client),
-		register:   make(chan *Client),
-		unregister: make(chan *Client),
-		rdb:        redisClient,
+func New(redisClient *rdb.Client, opts ...HubOption) *Hub {
+	h := &Hub{
+		clients:        make(map[string]*Client),
+		byAccount:      make(map[string]map[string]*Client),
+		byNode:         make(map[string]*Client),
+		byDevice:       make(map[string]*Client),
+		register:       make(chan *Client),
+		unregister:     make(chan *Client),
+		rdb:            redisClient,
+		maxMessageSize: defaultMaxMessageSize,
 	}
+	for _, opt := range opts {
+		opt(h)
+	}
+	return h
 }
 
 // Run executes the hub event loop.
@@ -313,7 +336,7 @@ func (c *Client) ReadPump(handleMessage func(client *Client, msgType int, payloa
 		_ = c.Conn.Close()
 	}()
 
-	c.Conn.SetReadLimit(maxMessageSize)
+	c.Conn.SetReadLimit(c.Hub.maxMessageSize)
 	_ = c.Conn.SetReadDeadline(time.Now().Add(pongWait))
 	c.Conn.SetPongHandler(func(string) error {
 		_ = c.Conn.SetReadDeadline(time.Now().Add(pongWait))

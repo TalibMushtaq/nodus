@@ -17,9 +17,9 @@ import (
 	"github.com/google/uuid"
 )
 
-// maxBufferUploadSize caps a single shard upload. Shards are 8 MB (Phase 2);
-// the extra headroom accommodates transport framing without inviting abuse.
-const maxBufferUploadSize = 10 * 1024 * 1024
+// defaultMaxBufferUploadSize caps a single shard upload when no configured cap
+// is supplied. The default 8 MB shard plus transport-framing headroom.
+const defaultMaxBufferUploadSize = 10 * 1024 * 1024
 
 // uploadMetadata is the parsed X-Nodus metadata header block for a shard upload.
 type uploadMetadata struct {
@@ -36,7 +36,7 @@ type uploadMetadata struct {
 // parseUploadMetadata reads the shard metadata from X-Nodus headers. Every
 // field is required except source_device, which can be empty for v1 clients
 // that haven't registered a device identity yet.
-func parseUploadMetadata(r *http.Request) (uploadMetadata, error) {
+func parseUploadMetadata(r *http.Request, maxSize int64) (uploadMetadata, error) {
 	md := uploadMetadata{
 		FileID:       strings.TrimSpace(r.Header.Get("X-Nodus-File-ID")),
 		Hash:         strings.TrimSpace(r.Header.Get("X-Nodus-Hash")),
@@ -56,8 +56,8 @@ func parseUploadMetadata(r *http.Request) (uploadMetadata, error) {
 		return md, errInvalidUploadMeta("shard_index must be a non-negative integer")
 	}
 	size, err := strconv.ParseInt(strings.TrimSpace(r.Header.Get("X-Nodus-Size")), 10, 64)
-	if err != nil || size < 0 || size > maxBufferUploadSize {
-		return md, errInvalidUploadMeta("size must be between 0 and 10MB")
+	if err != nil || size < 0 || size > maxSize {
+		return md, errInvalidUploadMeta("size exceeds the configured shard limit")
 	}
 	md.VersionNumber = version
 	md.ShardIndex = shard
@@ -86,7 +86,13 @@ func errInvalidUploadMeta(msg string) error {
 // the raw encrypted bytes. On success the Relay records the shard as
 // RELAY_BUFFERED and, if the target node is online right now, proactively
 // sends pending_notify so delivery doesn't wait for the next reconnect.
-func BufferUpload(pool *db.Pool, rClient *rdb.Client, buf *buffer.Buffer, h *hub.Hub) http.HandlerFunc {
+func BufferUpload(pool *db.Pool, rClient *rdb.Client, buf *buffer.Buffer, h *hub.Hub, maxShardBytes ...int64) http.HandlerFunc {
+	// Cap = configured max plaintext shard + framing headroom; defaults to the
+	// legacy 10 MB when the caller passes nothing (tests).
+	limit := int64(defaultMaxBufferUploadSize)
+	if len(maxShardBytes) > 0 && maxShardBytes[0] > 0 {
+		limit = maxShardBytes[0] + 1024*1024
+	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		accountID, ok := auth.GetAccountID(r.Context())
 		if !ok {
@@ -94,7 +100,7 @@ func BufferUpload(pool *db.Pool, rClient *rdb.Client, buf *buffer.Buffer, h *hub
 			return
 		}
 
-		md, err := parseUploadMetadata(r)
+		md, err := parseUploadMetadata(r, limit)
 		if err != nil {
 			respondError(w, http.StatusBadRequest, err.Error())
 			return
@@ -166,11 +172,11 @@ func BufferUpload(pool *db.Pool, rClient *rdb.Client, buf *buffer.Buffer, h *hub
 		// Content-Length is unreliable for chunked encoding, so we cap with
 		// MaxBytesReader and validate length against the declared size.
 		// Note: we check len(body) before err deliberately. If the body is
-		// exactly at maxBufferUploadSize+1, MaxBytesReader causes ReadAll to
+		// exactly at limit+1, MaxBytesReader causes ReadAll to
 		// return a partial body + an error; the len check fires first and
 		// gives a clearer "size mismatch" response. The err path below
 		// catches other I/O failures (client disconnect, etc.).
-		r.Body = http.MaxBytesReader(w, r.Body, maxBufferUploadSize+1)
+		r.Body = http.MaxBytesReader(w, r.Body, limit+1)
 		body, err := io.ReadAll(r.Body)
 		if len(body) != int(md.Size) {
 			_, _ = pool.Exec(r.Context(),

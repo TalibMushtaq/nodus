@@ -37,6 +37,11 @@ type Config struct {
 	// Relay Shard Buffer
 	BufferDir string
 	BufferTTL time.Duration
+	// MaxShardBytes is the largest *plaintext* shard the Relay will accept and
+	// relay onward. The buffer upload cap and the WebSocket read limit are
+	// derived from it (with framing headroom), so raising this one value lets
+	// clients use larger shards. Default 8 MiB; env MAX_SHARD_BYTES_MB.
+	MaxShardBytes int64
 }
 
 // Load populates Config from environment variables with sensible defaults.
@@ -72,6 +77,14 @@ func Load() (*Config, error) {
 
 	bufferTTLHours, _ := strconv.Atoi(getEnv("BUFFER_TTL_HOURS", "72"))
 
+	// Shard size is a client choice; the Relay must be configured to accept it.
+	// A value below 1 is treated as unset and falls back to the 8 MiB default.
+	maxShardMB, _ := strconv.Atoi(getEnv("MAX_SHARD_BYTES_MB", "8"))
+	if maxShardMB < 1 {
+		maxShardMB = 8
+	}
+	maxShardBytes := int64(maxShardMB) * 1024 * 1024
+
 	trustProxy := false
 	if v := getEnv("TRUST_PROXY", "false"); strings.EqualFold(v, "true") || v == "1" {
 		trustProxy = true
@@ -89,6 +102,7 @@ func Load() (*Config, error) {
 		TrustProxy:           trustProxy,
 		BufferDir:            bufferDir,
 		BufferTTL:            time.Duration(bufferTTLHours) * time.Hour,
+		MaxShardBytes:        maxShardBytes,
 	}
 
 	return cfg, nil

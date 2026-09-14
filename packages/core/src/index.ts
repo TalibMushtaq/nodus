@@ -8,6 +8,10 @@ export type {
 } from "./types.js";
 export {
   SHARD_SIZE_BYTES,
+  DEFAULT_SHARD_SIZE_BYTES,
+  MIN_SHARD_SIZE_BYTES,
+  MAX_SHARD_SIZE_BYTES,
+  resolveShardSize,
   splitIntoShards,
   reconstructFromShards,
 } from "./shard.js";
