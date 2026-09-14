@@ -146,13 +146,58 @@ export function browserDownloadDeps(device: StoredDeviceIdentity): DownloadDeps 
       return entry?.locations ?? [];
     },
     async fetchShard(_fileId, location) {
-      const nodes = await getTrustedNodes();
-      const host = nodes.find((n) => n.node_id === location.node_id)?.host;
-      if (!host || !location.hash) {
-        throw new ShardUnavailableError(location.shard_index, "no_trusted_host");
+      // Preferred path: a trusted LAN host for the storing node. If the LAN
+      // fetch fails for ANY reason (no longer paired, node unreachable, auth
+      // reject, timeout) we fall through to the Relay-mediated path instead of
+      // failing the download — the Relay pulls the shard from the node over
+      // its authenticated WS connection (design A).
+      if (location.hash) {
+        const nodes = await getTrustedNodes();
+        const host = nodes.find((n) => n.node_id === location.node_id)?.host;
+        if (host) {
+          try {
+            const client = new NodeClient(nodusBaseUrl(host));
+            return await client.fetchShard(device.device_id, identityPrivateKey(device), location.hash);
+          } catch {
+            // Fall through to the Relay path below.
+          }
+        }
+        const viaRelay = await fetchShardViaRelay(location.hash);
+        if (viaRelay.ok) return viaRelay.data as Uint8Array;
+        throw new ShardUnavailableError(location.shard_index, viaRelay.error ?? "relay_unavailable");
       }
-      const client = new NodeClient(nodusBaseUrl(host));
-      return client.fetchShard(device.device_id, identityPrivateKey(device), location.hash);
+      throw new ShardUnavailableError(location.shard_index, "no_trusted_host");
     },
   };
+}
+
+export interface RelayShardFetchResult {
+  ok: boolean;
+  data?: Uint8Array;
+  error?: string;
+}
+
+/**
+ * Fetch a stored shard through the Relay (design A). The Relay finds which of
+ * the account's nodes holds the object, pulls it over their authenticated WS
+ * connection, and streams the raw ciphertext bytes back. Only ever a fallback
+ * — the direct LAN fetch is preferred when a trusted host exists.
+ */
+export async function fetchShardViaRelay(hash: string): Promise<RelayShardFetchResult> {
+  try {
+    const res = await fetch(`/api/shard/${encodeURIComponent(hash)}`);
+    if (!res.ok) {
+      let message = `relay shard fetch failed: ${res.status}`;
+      try {
+        const body = (await res.json()) as { error?: string };
+        if (body?.error) message = body.error;
+      } catch {
+        // Non-JSON error body; keep the HTTP status message.
+      }
+      return { ok: false, error: message };
+    }
+    return { ok: true, data: new Uint8Array(await res.arrayBuffer()) };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
 }

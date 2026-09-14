@@ -133,6 +133,7 @@ func main() {
 	// Correlates manual ping HTTP requests with the pong the peer sends back
 	// over its WS connection (Devices page "Ping" action).
 	pingTracker := handler.NewPingTracker()
+	shardRegistry := handler.NewShardFetchRegistry()
 	log.Println("[relay] websocket hub: running")
 
 	// 6. Start buffer TTL cleanup worker (sweeps every 30m)
@@ -235,12 +236,16 @@ func main() {
 		// target Storage Node is offline; the node pulls them with a single-use
 		// token via /buffer/fetch (deliberately unauthenticated).
 		mux.Handle("POST /buffer/upload", auth.RequireAuth(sessionStore, cfg)(handler.BufferUpload(pool, redisClient, buf, wsHub)))
+		// Design A: relay-mediated shard download fallback. Session-authenticated;
+		// FetchShard resolves the account from the session and only serves shards
+		// whose file belongs to that account.
+		mux.Handle("GET /shards/{object_id}", auth.RequireAuth(sessionStore, cfg)(handler.FetchShard(pool, wsHub, shardRegistry)))
 		mux.HandleFunc("GET /buffer/fetch", handler.BufferFetch(pool, redisClient, buf))
 	}
 
 	// WebSocket Gateway (browser auth via session cookie; node auth via Ed25519
 	// challenge-response)
-	mux.HandleFunc("GET /ws", handler.WebSocket(wsHub, pool, redisClient, buf, sessionStore, cfg, pingTracker))
+	mux.HandleFunc("GET /ws", handler.WebSocket(wsHub, pool, redisClient, buf, sessionStore, cfg, pingTracker, shardRegistry))
 
 	// 8. HTTP Server Lifecycle
 	server := &http.Server{

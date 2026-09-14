@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@repo/ui/primitives/button";
 import { Section } from "@repo/ui/primitives/section";
@@ -28,7 +29,9 @@ import {
   ShardUnavailableError,
   ShardIntegrityError,
 } from "../../../lib/download";
-import { buildFolderZip, triggerBlobDownload } from "../../../lib/folder-download";
+import { buildFolderZip, describeFolderSkips, triggerBlobDownload } from "../../../lib/folder-download";
+import { getTrustedNodes } from "../../../lib/trusted-nodes";
+import { ensureNodeTrusted } from "../../../lib/auto-pair";
 import { startTransfer, finishTransfer, logTransferAction } from "../../../lib/transfer-log";
 import { activityPathFromTransfer } from "../../../lib/overview";
 import { formatBytes, timeAgo } from "../../../lib/format";
@@ -58,7 +61,13 @@ const STATUS_FILTERS: { value: SyncStatus | "all"; label: string }[] = [
 /** Distinguish the download failure modes the user can actually act on. */
 function describeDownloadError(err: unknown): string {
   if (err instanceof MissingEnvelopeError) return "This device has no key for that file.";
-  if (err instanceof ShardUnavailableError) return "A required shard is not stored on a reachable node.";
+  if (err instanceof ShardUnavailableError) {
+    // A shard can be listed NODE_STORED yet unreachable because this browser
+    // never paired with the node that holds it — a pairing gap, not data loss.
+    return err.message.includes("no_trusted_host")
+      ? "This browser isn't paired with the node storing that file — pair it on the Devices page, then retry."
+      : "A required shard isn't stored on a reachable node yet.";
+  }
   if (err instanceof ShardIntegrityError) return "Downloaded data failed its integrity check.";
   return err instanceof Error ? err.message : String(err);
 }
@@ -118,6 +127,13 @@ const UPLOAD_STATUS_COLOR: Record<UploadStatus, string> = {
   skipped: "var(--status-local)",
 };
 
+/**
+ * Google-Drive-style upload progress: a floating card pinned to the bottom
+ * right of the viewport. Expanded it lists each file with its own bar; the
+ * header shows aggregate progress and collapses to a compact card. When every
+ * task finishes without errors the card collapses and auto-dismisses; failures
+ * stay open so the user can read them before clearing the queue.
+ */
 function UploadQueue({
   tasks,
   speedBps,
@@ -129,43 +145,128 @@ function UploadQueue({
   activeId: string | null;
   onDismiss: () => void;
 }) {
+  const [collapsed, setCollapsed] = useState(false);
+  const [completedCollapsed, setCompletedCollapsed] = useState(false);
+  const prevAllDone = useRef(false);
+
+  const totalBytes = tasks.reduce((sum, task) => sum + task.sizeBytes, 0);
+  const completedBytes = tasks.reduce((sum, task) => sum + task.completedBytes, 0);
+  const overallPct = totalBytes === 0 ? 0 : (completedBytes / totalBytes) * 100;
+
+  const activeCount = tasks.filter((task) => task.status === "queued" || task.status === "active").length;
+  const errorCount = tasks.filter((task) => task.status === "error").length;
+  const doneCount = tasks.filter((task) => task.status === "done").length;
+  const allDone = tasks.length > 0 && activeCount === 0;
+  // Failures always stay expanded so the user can read why before clearing;
+  // otherwise the user's chevron choice rules, and a completed batch collapses.
+  const expanded = errorCount > 0 ? true : !collapsed && !completedCollapsed;
+
+  // Auto-collapse then auto-dismiss only at the moment the last task finishes
+  // (not on every render, so a stale completed queue from a previous visit
+  // does not pop open or vanish a second after the page loads). All state
+  // updates are deferred behind timers to stay outside the render loop.
+  useEffect(() => {
+    const wasDone = prevAllDone.current;
+    prevAllDone.current = allDone;
+    if (allDone && !wasDone) {
+      if (errorCount > 0) return;
+      const collapseAt = setTimeout(() => setCompletedCollapsed(true), 1000);
+      const dismissAt = setTimeout(onDismiss, 4500);
+      return () => {
+        clearTimeout(collapseAt);
+        clearTimeout(dismissAt);
+      };
+    }
+    // A new batch started after a completed one: re-open the list.
+    if (!allDone && wasDone) {
+      const reopen = setTimeout(() => setCompletedCollapsed(false), 0);
+      return () => clearTimeout(reopen);
+    }
+  }, [allDone, errorCount, onDismiss]);
+
   if (tasks.length === 0) return null;
-  const finished = tasks.every((task) => task.status !== "queued" && task.status !== "active");
+
+  const heading = activeCount > 0
+    ? `Uploading ${activeCount} file${activeCount === 1 ? "" : "s"}`
+    : errorCount > 0
+      ? `${errorCount} upload${errorCount === 1 ? "" : "s"} failed`
+      : `Uploaded ${doneCount} file${doneCount === 1 ? "" : "s"}`;
+
   return (
-    <div className="mb-3 border border-border rounded-xl overflow-hidden bg-card" role="status" aria-live="polite">
-      <div className="flex items-center justify-between px-4 py-2 border-b border-border">
-        <span className="text-xs font-medium text-foreground">
-          Uploads ({tasks.filter((t) => t.status === "done").length}/{tasks.length})
+    <div
+      role="status"
+      aria-live="polite"
+      className="fixed bottom-4 right-4 z-50 w-[22rem] max-w-[calc(100vw-2rem)] rounded-xl border border-border bg-card shadow-lg overflow-hidden"
+    >
+      <button
+        type="button"
+        onClick={() => setCollapsed((value) => !value)}
+        aria-expanded={expanded}
+        className="w-full flex items-center justify-between gap-3 px-4 py-2.5 text-left transition-colors hover:bg-secondary/50"
+      >
+        <span className="flex items-center gap-2 min-w-0">
+          <Icon
+            name={errorCount > 0 ? "warning" : activeCount > 0 ? "upload" : "check"}
+            size={16}
+            className={activeCount > 0 ? "text-foreground animate-pulse" : "text-foreground"}
+          />
+          <span className="text-xs font-medium text-foreground truncate">{heading}</span>
         </span>
-        {finished && (
-          <button type="button" onClick={onDismiss} className="text-xs text-muted-foreground hover:text-foreground">
+        <span className="flex items-center gap-2 shrink-0">
+          {activeCount > 0 && speedBps > 0 ? (
+            <span className="text-[10px] font-mono text-muted-foreground">{formatBytes(speedBps)}/s</span>
+          ) : (
+            <span className="text-[10px] font-mono text-muted-foreground">{Math.round(overallPct)}%</span>
+          )}
+          <Icon name="chevron-down" size={14} className={expanded ? "rotate-180 text-muted-foreground" : "text-muted-foreground"} />
+        </span>
+      </button>
+
+      {!expanded && (
+        <div className="px-4 pb-2">
+          <Progress value={overallPct} />
+        </div>
+      )}
+
+      {expanded && (
+        <div className="border-t border-border max-h-72 overflow-y-auto">
+          <div className="px-4 py-2">
+            <Progress value={overallPct} />
+          </div>
+          {tasks.map((task) => {
+            const pct = task.sizeBytes === 0 ? 0 : (task.completedBytes / task.sizeBytes) * 100;
+            const active = task.id === activeId;
+            return (
+              <div key={task.id} className="px-4 py-2.5 border-t border-border last:border-0">
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-xs font-medium text-foreground truncate">{task.name}</span>
+                  <span className="text-[10px] shrink-0" style={{ color: UPLOAD_STATUS_COLOR[task.status] }}>
+                    {UPLOAD_STATUS_TEXT[task.status]}
+                    {active && speedBps > 0 ? ` · ${formatBytes(speedBps)}/s` : ""}
+                  </span>
+                </div>
+                <div className="mt-1.5">
+                  <Progress value={pct} />
+                </div>
+                <div className="mt-1 text-[10px] font-mono text-muted-foreground">
+                  {formatBytes(task.completedBytes)} / {formatBytes(task.sizeBytes)}
+                  {task.totalShards > 0 ? ` · ${task.completedShards}/${task.totalShards} shards` : ""}
+                  {task.error ? ` · ${task.error}` : ""}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {allDone && errorCount === 0 && (
+        <div className="flex items-center justify-between border-t border-border px-4 py-1.5">
+          <span className="text-[10px] text-muted-foreground">All uploads finished</span>
+          <button type="button" onClick={onDismiss} className="text-[10px] text-muted-foreground hover:text-foreground">
             Dismiss
           </button>
-        )}
-      </div>
-      {tasks.map((task) => {
-        const pct = task.sizeBytes === 0 ? 0 : (task.completedBytes / task.sizeBytes) * 100;
-        const active = task.id === activeId;
-        return (
-          <div key={task.id} className="px-4 py-2.5 border-b border-border last:border-0">
-            <div className="flex items-center justify-between gap-3">
-              <span className="text-xs font-medium text-foreground truncate">{task.name}</span>
-              <span className="text-[10px] shrink-0" style={{ color: UPLOAD_STATUS_COLOR[task.status] }}>
-                {UPLOAD_STATUS_TEXT[task.status]}
-                {active && speedBps > 0 ? ` · ${formatBytes(speedBps)}/s` : ""}
-              </span>
-            </div>
-            <div className="mt-1.5">
-              <Progress value={pct} />
-            </div>
-            <div className="mt-1 text-[10px] font-mono text-muted-foreground">
-              {formatBytes(task.completedBytes)} / {formatBytes(task.sizeBytes)}
-              {task.totalShards > 0 ? ` · ${task.completedShards}/${task.totalShards} shards` : ""}
-              {task.error ? ` · ${task.error}` : ""}
-            </div>
-          </div>
-        );
-      })}
+        </div>
+      )}
     </div>
   );
 }
@@ -467,6 +568,10 @@ export function FilesClient() {
   const [speedBps, setSpeedBps] = useState(0);
   const [actionError, setActionError] = useState<string | null>(null);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
+  // Set when a download failed because no trusted node host was known, or when
+  // the browser has no paired node at all — both mean the user must pair one.
+  const [pairingNudge, setPairingNudge] = useState(false);
+  const [trustedNodeCount, setTrustedNodeCount] = useState<number | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   // Content hashes accepted in this session. The catalog only refreshes after
   // an upload completes, so this catches a second identical file selected in
@@ -518,6 +623,19 @@ export function FilesClient() {
       .catch(() => {
         // Upload is disabled without a target; the empty/error state explains it.
       });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Snapshot how many storage nodes this browser has paired with. Zero means
+  // downloads of node-stored files cannot work — surfacing a pairing CTA is
+  // more honest than relabeling every failure as data loss.
+  useEffect(() => {
+    let cancelled = false;
+    void getTrustedNodes().then((nodes) => {
+      if (!cancelled) setTrustedNodeCount(nodes.length);
+    });
     return () => {
       cancelled = true;
     };
@@ -594,6 +712,12 @@ export function FilesClient() {
         return;
       }
       setActionError(null);
+      // Design B: proactively pair the chosen node so downloads (and Path A
+      // WebRTC transfers) work after this upload — no dialog needed. Fire-and-
+      // forget by design: the upload above must never block on a host probe, and
+      // a failed auto-pair is harmless because the Relay-mediated download
+      // fallback covers shard fetches regardless.
+      void ensureNodeTrusted(targetNode);
       const chosen = Array.from(fileList);
       const tasks: UploadTask[] = chosen.map((file) => ({
         id: crypto.randomUUID(),
@@ -906,18 +1030,20 @@ export function FilesClient() {
         if (archive.fileCount === 0) {
           // Nothing was added: do not hand the user an empty archive.
           await finishTransfer(log.id, "failed", "no downloadable files");
+          const { message, pairingNeeded } = describeFolderSkips(archive.skipped);
+          setPairingNudge(pairingNeeded);
           setActionError(
             archive.skipped.length > 0
-              ? `${archive.skipped.length} file(s) in “${folder.name}” are not stored on a node and could not be downloaded.`
+              ? `${archive.skipped.length} file(s) in “${folder.name}” could not be downloaded: ${message}`
               : `“${folder.name}” has no files to download.`,
           );
         } else {
           triggerBlobDownload(archive.data, archive.fileName);
           await finishTransfer(log.id, "complete", `${archive.fileCount} files, ${formatBytes(archive.bytes)}`);
           if (archive.skipped.length > 0) {
-            setActionError(
-              `${archive.skipped.length} file(s) were not stored on a node and were left out of the zip.`,
-            );
+            const { message, pairingNeeded } = describeFolderSkips(archive.skipped);
+            setPairingNudge(pairingNeeded);
+            setActionError(`${archive.skipped.length} file(s) were left out of the zip: ${message}`);
           }
         }
       } catch (err) {
@@ -1003,12 +1129,35 @@ export function FilesClient() {
 
   return (
     <div className="space-y-6 p-6">
+      <UploadQueue
+        tasks={uploads}
+        speedBps={speedBps}
+        activeId={activeUploadId}
+        onDismiss={() => setUploads([])}
+      />
+
       {error && (
         <div className="flex items-center gap-3" role="alert">
           <p className="text-xs text-destructive">{error}</p>
           <Button variant="secondary" size="sm" onClick={refresh}>
             Retry
           </Button>
+        </div>
+      )}
+
+      {(pairingNudge || (trustedNodeCount === 0 && files.some((file) => file.storageState === "node"))) && (
+        <div className="flex items-center justify-between gap-3 rounded-lg border border-border bg-secondary/40 px-4 py-2.5">
+          <p className="text-xs text-foreground">
+            {pairingNudge
+              ? "Downloads failed because this browser isn't trusted by the storage node holding those files."
+              : "No storage node is paired with this browser yet — files backed up to a node can't be downloaded until you pair one."}
+          </p>
+          <Link
+            href="/pair"
+            className="shrink-0 text-xs font-medium text-foreground underline underline-offset-2 hover:text-accent"
+          >
+            Pair a node
+          </Link>
         </div>
       )}
 
@@ -1076,13 +1225,6 @@ export function FilesClient() {
           </div>
         }
       >
-        <UploadQueue
-          tasks={uploads}
-          speedBps={speedBps}
-          activeId={activeUploadId}
-          onDismiss={() => setUploads([])}
-        />
-
         {uploadHint && !loading && (
           <p className="text-xs text-muted-foreground mb-3">{uploadHint}</p>
         )}

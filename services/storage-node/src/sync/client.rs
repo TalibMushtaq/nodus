@@ -12,8 +12,9 @@ use super::snapshot::is_rebuild_required_for;
 use super::types::{
     BatchAckPayload, EventBatchPayload, NodeAuthChallengePayload, NodeAuthResponsePayload,
     NodeAuthResultPayload, PairingTokenPushPayload, PendingNotifyPayload, ProtocolEnvelope,
-    RegisterPayload, ShardAckPayload, SnapshotBeginPayload, SnapshotChunkPayload,
-    SnapshotEndPayload, SyncCursor, SyncHelloPayload, SyncStatusPayload,
+    RegisterPayload, ShardAckPayload, ShardFetchRequestPayload, ShardFetchResultPayload,
+    SnapshotBeginPayload, SnapshotChunkPayload, SnapshotEndPayload, SyncCursor, SyncHelloPayload,
+    SyncStatusPayload,
 };
 use crate::identity::NodeIdentity;
 use crate::store::ObjectStore;
@@ -596,6 +597,47 @@ impl SyncClient {
                             Self::send_envelope(&mut write, "pong", &payload).await?;
                         }
                     }
+                    // Design A: the Relay needs an object we hold, to serve a
+                    // browser download that has no direct host. Read the bytes
+                    // off disk and answer with a text result followed by the raw
+                    // payload as one binary frame. "missing"/"error" resolve the
+                    // Relay's waiter so it can try another holder instead.
+                    "shard_fetch_request" => {
+                        let req: ShardFetchRequestPayload = serde_json::from_value(env.payload)?;
+                        match self
+                            .object_store
+                            .get(&req.object_id)
+                            .await
+                        {
+                            Ok(bytes) => {
+                                Self::send_envelope(
+                                    &mut write,
+                                    "shard_fetch_result",
+                                    &serde_json::to_value(ShardFetchResultPayload {
+                                        request_id: req.request_id.clone(),
+                                        object_id: req.object_id.clone(),
+                                        status: "ok".to_string(),
+                                        error: None,
+                                    })?,
+                                )
+                                .await?;
+                                Self::send_binary(&mut write, bytes).await?;
+                            }
+                            Err(_) => {
+                                Self::send_envelope(
+                                    &mut write,
+                                    "shard_fetch_result",
+                                    &serde_json::to_value(ShardFetchResultPayload {
+                                        request_id: req.request_id.clone(),
+                                        object_id: req.object_id.clone(),
+                                        status: "missing".to_string(),
+                                        error: Some("object not found in store".to_string()),
+                                    })?,
+                                )
+                                .await?;
+                            }
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -674,6 +716,22 @@ impl SyncClient {
     {
         let env = ProtocolEnvelope::new(msg_type, payload.clone());
         Self::send_json(write, &env).await
+    }
+
+    /// Send a raw binary frame over the WebSocket writer under the same finite
+    /// deadline as the text path (Design A: a shard's bytes answer a
+    /// shard_fetch_request). `Message::Binary` is the one place outbound bytes
+    /// ever travel outside a text envelope.
+    async fn send_binary<W>(write: &mut W, bytes: Vec<u8>) -> anyhow::Result<()>
+    where
+        W: futures_util::Sink<Message> + Unpin,
+        W::Error: std::error::Error + Send + Sync + 'static,
+    {
+        let msg = Message::Binary(bytes.into());
+        tokio::time::timeout(WS_WRITE_TIMEOUT, write.send(msg))
+            .await
+            .map_err(|_| anyhow::anyhow!("websocket send timed out after {WS_WRITE_TIMEOUT:?}"))?
+            .map_err(|e| anyhow::anyhow!("websocket send failed: {e}"))
     }
 
     /// This node's disk figures for the heartbeat as `(used, total)`, or `None`

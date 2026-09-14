@@ -332,7 +332,7 @@ func TestRegisterRerunsDeliveryAfterOfflineUpload(t *testing.T) {
 		Timestamp:     time.Now().UTC().Format(time.RFC3339),
 		Payload:       json.RawMessage(`{}`),
 	}
-	handleIncomingEnvelope(client, registerEnv, h.pool, h.rClient, h.buf, h.hub, nil)
+	handleIncomingEnvelope(client, registerEnv, h.pool, h.rClient, h.buf, h.hub, nil, nil)
 
 	// Sibling tests may have left other shards buffered for the same node, so
 	// skip their notifies and wait for ours.

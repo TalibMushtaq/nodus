@@ -1,5 +1,56 @@
 # Changelog
 
+## [2026-09-14] - Relay-mediated downloads (design A: browser shard fetch fallback)
+
+**What changed:** Folder downloads now succeed even when the browser has no trusted LAN pairing with the node that stores the shards. The Relay becomes a mediated read path: the web client requests the shard by hash, the Relay streams it out of the account's node over their authenticated WS connection, and the browser reconstructs the file from the returned bytes (LAN-direct stays preferred when a trusted host exists).
+
+- New relay→node WS pair `shard_fetch_request` / `shard_fetch_result`: the Relay asks a node for a stored object by id; the node answers with a text envelope (`ok` | `missing` | `error`) followed by one raw binary frame carrying the shard bytes. Sequence is correlated by `request_id`, and the registry binds each answer to the exact node the request was assigned to (a different node's result or an unarmed binary frame is dropped).
+- New relay endpoint `GET /shards/{object_id}` (session-authenticated). Ownership is enforced relay-side: only `file_locations` rows whose file belongs to the requesting account are considered, so another tenant's shard can never be pulled. It asks holding nodes one at a time, waits `shardFetchTimeout` (30s), then tries the next; `404 shard_unavailable` if none answered. Binary WS frames ride the existing 10 MB read limit (8 MB shards fit).
+- Web: `browserDownloadDeps.fetchShard` now falls back to the Relay through a new `/api/shard/[hash]` proxy (streams the relay response body, session cookie attached server-side) whenever the direct LAN fetch is missing or fails — so "not paired" no longer blocks a download.
+- Storage node: `sync/client.rs` serves `shard_fetch_request` straight from `ObjectStore`, reusing the same timeout-bounded writer as every other outbound message.
+
+**Impact:** `services/relay/internal/handler/shard_fetch.go` (new: registry + handler), `ws.go` (binary-frame routing + dispatch + node-only guard), `main.go` (route + registry), `services/storage-node/src/sync/{types.rs,client.rs}`, `apps/web/lib/download.ts` (+`fetchShardViaRelay`), `apps/web/app/api/shard/[hash]/route.ts` (new). Tests: relay `shard_fetch_test.go` (7 unit) + `shard_fetch_integration_test.go` (3, `TEST_DATABASE_URL`), web `__tests__/shard-relay.test.ts`. Verified live: the real node served all three account shards through the running relay with byte-exact sizes.
+
+## [2026-09-14] - Auto-pair on upload (design B)
+
+**What changed:** The first upload to a storage node now silently pairs the browser with that node over its local listener — no pairing dialog, no QR scan. Picking files immediately begins the upload (auto-pair is fire-and-forget), and afterwards trusted-node is populated so future downloads use the direct LAN path and WebRTC transfers are eligible.
+
+- New `lib/auto-pair.ts` `ensureNodeTrusted(nodeId)`: skips when the node is already trusted; otherwise probes only loopback + the page's own hostname (never a network port-scan), confirms the node advertises the exact `node_id`, issues a Relay pairing token bound to this device, redeems it on the node, and records the node in trusted-nodes. Any failure returns `{ paired: false }` and is swallowed — downloads are safe regardless because design A covers the unpaired case.
+- Hooked into the Files page upload handler (`void ensureNodeTrusted(targetNode)`) so upload latency is never affected.
+
+**Impact:** `apps/web/lib/auto-pair.ts` (new), `apps/web/app/(dashboard)/files/files-client.tsx`, `apps/web/lib/__tests__/shard-relay.test.ts` (auto-pair unit tests).
+
+## [2026-09-14] - Honest download-failure messaging + pairing nudge
+
+**What changed:** Downloads (single file and folder zip) no longer blame the storage layer blindly. A skip that really means "this browser never paired with the node holding the bytes" is now reported as such, and the Files page nudges you to pair a node when none is trusted.
+
+- `lib/folder-download.ts`: `skipped` is now `{ name, kind, detail }` typed by cause — `not-stored` (still buffered/transferring), `not-paired` (shard stored but no trusted node host), `missing-key` (no FEK envelope), `failed` (everything else). Added `classifySkip` and `describeFolderSkips` helper.
+- Files page: folder-zip errors group skipped files by cause ("2 file(s) still buffered — not stored on a node yet; 1 file(s) stored on a node this browser isn't paired with…"). The old blanket "not stored on a node and could not be downloaded" is gone.
+- Single-file download errors now say when pairing is the fix ("pair it on the Devices page") vs. a genuinely un-stored shard.
+- New pairing nudge banner on the Files page appears when the browser has no trusted node but a node-stored file exists, or right after a download that hit a pairing gap — with a direct `/pair` link. It is hidden for relay-buffer-only accounts.
+
+**Impact:** `apps/web/lib/folder-download.ts`, `apps/web/app/(dashboard)/files/files-client.tsx`, `apps/web/lib/__tests__/folder-download.test.ts` (+3 tests).
+
+## [2026-09-14] - Floating upload progress widget (Google Drive style)
+
+**What changed:** Upload progress is no longer a strip pinned inside the Files page header. It is a floating card fixed to the bottom-right of the viewport (`fixed bottom-4 right-4 z-50`), Google-Drive style.
+
+- Header shows aggregate state ("Uploading N files" / "N uploads failed" / "Uploaded N files") with the overall percentage and live throughput while active; a chevron toggles expand/collapse.
+- Expanded lists every file with its own bar + bytes and shard counts; collapsed shows a slim aggregate bar.
+- When the last task completes without errors the card collapses to a "All uploads finished / Dismiss" footer and auto-dismisses after ~4s. Failures stay open and expanded so the user can read them before clearing.
+
+**Impact:** `apps/web/app/(dashboard)/files/files-client.tsx` (`UploadQueue` → floating widget, moved out of the inline `Section` into the page root).
+
+## [2026-09-14] - Fix: uploads rejected with "sync event batch rejected: rejected"
+
+**What changed:** Every web upload failed at announce (`FILE_CREATED` + `FILE_VERSION_ADDED`) because `applySingleEventTx` mis-detected a vacant version slot as an error and rejected the whole device batch as `"rejected"`.
+
+- Root cause: the `file_versions` occupancy lookup from commit `0c63190` checked the no-rows sentinel with `switch err { case sql.ErrNoRows }`. pgx v5 returns `pgx.ErrNoRows` — a `*proxyError` wrapping `sql.ErrNoRows` — which is never `==` to `sql.ErrNoRows`, so every fresh `FILE_VERSION_ADDED` (version slot empty) fell into the `default` branch and returned false. That surfaced as `sync event batch rejected: rejected` in the Files UI (`apps/web/lib/uploader.ts`).
+- Fix: the occupancy check now uses `errors.Is(err, pgx.ErrNoRows)` (matching the rest of the codebase). The node path (`applySingleEvent`) shares `applySingleEventTx` and is fixed too.
+- Regression tests: `TestApplyDeviceBatchFileVersionAnnounce` (device announce into a folder) and `TestApplySingleEventFileVersionForVacantSlotRegression` (node path), both green against real Postgres; also fixed pre-existing fixture collisions (`security_envelopes_integration_test.go` reused fixed `f1`/`dir1` ids across tests sharing a database).
+
+**Impact:** `services/relay/internal/handler/sync.go`, `internal/handler/file_version_vacant_slot_test.go` (new), `internal/handler/security_envelopes_integration_test.go`. Verified with full relay suite against Postgres + Redis.
+
 ## [2026-09-14] - Recovery/security hardening (post-implementation audit)
 
 **What changed:** Follow-up hardening from an audit of the ADR-0002 recovery work.

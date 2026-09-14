@@ -80,7 +80,7 @@ type PendingNotifyPayload struct {
 // rows buffer_upload.go requires before it accepts shards.
 func messageRequiresNode(messageType string) bool {
 	switch messageType {
-	case "sync_hello", "snapshot_begin", "snapshot_chunk", "snapshot_end", "shard_ack", "tombstone_ack":
+	case "sync_hello", "snapshot_begin", "snapshot_chunk", "snapshot_end", "shard_ack", "tombstone_ack", "shard_fetch_result":
 		return true
 	default:
 		return false
@@ -97,7 +97,7 @@ func presencePeerID(c *hub.Client) string {
 }
 
 // WebSocket handles incoming WebSocket connection upgrades and message lifecycle.
-func WebSocket(h *hub.Hub, pool *db.Pool, rClient *rdb.Client, buf *buffer.Buffer, store auth.SessionStore, cfg *config.Config, pingTracker *PingTracker) http.HandlerFunc {
+func WebSocket(h *hub.Hub, pool *db.Pool, rClient *rdb.Client, buf *buffer.Buffer, store auth.SessionStore, cfg *config.Config, pingTracker *PingTracker, shards *ShardFetchRegistry) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !originAllowed(r, cfg) {
 			http.Error(w, "forbidden origin", http.StatusForbidden)
@@ -152,6 +152,17 @@ func WebSocket(h *hub.Hub, pool *db.Pool, rClient *rdb.Client, buf *buffer.Buffe
 
 		go client.WritePump()
 		go client.ReadPump(func(c *hub.Client, msgType int, payload []byte) {
+			// Design A: a storage node answers a shard_fetch_request with a text
+			// result envelope followed by ONE binary frame carrying the raw
+			// shard bytes. Binary frames are never part of the text envelope
+			// protocol, so route them straight to the registry that correlated
+			// the fetch — anything unarmed is dropped there.
+			if msgType == websocket.BinaryMessage {
+				if shards != nil && c.NodeID != "" {
+					shards.ResolveBinary(c, payload)
+				}
+				return
+			}
 			if msgType != websocket.TextMessage {
 				return
 			}
@@ -169,7 +180,7 @@ func WebSocket(h *hub.Hub, pool *db.Pool, rClient *rdb.Client, buf *buffer.Buffe
 				return
 			}
 
-			handleIncomingEnvelope(c, env, pool, rClient, buf, h, pingTracker)
+			handleIncomingEnvelope(c, env, pool, rClient, buf, h, pingTracker, shards)
 		})
 	}
 }
@@ -182,6 +193,7 @@ func handleIncomingEnvelope(
 	buf *buffer.Buffer,
 	h *hub.Hub,
 	pingTracker *PingTracker,
+	shards *ShardFetchRegistry,
 ) {
 	ctx := context.Background()
 	if !c.IsAuthenticated && env.Type != "node_auth_response" {
@@ -213,6 +225,11 @@ func handleIncomingEnvelope(
 		// Manual ping reply from a node or device; resolves the waiting HTTP
 		// handler. Handled before the node-only guard because devices reply too.
 		HandlePong(pingTracker, env)
+
+	case "shard_fetch_result":
+		// Design A: node's answer to a relay-mediated shard fetch. Resolved by
+		// the registry that correlated the request with the node's outbound WS.
+		shards.HandleResult(c, env)
 
 	case "webrtc_offer", "webrtc_answer", "webrtc_ice_candidate":
 		HandleWebRTCSignaling(ctx, c, env, h)

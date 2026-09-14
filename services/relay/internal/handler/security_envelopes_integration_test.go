@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -28,25 +29,28 @@ func TestEnvelopeSummaryCountsPerRecipient(t *testing.T) {
 	pool, accountID := createPairingCodeHarness(t)
 	ctx := context.Background()
 
-	_, err := pool.Exec(ctx, `
-		INSERT INTO files (file_id, account_id, encrypted_name) VALUES ('f1', $1, 'x'), ('f2', $1, 'y')
-	`, accountID)
+	pfx := accountID[:8] // unique per test for id columns
+	_, err := pool.Exec(ctx, fmt.Sprintf(`
+		INSERT INTO files (file_id, account_id, encrypted_name)
+		VALUES ('f1-%s', $1, 'x'), ('f2-%s', $1, 'y')
+	`, pfx, pfx), accountID)
 	require.NoError(t, err)
-	_, err = pool.Exec(ctx, `
-		INSERT INTO folders (folder_id, account_id, encrypted_name) VALUES ('dir1', $1, 'z')
-	`, accountID)
+	_, err = pool.Exec(ctx, fmt.Sprintf(`
+		INSERT INTO folders (folder_id, account_id, encrypted_name)
+		VALUES ('dir1-%s', $1, 'z')
+	`, pfx), accountID)
 	require.NoError(t, err)
-	_, err = pool.Exec(ctx, `
+	_, err = pool.Exec(ctx, fmt.Sprintf(`
 		INSERT INTO key_envelopes (file_id, recipient_id, recipient_kind, encrypted_key) VALUES
-			('f1', 'dev-1', 'device', 'k1'),
-			('f2', 'dev-1', 'device', 'k2'),
-			('f1', 'node-1', 'node', 'k3')
-	`)
+			('f1-%s', 'dev-1', 'device', 'k1'),
+			('f2-%s', 'dev-1', 'device', 'k2'),
+			('f1-%s', 'node-1', 'node', 'k3')
+	`, pfx, pfx, pfx))
 	require.NoError(t, err)
-	_, err = pool.Exec(ctx, `
+	_, err = pool.Exec(ctx, fmt.Sprintf(`
 		INSERT INTO folder_key_envelopes (folder_id, recipient_id, recipient_kind, encrypted_key) VALUES
-			('dir1', 'dev-1', 'device', 'k4')
-	`)
+			('dir1-%s', 'dev-1', 'device', 'k4')
+	`, pfx))
 	require.NoError(t, err)
 
 	rr := getAuth(t, EnvelopeSummary(pool), accountID, "/envelopes/summary")
@@ -70,13 +74,14 @@ func TestExportEnvelopesReturnsBothFamilies(t *testing.T) {
 	pool, accountID := createPairingCodeHarness(t)
 	ctx := context.Background()
 
-	_, err := pool.Exec(ctx, `INSERT INTO files (file_id, account_id, encrypted_name) VALUES ('f1', $1, 'x')`, accountID)
+	pfx := accountID[:8]
+	_, err := pool.Exec(ctx, fmt.Sprintf(`INSERT INTO files (file_id, account_id, encrypted_name) VALUES ('f1-%s', $1, 'x')`, pfx), accountID)
 	require.NoError(t, err)
-	_, err = pool.Exec(ctx, `INSERT INTO folders (folder_id, account_id, encrypted_name) VALUES ('dir1', $1, 'z')`, accountID)
+	_, err = pool.Exec(ctx, fmt.Sprintf(`INSERT INTO folders (folder_id, account_id, encrypted_name) VALUES ('dir1-%s', $1, 'z')`, pfx), accountID)
 	require.NoError(t, err)
-	_, err = pool.Exec(ctx, `INSERT INTO key_envelopes (file_id, recipient_id, recipient_kind, encrypted_key) VALUES ('f1', 'dev-1', 'device', 'k1')`)
+	_, err = pool.Exec(ctx, fmt.Sprintf(`INSERT INTO key_envelopes (file_id, recipient_id, recipient_kind, encrypted_key) VALUES ('f1-%s', 'dev-1', 'device', 'k1')`, pfx))
 	require.NoError(t, err)
-	_, err = pool.Exec(ctx, `INSERT INTO folder_key_envelopes (folder_id, recipient_id, recipient_kind, encrypted_key) VALUES ('dir1', 'dev-1', 'device', 'k2')`)
+	_, err = pool.Exec(ctx, fmt.Sprintf(`INSERT INTO folder_key_envelopes (folder_id, recipient_id, recipient_kind, encrypted_key) VALUES ('dir1-%s', 'dev-1', 'device', 'k2')`, pfx))
 	require.NoError(t, err)
 
 	rr := getAuth(t, ExportEnvelopes(pool), accountID, "/envelopes/export")

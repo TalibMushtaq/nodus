@@ -4,9 +4,10 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
-	"database/sql"
+
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"time"
@@ -895,17 +896,19 @@ func applySingleEventTx(
 			versionNumber := data.VersionNumber
 			var occupantParent *int
 			var occupantHash string
-			switch err := tx.QueryRow(ctx, `
+			// pgx wraps its no-rows sentinel (pgx.ErrNoRows is a proxyError
+			// around sql.ErrNoRows), so a `case sql.ErrNoRows:` switch would never
+			// match a vacant slot and every fresh FILE_VERSION_ADDED would be
+			// rejected. errors.Is unwraps the proxy.
+			err := tx.QueryRow(ctx, `
 				SELECT parent_version_id, version_hash FROM file_versions
 				WHERE file_id = $1 AND version_number = $2
-			`, data.FileID, data.VersionNumber).Scan(&occupantParent, &occupantHash); err {
-			case sql.ErrNoRows:
+			`, data.FileID, data.VersionNumber).Scan(&occupantParent, &occupantHash)
+			if errors.Is(err, pgx.ErrNoRows) {
 				// Vacant slot: insert at the claimed number.
-			case nil:
-				if !isVersionSlotFork(true, occupantParent, occupantHash, data.ParentVersionID, data.VersionHash) {
-					// Identical content re-delivery: keep the slot, flag unchanged.
-					break
-				}
+			} else if err != nil {
+				return false
+			} else if isVersionSlotFork(true, occupantParent, occupantHash, data.ParentVersionID, data.VersionHash) {
 				var maxNumber int
 				if err := tx.QueryRow(ctx, `
 					SELECT COALESCE(MAX(version_number), 0) FROM file_versions WHERE file_id = $1
@@ -922,9 +925,8 @@ func applySingleEventTx(
 				`, data.FileID, occupantParent, occupantHash); err != nil {
 					return false
 				}
-			default:
-				return false
 			}
+			// Identical content re-delivery: keep the slot, flag unchanged.
 
 			insertVersion := `
 				INSERT INTO file_versions (file_id, version_number, parent_version_id, conflict_status, version_hash, shard_count, created_at)

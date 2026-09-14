@@ -42,7 +42,7 @@ func TestWebSocketCookieHandshakeAuthenticatesSession(t *testing.T) {
 	go h.Run(ctx)
 
 	cfg := &config.Config{SessionCookieName: "nodus_session"}
-	server := httptest.NewServer(WebSocket(h, nil, nil, nil, wsCookieSessionStore{}, cfg, nil))
+	server := httptest.NewServer(WebSocket(h, nil, nil, nil, wsCookieSessionStore{}, cfg, nil, nil))
 	defer server.Close()
 
 	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
@@ -74,7 +74,7 @@ func TestWebSocketRejectsUnauthenticatedBrowser(t *testing.T) {
 		SessionCookieName: "nodus_session",
 		AllowedOrigins:    []string{"http://localhost"},
 	}
-	server := httptest.NewServer(WebSocket(h, nil, nil, nil, wsCookieSessionStore{}, cfg, nil))
+	server := httptest.NewServer(WebSocket(h, nil, nil, nil, wsCookieSessionStore{}, cfg, nil, nil))
 	defer server.Close()
 
 	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")

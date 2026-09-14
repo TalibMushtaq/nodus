@@ -60,6 +60,27 @@ pub struct PairingTokenPushPayload {
     pub account_id: String,
 }
 
+/// Design A: Relay → Node — the Relay needs the bytes of a stored object to
+/// serve a browser download that has no direct host. `request_id` correlates
+/// the answer over the WS round trip (the Relay binds it to this node).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ShardFetchRequestPayload {
+    pub request_id: String,
+    pub object_id: String,
+}
+
+/// Design A: Node → Relay — answer to a `shard_fetch_request`. Status "ok"
+/// means the raw shard bytes follow in the next binary frame on the same
+/// connection; "missing"/"error" carry a reason and no bytes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ShardFetchResultPayload {
+    pub request_id: String,
+    pub object_id: String,
+    pub status: String, // "ok" | "missing" | "error"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
 /// Node → Relay: identity registration. The Relay keys pending-buffer delivery
 /// on node_id, so the node must register before it can receive pending_notify.
 #[derive(Debug, Clone, Serialize, Deserialize)]
