@@ -253,7 +253,10 @@ export class WebRtcSessionCache {
   /** Keys whose negotiation recently failed, until this timestamp. */
   private readonly cooldowns = new Map<string, number>();
 
-  constructor(private readonly cooldownMs = 30_000) {}
+  // A failed direct path is benched for a couple of minutes: retrying too soon
+  // makes every shard pay another negotiation/ack timeout while the transfer
+  // crawls (the buffer fallback is progress, this path is not).
+  constructor(private readonly cooldownMs = 120_000) {}
 
   /**
    * False while a key is cooling down after a negotiation failure. Callers skip

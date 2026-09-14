@@ -166,11 +166,11 @@ export function createBrowserAttemptPath(deps: BrowserAttemptPathDeps): AttemptP
         success: true,
       };
     } catch (err) {
-      // A session whose send failed must not be handed to the next shard; drop
-      // it so the next attempt negotiates a fresh connection. If it never even
-      // connected, the node/relay is likely unreachable — cool the path down so
-      // the remaining shards fall straight through to Path C.
-      if (!session.everConnected) sessions.markUnavailable(key);
+      // A failed direct transfer means this path is not working for this node
+      // right now. Drop the session and cool the path down so the remaining
+      // shards fall straight through to Path C instead of each paying another
+      // negotiation + ack timeout while every concurrency slot waits on it.
+      sessions.markUnavailable(key);
       sessions.evict(key);
       throw err;
     }
