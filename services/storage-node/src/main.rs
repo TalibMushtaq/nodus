@@ -228,11 +228,23 @@ pub(crate) async fn boot_daemon(cfg: config::Config) -> anyhow::Result<()> {
     // connections. `new()` stamps `started` here, so uptime covers node boot.
     let telemetry = telemetry::Telemetry::new();
 
+    // One WebRTC session manager shared by both signaling paths: Path A (LAN
+    // HTTP offers handled by the local listener) and Path B (offers relayed
+    // over the WS connection in the sync loop). Sessions, the concurrency cap,
+    // the TTL reaper, and the "direct active" telemetry are therefore global.
+    let webrtc_manager = Arc::new(webrtc::WebRtcManager::new(
+        db.clone(),
+        store_arc.clone(),
+        Arc::clone(&sync_identity_arc),
+        telemetry.clone(),
+    ));
+
     // The sync loop owns its own copy of the relay URL; the original is kept
     // for the local-discovery verify-fallback derivation below.
     let sync_relay_url = relay_url.clone();
     let sync_identity_for_loop = Arc::clone(&sync_identity_arc);
     let sync_store = store_arc.clone();
+    let sync_webrtc = webrtc_manager.clone();
 
     let sync_telemetry = telemetry.clone();
     let _sync_handle = tokio::spawn(async move {
@@ -251,6 +263,7 @@ pub(crate) async fn boot_daemon(cfg: config::Config) -> anyhow::Result<()> {
                 sync_identity_for_loop.clone(),
                 sync_db.clone(),
                 sync_store.clone(), // Phase 10: buffer-fetch flow writes shards
+                sync_webrtc.clone(), // Path B: relay-signaled WebRTC sessions
                 500,                // batch size
                 Some(Arc::new(move || sync_telemetry_for_hook.session_up())),
             );
@@ -298,6 +311,7 @@ pub(crate) async fn boot_daemon(cfg: config::Config) -> anyhow::Result<()> {
         Arc::clone(&sync_identity_arc),
         db.clone(),
         store_arc.clone(),
+        webrtc_manager.clone(),
         Some(&relay_url),
         local::server::LOCAL_PORT,
         telemetry.clone(),

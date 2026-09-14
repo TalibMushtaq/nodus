@@ -169,6 +169,7 @@ pub async fn spawn(
     identity: Arc<NodeIdentity>,
     db: SqlitePool,
     store: Arc<crate::store::ObjectStore>,
+    webrtc_manager: Arc<crate::webrtc::WebRtcManager>,
     relay_url: Option<&str>,
     telemetry: crate::telemetry::Telemetry,
 ) -> anyhow::Result<tokio::task::JoinHandle<()>> {
@@ -178,13 +179,9 @@ pub async fn spawn(
         crate::sync::client::relay_http_base(u)
     });
 
-    let webrtc_manager = Arc::new(crate::webrtc::WebRtcManager::new(
-        db.clone(),
-        store.clone(),
-        identity.clone(),
-        telemetry.clone(),
-    ));
-
+    // The manager is created by `main` and shared with the sync loop so Path A
+    // (local HTTP) and Path B (relay WS) sessions live in one pool with the same
+    // cap, TTL, and telemetry.
     let state = LocalState {
         identity,
         db,

@@ -22,6 +22,16 @@ export const WebRTCOfferPayloadSchema = z.object({
   from_peer: PeerIdSchema,
   to_peer: PeerIdSchema,
   sdp: z.string(),
+  /**
+   * Unix-epoch milliseconds the offer was signed at. Required by the node for
+   * relay-signaled (Path B) offers so it can enforce a freshness window; the
+   * LAN path carries the timestamp in HTTP headers instead. Optional at the
+   * schema layer so older/other senders remain valid, but the node rejects a
+   * relay offer without it.
+   */
+  timestamp: z.number().int().optional(),
+  /** Hex Ed25519 signature over `"{from_peer}:{session}:{timestamp}:{blake3(sdp)}"`. */
+  signature: z.string().optional(),
 });
 
 export type WebRTCOfferPayload = z.infer<typeof WebRTCOfferPayloadSchema>;
@@ -49,6 +59,10 @@ export const WebRTCIceCandidatePayloadSchema = z.object({
   from_peer: PeerIdSchema,
   to_peer: PeerIdSchema,
   candidate: z.string(),
+  /** Unix-epoch milliseconds the candidate was signed at (Path B only). */
+  timestamp: z.number().int().optional(),
+  /** Hex Ed25519 signature over `"{from_peer}:{session}:{timestamp}:{blake3(candidate)}"`. */
+  signature: z.string().optional(),
 });
 
 export type WebRTCIceCandidatePayload = z.infer<typeof WebRTCIceCandidatePayloadSchema>;

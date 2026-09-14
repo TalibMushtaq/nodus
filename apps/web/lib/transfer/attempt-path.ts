@@ -7,13 +7,14 @@
 // throws so the executor falls through to the next one.
 
 import { NODUS_LOCAL_PORT } from "@repo/relay-client";
-import { createLocalSignalingChannel, transferShardViaWebRtc } from "@repo/webrtc-transport";
+import { createLocalSignalingChannel } from "@repo/webrtc-transport";
 import type { SignalingChannel } from "@repo/webrtc-transport";
 import type { AttemptPathFn, LocalQueue, ShardTransferRequest, TransferPath, TransferResult } from "@repo/transfer-manager";
 
 import { getTrustedNodes } from "../trusted-nodes";
 import { canAttemptLocalPath, canAttemptRelaySignaling, getWebRtcCapabilities } from "../local-network";
 import type { ShardUpload, ShardUploadResult } from "../buffer";
+import { WebRtcSessionCache } from "./webrtc-session";
 
 export interface BrowserAttemptPathDeps {
   postShard: (dto: ShardUpload) => Promise<ShardUploadResult>;
@@ -32,6 +33,18 @@ export interface BrowserAttemptPathDeps {
    * Relay WS client omit it, and Path B then throws so the chain falls to C.
    */
   createRelayChannel?: (targetNode: string) => SignalingChannel | null;
+  /**
+   * Whether the Relay socket is currently connected. Path B signals *through*
+   * the Relay, so when it is down the attempt is skipped immediately instead
+   * of paying a negotiation timeout per shard. Path A (LAN) ignores this.
+   */
+  isRelayAvailable?: () => boolean;
+  /**
+   * Persistent WebRTC sessions shared across shards. Optional; when omitted an
+   * internal cache is used. The provider owns one and closes it on unmount so
+   * peer connections and signaling sockets do not outlive the app session.
+   */
+  sessionCache?: WebRtcSessionCache;
 }
 
 function toResult(
@@ -65,6 +78,7 @@ async function resolveLocalChannel(request: ShardTransferRequest, deps: BrowserA
 }
 
 export function createBrowserAttemptPath(deps: BrowserAttemptPathDeps): AttemptPathFn {
+  const sessions = deps.sessionCache ?? new WebRtcSessionCache();
   return async (request, path) => {
     const startedAt = Date.now();
 
@@ -103,38 +117,62 @@ export function createBrowserAttemptPath(deps: BrowserAttemptPathDeps): AttemptP
 
     // Path A/B: WebRTC. Capability or host failures throw to advance the chain.
     const caps = getWebRtcCapabilities();
-    let channel: SignalingChannel | null;
-    if (path === "local_signaling") {
+    const isLocal = path === "local_signaling";
+    if (isLocal) {
       if (!canAttemptLocalPath(caps)) throw new Error("local signaling unavailable in this browser context");
-      channel = await resolveLocalChannel(request, deps);
     } else {
       if (!canAttemptRelaySignaling(caps)) throw new Error("WebRTC unavailable in this browser context");
-      channel = deps.createRelayChannel?.(String(request.targetNode)) ?? null;
-      if (!channel) throw new Error("relay signaling channel unavailable");
+      if (!deps.createRelayChannel) throw new Error("relay signaling channel unavailable");
+      if (deps.isRelayAvailable && !deps.isRelayAvailable()) {
+        throw new Error("relay is not connected");
+      }
     }
 
-    const transfer = await transferShardViaWebRtc({
-      signalingChannel: channel,
-      shard: {
+    // One session per (path, node): negotiate once, then stream every shard of
+    // the transfer over the same data channel. Capability/host failures above
+    // happen before any session is created, so the chain falls through cleanly.
+    const key = `${path}:${request.targetNode}`;
+    // Skip a recent negotiation failure rather than retrying the full timeout
+    // on every shard; the cooldown is short so a recovered node is retried.
+    if (!sessions.isAvailable(key)) throw new Error("WebRTC session recently failed");
+
+    const session = sessions.get(key, () => ({
+      createChannel: () => {
+        if (isLocal) return resolveLocalChannel(request, deps);
+        const channel = deps.createRelayChannel!(String(request.targetNode));
+        if (!channel) throw new Error("relay signaling channel unavailable");
+        return channel;
+      },
+    }));
+
+    try {
+      const result = await session.send({
         transferId: request.transferId,
         fileId: request.fileId,
         versionNumber: request.versionNumber,
         shardIndex: request.shardIndex,
         data: request.data,
         hash: request.hash,
-        targetNode: request.targetNode,
+        targetNode: request.targetNode ? String(request.targetNode) : undefined,
         sourceDevice: deps.sourceDevice,
-      },
-      path: path === "local_signaling" ? "A" : "B",
-      // WebRTC streams the shard in 16 KB chunks and reports send progress.
-      onProgress: request.onProgress,
-    });
-    return {
-      path,
-      durationMs: transfer.durationMs,
-      transferId: request.transferId,
-      bytesTransferred: transfer.bytesTransferred,
-      success: true,
-    };
+        // sendShard streams 16 KB chunks and reports in-shard byte progress.
+        onProgress: request.onProgress,
+      });
+      return {
+        path,
+        durationMs: result.durationMs,
+        transferId: request.transferId,
+        bytesTransferred: result.bytesTransferred,
+        success: true,
+      };
+    } catch (err) {
+      // A session whose send failed must not be handed to the next shard; drop
+      // it so the next attempt negotiates a fresh connection. If it never even
+      // connected, the node/relay is likely unreachable — cool the path down so
+      // the remaining shards fall straight through to Path C.
+      if (!session.everConnected) sessions.markUnavailable(key);
+      sessions.evict(key);
+      throw err;
+    }
   };
 }

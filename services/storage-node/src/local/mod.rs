@@ -26,12 +26,13 @@ pub async fn spawn_local(
     identity: Arc<NodeIdentity>,
     db: SqlitePool,
     store: Arc<ObjectStore>,
+    webrtc_manager: Arc<crate::webrtc::WebRtcManager>,
     relay_url: Option<&str>,
     port: u16,
     telemetry: crate::telemetry::Telemetry,
 ) -> anyhow::Result<(mdns::MdnsAdvertiser, tokio::task::JoinHandle<()>)> {
     let mdns =
         mdns::MdnsAdvertiser::start(&identity.node_id, identity.public_key.as_bytes(), port)?;
-    let handle = server::spawn(identity, db, store, relay_url, telemetry).await?;
+    let handle = server::spawn(identity, db, store, webrtc_manager, relay_url, telemetry).await?;
     Ok((mdns, handle))
 }

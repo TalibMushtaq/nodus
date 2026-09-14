@@ -9,6 +9,8 @@ import { postShard } from "../lib/buffer";
 import type { WebRtcCapabilities } from "../lib/local-network";
 import { useWebRtcCapabilities } from "../lib/use-capabilities";
 import { createBrowserAttemptPath } from "../lib/transfer/attempt-path";
+import { createBrowserRelayChannel } from "../lib/transfer/relay-signaling";
+import { WebRtcSessionCache } from "../lib/transfer/webrtc-session";
 import { IndexedDBLocalQueue } from "../lib/transfer/local-queue";
 import { IndexedDBPathCache } from "../lib/transfer/path-cache";
 import { identityPrivateKey, signDeviceMessage } from "@repo/relay-client";
@@ -43,26 +45,59 @@ const TransferContext = createContext<TransferContextValue | null>(null);
  */
 export function TransferProvider({ children }: { children: ReactNode }) {
   const { device } = useAuth();
-  const { status: wsStatus } = useWs();
+  // `send`/`on` drive Path B: the browser's WebRTC offer and ICE trickle to the
+  // node as `webrtc_*` envelopes over the same Relay socket the rest of the app
+  // uses. Without this the relay_signaling path had no channel and every remote
+  // upload fell through to the HTTP relay buffer.
+  const { status: wsStatus, send: wsSend, on: wsOn } = useWs();
   const [manager, setManager] = useState<TransferManager | null>(null);
   const [queuedCount, setQueuedCount] = useState(0);
   const queueRef = useRef<IndexedDBLocalQueue | null>(null);
   const capabilities = useWebRtcCapabilities();
+
+  // Path B signals through the Relay, so the attempt path needs the *current*
+  // socket state without rebuilding the manager on every status transition.
+  const wsStatusRef = useRef(wsStatus);
+  useEffect(() => {
+    wsStatusRef.current = wsStatus;
+  }, [wsStatus]);
 
   useEffect(() => {
     if (!device) return;
     let cancelled = false;
     const cache = new IndexedDBPathCache();
     const queue = new IndexedDBLocalQueue();
+    // Persistent WebRTC sessions outlive individual shards; the provider owns
+    // them so an unmount closes the peer connections and signaling sockets.
+    const sessionCache = new WebRtcSessionCache();
     Promise.all([cache.hydrate(), queue.hydrate()]).then(() => {
       if (cancelled) return;
       const attemptPath = createBrowserAttemptPath({
         postShard,
         localQueue: queue,
+        sessionCache,
         deviceId: device.device_id,
         sourceDevice: device.device_id,
         // Path A requires proving device identity to the node per message.
         signLocal: (message) => signDeviceMessage(identityPrivateKey(device), message),
+        // Path B (internet WebRTC): signal through the Relay socket. Built per
+        // attempt because each shard transfer needs its own signaling state;
+        // it returns null when the socket is not up, which makes the executor
+        // fall through to Path C.
+        createRelayChannel: (targetNode) =>
+          createBrowserRelayChannel({
+            send: wsSend,
+            on: wsOn,
+            fromPeer: device.device_id,
+            toPeer: targetNode,
+            // Prove device identity so a compromised Relay cannot inject an
+            // offer on this device's behalf.
+            sign: (message) => signDeviceMessage(identityPrivateKey(device), message),
+          }),
+        // Skip Path B entirely while the Relay socket is down: it cannot signal,
+        // and otherwise every shard would burn a negotiation timeout before
+        // falling back to the buffer.
+        isRelayAvailable: () => wsStatusRef.current === "connected",
       });
       queueRef.current = queue;
       setManager(new TransferManager(attemptPath, undefined, cache, queue));
@@ -71,8 +106,9 @@ export function TransferProvider({ children }: { children: ReactNode }) {
     return () => {
       cancelled = true;
       queueRef.current = null;
+      sessionCache.closeAll();
     };
-  }, [device]);
+  }, [device, wsSend, wsOn]);
 
   const syncQueued = useCallback(() => setQueuedCount(queueRef.current?.size ?? 0), []);
 

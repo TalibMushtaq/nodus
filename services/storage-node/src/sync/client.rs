@@ -209,12 +209,21 @@ const RELAY_FETCH_TIMEOUT: Duration = Duration::from_secs(30);
 /// chunk) while still failing deterministically.
 const WS_WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Freshness window for a signed Path B (relay-signaled WebRTC) message. The
+/// signature binds the device, session, timestamp, and payload hash; bounding
+/// the timestamp stops a captured offer from being replayed later.
+const RELAY_SIGNAL_FRESHNESS_MS: i64 = 60_000;
+
 pub struct SyncClient {
     pub relay_url: String,
     pub identity: Arc<NodeIdentity>,
     pub db: SqlitePool,
     pub batch_size: usize,
     pub object_store: Arc<ObjectStore>,
+    /// Shared with the local HTTP listener. Path B (relay-signaled internet
+    /// WebRTC) creates sessions here from offers that arrive over the Relay WS,
+    /// so the same session cap/TTL/telemetry governs both signaling paths.
+    pub webrtc_manager: Arc<crate::webrtc::WebRtcManager>,
     pub http_fetch_url: String,
     pub http_client: reqwest::Client,
     /// Fired once per successful session immediately after Relay auth, so the
@@ -229,6 +238,7 @@ impl SyncClient {
         identity: Arc<NodeIdentity>,
         db: SqlitePool,
         object_store: Arc<ObjectStore>,
+        webrtc_manager: Arc<crate::webrtc::WebRtcManager>,
         batch_size: usize,
         on_connected: Option<Arc<dyn Fn() + Send + Sync>>,
     ) -> Self {
@@ -238,6 +248,7 @@ impl SyncClient {
             identity,
             db,
             object_store,
+            webrtc_manager,
             // Bound the buffer fetch (#9): a stalled Relay should fail this
             // shard and let the session continue, not pin the read loop.
             http_client: reqwest::Client::builder()
@@ -420,6 +431,20 @@ impl SyncClient {
         // Consume the immediate first tick; the initial SYNC_HELLO was already
         // sent above, so the first periodic pull is one interval later.
         sync_pull.tick().await;
+
+        // Path B: a WebRTC session produces its local ICE candidates
+        // asynchronously *after* the answer is sent, so they cannot ride the
+        // answer SDP. A per-session forwarding task pushes them into this
+        // channel, and the select loop drains it into `webrtc_ice_candidate`
+        // envelopes. Sender and receiver are separate variables on purpose:
+        // the offer branch clones only the sender while the ICE branch awaits
+        // the receiver, so `select!` has no borrow conflict.
+        let (ice_tx, mut ice_rx) = tokio::sync::mpsc::unbounded_channel::<(String, String)>();
+        // One forwarder per session id, removed by the task when it ends (its
+        // session was pruned) so a later re-offer spawns a fresh one.
+        let ice_forwarders: Arc<tokio::sync::Mutex<std::collections::HashSet<String>>> =
+            Arc::new(tokio::sync::Mutex::new(std::collections::HashSet::new()));
+
         loop {
             tokio::select! {
                 maybe_msg = read.next() => {
@@ -638,9 +663,32 @@ impl SyncClient {
                             }
                         }
                     }
+                    // Path B: a device (browser) that cannot reach us on the LAN
+                    // is opening a WebRTC data channel over the Relay. Gate on a
+                    // paired/ACTIVE device of this account, create or reuse the
+                    // session, and send the answer back over the same WS.
+                    "webrtc_offer" => {
+                        self.handle_relay_offer(&mut write, &env, &ice_tx, &ice_forwarders)
+                            .await?;
+                    }
+                    // Path B trickle: the device's ICE candidates, added to the
+                    // live session. Unknown sessions/candidates are ignored (a
+                    // late candidate after the session was pruned is not fatal).
+                    "webrtc_ice_candidate" => {
+                        self.handle_relay_ice_candidate(&env).await?;
+                    }
                     _ => {}
                 }
             }
+                }
+                Some((device_id, candidate)) = ice_rx.recv() => {
+                    // Forward one node-side ICE candidate to its device.
+                    let payload = serde_json::json!({
+                        "from_peer": self.identity.node_id,
+                        "to_peer": device_id,
+                        "candidate": candidate,
+                    });
+                    Self::send_envelope(&mut write, "webrtc_ice_candidate", &payload).await?;
                 }
                 _ = heartbeat.tick() => {
                     // Liveness ping (§13): the Relay keys the node's
@@ -685,6 +733,180 @@ impl SyncClient {
             }
         }
 
+        Ok(())
+    }
+
+    /// Verify a device-signed Path B signaling message: the sender must be a
+    /// paired, ACTIVE device, the timestamp must be fresh, and the Ed25519
+    /// signature must cover
+    /// `"{device}:relay-{device}:{timestamp}:{blake3(payload)}"`. This is the
+    /// relay-path counterpart to the LAN handler's per-message device proof.
+    async fn verify_relay_signaling(
+        &self,
+        from_peer: &str,
+        env: &ProtocolEnvelope,
+        payload: &str,
+    ) -> anyhow::Result<()> {
+        let timestamp = env
+            .payload
+            .get("timestamp")
+            .and_then(|v| v.as_i64())
+            .ok_or_else(|| anyhow::anyhow!("missing timestamp"))?;
+        let signature = env
+            .payload
+            .get("signature")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("missing signature"))?;
+
+        let public_key: Vec<u8> = sqlx::query_scalar(
+            "SELECT public_key_bytes FROM devices WHERE device_id = ? AND status = 'ACTIVE'",
+        )
+        .bind(from_peer)
+        .fetch_optional(&self.db)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("device is not a paired, active device"))?;
+
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        if (now_ms - timestamp).abs() > RELAY_SIGNAL_FRESHNESS_MS {
+            return Err(anyhow::anyhow!("stale signaling timestamp"));
+        }
+
+        let digest = blake3::hash(payload.as_bytes()).to_hex().to_string();
+        let message = format!("{from_peer}:relay-{from_peer}:{timestamp}:{digest}");
+        crate::local::auth::verify_signature(&public_key, message.as_bytes(), signature)
+    }
+
+    /// Path B: handle an inbound `webrtc_offer` from a paired device and reply
+    /// with `webrtc_answer` over the Relay WS.
+    async fn handle_relay_offer<W>(
+        &self,
+        write: &mut W,
+        env: &ProtocolEnvelope,
+        ice_tx: &tokio::sync::mpsc::UnboundedSender<(String, String)>,
+        forwarders: &Arc<tokio::sync::Mutex<std::collections::HashSet<String>>>,
+    ) -> anyhow::Result<()>
+    where
+        W: futures_util::Sink<Message> + Unpin,
+        W::Error: std::error::Error + Send + Sync + 'static,
+    {
+        let from_peer = env
+            .payload
+            .get("from_peer")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let to_peer = env
+            .payload
+            .get("to_peer")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let sdp = env.payload.get("sdp").and_then(|v| v.as_str()).unwrap_or("");
+
+        // The relay routes to us, but a misbehaving relay could address another
+        // node; never act on an offer not addressed to this node.
+        if to_peer != self.identity.node_id || from_peer.is_empty() || sdp.is_empty() {
+            return Ok(());
+        }
+
+        // Verify the device's signature before creating a session. The Relay
+        // forwards signaling blindly, so without this a compromised Relay could
+        // open sessions as any paired device. Message shape matches the LAN
+        // path: "{device}:{session}:{timestamp}:{blake3(payload)}".
+        if let Err(e) = self.verify_relay_signaling(from_peer, env, sdp).await {
+            eprintln!("[sync] rejecting webrtc_offer from {from_peer}: {e}");
+            return Ok(());
+        }
+
+        // The WS payload carries no session id, so key one relay session per
+        // device; the same device re-offering reuses it.
+        let session_id = format!("relay-{from_peer}");
+        let session = match self
+            .webrtc_manager
+            .get_or_create_session(&session_id, from_peer)
+            .await
+        {
+            Ok(session) => session,
+            Err(e) => {
+                eprintln!("[sync] failed to create WebRTC session for {from_peer}: {e}");
+                return Ok(());
+            }
+        };
+        session.touch();
+
+        let answer = match session.handle_offer(sdp).await {
+            Ok(answer) => answer,
+            Err(e) => {
+                eprintln!("[sync] failed to handle WebRTC offer from {from_peer}: {e}");
+                return Ok(());
+            }
+        };
+
+        // Start forwarding this session's ICE candidates once. The task ends
+        // when the session is dropped (broadcast closes); removing the id then
+        // lets a later re-offer start a fresh forwarder.
+        {
+            let mut set = forwarders.lock().await;
+            if set.insert(session_id.clone()) {
+                let mut ice_rx = session.subscribe_ice();
+                let tx = ice_tx.clone();
+                let device = from_peer.to_string();
+                let forwarders = Arc::clone(forwarders);
+                let session_id = session_id.clone();
+                tokio::spawn(async move {
+                    while let Ok(candidate) = ice_rx.recv().await {
+                        if tx.send((device.clone(), candidate)).is_err() {
+                            break;
+                        }
+                    }
+                    forwarders.lock().await.remove(&session_id);
+                });
+            }
+        }
+
+        let payload = serde_json::json!({
+            "from_peer": self.identity.node_id,
+            "to_peer": from_peer,
+            "sdp": answer,
+        });
+        Self::send_envelope(write, "webrtc_answer", &payload).await
+    }
+
+    /// Path B: add an inbound ICE candidate to the device's live session.
+    async fn handle_relay_ice_candidate(&self, env: &ProtocolEnvelope) -> anyhow::Result<()> {
+        let from_peer = env
+            .payload
+            .get("from_peer")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let to_peer = env
+            .payload
+            .get("to_peer")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let candidate = env
+            .payload
+            .get("candidate")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if to_peer != self.identity.node_id || from_peer.is_empty() || candidate.is_empty() {
+            return Ok(());
+        }
+        if let Err(e) = self
+            .verify_relay_signaling(from_peer, env, candidate)
+            .await
+        {
+            eprintln!("[sync] rejecting webrtc_ice_candidate from {from_peer}: {e}");
+            return Ok(());
+        }
+        let session_id = format!("relay-{from_peer}");
+        if let Some(session) = self.webrtc_manager.get_session(&session_id).await {
+            if session.device_id != from_peer {
+                return Ok(());
+            }
+            session.touch();
+            if let Err(e) = session.add_ice_candidate(candidate).await {
+                eprintln!("[sync] failed to add ICE candidate from {from_peer}: {e}");
+            }
+        }
         Ok(())
     }
 
@@ -1229,6 +1451,93 @@ fn schema_major_compatible(version: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A session manager for tests that construct a `SyncClient` but never open
+    /// a WebRTC session.
+    fn test_webrtc_manager(
+        pool: &SqlitePool,
+        store: Arc<ObjectStore>,
+        identity: Arc<NodeIdentity>,
+    ) -> Arc<crate::webrtc::WebRtcManager> {
+        Arc::new(crate::webrtc::WebRtcManager::new(
+            pool.clone(),
+            store,
+            identity,
+            crate::telemetry::Telemetry::new(),
+        ))
+    }
+
+    #[tokio::test]
+    async fn relay_signaling_verifies_device_signature() {
+        use ed25519_dalek::{Signer, SigningKey};
+
+        let dir = tempdir().unwrap();
+        let pool = db::open(dir.path()).await.unwrap();
+        let store = Arc::new(
+            ObjectStore::new(dir.path().join("objects"), pool.clone())
+                .await
+                .unwrap(),
+        );
+        let identity = Arc::new(identity::load_or_generate(dir.path()).unwrap());
+        let client = SyncClient::new(
+            "ws://127.0.0.1:8080/ws".to_string(),
+            identity.clone(),
+            pool.clone(),
+            store.clone(),
+            test_webrtc_manager(&pool, store, identity.clone()),
+            100,
+            None,
+        );
+
+        let signing = SigningKey::from_bytes(&[7u8; 32]);
+        let public = signing.verifying_key().to_bytes();
+        sqlx::query(
+            "INSERT INTO devices (device_id, public_key_bytes, status, created_at) \
+             VALUES ('dev-relay', ?, 'ACTIVE', 'now')",
+        )
+        .bind(public.to_vec())
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let sdp = "v=0-offer";
+        let timestamp = chrono::Utc::now().timestamp_millis();
+        let digest = blake3::hash(sdp.as_bytes()).to_hex().to_string();
+        let message = format!("dev-relay:relay-dev-relay:{timestamp}:{digest}");
+        let signature = hex::encode(signing.sign(message.as_bytes()).to_bytes());
+        let env = ProtocolEnvelope::new(
+            "webrtc_offer",
+            serde_json::json!({
+                "from_peer": "dev-relay",
+                "to_peer": identity.node_id,
+                "sdp": sdp,
+                "timestamp": timestamp,
+                "signature": signature,
+            }),
+        );
+
+        // Valid signature over the exact payload verifies.
+        assert!(
+            client
+                .verify_relay_signaling("dev-relay", &env, sdp)
+                .await
+                .is_ok()
+        );
+        // A swapped payload changes the digest, so the signature no longer binds.
+        assert!(
+            client
+                .verify_relay_signaling("dev-relay", &env, "tampered-sdp")
+                .await
+                .is_err()
+        );
+        // An unpaired device is rejected regardless of the signature.
+        assert!(
+            client
+                .verify_relay_signaling("dev-unknown", &env, sdp)
+                .await
+                .is_err()
+        );
+    }
     use crate::db;
     use crate::identity;
     use tempfile::tempdir;
@@ -1485,14 +1794,18 @@ mod tests {
     async fn test_record_shard_metadata_waits_for_version() {
         let dir = tempdir().unwrap();
         let pool = db::open(dir.path()).await.unwrap();
-        let store = ObjectStore::new(dir.path().join("objects"), pool.clone())
-            .await
-            .unwrap();
+        let store = Arc::new(
+            ObjectStore::new(dir.path().join("objects"), pool.clone())
+                .await
+                .unwrap(),
+        );
+        let identity = Arc::new(identity::load_or_generate(dir.path()).unwrap());
         let client = SyncClient::new(
             "ws://127.0.0.1:8080/ws".to_string(),
-            Arc::new(identity::load_or_generate(dir.path()).unwrap()),
+            identity.clone(),
             pool.clone(),
-            Arc::new(store),
+            store.clone(),
+            test_webrtc_manager(&pool, store.clone(), identity.clone()),
             100,
             None,
         );
@@ -1552,14 +1865,18 @@ mod tests {
     async fn rejects_conflicting_relay_shard() {
         let dir = tempdir().unwrap();
         let pool = db::open(dir.path()).await.unwrap();
-        let store = ObjectStore::new(dir.path().join("objects"), pool.clone())
-            .await
-            .unwrap();
+        let store = Arc::new(
+            ObjectStore::new(dir.path().join("objects"), pool.clone())
+                .await
+                .unwrap(),
+        );
+        let identity = Arc::new(identity::load_or_generate(dir.path()).unwrap());
         let client = SyncClient::new(
             "ws://127.0.0.1:8080/ws".to_string(),
-            Arc::new(identity::load_or_generate(dir.path()).unwrap()),
+            identity.clone(),
             pool.clone(),
-            Arc::new(store),
+            store.clone(),
+            test_webrtc_manager(&pool, store.clone(), identity.clone()),
             100,
             None,
         );
@@ -1614,14 +1931,18 @@ mod tests {
     async fn record_shard_metadata_enforces_signed_manifest() {
         let dir = tempdir().unwrap();
         let pool = db::open(dir.path()).await.unwrap();
-        let store = ObjectStore::new(dir.path().join("objects"), pool.clone())
-            .await
-            .unwrap();
+        let store = Arc::new(
+            ObjectStore::new(dir.path().join("objects"), pool.clone())
+                .await
+                .unwrap(),
+        );
+        let identity = Arc::new(identity::load_or_generate(dir.path()).unwrap());
         let client = SyncClient::new(
             "ws://127.0.0.1:8080/ws".to_string(),
-            Arc::new(identity::load_or_generate(dir.path()).unwrap()),
+            identity.clone(),
             pool.clone(),
-            Arc::new(store),
+            store.clone(),
+            test_webrtc_manager(&pool, store.clone(), identity.clone()),
             100,
             None,
         );
