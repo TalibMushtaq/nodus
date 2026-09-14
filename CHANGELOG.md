@@ -1,5 +1,17 @@
 # Changelog
 
+## [2026-09-14] - Upload widget survives navigation; flat object layout
+
+**What changed:** Two fixes for large uploads, plus upload diagnostics.
+
+- **Widget persistence:** the floating upload-progress card moved out of the Files page into a global `UploadProvider` mounted in the dashboard layout. The queue state and throughput sampler live there now, so navigating away from Files (which unmounts that page while the upload's async loop keeps running) no longer makes the widget disappear.
+- **How/where details:** the expanded widget now shows each upload's live transfer path (Local P2P / Relay WebRTC / Relay buffer / Queued on device) and the receiving storage-node name, alongside bytes, shard count, phase and speed. The path is captured from the transfer-manager result per shard.
+- **Flat object layout:** the storage node stored each shard at `objects/<ab>/<hash>`; because distinct hashes rarely share a prefix, that read as "a folder per shard". Objects now live directly under `objects/<hash>`, and `migrate_flat_layout` moves existing bucketed objects on boot (logged once, idempotent). The live dev node migrated 22 objects with no divergence on the boot reconcile.
+
+**Impact:** `apps/web/providers/upload-provider.tsx` (new), `apps/web/app/(dashboard)/layout.tsx`, `apps/web/app/(dashboard)/files/files-client.tsx`, `services/storage-node/src/store/{layout.rs,write.rs,mod.rs}`. Verified: full `pnpm test`, `pnpm check-types`, `pnpm lint`, web build; node `migrate_flat_layout` unit test; live node restart showed `migrated 22 object(s)` and a clean reconcile.
+
+**Follow-ups:** A flat `objects/` directory is fine for personal-scale vaults; a very large vault (hundreds of thousands of shards) would want re-bucketing. The upload loop still lives in FilesClient and keeps running after unmount, so its page-level error state is discarded on navigation (the widget, which is global, is unaffected).
+
 ## [2026-09-14] - Live two-peer WebRTC transfer test
 
 **What changed:** Added `services/storage-node/tests/webrtc_session_transfer_test.rs`: a real WebRTC transfer with the node's `WebRtcManager` as one peer and the `webrtc` crate as the other. They complete an actual SDP + ICE handshake over loopback and stream **two shards over one data channel**, asserting each ack is `verified` and each shard's bytes reach the object store.
