@@ -262,9 +262,9 @@ pub(crate) async fn boot_daemon(cfg: config::Config) -> anyhow::Result<()> {
                 sync_relay_url.clone(),
                 sync_identity_for_loop.clone(),
                 sync_db.clone(),
-                sync_store.clone(), // Phase 10: buffer-fetch flow writes shards
+                sync_store.clone(),  // Phase 10: buffer-fetch flow writes shards
                 sync_webrtc.clone(), // Path B: relay-signaled WebRTC sessions
-                500,                // batch size
+                500,                 // batch size
                 Some(Arc::new(move || sync_telemetry_for_hook.session_up())),
             );
             sync_telemetry.set_connecting();

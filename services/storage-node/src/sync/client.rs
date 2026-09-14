@@ -799,7 +799,11 @@ impl SyncClient {
             .get("to_peer")
             .and_then(|v| v.as_str())
             .unwrap_or("");
-        let sdp = env.payload.get("sdp").and_then(|v| v.as_str()).unwrap_or("");
+        let sdp = env
+            .payload
+            .get("sdp")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
 
         // The relay routes to us, but a misbehaving relay could address another
         // node; never act on an offer not addressed to this node.
@@ -890,10 +894,7 @@ impl SyncClient {
         if to_peer != self.identity.node_id || from_peer.is_empty() || candidate.is_empty() {
             return Ok(());
         }
-        if let Err(e) = self
-            .verify_relay_signaling(from_peer, env, candidate)
-            .await
-        {
+        if let Err(e) = self.verify_relay_signaling(from_peer, env, candidate).await {
             eprintln!("[sync] rejecting webrtc_ice_candidate from {from_peer}: {e}");
             return Ok(());
         }
@@ -1267,7 +1268,8 @@ impl SyncClient {
                 let env = ProtocolEnvelope::new("snapshot_chunk", serde_json::to_value(chunk)?);
                 SyncClient::send_json(&mut *self.write, &env).await?;
                 if self.last_ping.elapsed() >= HEARTBEAT_INTERVAL {
-                    SyncClient::send_heartbeat(&mut *self.write, self.node_id, self.storage).await?;
+                    SyncClient::send_heartbeat(&mut *self.write, self.node_id, self.storage)
+                        .await?;
                     self.last_ping = std::time::Instant::now();
                 }
                 Ok(())

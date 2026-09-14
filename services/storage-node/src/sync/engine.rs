@@ -564,7 +564,9 @@ pub(crate) async fn apply_remote_event_conn(
             if !file_id.is_empty()
                 && !recipient_id.is_empty()
                 && !encrypted_key.is_empty()
-                && (recipient_kind == "device" || recipient_kind == "node" || recipient_kind == "recovery")
+                && (recipient_kind == "device"
+                    || recipient_kind == "node"
+                    || recipient_kind == "recovery")
             {
                 sqlx::query(
                     r#"
@@ -612,7 +614,9 @@ pub(crate) async fn apply_remote_event_conn(
             if !folder_id.is_empty()
                 && !recipient_id.is_empty()
                 && !encrypted_key.is_empty()
-                && (recipient_kind == "device" || recipient_kind == "node" || recipient_kind == "recovery")
+                && (recipient_kind == "device"
+                    || recipient_kind == "node"
+                    || recipient_kind == "recovery")
             {
                 sqlx::query(
                     r#"

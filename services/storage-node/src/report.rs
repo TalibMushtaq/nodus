@@ -432,7 +432,10 @@ mod tests {
     fn disk_usage_of_missing_path_is_unknown() {
         // A path that cannot be stat'd yields (0, 0) rather than a bogus total,
         // so the heartbeat omits capacity instead of reporting "0 of 0".
-        assert_eq!(disk_usage(std::path::Path::new("/nonexistent/nodus/data")), (0, 0));
+        assert_eq!(
+            disk_usage(std::path::Path::new("/nonexistent/nodus/data")),
+            (0, 0)
+        );
     }
 
     #[test]

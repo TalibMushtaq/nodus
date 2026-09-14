@@ -72,22 +72,23 @@ async fn test_live_webrtc_session_transfers_two_shards() {
         let session = session.clone();
         let pending = client_pending.clone();
         let ready = client_ready.clone();
-        client
-            .on_ice_candidate(Box::new(move |candidate| {
-                let session = session.clone();
-                let pending = pending.clone();
-                let ready = ready.clone();
-                Box::pin(async move {
-                    let Some(candidate) = candidate else { return };
-                    let Ok(init) = candidate.to_json() else { return };
-                    if ready.load(Ordering::SeqCst) {
-                        let json = serde_json::to_string(&init).unwrap_or_default();
-                        let _ = session.add_ice_candidate(&json).await;
-                    } else {
-                        pending.lock().await.push(init);
-                    }
-                })
-            }));
+        client.on_ice_candidate(Box::new(move |candidate| {
+            let session = session.clone();
+            let pending = pending.clone();
+            let ready = ready.clone();
+            Box::pin(async move {
+                let Some(candidate) = candidate else { return };
+                let Ok(init) = candidate.to_json() else {
+                    return;
+                };
+                if ready.load(Ordering::SeqCst) {
+                    let json = serde_json::to_string(&init).unwrap_or_default();
+                    let _ = session.add_ice_candidate(&json).await;
+                } else {
+                    pending.lock().await.push(init);
+                }
+            })
+        }));
     }
 
     let node_pending: Arc<Mutex<Vec<RTCIceCandidateInit>>> = Arc::new(Mutex::new(Vec::new()));
@@ -166,7 +167,10 @@ async fn test_live_webrtc_session_transfers_two_shards() {
     .expect("data channel never opened");
 
     // ── two shards over ONE channel ──────────────────────────────────────────
-    for (index, payload) in [(0i64, b"first-shard-ciphertext".to_vec()), (1i64, b"second-shard-ciphertext".to_vec())] {
+    for (index, payload) in [
+        (0i64, b"first-shard-ciphertext".to_vec()),
+        (1i64, b"second-shard-ciphertext".to_vec()),
+    ] {
         let hash = blake3::hash(&payload).to_hex().to_string();
         let meta = serde_json::json!({
             "file_id": "file-live",
@@ -188,7 +192,10 @@ async fn test_live_webrtc_session_transfers_two_shards() {
             .await
             .expect("timed out waiting for the shard ack")
             .expect("ack channel closed");
-        assert_eq!(ack["status"], "verified", "shard {index} not verified: {ack}");
+        assert_eq!(
+            ack["status"], "verified",
+            "shard {index} not verified: {ack}"
+        );
         assert!(
             store.exists(&hash),
             "shard {index} bytes were not written to the object store"
