@@ -1,5 +1,84 @@
 # Changelog
 
+## [2026-09-14] - Live two-peer WebRTC transfer test
+
+**What changed:** Added `services/storage-node/tests/webrtc_session_transfer_test.rs`: a real WebRTC transfer with the node's `WebRtcManager` as one peer and the `webrtc` crate as the other. They complete an actual SDP + ICE handshake over loopback and stream **two shards over one data channel**, asserting each ack is `verified` and each shard's bytes reach the object store.
+
+- This is the coverage the unit tests could not reach: it proves the transport moves bytes end-to-end, and that a single session carries more than one shard — the property the browser's persistent-session reuse relies on. The transport is shared by Path A and Path B.
+- Signaling is in-process (the offer is passed straight to `session.handle_offer`); the relay-signaled Path B wiring remains covered by `relay-signaling.test.ts` (web) and `relay_signaling_verifies_device_signature` (node).
+- ICE is trickled with a small per-side buffer so a candidate that arrives before the peer's remote description is set is not dropped.
+- `bytes` added as a dev-dependency for the data-channel `send` API.
+
+**Impact:** `services/storage-node/tests/webrtc_session_transfer_test.rs` (new), `services/storage-node/Cargo.toml`. Verified: full `pnpm test` (TS/Rust/Go); the new test passed 5/5 consecutive runs, so it is not ICE-flaky in CI conditions.
+
+**Follow-ups:** The peer is the Rust `webrtc` crate, not a browser; browser↔node Path B is still only covered by unit tests plus manual runs.
+
+## [2026-09-14] - Configurable shard size
+
+**What changed:** Shard size is now a client choice (default 8 MiB, range 1–32 MiB) rather than a hard-coded constant, so a large upload can trade many small transfers for fewer, bigger ones.
+
+- **`@repo/core`**: added `DEFAULT_SHARD_SIZE_BYTES`, `MIN_SHARD_SIZE_BYTES`, `MAX_SHARD_SIZE_BYTES`, `resolveShardSize()` (clamp/fallback), and an optional `shardSize` parameter on `splitIntoShards`. `SHARD_SIZE_BYTES` remains an alias for the default.
+- **Web**: `shardSizeBytes` joins the sync preferences (Settings → Sync, 8/16/32 MB) with `NEXT_PUBLIC_SHARD_SIZE_BYTES` as the deployment default; older stored preferences are normalized. The value threads through `useUploader` → `uploadFile`/`measurePlaintext`, and the uploader persists it in the progress record so a resume keeps the original shard boundaries even if the preference changes mid-upload.
+- **Relay**: new `MAX_SHARD_BYTES_MB` (default 8) drives both the buffer-upload cap and the WebSocket read limit used for shard binary frames during relay-mediated downloads — previously two separate 10 MB constants. Implemented as `config.MaxShardBytes`, `hub.WithMaxMessageSize(...)`, and a variadic cap on `BufferUpload` (existing 4-arg calls/tests still compile). Default behavior is byte-for-byte unchanged.
+- **Node**: unchanged — its 64 MiB `MAX_SHARD_BYTES` already covers the 32 MiB client maximum.
+
+**Impact:** `packages/core/src/{shard.ts,index.ts}`, `packages/core/tests/shard.test.ts`, `apps/web/lib/{uploader.ts,upload-progress.ts,preferences.ts,use-uploader.ts}`, `apps/web/app/(dashboard)/files/files-client.tsx`, `apps/web/app/(dashboard)/settings/page.tsx`, `apps/web/lib/__tests__/uploader.test.ts`, `services/relay/internal/{config/config.go,hub/hub.go,handler/buffer_upload.go}`, `services/relay/main.go`, relay config tests. Verified: full `pnpm test` (TS/Rust/Go), `pnpm check-types`, `pnpm lint`, web build.
+
+**Follow-ups:** There is no negotiated max — the operator raises the relay cap and the client picks a size. A mismatch only affects the Path C buffer (WebRTC is not relay-capped at upload time); it surfaces as rejected buffer uploads. Default remains 8 MiB, so nothing changes unless opted in.
+
+## [2026-09-14] - Phase 1b: one persistent WebRTC session per transfer
+
+**What changed:** WebRTC uploads no longer negotiate a fresh peer connection for every 8 MiB shard. A session is created once per `(path, node)` and every shard of the transfer streams over the same data channel, so an 800 MB file pays one SDP/ICE round trip instead of ~100.
+
+- New `apps/web/lib/transfer/webrtc-session.ts`: `PersistentWebRtcSession` negotiates once, serializes shard sends over the channel (the frame protocol has no shard id on the wire, so overlapping sends would corrupt both), closes after 120 s idle, and poisons itself on failure. `WebRtcSessionCache` keeps one session per key and applies a 30 s cooldown after a *negotiation-level* failure, so an offline node does not cost one negotiation timeout per shard before Path C runs.
+- `apps/web/lib/transfer/attempt-path.ts`: Path A/B now run through the cache instead of calling `transferShardViaWebRtc` per shard. A session that never connected is cooled down and evicted; one that connected is only evicted (a one-off shard failure should not bench the path).
+- Relay gate: Path B is skipped immediately when the Relay socket is down (`isRelayAvailable`), preserving the fast relay-buffer fallback.
+- `TransferProvider` owns the cache and closes all sessions on unmount, so peer connections and signaling sockets never outlive the app session.
+- The node needed no change — its data-channel handler already resets per-shard state after `shard_done` and keeps the session warm.
+
+**Impact:** `apps/web/lib/transfer/webrtc-session.ts` (new), `apps/web/lib/transfer/attempt-path.ts`, `apps/web/providers/transfer-provider.tsx`, `apps/web/lib/__tests__/webrtc-session.test.ts` (new). Verified: TS 193 tests, Rust 210 + integration, Go, web typecheck/lint/build all pass.
+
+**Follow-ups:** A single data channel serializes shards, so there is no intra-transfer parallelism on the WebRTC path (reasonable for one link, but a multi-lane pool is a possible future improvement). Live two-peer WebRTC is still not exercised in CI.
+
+## [2026-09-14] - Path B end-to-end: internet WebRTC uploads (relay-signaled)
+
+**What changed:** A browser that cannot reach a storage node on the LAN now streams shards to it directly over WebRTC, signaled through the Relay WebSocket — instead of always falling back to the HTTP relay buffer. This completes the spec's Path B across web, protocol, and node.
+
+- **Web** (`apps/web/lib/transfer/relay-signaling.ts`, new): a `SignalingChannel` over the app's WS provider that sends `webrtc_offer` + trickle ICE to the node and accepts the node's `webrtc_answer`/ICE, filtering by peer pair. Wired into `TransferProvider` via `createRelayChannel`; previously `createBrowserAttemptPath` was never given a factory, so `relay_signaling` always threw and remote uploads fell to Path C.
+- **Signing:** each relay signaling message is signed with the device key over `"{device}:relay-{device}:{timestamp}:{blake3(payload)}"`, mirroring the LAN path's per-message device proof. `webrtc_offer`/`webrtc_ice_candidate` protocol payloads gained optional `timestamp`/`signature`; JSON schemas regenerated.
+- **Node** (`services/storage-node/src/sync/client.rs`): the WS read loop now handles `webrtc_offer` and `webrtc_ice_candidate`. `verify_relay_signaling` requires a paired/ACTIVE device and a fresh, payload-binding Ed25519 signature before any session is created, so a compromised Relay cannot inject signaling. Sessions are keyed one-per-device (`relay-<device>`), the answer is returned over WS, and async local ICE candidates are forwarded back by a per-session task feeding an mpsc the `select!` loop drains (sender/receiver live in separate variables to avoid a select borrow conflict).
+- **Shared manager** (`main.rs`, `local/{mod,server}.rs`): one `WebRtcManager` is created in `main` and shared by both the local HTTP listener (Path A) and the sync loop (Path B), so the session cap, TTL reaper, and "direct active" telemetry are global. The Relay needed no change — `HandleWebRTCSignaling` already forwards envelopes verbatim.
+
+**Impact:** `apps/web/lib/transfer/relay-signaling.ts` (new), `apps/web/providers/transfer-provider.tsx`, `apps/web/lib/__tests__/relay-signaling.test.ts` (new), `packages/protocol/src/messages/webrtc.ts` (+ regenerated `packages/protocol/schemas/webrtc_{offer,ice_candidate}.schema.json`), `services/storage-node/src/sync/client.rs`, `services/storage-node/src/main.rs`, `services/storage-node/src/local/{mod,server}.rs`. Verified: web 187 tests, node 210 + integration tests (`relay_signaling_verifies_device_signature`), Go `go test ./...`, web typecheck/lint/build.
+
+**Follow-ups:** The browser still negotiates a fresh peer connection per shard (Phase 1b session reuse is not done); the path cache makes Path B the first choice after one success, but per-shard renegotiation is still the dominant cost for large files. Live two-peer WebRTC is not exercised in CI.
+
+## [2026-09-14] - Large-file upload: parallel shards, honest progress, purge GC
+
+**What changed:** First tranche of the upload-performance work. Large files (an 800 MB upload shards into ~100 × 8 MiB objects) no longer upload shards strictly one at a time, the progress widget stops calling the hashing pass "Uploading", and permanently deleting a file no longer strands its relay-buffer shard files on disk.
+
+- **Parallel shard uploads** (`apps/web/lib/uploader.ts`): the serial `for` loop is replaced by a bounded worker pool (`DEFAULT_SHARD_CONCURRENCY = 4`, overridable per upload via the new `shardConcurrency` option). Peak memory stays bounded by the concurrency (plaintext + packed per shard). Progress now sums in-flight shard bytes over exact per-shard plaintext sizes, so a resumed or parallel upload's bar never regresses. The first shard failure stops new claims, drains in-flight shards (recording their completions for resume), then rethrows.
+- **Honest progress labels** (`apps/web/app/(dashboard)/files/files-client.tsx`): the floating widget now derives its verb from the active task's phase — “Hashing” during the whole-file measure pass, “Preparing” while events are emitted, “Uploading” while bytes move — instead of always showing “Uploading”.
+- **Purge buffer GC** (`services/relay/internal/handler/tombstones.go`): `finalizeTombstonePurge` now resolves every `buffer_id` reachable from the entity (`collectFileBufferIDs`, recursive for folders) and unlinks those Relay-buffer files after the DB commit. Previously the `file_locations` rows were deleted first, so the TTL sweep — which only scans existing rows — could never see the files again and each still-buffered shard leaked forever. `buffer.Buffer` is threaded through `PurgeTombstone`, `ApplyTombstoneAck`, `maybeFinalizePurge`, and the `ws.go`/`main.go` call sites.
+
+**Impact:** `apps/web/lib/uploader.ts`, `apps/web/app/(dashboard)/files/files-client.tsx`, `services/relay/internal/handler/tombstones.go`, `services/relay/internal/handler/ws.go`, `services/relay/main.go`. Tests: new `uploader.test.ts` concurrency case; new `tombstone_purge_buffer_integration_test.go` (gated on `TEST_DATABASE_URL`). Web 183 tests, relay `go test ./...`, web typecheck/lint all pass.
+
+**Follow-ups (remaining phases, not in this change):** WebRTC session reuse across a transfer's shards; Path B (relay-signaled internet WebRTC) — the browser never supplies `createRelayChannel` (`transfer-provider.tsx:59`) and the node ignores `webrtc_offer` over WS (`sync/client.rs:641`), so remote uploads still fall to the HTTP buffer; configurable/negotiated shard size.
+
+## [2026-09-14] - Auth screen adopts the nodus-design split layout
+
+**What changed:** The `/auth` wizard now matches the `nodus-design` `AuthFlow` layout: a fixed dark brand panel on the left and a plain, label-led form column on the right. The credential logic — email → password → recovery-phrase registration, and the email → phrase recovery branch — is unchanged; only the presentation moved.
+
+- Two-column `grid lg:grid-cols-2`: the left panel (logo, topology diagram, "Your files. Your hardware. No compromises." tagline, feature bullets, concentric-ring motif) is `hidden ... lg:flex` and `aria-hidden`, so mobile shows just the form with an inline wordmark.
+- The card wrapper is gone: fields now use a visible label (`AuthField`) with the design's caption-above-input pattern; email/password/phrase/recovery all restyled around it.
+- Primary actions use the app's accent gradient (`PrimaryButton`); the previous inline back links became the design's chevron `BackButton`.
+- Panel colors come from new fixed brand tokens (`--brand-surface`, `--brand-accent`, `--brand-ink*`, `--brand-panel*`, `--brand-synced`) — deliberately identical in light and dark since the panel is always the dark half.
+- The server-unreachable notice is restyled as the design's left-bordered callout; no new "offline sign-in" copy was added because the web client cannot authenticate against a node offline.
+
+**Impact:** `apps/web/app/auth/page.tsx` (rewritten markup; handlers/state preserved), `packages/ui/tokens.css` (brand tokens). No API, data, or routing changes. Verified: `pnpm --filter web check-types` and `lint` pass; screenshotted all four steps (email, password, recovery phrase, recovery entry) plus mobile and dark via Playwright.
+
+**Follow-ups:** None.
+
 ## [2026-09-14] - Dashboard visual redesign (technical editorial language)
 
 **What changed:** Every dashboard route (Overview, Backups, Devices, Activity, Conflicts, Tombstone, Security, Settings) plus the auth screen and the app shell were restyled around a single "technical editorial" design language. The warm palette, status colors, and all data/logic are unchanged — this is a visual and layout pass only.
