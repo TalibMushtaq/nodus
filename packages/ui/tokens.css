@@ -87,6 +87,19 @@
   /* Diagonal crosshatch used to differentiate the busier sections from the
    * plain page ground. Encoded as an SVG data URI so it stays a single token. */
   --bg-pattern: url("data:image/svg+xml,%3Csvg width='20' height='20' viewBox='0 0 20 20' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M0 0l20 20M20 0L0 20' stroke='%23c9c3ba' stroke-width='0.5'/%3E%3C/svg%3E");
+
+  /* Fixed dark "cover" for the auth split layout. Deliberately identical in
+   * light and dark — the sign-in page always shows the same dark half — so it
+   * gets its own tokens rather than following the theme-reactive palette. */
+  --brand-surface: linear-gradient(160deg, #141210 0%, #2a1f14 60%, #141210 100%);
+  --brand-accent: #c8722a;
+  --brand-ink: #ede9e2;
+  --brand-ink-muted: #93837a;
+  --brand-ink-faint: #6a6060;
+  --brand-panel: #2a2420;
+  --brand-panel-alt: #242020;
+  --brand-panel-line: #444038;
+  --brand-synced: #2ea55a;
 }
 .dark {
   --elev-card: 0 1px 2px rgba(0, 0, 0, 0.4), 0 2px 8px rgba(0, 0, 0, 0.3);
