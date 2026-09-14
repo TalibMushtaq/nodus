@@ -154,7 +154,8 @@
                 "type": "string",
                 "enum": [
                   "device",
-                  "node"
+                  "node",
+                  "recovery"
                 ]
               },
               "encrypted_key": {
@@ -187,7 +188,8 @@
                 "type": "string",
                 "enum": [
                   "device",
-                  "node"
+                  "node",
+                  "recovery"
                 ]
               },
               "encrypted_key": {

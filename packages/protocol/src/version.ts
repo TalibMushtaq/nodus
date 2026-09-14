@@ -5,7 +5,10 @@ import { z } from "zod";
  * Follows semver: major = breaking, minor = additive-only (new optional fields).
  * Rust and Go implementations must match the major version to interoperate.
  */
-export const CURRENT_SCHEMA_VERSION = "1.7" as const;
+// 1.8 adds the `recovery` recipient_kind to key/folder-key envelopes and
+// snapshot records (ADR-0002). Additive for senders; a 1.7 receiver would
+// reject a recovery envelope, so the minor bump advertises the new value.
+export const CURRENT_SCHEMA_VERSION = "1.8" as const;
 
 /**
  * @deprecated Phase 9 moved snapshot chunking to a record-count model. Chunks

@@ -38,6 +38,17 @@ export const TransferId = z.string().brand<TransferId>();
 export type SnapshotId = string & { readonly __snapshotId: unique symbol };
 export const SnapshotId = z.string().brand<SnapshotId>();
 
+/**
+ * Identity space a key envelope's `recipient_id` belongs to.
+ *
+ * `recovery` is the account-level key derived from the user's offline BIP39
+ * phrase (ADR-0002); unlike device/node recipients it is not a peer that
+ * connects, it only opens envelopes during recovery. Defined once here so the
+ * event and snapshot schemas cannot drift apart.
+ */
+export const RecipientKindSchema = z.enum(["device", "node", "recovery"]);
+export type RecipientKind = z.infer<typeof RecipientKindSchema>;
+
 // ── Mapping helpers ────────────────────────────────────────────────
 //
 // `packages/protocol` is deliberately zero-dependency on `@repo/core`, so it

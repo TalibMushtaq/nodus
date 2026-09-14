@@ -13,8 +13,9 @@ export const WEB_DB_NAME = "nodus-web";
  * Bump whenever a store is added/changed. v1 shipped only `trusted_nodes`;
  * v2 adds the catalog, sync-state, path-cache, transfer-queue, and key stores.
  * v4 adds `transfer_log` for the local Activity view.
+ * v5 adds `recovery` for the locally-kept account recovery phrase (ADR-0002).
  */
-export const WEB_DB_VERSION = 4;
+export const WEB_DB_VERSION = 5;
 
 export const STORE_TRUSTED_NODES = "trusted_nodes";
 export const STORE_CATALOG = "catalog";
@@ -25,6 +26,7 @@ export const STORE_TRANSFER_QUEUE = "transfer_queue";
 export const STORE_UPLOAD_PROGRESS = "upload_progress";
 export const STORE_KEYS = "keys";
 export const STORE_TRANSFER_LOG = "transfer_log";
+export const STORE_RECOVERY = "recovery";
 
 export const WEB_STORES = [
   STORE_TRUSTED_NODES,
@@ -36,6 +38,7 @@ export const WEB_STORES = [
   STORE_UPLOAD_PROGRESS,
   STORE_KEYS,
   STORE_TRANSFER_LOG,
+  STORE_RECOVERY,
 ] as const;
 
 export type WebStore = (typeof WEB_STORES)[number];
@@ -51,6 +54,7 @@ const KEY_PATH: Record<WebStore, string> = {
   [STORE_UPLOAD_PROGRESS]: "transferId",
   [STORE_KEYS]: "file_id",
   [STORE_TRANSFER_LOG]: "id",
+  [STORE_RECOVERY]: "account_id",
 };
 
 /**
@@ -136,20 +140,22 @@ export function idbClear(store: WebStore): Promise<undefined> {
 export { requestToPromise };
 
 /**
- * Delete the entire local database (catalog, keys, trusted nodes, transfer
- * queue, upload progress, folders, sync state, path cache).
+ * Clear the local content stores (catalog, keys, trusted nodes, transfer queue,
+ * upload progress, folders, sync state, path cache, transfer log).
  *
  * Backs Settings → Reset all data. The device identity and the HttpOnly session
  * cookie are intentionally left intact: this clears local *content*, not the
  * account, so the user stays signed in and can re-sync from the Relay.
+ *
+ * The `recovery` store (the locally-kept account recovery phrase) is NOT
+ * cleared: after a reset this device must still be able to reveal the phrase on
+ * the Security page, or a user who relied on it could lose the only copy if
+ * every other device is gone too. It lives under its own store precisely so a
+ * reset can keep it.
  */
-export function clearLocalDatabase(): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.deleteDatabase(WEB_DB_NAME);
-    request.onsuccess = () => resolve();
-    request.onerror = () => reject(request.error);
-    // An open connection in another tab blocks the delete; surface it instead
-    // of hanging the confirm dialog forever.
-    request.onblocked = () => reject(new Error("reset blocked by another open tab"));
-  });
+export async function clearLocalDatabase(): Promise<void> {
+  for (const store of WEB_STORES) {
+    if (store === STORE_RECOVERY) continue;
+    await idbClear(store);
+  }
 }

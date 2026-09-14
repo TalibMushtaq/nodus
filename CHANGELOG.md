@@ -1,5 +1,36 @@
 # Changelog
 
+## [2026-09-14] - Recovery/security hardening (post-implementation audit)
+
+**What changed:** Follow-up hardening from an audit of the ADR-0002 recovery work.
+
+- **Relay `Recover` nonce claim is now atomic** — the challenge row is locked with `SELECT … FOR UPDATE` inside the recovery transaction, so two concurrent submissions of the same nonce cannot both mint a session. A rejected attempt (bad signature, device owned by another account) rolls back and **leaves the nonce usable** instead of burning it.
+- **`PUT /account/recovery` validates the key server-side** (base64 → 32 bytes, else 400) and **deletes only the previous key's envelopes** — freshly re-sealed envelopes for the new key survive enrollment.
+- **Rate limiting + nonce GC** — the two open recovery endpoints are throttled per IP (5 burst / 1 s−1) via the existing in-process limiter, and expired nonce rows are pruned opportunistically when a challenge is issued.
+- **Web recovery card re-seals before enrolling** so a failed WS batch can no longer leave an account enrolled with zero recovery coverage.
+- **Auth page**: a mistyped phrase is validated before the request (clear error, no more stuck "Please wait…" spinner from an unhandled rejection), and the recovery call is wrapped in try/catch/finally.
+- **Settings → Reset all data no longer deletes the local recovery phrase** — the `recovery` store is skipped so the Security page can still reveal the phrase after a reset.
+- **Storage node migration 00005** also adds `recipient_id` indexes on both envelope tables (offline-recovery lookups); **Security page** shows folder coverage and defers the object-URL revoke.
+
+**Impact:** `services/relay` (`handler/{recovery.go,ratelimit.go,recovery_integration_test.go}`, `main.go`), `apps/web` (`app/auth/page.tsx`, `app/(dashboard)/security/{page.tsx,recovery-card.tsx}`, `lib/db.ts`), `services/storage-node/migrations/20260914000005_recovery_recipient_kind.sql`. Verified: `go vet`/`go build`, web typecheck/lint/tests, Rust build.
+
+## [2026-09-14] - Security parity + account recovery (ADR-0002)
+
+**What changed:** The `/security` page was rebuilt to match the prototype (recovery key card, per-recipient key-envelope table with an encrypted backup, and an enriched device-revocation list), and account recovery was implemented end to end: a BIP39 phrase generated at registration, enrolled on the account as an Ed25519 public key, sealed into every file/folder key envelope, and usable to sign in on a fresh device.
+
+- **Crypto (`packages/core`):** new `recovery.ts` (adds `@scure/bip39`) with `generateRecoveryPhrase` (24 words), `isValidRecoveryPhrase`, `recoveryIdentityFromPhrase` (BIP39 seed → HKDF-SHA256 → Ed25519), and `signRecoveryChallenge`. Unit-tested against a pinned BIP39 vector.
+- **Protocol (1.7 → 1.8):** a shared `RecipientKindSchema` (`device | node | recovery`) now backs the four `recipient_kind` enums in `events/event-types.ts` and `messages/snapshot.ts`; schemas regenerated.
+- **Relay:** migration `020` adds `accounts.recovery_public_key` and widens the `recipient_kind` CHECKs on `key_envelopes`, `folder_key_envelopes`, and both rebuild staging tables; migration `021` adds single-use `recovery_challenges`. `auth.go` stores the recovery key at register and returns it from `/auth/session`/login; `sync.go`/`snapshot.go` accept recovery envelopes via a shared `validRecipientKind`; new `PUT /account/recovery` (enroll/rotate, drops old recovery envelopes), `POST /auth/recovery/challenge` (nonce + public key), and `POST /auth/recovery` (Ed25519 signature over the nonce → registers the device and mints a session, no password).
+- **Envelope reads:** new `GET /envelopes/summary` (per-recipient file/folder counts + last-updated, no ciphertext) and `GET /envelopes/export` (ciphertext-only backup).
+- **Storage node:** migration `20260914000005` rebuilds `key_envelopes`/`folder_key_envelopes` with the widened CHECK; `sync/engine.rs` projects recovery envelopes.
+- **Web:** `lib/recovery.ts` (phrase create/validate/persist in a new `recovery` IndexedDB store, public key, enroll, online `recoverAccount`, `materializeRecoveryKeys`), `lib/security.ts` selectors, `lib/use-recovery-reseal.ts` (re-seal every readable key to the recovery identity), API proxies `/api/account/recovery`, `/api/auth/recovery[/challenge]`, `/api/envelopes/{summary,export}`. `collectRecipients` seals to the account recovery key when enrolled. Downloads prefer the locally cached FEK (so materialized recovery keys work). The `/auth` wizard gained a phrase-once registration step and a "use recovery key" sign-in path; the Security page gained the `RecoveryCard` (reveal/copy/regenerate + enroll/reseal).
+
+**Why:** The Security page previously showed only the paired-device list because the recovery seed and key-envelope table had no backend read path. ADR-0002 specified a recovery phrase but had no account/root key; the design's reveal/copy/regenerate controls required a real recovery identity rather than a mock.
+
+**Impact:** `packages/core` (`recovery.ts(new)` + tests, `index.ts`, `package.json`), `packages/protocol` (`types.ts`, `events/event-types.ts`, `messages/snapshot.ts`, `version.ts`, generated schemas), `services/relay` (`db/migrations/020,021`, `handler/{recovery.go(new),envelopes.go,auth.go,sync.go,snapshot.go}`, `main.go`, new integration tests), `services/storage-node` (migration + `sync/engine.rs`), `apps/web` (many files under `lib/` and `app/`, plus the Security and Auth pages). Verified: `pnpm lint`, `pnpm check-types`, `pnpm test` (TS 171, Go, Rust 209 + integration), `cargo clippy -D warnings`, web `next build`.
+
+**Follow-ups:** Offline recovery via a Storage Node's local network (§24) is not implemented yet — online recovery requires the Relay. Recovery endpoints are not yet rate-limited. The recovery phrase is kept in the same local IndexedDB as file keys so Security can reveal it, matching that existing threat model. Rotating the recovery key re-seals only keys a trusted device can open; skipped keys are reported.
+
 ## [2026-09-14] - Overview parity: topology, live stat cards, node capacity, device presence, activity paths
 
 **What changed:** The `/overview` page was rebuilt to match the `nodus-design` prototype: a network-topology panel, four headline stat cards (Storage used, Devices online, Pending shards, Tombstone window), Recent files and Recent activity panels, and a Devices mini-panel — all fed by real data. Three previously unpersisted figures were added so the numbers are honest.

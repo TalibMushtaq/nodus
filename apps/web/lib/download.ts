@@ -20,6 +20,7 @@ import type { StoredDeviceIdentity } from "@repo/relay-client";
 import { getCachedCatalog } from "./catalog";
 import type { RelayFileLocation } from "./catalog";
 import { fetchAndOpenFileKey } from "./envelopes";
+import { getFileKey } from "./keys";
 import { getTrustedNodes } from "./trusted-nodes";
 
 /** This device has no FEK envelope for the file (shared before it was added). */
@@ -132,6 +133,11 @@ export async function downloadFile(options: DownloadFileOptions): Promise<Downlo
 export function browserDownloadDeps(device: StoredDeviceIdentity): DownloadDeps {
   return {
     async fetchFileKey(fileId) {
+      // Prefer the locally cached FEK (this device's own upload, or a key
+      // materialized from a recovery envelope), then fall back to this device's
+      // Relay envelope for a file uploaded elsewhere.
+      const local = await getFileKey(fileId);
+      if (local) return local;
       return fetchAndOpenFileKey(fileId, device.device_id, identityPrivateKey(device));
     },
     async getShardLocations(fileId) {

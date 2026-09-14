@@ -33,12 +33,19 @@ export async function login(email: string, password: string, device: StoredDevic
   });
 }
 
-export async function register(email: string, password: string, device: StoredDeviceIdentity): Promise<AuthResult> {
+export async function register(
+  email: string,
+  password: string,
+  device: StoredDeviceIdentity,
+  recoveryPublicKey?: string,
+): Promise<AuthResult> {
   return postJson("/api/auth/register", {
     email,
     password,
     device_id: device.device_id,
     device_public_key: device.public_key,
+    // Enrolls the account recovery identity derived from the offline phrase.
+    recovery_public_key: recoveryPublicKey,
   });
 }
 

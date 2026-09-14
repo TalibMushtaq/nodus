@@ -25,7 +25,7 @@ export function useUploader(
   onProgress?: (event: UploadProgressEvent) => void,
   postShardOverride?: (dto: ShardUpload) => Promise<ShardUploadResult>,
 ) {
-  const { device } = useAuth();
+  const { device, session } = useAuth();
   const sendEventBatch = useEventBatch();
 
   // Seal the FEK for this device plus every other active device and storage
@@ -38,6 +38,9 @@ export function useUploader(
       const recipients = await collectRecipients({
         deviceId: device.device_id,
         edPublicKey: identityPublicKey(device),
+        // Seal to the account recovery identity when enrolled, so the user's
+        // offline phrase can open this file after losing every device.
+        recoveryPublicKey: session?.recovery_public_key ?? null,
       });
       const sealed = sealFekForRecipients(fek, recipients);
       const events: EventPayload[] = [];
@@ -50,7 +53,7 @@ export function useUploader(
         throw new Error(`key envelope batch rejected: ${ack.reason ?? "unknown"}`);
       }
     },
-    [device, sendEventBatch],
+    [device, session, sendEventBatch],
   );
 
   const upload = useCallback(

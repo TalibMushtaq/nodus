@@ -435,7 +435,7 @@ func stageRebuildChunk(ctx context.Context, pool *db.Pool, accountID string, chu
 			if r.FileID == "" || r.RecipientID == "" || r.EncryptedKey == "" {
 				continue
 			}
-			if r.RecipientKind != "device" && r.RecipientKind != "node" {
+			if !validRecipientKind(r.RecipientKind) {
 				continue
 			}
 			var createdAt *time.Time
@@ -465,7 +465,7 @@ func stageRebuildChunk(ctx context.Context, pool *db.Pool, accountID string, chu
 			if r.FolderID == "" || r.RecipientID == "" || r.EncryptedKey == "" {
 				continue
 			}
-			if r.RecipientKind != "device" && r.RecipientKind != "node" {
+			if !validRecipientKind(r.RecipientKind) {
 				continue
 			}
 			var createdAt *time.Time

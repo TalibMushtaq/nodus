@@ -37,7 +37,12 @@ export {
   type ParseResult,
 } from "./envelope.js";
 export type { EventId } from "./envelope.js";
-export { toProtocolFileId, fromProtocolFileId } from "./types.js";
+export {
+  toProtocolFileId,
+  fromProtocolFileId,
+  RecipientKindSchema,
+  type RecipientKind,
+} from "./types.js";
 
 // ── Error types ────────────────────────────────────────────────────
 

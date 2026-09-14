@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { NodeId, SnapshotId } from "../types.js";
+import { NodeId, RecipientKindSchema, SnapshotId } from "../types.js";
 
 // ── Snapshot records ────────────────────────────────────────────────
 //
@@ -68,7 +68,7 @@ export type FolderRecord = z.infer<typeof FolderRecordSchema>;
 export const KeyEnvelopeRecordSchema = z.object({
   file_id: z.string(),
   recipient_id: z.string(),
-  recipient_kind: z.enum(["device", "node"]),
+  recipient_kind: RecipientKindSchema,
   encrypted_key: z.string(),
   created_at: z.string().datetime().optional(),
 });
@@ -83,7 +83,7 @@ export type KeyEnvelopeRecord = z.infer<typeof KeyEnvelopeRecordSchema>;
 export const FolderKeyEnvelopeRecordSchema = z.object({
   folder_id: z.string(),
   recipient_id: z.string(),
-  recipient_kind: z.enum(["device", "node"]),
+  recipient_kind: RecipientKindSchema,
   encrypted_key: z.string(),
   created_at: z.string().datetime().optional(),
 });

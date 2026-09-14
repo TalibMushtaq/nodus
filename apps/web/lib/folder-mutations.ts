@@ -28,7 +28,7 @@ import {
 } from "./envelopes";
 
 export function useFolderMutations() {
-  const { device } = useAuth();
+  const { device, session } = useAuth();
   const sendEventBatch = useEventBatch();
 
   /**
@@ -86,6 +86,7 @@ export function useFolderMutations() {
         const recipients = await collectRecipients({
           deviceId: device.device_id,
           edPublicKey: identityPublicKey(device),
+          recoveryPublicKey: session?.recovery_public_key ?? null,
         });
         const sealed = sealFekForRecipients(fek, recipients);
         const events: EventPayload[] = [];
@@ -103,7 +104,7 @@ export function useFolderMutations() {
 
       return folderId;
     },
-    [device, sendEventBatch],
+    [device, session, sendEventBatch],
   );
 
   const remove = useCallback(

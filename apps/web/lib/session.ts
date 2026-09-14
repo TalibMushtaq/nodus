@@ -7,6 +7,8 @@ export interface SessionInfo {
   device_id: string;
   /** ISO-8601 UTC expiry of the current session. */
   session_expires_at: string;
+  /** Account recovery Ed25519 public key (base64); null when not enrolled. */
+  recovery_public_key?: string | null;
 }
 
 /**

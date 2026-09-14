@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { EventIdSchema } from "../types.js";
+import { EventIdSchema, RecipientKindSchema } from "../types.js";
 
 // ── Event type enum ────────────────────────────────────────────────
 
@@ -129,7 +129,7 @@ export const KeyEnvelopePayloadSchema = z.object({
   file_id: z.string(),
   /** device_id or node_id the FEK is sealed for. */
   recipient_id: z.string(),
-  recipient_kind: z.enum(["device", "node"]),
+  recipient_kind: RecipientKindSchema,
   encrypted_key: z.string(),
 });
 
@@ -143,7 +143,7 @@ export const KeyEnvelopePayloadSchema = z.object({
 export const FolderKeyEnvelopePayloadSchema = z.object({
   folder_id: z.string(),
   recipient_id: z.string(),
-  recipient_kind: z.enum(["device", "node"]),
+  recipient_kind: RecipientKindSchema,
   encrypted_key: z.string(),
 });
 

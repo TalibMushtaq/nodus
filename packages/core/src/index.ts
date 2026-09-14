@@ -30,6 +30,14 @@ export {
 } from "./crypto.js";
 export { shardMetadataFromEncryptedShard } from "./metadata.js";
 export {
+  generateRecoveryPhrase,
+  normalizeRecoveryPhrase,
+  isValidRecoveryPhrase,
+  recoveryIdentityFromPhrase,
+  signRecoveryChallenge,
+  type RecoveryIdentity,
+} from "./recovery.js";
+export {
   backoffDelay,
   backoffDelayWithRandom,
   sleepBackoff,

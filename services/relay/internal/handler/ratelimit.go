@@ -140,3 +140,10 @@ func trustedForwardedIP(xff string) string {
 }
 
 var redeemLimiter = newIPRateLimiter(10, 2)
+
+// recoveryLimiter throttles the two unauthenticated recovery endpoints
+// (challenge + recover) per IP. The phrase is the credential and is effectively
+// unguessable, so the limit exists to bound nonce-row creation (DB write
+// amplification / storage) rather than to stop brute force. 5 burst / 1 per
+// second keeps a legit recovery flow (2 requests) well within a burst window.
+var recoveryLimiter = newIPRateLimiter(5, 1)

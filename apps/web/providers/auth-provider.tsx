@@ -18,6 +18,8 @@ type AuthStatus = "loading" | "authenticated" | "unauthenticated";
 export interface AuthResult {
   ok: boolean;
   error?: string;
+  /** The session minted by login/register, when the call succeeded. */
+  session?: SessionInfo | null;
 }
 
 interface AuthContextValue {
@@ -26,7 +28,8 @@ interface AuthContextValue {
   device: StoredDeviceIdentity | null;
   serverReachable: boolean;
   login: (email: string, password: string) => Promise<AuthResult>;
-  register: (email: string, password: string) => Promise<AuthResult>;
+  /** `recoveryPublicKey` enrolls the account's ADR-0002 recovery identity. */
+  register: (email: string, password: string, recoveryPublicKey?: string) => Promise<AuthResult>;
   logout: () => Promise<void>;
   refresh: () => Promise<void>;
 }
@@ -81,19 +84,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
     setSession(res.session ?? null);
     setStatus("authenticated");
-    return { ok: true };
+    return { ok: true, session: res.session ?? null };
   }, []);
 
-  const handleRegister = useCallback(async (email: string, password: string) => {
-    const dev = getOrCreateDeviceIdentity();
-    const res = await register(email, password, dev);
-    if (!res.ok) {
-      return { ok: false, error: res.error };
-    }
-    setSession(res.session ?? null);
-    setStatus("authenticated");
-    return { ok: true };
-  }, []);
+  const handleRegister = useCallback(
+    async (email: string, password: string, recoveryPublicKey?: string) => {
+      const dev = getOrCreateDeviceIdentity();
+      // Only pass the recovery key when enrolling, so a plain registration keeps
+      // its original call shape.
+      const res = recoveryPublicKey
+        ? await register(email, password, dev, recoveryPublicKey)
+        : await register(email, password, dev);
+      if (!res.ok) {
+        return { ok: false, error: res.error };
+      }
+      setSession(res.session ?? null);
+      setStatus("authenticated");
+      return { ok: true, session: res.session ?? null };
+    },
+    [],
+  );
 
   const handleLogout = useCallback(async () => {
     await logout();

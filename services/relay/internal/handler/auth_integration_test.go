@@ -64,7 +64,7 @@ func setupAuthHarness(t *testing.T) *authHarness {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /auth/register", Register(pool, store, cfg))
 	mux.HandleFunc("POST /auth/login", Login(pool, store, cfg))
-	mux.HandleFunc("GET /auth/session", Session(store, cfg))
+	mux.HandleFunc("GET /auth/session", Session(pool, store, cfg))
 	mux.HandleFunc("POST /auth/logout", Logout(store, cfg))
 	mux.Handle("DELETE /devices/{id}", auth.RequireAuth(store, cfg)(RevokeDevice(pool, store)))
 
@@ -331,7 +331,7 @@ func TestAuthSessionCookieSecureFlag(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /auth/register", Register(pool, store, cfg))
 	mux.HandleFunc("POST /auth/login", Login(pool, store, cfg))
-	mux.HandleFunc("GET /auth/session", Session(store, cfg))
+	mux.HandleFunc("GET /auth/session", Session(pool, store, cfg))
 	mux.HandleFunc("POST /auth/logout", Logout(store, cfg))
 	mux.Handle("DELETE /devices/{id}", auth.RequireAuth(store, cfg)(RevokeDevice(pool, store)))
 

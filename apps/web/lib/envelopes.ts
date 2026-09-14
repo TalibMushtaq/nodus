@@ -20,7 +20,7 @@ import type { EventPayload } from "@repo/protocol";
 
 import { listDevices, listNodes } from "./pairing";
 
-export type RecipientKind = "device" | "node";
+export type RecipientKind = "device" | "node" | "recovery";
 
 export interface EnvelopeRecipient {
   recipientId: string;
@@ -42,6 +42,42 @@ export interface RelayFolderEnvelope {
   recipient_id: string;
   recipient_kind: RecipientKind;
   encrypted_key: string;
+}
+
+/** One recipient's envelope coverage (GET /api/envelopes/summary). */
+export interface EnvelopeSummary {
+  recipient_id: string;
+  recipient_kind: RecipientKind;
+  file_count: number;
+  folder_count: number;
+  /** ISO timestamp of the newest envelope for this recipient, or null. */
+  last_updated: string | null;
+}
+
+/** Ciphertext-only backup of every envelope (GET /api/envelopes/export). */
+export interface EnvelopeExport {
+  account_id: string;
+  generated_at: string;
+  file_envelopes: RelayEnvelope[];
+  folder_envelopes: RelayFolderEnvelope[];
+}
+
+/** Per-recipient coverage for the Security page's Key envelopes table. */
+export async function fetchEnvelopeSummary(): Promise<EnvelopeSummary[]> {
+  const res = await fetch("/api/envelopes/summary");
+  if (!res.ok) {
+    throw new Error(`failed to load envelope summary: ${res.status}`);
+  }
+  return (await res.json()) as EnvelopeSummary[];
+}
+
+/** Download the account's opaque envelopes for offline safekeeping. */
+export async function exportEnvelopes(): Promise<EnvelopeExport> {
+  const res = await fetch("/api/envelopes/export");
+  if (!res.ok) {
+    throw new Error(`failed to export envelopes: ${res.status}`);
+  }
+  return (await res.json()) as EnvelopeExport;
 }
 
 function toBase64(bytes: Uint8Array): string {
@@ -76,7 +112,7 @@ function fromHex(value: string): Uint8Array {
  * `"point" expected Uint8Array of length 32, got length=48`. Validate the length
  * here so a future encoding drift fails with an actionable message.
  */
-function decodeRecipientPublicKey(encoded: string, kind: RecipientKind): Uint8Array {
+export function decodeRecipientPublicKey(encoded: string, kind: RecipientKind): Uint8Array {
   const bytes = kind === "node" ? fromHex(encoded) : fromBase64(encoded);
   if (bytes.length !== 32) {
     throw new Error(`${kind} public key must decode to 32 bytes, got ${bytes.length}`);
@@ -193,18 +229,29 @@ export function openFolderKeyFromEnvelopes(
 }
 
 /**
- * Every potential recipient for a file: this device plus all active devices and
- * the account's storage nodes. `baseUrl` is injectable for non-browser callers.
+ * Every potential recipient for a file: this device plus all active devices,
+ * the account's storage nodes, and — when enrolled — the account recovery
+ * identity (ADR-0002), so a recovery phrase can later unlock the key.
+ *
+ * `recoveryPublicKey` is the account's recovery Ed25519 public key (base64),
+ * read from the session. Its recipient_id is the key itself: the node and Relay
+ * can both verify a signature against it without a separate id mapping.
  */
 export async function collectRecipients(
-  self: { deviceId: string; edPublicKey: Uint8Array },
-  baseUrl = "",
+  self: { deviceId: string; edPublicKey: Uint8Array; recoveryPublicKey?: string | null },
 ): Promise<EnvelopeRecipient[]> {
-  void baseUrl;
-
   const recipients: EnvelopeRecipient[] = [
     { recipientId: self.deviceId, recipientKind: "device", edPublicKey: self.edPublicKey },
   ];
+
+  // Recovery is a device-style base64 Ed25519 key (not a node's hex encoding).
+  if (self.recoveryPublicKey) {
+    recipients.push({
+      recipientId: self.recoveryPublicKey,
+      recipientKind: "recovery",
+      edPublicKey: decodeRecipientPublicKey(self.recoveryPublicKey, "recovery"),
+    });
+  }
 
   const [devices, nodes] = await Promise.all([listDevices(), listNodes()]);
   for (const device of devices) {

@@ -780,7 +780,7 @@ func applySingleEventTx(
 		if data.FileID == "" || data.RecipientID == "" || data.EncryptedKey == "" {
 			return false
 		}
-		if data.RecipientKind != "device" && data.RecipientKind != "node" {
+		if !validRecipientKind(data.RecipientKind) {
 			return false
 		}
 		// The Relay stores the opaque envelope only; it never sees the FEK.
@@ -806,7 +806,7 @@ func applySingleEventTx(
 		if data.FolderID == "" || data.RecipientID == "" || data.EncryptedKey == "" {
 			return false
 		}
-		if data.RecipientKind != "device" && data.RecipientKind != "node" {
+		if !validRecipientKind(data.RecipientKind) {
 			return false
 		}
 		if _, err := tx.Exec(ctx, `

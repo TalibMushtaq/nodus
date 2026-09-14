@@ -171,14 +171,22 @@ func main() {
 
 		mux.HandleFunc("POST /auth/register", handler.Register(pool, sessionStore, cfg))
 		mux.HandleFunc("POST /auth/login", handler.Login(pool, sessionStore, cfg))
-		mux.HandleFunc("GET /auth/session", handler.Session(sessionStore, cfg))
+		mux.HandleFunc("GET /auth/session", handler.Session(pool, sessionStore, cfg))
 		mux.HandleFunc("POST /auth/logout", handler.Logout(sessionStore, cfg))
+		// ADR-0002 online recovery: unauthenticated by design — the signed
+		// challenge is the credential, so a lost-password user can still recover.
+		mux.HandleFunc("POST /auth/recovery/challenge", handler.RecoveryChallenge(pool, cfg))
+		mux.HandleFunc("POST /auth/recovery", handler.Recover(pool, sessionStore, cfg))
 
 		// Device & Node Management (Authenticated)
 		mux.Handle("POST /devices/register", auth.RequireAuth(sessionStore, cfg)(handler.RegisterDevice(pool)))
 		mux.Handle("GET /devices", auth.RequireAuth(sessionStore, cfg)(handler.ListDevices(pool)))
 		mux.Handle("DELETE /devices/{id}", auth.RequireAuth(sessionStore, cfg)(handler.RevokeDevice(pool, sessionStore)))
 		mux.Handle("PATCH /devices/{id}", auth.RequireAuth(sessionStore, cfg)(handler.RenameDevice(pool)))
+
+		// Account recovery identity (ADR-0002): a trusted device enrolls or
+		// rotates the public key derived from the user's offline phrase.
+		mux.Handle("PUT /account/recovery", auth.RequireAuth(sessionStore, cfg)(handler.UpdateRecoveryKey(pool)))
 
 		mux.Handle("POST /nodes/register", auth.RequireAuth(sessionStore, cfg)(handler.RegisterNode(pool)))
 		mux.Handle("GET /nodes", auth.RequireAuth(sessionStore, cfg)(handler.ListNodes(pool)))
@@ -194,6 +202,11 @@ func main() {
 		mux.Handle("GET /files", auth.RequireAuth(sessionStore, cfg)(handler.ListFiles(pool)))
 		mux.Handle("GET /folders", auth.RequireAuth(sessionStore, cfg)(handler.ListFolders(pool)))
 		mux.Handle("GET /envelopes", auth.RequireAuth(sessionStore, cfg)(handler.ListEnvelopes(pool)))
+		// Security page: per-recipient coverage counts and a ciphertext-only
+		// backup of all envelopes. More specific than /envelopes, so the Go
+		// mux routes these before the single-file handler.
+		mux.Handle("GET /envelopes/summary", auth.RequireAuth(sessionStore, cfg)(handler.EnvelopeSummary(pool)))
+		mux.Handle("GET /envelopes/export", auth.RequireAuth(sessionStore, cfg)(handler.ExportEnvelopes(pool)))
 		// Bulk folder-key fetch: the client needs every folder envelope in one
 		// request to decrypt the folder tree (avoids an N+1 per refresh).
 		mux.Handle("GET /folder-envelopes", auth.RequireAuth(sessionStore, cfg)(handler.ListFolderEnvelopes(pool)))

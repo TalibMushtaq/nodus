@@ -23,6 +23,12 @@ type AuthRequest struct {
 	Password        string `json:"password"`
 	DeviceID        string `json:"device_id"`
 	DevicePublicKey string `json:"device_public_key"`
+	// RecoveryPublicKey is the Ed25519 key derived from the user's offline
+	// recovery phrase. Sent on register (to enroll recovery); ignored on login,
+	// which must never overwrite an existing recovery key. Optional so older
+	// clients and tests keep working — an account without one cannot be
+	// recovered until a trusted device enrolls it.
+	RecoveryPublicKey string `json:"recovery_public_key"`
 }
 
 // SessionResponse is the locked Phase 7a §2 post-auth body: account/device ids
@@ -33,6 +39,9 @@ type SessionResponse struct {
 	DeviceID         string    `json:"device_id"`
 	SessionExpiresAt time.Time `json:"session_expires_at"`
 	AccessToken      string    `json:"access_token,omitempty"`
+	// RecoveryPublicKey lets the client seal file/folder keys to the account's
+	// recovery identity. Nil when recovery is not enrolled.
+	RecoveryPublicKey *string `json:"recovery_public_key,omitempty"`
 }
 
 // Register creates a new user account, auto-registers its first device, and
@@ -69,9 +78,11 @@ func Register(pool *db.Pool, store auth.SessionStore, cfg *config.Config) http.H
 		}
 
 		accountID := uuid.NewString()
+		// nullif turns an omitted recovery key into NULL rather than an empty
+		// string, so "enrolled?" stays a single nil check.
 		query := `
-			INSERT INTO accounts (account_id, email, password_hash)
-			VALUES ($1, $2, $3)
+			INSERT INTO accounts (account_id, email, password_hash, recovery_public_key)
+			VALUES ($1, $2, $3, nullif($4, ''))
 		`
 
 		tx, err := pool.Begin(r.Context())
@@ -81,7 +92,7 @@ func Register(pool *db.Pool, store auth.SessionStore, cfg *config.Config) http.H
 		}
 		defer tx.Rollback(r.Context()) // nolint:errcheck
 
-		_, err = tx.Exec(r.Context(), query, accountID, req.Email, hashedPassword)
+		_, err = tx.Exec(r.Context(), query, accountID, req.Email, hashedPassword, req.RecoveryPublicKey)
 		if err != nil {
 			if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
 				respondError(w, http.StatusConflict, "an account with this email already exists")
@@ -102,8 +113,17 @@ func Register(pool *db.Pool, store auth.SessionStore, cfg *config.Config) http.H
 			return
 		}
 
-		issueSession(w, r, store, cfg, accountID, req.DeviceID, http.StatusCreated)
+		issueSession(w, r, store, cfg, accountID, req.DeviceID, recoveryKeyPtr(req.RecoveryPublicKey), http.StatusCreated)
 	}
+}
+
+// recoveryKeyPtr returns a pointer to a non-empty key, else nil, so an omitted
+// recovery key serializes as absent rather than "".
+func recoveryKeyPtr(key string) *string {
+	if key == "" {
+		return nil
+	}
+	return &key
 }
 
 // Login authenticates a user by email and password, auto-registers the device
@@ -124,12 +144,13 @@ func Login(pool *db.Pool, store auth.SessionStore, cfg *config.Config) http.Hand
 		}
 
 		var (
-			accountID    string
-			passwordHash string
+			accountID         string
+			passwordHash      string
+			recoveryPublicKey *string
 		)
 
-		query := `SELECT account_id, password_hash FROM accounts WHERE email = $1`
-		err := pool.QueryRow(r.Context(), query, req.Email).Scan(&accountID, &passwordHash)
+		query := `SELECT account_id, password_hash, recovery_public_key FROM accounts WHERE email = $1`
+		err := pool.QueryRow(r.Context(), query, req.Email).Scan(&accountID, &passwordHash, &recoveryPublicKey)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				respondError(w, http.StatusUnauthorized, "invalid email or password")
@@ -154,13 +175,14 @@ func Login(pool *db.Pool, store auth.SessionStore, cfg *config.Config) http.Hand
 			return
 		}
 
-		issueSession(w, r, store, cfg, accountID, req.DeviceID, http.StatusOK)
+		issueSession(w, r, store, cfg, accountID, req.DeviceID, recoveryPublicKey, http.StatusOK)
 	}
 }
 
 // Session reports the current session bound to the request cookie, or 401 when
-// the cookie is missing/expired/revoked.
-func Session(store auth.SessionStore, cfg *config.Config) http.HandlerFunc {
+// the cookie is missing/expired/revoked. It also returns whether the account has
+// enrolled a recovery key so the client knows whether uploads should seal to it.
+func Session(pool *db.Pool, store auth.SessionStore, cfg *config.Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		sess, _, err := auth.AuthenticateRequest(r, store, cfg)
 		if err != nil {
@@ -168,10 +190,16 @@ func Session(store auth.SessionStore, cfg *config.Config) http.HandlerFunc {
 			return
 		}
 
+		var recoveryPublicKey *string
+		_ = pool.QueryRow(r.Context(),
+			"SELECT recovery_public_key FROM accounts WHERE account_id = $1", sess.AccountID,
+		).Scan(&recoveryPublicKey)
+
 		respondJSON(w, http.StatusOK, SessionResponse{
-			AccountID:        sess.AccountID,
-			DeviceID:         sess.DeviceID,
-			SessionExpiresAt: sess.ExpiresAt,
+			AccountID:         sess.AccountID,
+			DeviceID:          sess.DeviceID,
+			SessionExpiresAt:  sess.ExpiresAt,
+			RecoveryPublicKey: recoveryPublicKey,
 		})
 	}
 }
@@ -193,7 +221,7 @@ func Logout(store auth.SessionStore, cfg *config.Config) http.HandlerFunc {
 
 // issueSession mints a session, writes the HttpOnly cookie, and responds with
 // the §2 body. status distinguishes register (201) from login (200).
-func issueSession(w http.ResponseWriter, r *http.Request, store auth.SessionStore, cfg *config.Config, accountID, deviceID string, status int) {
+func issueSession(w http.ResponseWriter, r *http.Request, store auth.SessionStore, cfg *config.Config, accountID, deviceID string, recoveryPublicKey *string, status int) {
 	rawID, err := store.CreateSession(r.Context(), accountID, deviceID)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "failed to create session")
@@ -204,9 +232,10 @@ func issueSession(w http.ResponseWriter, r *http.Request, store auth.SessionStor
 	setSessionCookie(w, cfg, rawID, expiresAt)
 
 	response := SessionResponse{
-		AccountID:        accountID,
-		DeviceID:         deviceID,
-		SessionExpiresAt: expiresAt,
+		AccountID:         accountID,
+		DeviceID:          deviceID,
+		SessionExpiresAt:  expiresAt,
+		RecoveryPublicKey: recoveryPublicKey,
 	}
 	if r.Header.Get("X-Nodus-Client") == "mobile" {
 		response.AccessToken = rawID
