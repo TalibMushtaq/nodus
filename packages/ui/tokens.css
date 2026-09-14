@@ -27,6 +27,14 @@
   --radius: 10px;
   --font-sans: "Inter", var(--font-inter), system-ui, sans-serif;
   --font-mono: "JetBrains Mono", var(--font-jetbrains-mono), "Fira Code", monospace;
+  /* Display face for page titles, the wordmark, and headline figures. The
+   * dashboard keeps Inter for body/UI; Space Grotesk carries the "technical"
+   * editorial voice without the marketing page's serif. */
+  --font-display: "Space Grotesk", var(--font-space-grotesk), "IBM Plex Sans", system-ui, sans-serif;
+
+  /* Data-viz accent: a warm print-yellow reserved for figures and charts so
+   * status colors keep their meaning. Distinct from --color-accent on purpose. */
+  --color-chart: #e0c76b;
 }
 
 /* Dark mode is a designed mood, not an inversion of light */
@@ -48,6 +56,9 @@
   --color-border: #2a2824;
   --color-input: #2a2824;
   --color-ring: #c8722a;
+  /* Muted warm yellow: bright enough to read on the near-black ground without
+   * glowing against the dark status palette. */
+  --color-chart: #b99a45;
 }
 
 /* Status palette (light + dark) — the sync/connection "wordmark". Consumed
@@ -64,8 +75,25 @@
   --status-offline-bg: #e8e6e2;
   --status-local: #2e5f8a;
   --status-local-bg: #d6e8f8;
+
+  /* Elevation — warm, low-contrast shadows so cards read as printed layers
+   * rather than floaty SaaS panels. Kept as plain custom properties (not
+   * @theme) so the dark mood can retune them and inline styles can consume
+   * them directly. */
+  --elev-card: 0 1px 2px rgba(28, 26, 23, 0.04), 0 2px 8px rgba(28, 26, 23, 0.04);
+  --elev-raised: 0 4px 16px rgba(28, 26, 23, 0.08), 0 1px 3px rgba(28, 26, 23, 0.05);
+  --elev-float: 0 24px 56px rgba(28, 26, 23, 0.16);
+
+  /* Diagonal crosshatch used to differentiate the busier sections from the
+   * plain page ground. Encoded as an SVG data URI so it stays a single token. */
+  --bg-pattern: url("data:image/svg+xml,%3Csvg width='20' height='20' viewBox='0 0 20 20' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M0 0l20 20M20 0L0 20' stroke='%23c9c3ba' stroke-width='0.5'/%3E%3C/svg%3E");
 }
 .dark {
+  --elev-card: 0 1px 2px rgba(0, 0, 0, 0.4), 0 2px 8px rgba(0, 0, 0, 0.3);
+  --elev-raised: 0 4px 16px rgba(0, 0, 0, 0.45), 0 1px 3px rgba(0, 0, 0, 0.4);
+  --elev-float: 0 24px 56px rgba(0, 0, 0, 0.6);
+  --bg-pattern: url("data:image/svg+xml,%3Csvg width='20' height='20' viewBox='0 0 20 20' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M0 0l20 20M20 0L0 20' stroke='%233a352e' stroke-width='0.5'/%3E%3C/svg%3E");
+
   --status-synced: #34c472;
   --status-synced-bg: #0f2e1c;
   --status-pending: #e07830;

@@ -33,6 +33,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { Section } from "@repo/ui/primitives/section";
+import { PageHeader } from "@repo/ui/primitives/page-header";
 import { Button } from "@repo/ui/primitives/button";
 import { StatusBadge } from "@repo/ui/primitives/badge";
 import { addTrustedNode, getTrustedNodes, type TrustedNode } from "../../lib/trusted-nodes";
@@ -182,16 +183,20 @@ export default function PairPage() {
   }, [device, probe]);
 
   const inputCls =
-    "flex-1 min-w-[180px] px-3 py-2 text-sm bg-secondary border border-border text-foreground placeholder-muted-foreground outline-none focus:border-accent transition-colors";
+    "flex-1 min-w-[180px] px-3 py-2 text-sm bg-secondary border border-border rounded-xl text-foreground placeholder-muted-foreground outline-none transition-colors focus:border-accent focus:ring-2 focus:ring-accent/20";
 
   return (
-    <main className="mx-auto max-w-3xl p-6 space-y-6">
-      <div className="flex items-center justify-between">
-        <h1 className="text-sm font-semibold text-foreground">Pair a Storage Node</h1>
-        <Link href="/overview" className="text-xs text-muted-foreground hover:text-foreground transition-colors">
-          ← Back to dashboard
-        </Link>
-      </div>
+    <main className="mx-auto max-w-3xl space-y-8 p-6">
+      <PageHeader
+        eyebrow="Setup"
+        title="Pair a Storage Node"
+        description="Bind this browser to a node so your files can sync directly over the LAN."
+        actions={
+          <Link href="/overview" className="text-xs text-muted-foreground hover:text-foreground transition-colors">
+            ← Back to dashboard
+          </Link>
+        }
+      />
 
       {/* Device id is server-side unknown (window-gated init); suppress the
           transient hydration mismatch on the prerendered HTML. */}
@@ -231,7 +236,7 @@ export default function PairPage() {
         {nodes.length === 0 && !nodeError ? (
           <p className="text-xs text-muted-foreground">No storage nodes registered yet.</p>
         ) : (
-          <ul className="border border-border rounded-xl overflow-hidden bg-card divide-y divide-border">
+          <ul className="stagger rounded-2xl border border-border overflow-hidden bg-card divide-y divide-border elev-card">
             {nodes.map((n) => (
               <li key={n.node_id}>
                 <label className="flex items-center gap-3 px-4 py-3 cursor-pointer hover:bg-secondary/40">
@@ -243,7 +248,7 @@ export default function PairPage() {
                   />
                   <code className="font-mono text-xs text-foreground">{n.node_id.slice(0, 12)}…</code>
                   {n.is_primary && (
-                    <span className="px-1.5 py-0.5 text-[9px] font-medium border border-accent/40 text-accent bg-accent/10 rounded-sm">
+                    <span className="px-1.5 py-0.5 text-[9px] font-medium border border-accent/40 text-accent bg-accent/10 rounded">
                       PRIMARY
                     </span>
                   )}
@@ -268,7 +273,7 @@ export default function PairPage() {
             <p className="text-xs text-muted-foreground">
               Token issued — scan with a mobile app, or finish pairing this browser below.
             </p>
-            <pre className="text-[11px] font-mono whitespace-pre-wrap break-all bg-secondary border border-border p-3 rounded-lg text-foreground">
+            <pre className="text-[11px] font-mono whitespace-pre-wrap break-all bg-secondary border border-border p-3 rounded-xl text-foreground">
               {pairingUrl}
             </pre>
             <Button
@@ -327,7 +332,7 @@ export default function PairPage() {
         {trusted.length === 0 ? (
           <p className="text-xs text-muted-foreground">Nothing paired yet.</p>
         ) : (
-          <ul className="border border-border rounded-xl overflow-hidden bg-card divide-y divide-border">
+          <ul className="stagger rounded-2xl border border-border overflow-hidden bg-card divide-y divide-border elev-card">
             {trusted.map((t) => (
               <li key={t.node_id} className="px-4 py-3 text-xs text-muted-foreground">
                 <code className="font-mono text-foreground">{t.node_id.slice(0, 12)}…</code> @ {t.host} — paired{" "}

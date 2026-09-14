@@ -4,6 +4,7 @@ import { useState } from "react";
 import { Toggle } from "@repo/ui/primitives/toggle";
 import { Select } from "@repo/ui/primitives/select";
 import { Section } from "@repo/ui/primitives/section";
+import { PageHeader } from "@repo/ui/primitives/page-header";
 import { SettingRow } from "@repo/ui/primitives/setting-row";
 import { Button } from "@repo/ui/primitives/button";
 import { ConfirmDialog } from "@repo/ui/primitives/overlay";
@@ -43,9 +44,15 @@ export default function SettingsPage() {
   };
 
   return (
-    <div className="space-y-6 p-6">
+    <div className="mx-auto max-w-3xl space-y-8 p-6">
+      <PageHeader
+        eyebrow="Preferences"
+        title="Settings"
+        description="Appearance, local sync defaults, and the device-level reset."
+      />
+
       <Section title="Appearance">
-        <div className="border border-border rounded-xl bg-card px-4">
+        <div className="elev-card border border-border rounded-2xl bg-card px-4">
           <SettingRow label="Theme" detail="Light, dark, or system preference">
             <Select
               aria-label="Theme"
@@ -61,7 +68,7 @@ export default function SettingsPage() {
       </Section>
 
       <Section title="Sync">
-        <div className="border border-border rounded-xl bg-card px-4">
+        <div className="elev-card border border-border rounded-2xl bg-card px-4">
           <SettingRow label="Auto-sync" detail="Saved on this device">
             <Toggle
               aria-label="Auto-sync"
@@ -85,7 +92,7 @@ export default function SettingsPage() {
       </Section>
 
       <Section title="Danger zone">
-        <div className="border border-destructive/30 rounded-xl bg-card px-4">
+        <div className="elev-card border border-destructive/30 rounded-2xl bg-card px-4">
           <SettingRow
             label="Reset all data"
             detail="Removes local files, keys, and pairing data from this browser. This cannot be undone."

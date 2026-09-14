@@ -103,7 +103,7 @@ export function Modal({ children, onClose, className = "" }: ModalProps) {
         aria-labelledby={titleId}
         ref={panelRef}
         tabIndex={-1}
-        className={`bg-card border border-border mx-4 outline-none ${className}`}
+        className={`elev-float overflow-hidden rounded-2xl border border-border bg-card mx-4 outline-none ${className}`}
         onClick={(e) => e.stopPropagation()}
       >
         <OverlayTitleContext.Provider value={titleId}>{children}</OverlayTitleContext.Provider>

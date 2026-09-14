@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Section } from "@repo/ui/primitives/section";
+import { PageHeader } from "@repo/ui/primitives/page-header";
 import { EmptyState } from "@repo/ui/primitives/empty-state";
 import { DeviceStateBadge } from "@repo/ui/primitives/badge";
 import { ConfirmDialog } from "@repo/ui/primitives/overlay";
@@ -113,7 +114,13 @@ export default function SecurityPage() {
   }, []);
 
   return (
-    <div className="max-w-3xl space-y-6 p-6">
+    <div className="mx-auto max-w-4xl space-y-8 p-6">
+      <PageHeader
+        eyebrow="Trust"
+        title="Security"
+        description="Recovery identity, per-device key coverage, and device revocation."
+      />
+
       {error && <p className="text-xs text-destructive">{error}</p>}
 
       {/* Recovery key (ADR-0002) */}
@@ -140,12 +147,13 @@ export default function SecurityPage() {
           <p className="text-xs text-muted-foreground px-1">Loading key envelopes…</p>
         ) : rows.length === 0 ? (
           <EmptyState
+            icon="lock"
             title="No key envelopes yet"
             description="Each device and node gets an envelope for every file's key when a file is uploaded."
           />
         ) : (
           <>
-            <div className="bg-card border border-border rounded-xl overflow-hidden">
+            <div className="bg-card border border-border rounded-2xl overflow-hidden elev-card">
               <p className="px-4 py-3 text-xs text-muted-foreground border-b border-border">
                 Each device holds an encrypted copy of each file&apos;s encryption key. The relay
                 stores these envelopes but cannot decrypt them.
@@ -201,11 +209,12 @@ export default function SecurityPage() {
           <p className="text-xs text-muted-foreground px-1">Loading devices…</p>
         ) : devices.length === 0 ? (
           <EmptyState
+            icon="phone"
             title="No paired devices"
             description="Devices are registered here when they pair with a Storage Node."
           />
         ) : (
-          <div className="border border-border rounded-xl overflow-hidden bg-card divide-y divide-border">
+          <div className="border border-border rounded-2xl overflow-hidden bg-card divide-y divide-border elev-card">
             {devices.map((d) => {
               const revoked = d.status === "REVOKED";
               return (

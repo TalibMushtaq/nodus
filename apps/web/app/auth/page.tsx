@@ -155,27 +155,43 @@ export default function AuthPage() {
     router.push("/overview");
   };
 
-  const inputCls = "w-full px-4 py-3 text-sm bg-secondary border border-border text-foreground placeholder-muted-foreground outline-none focus:border-accent transition-colors";
+  const inputCls = "w-full px-4 py-3 text-sm bg-secondary border border-border rounded-xl text-foreground placeholder-muted-foreground outline-none transition-colors focus:border-accent focus:ring-2 focus:ring-accent/20";
 
   return (
-    <main className="min-h-dvh flex items-center justify-center bg-gradient-to-br from-orange-100 via-orange-50 to-amber-100 dark:from-stone-950 dark:via-stone-950 dark:to-stone-900">
-      <div className="w-full max-w-sm mx-4">
+    <main className="relative flex min-h-dvh items-center justify-center overflow-hidden bg-background px-4 py-12">
+      {/* Decorative ground: a crosshatch that fades toward the edges plus a warm
+          accent glow behind the card. Purely visual and pointer-transparent. */}
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-0 bg-crosshatch opacity-50"
+        style={{
+          maskImage: "radial-gradient(ellipse at center, black, transparent 72%)",
+          WebkitMaskImage: "radial-gradient(ellipse at center, black, transparent 72%)",
+        }}
+      />
+      <div
+        aria-hidden
+        className="pointer-events-none absolute -top-24 left-1/2 h-[420px] w-[720px] -translate-x-1/2 rounded-full bg-accent/10 blur-3xl"
+      />
+
+      <div className="relative w-full max-w-sm mx-4">
         {/* Logo */}
-        <div className="flex items-center justify-center gap-2.5 mb-8">
-          <span className="text-accent"><Icon name="logo" size={22} /></span>
-          <span className="text-lg font-semibold tracking-tight text-foreground">Nodus</span>
+        <div className="mb-8 flex items-center justify-center gap-2.5">
+          <span className="text-accent rise"><Icon name="logo" size={24} /></span>
+          <span className="font-display text-xl font-semibold tracking-[-0.02em] text-foreground">Nodus</span>
         </div>
 
         {!serverReachable && (
-          <div className="mb-4 px-4 py-2.5 text-xs text-center rounded-lg" style={{ color: "var(--status-offline)", backgroundColor: "var(--status-offline-bg)", border: "1px solid var(--status-offline)30" }}>
+          <div className="mb-4 rounded-xl px-4 py-2.5 text-center text-xs" style={{ color: "var(--status-offline)", backgroundColor: "var(--status-offline-bg)", border: "1px solid var(--status-offline)30" }}>
             Server unreachable — sign-in won&apos;t work until the relay is back online.
           </div>
         )}
 
-        <div className="bg-card border border-border p-6 space-y-5">
+        <div className="elev-float relative overflow-hidden rounded-2xl border border-border bg-card p-6 space-y-5">
+          <span aria-hidden className="absolute inset-x-0 top-0 h-0.5 accent-gradient" />
           {/* Header */}
           <div>
-            <h1 className="text-sm font-semibold text-foreground">
+            <h1 className="font-display text-lg font-semibold tracking-[-0.01em] text-foreground">
               {mode === "register" && step === "email" && "Create your account"}
               {mode === "register" && step === "password" && "Choose a password"}
               {mode === "register" && step === "recovery" && "Save your recovery phrase"}
@@ -325,7 +341,7 @@ export default function AuthPage() {
             onClick={handleContinue}
             disabled={loading || !serverReachable}
             title={!serverReachable ? "The relay is unreachable" : undefined}
-            className="w-full py-2.5 text-sm font-medium bg-accent text-accent-foreground hover:opacity-90 transition-opacity disabled:opacity-50"
+            className="accent-gradient elev-card w-full rounded-xl py-2.5 text-sm font-medium text-accent-foreground transition-opacity hover:opacity-95 disabled:opacity-50"
           >
             {loading
               ? "Please wait..."

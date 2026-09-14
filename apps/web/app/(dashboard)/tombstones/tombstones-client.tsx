@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { Section } from "@repo/ui/primitives/section";
+import { PageHeader } from "@repo/ui/primitives/page-header";
 import { EmptyState } from "@repo/ui/primitives/empty-state";
 import { Button } from "@repo/ui/primitives/button";
 import { ConfirmDialog } from "@repo/ui/primitives/overlay";
@@ -146,7 +147,13 @@ export function TombstonesClient() {
   }, [purgeTarget, refresh, names]);
 
   return (
-    <div className="space-y-6 p-6">
+    <div className="mx-auto max-w-5xl space-y-8 p-6">
+      <PageHeader
+        eyebrow="Recovery"
+        title="Tombstone"
+        description="Soft-deleted files and folders, held until restored or permanently purged."
+      />
+
       {error && (
         <div className="flex items-center gap-3" role="alert">
           <p className="text-xs text-destructive">{error}</p>
@@ -173,11 +180,12 @@ export function TombstonesClient() {
           <p className="text-xs text-muted-foreground px-1">Loading tombstones…</p>
         ) : items.length === 0 ? (
           <EmptyState
+            icon="trash"
             title="Tombstone is empty"
             description="Deleted files and folders appear here until restored or permanently deleted."
           />
         ) : (
-          <div className="border border-border rounded-xl overflow-hidden bg-card">
+          <div className="border border-border rounded-2xl overflow-hidden bg-card elev-card">
             {items.map((item) => {
               const status = tombstoneStatus(item);
               const busy = busyKey === keyOf(item);

@@ -116,7 +116,7 @@ export function RecoveryCard() {
 
   return (
     <Section title="Recovery key">
-      <div className="bg-card border border-border rounded-xl p-5 space-y-4">
+      <div className="elev-card bg-card border border-border rounded-2xl p-5 space-y-4">
         <p className="text-xs text-muted-foreground leading-relaxed">
           Your recovery key is the only way to access your files if you lose all trusted devices.
           Store it somewhere safe and offline. Nodus never sends this key to any server.

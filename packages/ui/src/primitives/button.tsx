@@ -3,15 +3,17 @@ import type { ButtonHTMLAttributes } from "react";
 type Variant = "primary" | "secondary" | "ghost" | "destructive" | "link";
 
 const base =
-  "inline-flex items-center justify-center gap-1.5 text-xs font-medium transition-colors select-none disabled:opacity-40 disabled:pointer-events-none";
+  "inline-flex items-center justify-center gap-1.5 rounded-lg text-xs font-medium transition-all select-none hover:-translate-y-px active:translate-y-0 disabled:opacity-40 disabled:pointer-events-none";
 
 // Button variants mirror the prototype's vocabulary: the accent-gradient
 // primary action, bordered "secondary" buttons, and the destructive outlines.
+// Filled/bordered variants sit on the card elevation so they read as tappable
+// surfaces; ghost and link stay flat.
 const variants: Record<Variant, string> = {
-  primary: "accent-gradient text-accent-foreground hover:opacity-90",
-  secondary: "border border-border text-foreground hover:bg-secondary hover:border-accent/30",
+  primary: "accent-gradient text-accent-foreground elev-card hover:opacity-95",
+  secondary: "border border-border bg-card text-foreground elev-card hover:border-accent/40 hover:text-accent",
   ghost: "text-muted-foreground hover:text-foreground hover:bg-secondary",
-  destructive: "border border-destructive text-destructive hover:bg-destructive/10",
+  destructive: "border border-destructive/40 bg-card text-destructive elev-card hover:bg-destructive/10",
   link: "text-accent hover:opacity-80",
 };
 

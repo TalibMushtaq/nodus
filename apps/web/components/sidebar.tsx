@@ -72,23 +72,32 @@ export function Sidebar({ collapsed, onCollapse }: SidebarProps) {
         <span className="text-accent shrink-0">
           <Logo size={20} />
         </span>
-        {!collapsed && <span className="text-sm font-semibold tracking-tight text-foreground">Nodus</span>}
+        {!collapsed && (
+          <span className="font-display text-[15px] font-semibold tracking-[-0.01em] text-foreground">
+            Nodus
+          </span>
+        )}
       </div>
 
       {/* Relay status */}
       {!collapsed && (
-        <div className="px-4 pt-3 pb-2 space-y-1.5">
-          <div className="flex items-center gap-2 px-2.5 py-2 rounded-sm bg-secondary">
-            <StatusBadge status={relayBadge} variant="dot" />
-            <span className="text-xs text-muted-foreground font-mono truncate">
-              Relay · {relayStatusLabel(wsStatus)}
-            </span>
-          </div>
-          <div className="flex items-center gap-2 px-2.5 py-2 rounded-sm bg-secondary">
-            <StatusBadge status={nodeBadgeOverride} variant="dot" />
-            <span className="text-xs text-muted-foreground font-mono truncate">
-              Node · {nodeLabel}
-            </span>
+        <div className="px-3 pt-3 pb-1">
+          {/* Presence readout: the two live signals that gate everything else,
+              folded into one bordered card so it reads as a single instrument
+              cluster rather than two floating pills. */}
+          <div className="overflow-hidden rounded-xl border border-border bg-card/70 divide-y divide-border">
+            <div className="flex items-center gap-2 px-2.5 py-2">
+              <StatusBadge status={relayBadge} variant="dot" />
+              <span className="text-xs text-muted-foreground font-mono truncate">
+                Relay · {relayStatusLabel(wsStatus)}
+              </span>
+            </div>
+            <div className="flex items-center gap-2 px-2.5 py-2">
+              <StatusBadge status={nodeBadgeOverride} variant="dot" />
+              <span className="text-xs text-muted-foreground font-mono truncate">
+                Node · {nodeLabel}
+              </span>
+            </div>
           </div>
         </div>
       )}
@@ -102,7 +111,9 @@ export function Sidebar({ collapsed, onCollapse }: SidebarProps) {
               key={item.id}
               href={`/${item.id}`}
               className={`w-full flex items-center gap-3 px-2.5 py-2.5 text-sm rounded-xl transition-all ${
-                active ? "text-white font-semibold shadow-sm accent-gradient" : "text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-white/5"
+                active
+                  ? "text-white font-semibold accent-gradient elev-card"
+                  : "text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-white/5"
               } ${collapsed ? "justify-center" : ""}`}
               title={collapsed ? item.label : undefined}
             >

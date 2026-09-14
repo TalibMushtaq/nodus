@@ -1,5 +1,23 @@
 # Changelog
 
+## [2026-09-14] - Dashboard visual redesign (technical editorial language)
+
+**What changed:** Every dashboard route (Overview, Backups, Devices, Activity, Conflicts, Tombstone, Security, Settings) plus the auth screen and the app shell were restyled around a single "technical editorial" design language. The warm palette, status colors, and all data/logic are unchanged — this is a visual and layout pass only.
+
+- **Design tokens** (`packages/ui/tokens.css`): added `--font-display` (Space Grotesk) for titles/figures/wordmark, a warm `--color-chart` data-viz accent, per-mode elevation tokens (`--elev-card`/`--elev-raised`/`--elev-float`), and a crosshatch `--bg-pattern` background data-URI with tuned light/dark variants.
+- **Typography** (`apps/web/app/layout.tsx`): loaded Space Grotesk at 500/600 via `next/font` and exposed `--font-space-grotesk`; Inter stays the body/UI face and JetBrains Mono the code face.
+- **Global utilities** (`apps/web/app/globals.css`): added `.elev-card`/`.elev-raised`/`.elev-float`, `.card-interactive`, `.bg-crosshatch`, and `.rise`/`.stagger` entrance animations with a `prefers-reduced-motion` escape hatch.
+- **New primitive** `packages/ui/src/primitives/page-header.tsx` (`PageHeader`): eyebrow + display title + description + actions. Adopted at the top of every routed page; `Section` now renders a matching display-face heading instead of an uppercase micro-label.
+- **Primitives polished:** `StatCard` (display figures, colored top hairline), `Button` (rounded, hover lift, elevation), `EmptyState` (optional `icon` in a dashed plate), `Progress` (accent gradient + eased width), `Select` (rounded, transition), and rounded + floating `Modal` panels.
+- **Shell:** sidebar wordmark/section labels use the display face and the relay/node presence readout is one instrument cluster; topbar uses a breadcrumb masthead and a framed theme toggle; dashboard `loading.tsx` is a layout-matched skeleton.
+- **Auth:** crosshatch ground with a warm glow, floating card with accent hairline, display heading, rounded inputs, gradient CTA.
+- **Pair route:** `/pair` adopted the same language (PageHeader, elevated rounded node/trusted lists, rounded inputs and code blocks).
+- **Bug fix found during visual QA:** the Tailwind `@source` directive in `globals.css` pointed at `../../packages/ui/src` (resolving to the nonexistent `apps/packages/ui/src`) instead of `../../../packages/ui/src`. Every utility used *only* inside `packages/ui` was silently dropped from the app CSS — most visibly `EmptyState`'s `py-16`, which rendered empty states as thin strips. Corrected the path; the shared-package utilities now compile in both dev and production (verified `.py-16`, `.w-11`, `.gap-x-6`).
+
+**Impact:** `packages/ui/tokens.css`, `packages/ui/src/primitives/{page-header,section,stat-card,button,empty-state,progress,select,overlay}.tsx`, `apps/web/app/{layout.tsx,globals.css,auth/page.tsx,pair/page.tsx}`, `apps/web/app/(dashboard)/{loading.tsx,overview,files,devices,activity,conflicts,tombstones,security,settings}`, `apps/web/components/{sidebar,topbar}.tsx`. No API, data, or routing changes; all 182 web tests, typecheck, lint, and the production build pass.
+
+**Follow-ups:** Visually QA'd light and dark across the auth screen and all dashboard routes via a stub Relay (screenshots; not committed). The `@source` fix is release-worthy on its own — it was latent before this change.
+
 ## [2026-09-14] - Relay-mediated downloads (design A: browser shard fetch fallback)
 
 **What changed:** Folder downloads now succeed even when the browser has no trusted LAN pairing with the node that stores the shards. The Relay becomes a mediated read path: the web client requests the shard by hash, the Relay streams it out of the account's node over their authenticated WS connection, and the browser reconstructs the file from the returned bytes (LAN-direct stays preferred when a trusted host exists).

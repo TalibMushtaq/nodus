@@ -3,6 +3,7 @@
 import { useCallback, useState } from "react";
 import Link from "next/link";
 import { Section } from "@repo/ui/primitives/section";
+import { PageHeader } from "@repo/ui/primitives/page-header";
 import { EmptyState } from "@repo/ui/primitives/empty-state";
 import { Button } from "@repo/ui/primitives/button";
 import { Icon } from "@repo/ui/primitives/icons";
@@ -58,7 +59,13 @@ export function ConflictsClient() {
   );
 
   return (
-    <div className="space-y-6 p-6">
+    <div className="mx-auto max-w-5xl space-y-8 p-6">
+      <PageHeader
+        eyebrow="Reconciliation"
+        title="Conflicts"
+        description="Preserved version forks from offline edits. Nothing is discarded until you resolve it."
+      />
+
       {error && (
         <div className="flex items-center gap-3" role="alert">
           <p className="text-xs text-destructive">{error}</p>
@@ -85,11 +92,12 @@ export function ConflictsClient() {
           <p className="text-xs text-muted-foreground px-1">Loading conflicts…</p>
         ) : conflicts.length === 0 ? (
           <EmptyState
+            icon="copy"
             title="No conflicts"
             description="When two devices edit the same file offline, both versions are kept and appear here until you resolve them."
           />
         ) : (
-          <div className="border border-border rounded-xl overflow-hidden bg-card">
+          <div className="border border-border rounded-2xl overflow-hidden bg-card elev-card">
             {conflicts.map((conflict) => (
               <div
                 key={conflict.fileId}

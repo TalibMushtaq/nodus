@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { StatCard } from "@repo/ui/primitives/stat-card";
 import { Section } from "@repo/ui/primitives/section";
+import { PageHeader } from "@repo/ui/primitives/page-header";
 import { EmptyState } from "@repo/ui/primitives/empty-state";
 import { Button } from "@repo/ui/primitives/button";
 import { StatusBadge, type SyncStatus } from "@repo/ui/primitives/badge";
@@ -96,7 +97,9 @@ function TopologyNode({
   return (
     <div className={`flex flex-col items-center gap-1 min-w-[84px] ${muted ? "opacity-70" : ""}`}>
       <div
-        className="w-12 h-12 border-2 rounded-sm flex items-center justify-center bg-secondary"
+        className={`w-12 h-12 border-2 rounded-xl flex items-center justify-center bg-secondary ${
+          active ? "elev-card" : ""
+        }`}
         style={{ borderColor: active ? "var(--color-accent)" : "var(--color-border)" }}
       >
         <span style={{ color: active ? "var(--color-accent)" : "var(--color-muted-foreground)" }}>
@@ -233,9 +236,20 @@ export function OverviewClient({ publicRelayUrl }: OverviewClientProps) {
   const nothingConnected = !loading && nodes.length === 0 && devices.length === 0;
 
   return (
-    <div className="max-w-6xl space-y-6 p-6">
+    <div className="mx-auto max-w-6xl space-y-8 p-6">
+      <PageHeader
+        eyebrow="Dashboard"
+        title="Overview"
+        description="One pane over your network: presence, storage, and the latest sync movement."
+        actions={
+          <Button variant="secondary" size="sm" onClick={retry}>
+            Refresh
+          </Button>
+        }
+      />
+
       {error && (
-        <div className="flex items-center gap-3" role="alert">
+        <div className="flex items-center gap-3 rounded-xl border border-destructive/30 bg-destructive/5 px-4 py-2.5" role="alert">
           <p className="text-xs text-destructive">{error}</p>
           <Button variant="secondary" size="sm" onClick={retry}>
             Retry
@@ -244,20 +258,13 @@ export function OverviewClient({ publicRelayUrl }: OverviewClientProps) {
       )}
 
       {/* Network topology */}
-      <section>
-        <div className="flex items-center justify-between mb-3">
-          <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+      <section className="rise">
+        <div className="mb-3 flex items-center justify-between px-0.5">
+          <h2 className="font-display text-sm font-semibold tracking-[-0.01em] text-foreground">
             Network topology
           </h2>
-          <button
-            type="button"
-            onClick={retry}
-            className="text-xs text-muted-foreground hover:text-foreground transition-colors"
-          >
-            Refresh
-          </button>
         </div>
-        <div className="bg-gradient-to-br from-orange-50/60 to-amber-50/40 border border-border rounded-xl p-5 dark:from-amber-950/20 dark:to-orange-950/10">
+        <div className="elev-card bg-gradient-to-br from-orange-50/70 to-amber-50/50 border border-border rounded-2xl p-5 dark:from-amber-950/20 dark:to-orange-950/10">
           <div className="flex items-center justify-center gap-0 overflow-x-auto">
             <TopologyNode icon="devices" label="Web client" detail="This browser" active />
             <TopologyLink caption="Local P2P" solid />
@@ -292,7 +299,7 @@ export function OverviewClient({ publicRelayUrl }: OverviewClientProps) {
       </section>
 
       {/* Stat cards */}
-      <section className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+      <section className="stagger grid grid-cols-2 lg:grid-cols-4 gap-3">
         <StatCard
           label="Storage used"
           value={loading ? "…" : formatBytes(usage.usedBytes)}
@@ -347,7 +354,7 @@ export function OverviewClient({ publicRelayUrl }: OverviewClientProps) {
       )}
 
       {/* Bottom grid: recent files + recent activity */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <div className="stagger grid grid-cols-1 lg:grid-cols-2 gap-6">
         <Section
           title="Recent files"
           action={
@@ -366,7 +373,7 @@ export function OverviewClient({ publicRelayUrl }: OverviewClientProps) {
               description={loading ? "Reading the local catalog." : "Upload a file to see it here."}
             />
           ) : (
-            <div className="bg-card border border-border divide-y divide-border rounded-xl overflow-hidden">
+            <div className="bg-card border border-border divide-y divide-border rounded-2xl overflow-hidden elev-card">
               {files4.map((file) => (
                 <button
                   key={file.fileId}
@@ -417,7 +424,7 @@ export function OverviewClient({ publicRelayUrl }: OverviewClientProps) {
               }
             />
           ) : (
-            <div className="bg-card border border-border divide-y divide-border rounded-xl overflow-hidden">
+            <div className="bg-card border border-border divide-y divide-border rounded-2xl overflow-hidden elev-card">
               {activity4.map((entry) => (
                 <div key={entry.id} className="flex items-center gap-3 px-4 py-2.5 hover:bg-secondary/50 transition-colors">
                   <div className="flex-1 min-w-0">
@@ -459,9 +466,9 @@ export function OverviewClient({ publicRelayUrl }: OverviewClientProps) {
             description={loading ? "Reading the Relay catalog." : "Pair a device or node to see it here."}
           />
         ) : (
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <div className="stagger grid grid-cols-2 sm:grid-cols-4 gap-3">
             {deviceCards.map((device) => (
-              <div key={device.key} className="bg-card border border-border rounded-xl p-3 flex flex-col gap-2">
+              <div key={device.key} className="card-interactive bg-card border border-border rounded-2xl p-3 flex flex-col gap-2">
                 <div className="flex items-start justify-between">
                   <span className="text-[10px] font-medium text-muted-foreground">{device.type}</span>
                   <StatusBadge status={device.status} variant="dot" />

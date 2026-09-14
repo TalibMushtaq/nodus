@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@repo/ui/primitives/button";
 import { Section } from "@repo/ui/primitives/section";
+import { PageHeader } from "@repo/ui/primitives/page-header";
 import { EmptyState } from "@repo/ui/primitives/empty-state";
 import type { SyncStatus } from "@repo/ui/primitives/badge";
 import { Select } from "@repo/ui/primitives/select";
@@ -369,7 +370,7 @@ function FolderTile({
   onDelete: (folder: FolderView) => void;
 }) {
   return (
-    <div className="group relative flex flex-col items-center justify-start gap-2 p-4 rounded-xl border border-border bg-card hover:border-accent/50 hover:bg-secondary/40 transition-colors">
+      <div className="card-interactive group relative flex flex-col items-center justify-start gap-2 p-4 rounded-2xl border border-border bg-card hover:border-accent/50">
       <button
         type="button"
         onClick={() => onOpen(folder)}
@@ -1128,7 +1129,7 @@ export function FilesClient() {
   const moveOptions = useMemo(() => folderOptions(folders), [folders]);
 
   return (
-    <div className="space-y-6 p-6">
+    <div className="mx-auto max-w-6xl space-y-8 p-6">
       <UploadQueue
         tasks={uploads}
         speedBps={speedBps}
@@ -1136,8 +1137,14 @@ export function FilesClient() {
         onDismiss={() => setUploads([])}
       />
 
+      <PageHeader
+        eyebrow="Storage"
+        title="Backups"
+        description="Every file in your vault, stored end-to-end encrypted across your own nodes."
+      />
+
       {error && (
-        <div className="flex items-center gap-3" role="alert">
+        <div className="flex items-center gap-3 rounded-xl border border-destructive/30 bg-destructive/5 px-4 py-2.5" role="alert">
           <p className="text-xs text-destructive">{error}</p>
           <Button variant="secondary" size="sm" onClick={refresh}>
             Retry
@@ -1162,9 +1169,9 @@ export function FilesClient() {
       )}
 
       <Section
-        title="Backups"
+        title="All files"
         action={
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <Select
               aria-label="Sort files"
               value={sortBy}
@@ -1296,6 +1303,7 @@ export function FilesClient() {
           <p className="text-xs text-muted-foreground px-1">Loading files…</p>
         ) : visibleFolders.length === 0 && visible.length === 0 ? (
           <EmptyState
+            icon="folder"
             title={files.length === 0 && folders.length === 0 ? "No files yet" : "This folder is empty"}
             description={
               files.length === 0 && folders.length === 0
@@ -1330,7 +1338,7 @@ export function FilesClient() {
               </div>
             )}
             {visible.length > 0 && (
-              <div className="border border-border rounded-xl overflow-hidden bg-card">
+              <div className="border border-border rounded-2xl overflow-hidden bg-card elev-card">
                 {visible.map((file) => (
                   <FileRowView
                     key={file.fileId}

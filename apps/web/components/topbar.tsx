@@ -75,14 +75,25 @@ export function TopBar({ title, onMenuClick }: TopBarProps) {
           <Icon name="list-view" size={16} />
         </button>
       )}
-      <h1 className="text-sm font-semibold text-foreground flex-1">{title}</h1>
+      {/* Breadcrumb-style title: the product name anchors the left edge, the
+          current section takes the display face so the header reads as an
+          editorial masthead rather than a bare toolbar label. */}
+      <div className="flex min-w-0 flex-1 items-baseline gap-2">
+        <span className="hidden text-[11px] uppercase tracking-[0.16em] text-muted-foreground sm:inline">
+          Nodus
+        </span>
+        <span className="hidden text-muted-foreground sm:inline">/</span>
+        <h1 className="truncate font-display text-[15px] font-semibold tracking-[-0.01em] text-foreground">
+          {title}
+        </h1>
+      </div>
 
       {/* Theme toggle */}
       <button
         type="button"
         onClick={cycleTheme}
         aria-label="Toggle theme"
-        className="text-muted-foreground hover:text-foreground transition-colors"
+        className="flex h-7 w-7 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
         title={`Current: ${theme}${theme === "system" ? ` (${resolvedDark ? "dark" : "light"})` : ""}`}
       >
         <Icon name={resolvedDark ? "sun" : "moon"} size={16} />

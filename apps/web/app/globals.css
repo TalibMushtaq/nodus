@@ -2,8 +2,12 @@
 @import "@repo/ui/tokens.css";
 
 /* Make Tailwind scan the shared UI package too, so classes used only there
- * are still generated for the app bundle. */
-@source "../../packages/ui/src";
+ * are still generated for the app bundle. The path is relative to THIS file
+ * (apps/web/app/globals.css), so it must climb three levels to the repo root
+ * before descending into packages/ui — the previous two-level path resolved to
+ * apps/packages/ui and silently dropped every packages/ui-only utility (e.g.
+ * the EmptyState's py-16). */
+@source "../../../packages/ui/src";
 
 @layer base {
   html,
@@ -43,4 +47,79 @@
 *:hover::-webkit-scrollbar-thumb {
   background: var(--color-border);
   border-radius: 2px;
+}
+
+/* ── Elevation ──────────────────────────────────────────────────────────
+ * The shadow tokens live in tokens.css so the dark mood can retune them.
+ * These classes are the sanctioned way to apply them: Tailwind's shadow-*
+ * utilities would inline a single literal and ignore the dark override.
+ */
+.elev-card {
+  box-shadow: var(--elev-card);
+}
+.elev-raised {
+  box-shadow: var(--elev-raised);
+}
+.elev-float {
+  box-shadow: var(--elev-float);
+}
+/* Interactive surface: rests at card elevation, lifts to raised on hover. */
+.card-interactive {
+  box-shadow: var(--elev-card);
+  transition:
+    box-shadow 0.2s ease,
+    border-color 0.2s ease,
+    transform 0.2s ease;
+}
+.card-interactive:hover {
+  box-shadow: var(--elev-raised);
+  transform: translateY(-1px);
+}
+
+/* Diagonal crosshatch, used to set the denser tool sections apart from the
+ * plain page ground. Token-defined so light and dark each get a tuned line. */
+.bg-crosshatch {
+  background-image: var(--bg-pattern);
+}
+
+/* ── Entrance motion ────────────────────────────────────────────────────
+ * A short rise on mount. `.stagger` cascades its direct children so grids and
+ * lists settle in rather than snapping in all at once. */
+@keyframes rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.rise {
+  animation: rise-in 0.5s cubic-bezier(0.22, 0.61, 0.36, 1) both;
+}
+.stagger > * {
+  animation: rise-in 0.5s cubic-bezier(0.22, 0.61, 0.36, 1) both;
+}
+.stagger > *:nth-child(1) { animation-delay: 0ms; }
+.stagger > *:nth-child(2) { animation-delay: 60ms; }
+.stagger > *:nth-child(3) { animation-delay: 120ms; }
+.stagger > *:nth-child(4) { animation-delay: 180ms; }
+.stagger > *:nth-child(5) { animation-delay: 240ms; }
+.stagger > *:nth-child(6) { animation-delay: 300ms; }
+.stagger > *:nth-child(7) { animation-delay: 360ms; }
+.stagger > *:nth-child(8) { animation-delay: 420ms; }
+
+/* Respect the OS reduce-motion preference: content must still be fully
+ * visible, so the animations are removed rather than shortened. */
+@media (prefers-reduced-motion: reduce) {
+  .rise,
+  .stagger > * {
+    animation: none;
+  }
+  .card-interactive,
+  .card-interactive:hover {
+    transition: none;
+    transform: none;
+  }
 }

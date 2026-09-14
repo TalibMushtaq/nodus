@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { Inter, JetBrains_Mono } from "next/font/google";
+import { Inter, JetBrains_Mono, Space_Grotesk } from "next/font/google";
 
 import "./globals.css";
 import { ThemeProvider } from "../providers/theme-provider";
@@ -15,6 +15,15 @@ const inter = Inter({
 const jetbrainsMono = JetBrains_Mono({
   subsets: ["latin"],
   variable: "--font-jetbrains-mono",
+  display: "swap",
+});
+
+// Display face for page titles, wordmark, and headline figures. Loaded at the
+// two weights the type scale uses (500 for labels, 600 for headings).
+const spaceGrotesk = Space_Grotesk({
+  subsets: ["latin"],
+  weight: ["500", "600"],
+  variable: "--font-space-grotesk",
   display: "swap",
 });
 
@@ -35,7 +44,11 @@ export default function RootLayout({
   // that then inherits down. That silently dropped the app back to the system
   // font stack.
   return (
-    <html lang="en" suppressHydrationWarning className={`${inter.variable} ${jetbrainsMono.variable}`}>
+    <html
+      lang="en"
+      suppressHydrationWarning
+      className={`${inter.variable} ${jetbrainsMono.variable} ${spaceGrotesk.variable}`}
+    >
       <head>
         {/* Pre-hydration theme application to avoid a light-mode flash. */}
         <script

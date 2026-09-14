@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Section } from "@repo/ui/primitives/section";
+import { PageHeader } from "@repo/ui/primitives/page-header";
 import { EmptyState } from "@repo/ui/primitives/empty-state";
 import { Button } from "@repo/ui/primitives/button";
 import { ConfirmDialog } from "@repo/ui/primitives/overlay";
@@ -110,7 +111,13 @@ export function ActivityClient() {
   }, []);
 
   return (
-    <div className="space-y-6 p-6">
+    <div className="mx-auto max-w-5xl space-y-8 p-6">
+      <PageHeader
+        eyebrow="Timeline"
+        title="Activity"
+        description="Uploads, downloads, deletes, and restores recorded by this browser."
+      />
+
       <Section
         title="Activity · this device"
         action={
@@ -121,17 +128,17 @@ export function ActivityClient() {
           ) : undefined
         }
       >
-        <div className="flex flex-wrap items-center gap-1.5 mb-3" role="group" aria-label="Filter activity">
+        <div className="mb-3 flex flex-wrap items-center gap-1.5" role="group" aria-label="Filter activity">
           {FILTERS.map((option) => (
             <button
               key={option.value}
               type="button"
               onClick={() => setFilter(option.value)}
               aria-pressed={filter === option.value}
-              className={`px-2.5 py-1 text-xs border transition-colors ${
+              className={`rounded-full border px-2.5 py-1 text-xs transition-colors ${
                 filter === option.value
-                  ? "border-accent/40 text-accent bg-accent/10"
-                  : "border-border text-muted-foreground hover:text-foreground"
+                  ? "border-accent/40 bg-accent/10 text-accent"
+                  : "border-border text-muted-foreground hover:border-accent/30 hover:text-foreground"
               }`}
             >
               {option.label}
@@ -143,6 +150,7 @@ export function ActivityClient() {
           <p className="text-xs text-muted-foreground px-1">Loading activity…</p>
         ) : visible.length === 0 ? (
           <EmptyState
+            icon="activity"
             title={entries.length === 0 ? "No activity yet" : "Nothing matches this filter"}
             description={
               entries.length === 0
@@ -151,7 +159,7 @@ export function ActivityClient() {
             }
           />
         ) : (
-          <div className="border border-border rounded-xl overflow-hidden bg-card">
+          <div className="border border-border rounded-2xl overflow-hidden bg-card elev-card">
             {visible.map((entry) => (
               <div
                 key={entry.id}

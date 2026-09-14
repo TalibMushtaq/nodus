@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@repo/ui/primitives/button";
 import { Section } from "@repo/ui/primitives/section";
+import { PageHeader } from "@repo/ui/primitives/page-header";
 import { EmptyState } from "@repo/ui/primitives/empty-state";
 import { StatusBadge, DeviceStateBadge } from "@repo/ui/primitives/badge";
 import { ConfirmDialog, Modal, ModalHeader } from "@repo/ui/primitives/overlay";
@@ -79,7 +80,7 @@ function NodeRowView({
   const online = isNodeOnline(node);
   return (
     <div className="flex items-center gap-4 px-5 py-3.5 border-b border-border last:border-0 hover:bg-secondary/40 transition-colors">
-      <div className="w-9 h-9 border border-border flex items-center justify-center shrink-0 bg-secondary">
+      <div className="w-9 h-9 rounded-xl border border-border flex items-center justify-center shrink-0 bg-secondary">
         <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
           <rect x="2" y="2" width="14" height="14" rx="1" stroke="currentColor" strokeWidth="1.3" />
           <path d="M5 6h8M5 9h8M5 12h5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
@@ -146,7 +147,7 @@ function DeviceRowView({
   const revoked = device.status === "REVOKED";
   return (
     <div className="flex items-center gap-4 px-5 py-3.5 border-b border-border last:border-0 hover:bg-secondary/40 transition-colors">
-      <div className="w-9 h-9 border border-border flex items-center justify-center shrink-0 bg-secondary">
+      <div className="w-9 h-9 rounded-xl border border-border flex items-center justify-center shrink-0 bg-secondary">
         <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
           <rect x="5" y="1.5" width="8" height="15" rx="1.5" stroke="currentColor" strokeWidth="1.3" />
           <path d="M7.5 4h3M9 14h0" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
@@ -357,9 +358,17 @@ export function DevicesClient({ publicRelayUrl }: DevicesClientProps) {
   }, []);
 
   return (
-    <div className="space-y-6 p-6">
+    <div className="mx-auto max-w-5xl space-y-8 p-6">
+      <PageHeader
+        eyebrow="Network"
+        title="Devices"
+        description="Storage nodes and client devices registered to this account, with live reachability."
+      />
+
       {error && (
-        <p className="text-xs text-destructive">{error}</p>
+        <p className="rounded-xl border border-destructive/30 bg-destructive/5 px-4 py-2.5 text-xs text-destructive">
+          {error}
+        </p>
       )}
 
       {publicRelayUrl === null && (
@@ -393,6 +402,7 @@ export function DevicesClient({ publicRelayUrl }: DevicesClientProps) {
           <EmptyState
             title="No storage nodes yet"
             description="Pair a Storage Node to start syncing files across your network."
+            icon="server"
             action={
               <Button
                 variant="primary"
@@ -405,7 +415,7 @@ export function DevicesClient({ publicRelayUrl }: DevicesClientProps) {
             }
           />
         ) : (
-          <div className="border border-border rounded-xl overflow-hidden bg-card">
+          <div className="border border-border rounded-2xl overflow-hidden bg-card elev-card stagger">
             {nodes.map((n) => (
               <NodeRowView
                 key={n.node_id}
@@ -431,9 +441,10 @@ export function DevicesClient({ publicRelayUrl }: DevicesClientProps) {
           <EmptyState
             title="No paired devices"
             description="Pair a device to sync files across your network. This browser is registered after you pair with a node on /pair."
+            icon="phone"
           />
         ) : (
-          <div className="border border-border rounded-xl overflow-hidden bg-card">
+          <div className="border border-border rounded-2xl overflow-hidden bg-card elev-card stagger">
             {devices.map((d) => (
               <DeviceRowView
                 key={d.device_id}
