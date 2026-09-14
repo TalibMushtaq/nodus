@@ -36,13 +36,13 @@ import { getTrustedNodes } from "../../../lib/trusted-nodes";
 import { ensureNodeTrusted } from "../../../lib/auto-pair";
 import { startTransfer, finishTransfer, logTransferAction } from "../../../lib/transfer-log";
 import { activityPathFromTransfer } from "../../../lib/overview";
-import { formatBytes, timeAgo } from "../../../lib/format";
+import { formatBytes, shortId, timeAgo } from "../../../lib/format";
 import {
   measurePlaintext,
   type FileMeasurement,
-  type UploadPhase,
   type UploadProgressEvent,
 } from "../../../lib/uploader";
+import { useUpload, type UploadTask } from "../../../providers/upload-provider";
 import { findIncompleteByHash, findStoredDuplicate, type FileStorageState } from "../../../lib/file-view";
 
 // Files view: catalog/upload/download plus a folder tree. Folders are metadata
@@ -94,200 +94,6 @@ function FileStorageBadge({ state }: { state: FileStorageState }) {
       <span className="inline-block w-1.5 h-1.5 rounded-full" style={{ backgroundColor: cfg.color }} />
       {cfg.label}
     </span>
-  );
-}
-
-// ── Upload queue model ─────────────────────────────────────────────────
-
-type UploadStatus = "queued" | "active" | "done" | "error" | "skipped";
-
-interface UploadTask {
-  id: string;
-  name: string;
-  sizeBytes: number;
-  completedBytes: number;
-  completedShards: number;
-  totalShards: number;
-  phase: UploadPhase;
-  status: UploadStatus;
-  error?: string;
-}
-
-const UPLOAD_STATUS_TEXT: Record<UploadStatus, string> = {
-  queued: "Queued",
-  active: "Uploading",
-  done: "Uploaded",
-  error: "Failed",
-  skipped: "Skipped (already stored)",
-};
-
-const UPLOAD_STATUS_COLOR: Record<UploadStatus, string> = {
-  queued: "var(--status-local)",
-  active: "var(--status-pending)",
-  done: "var(--status-synced)",
-  error: "var(--status-conflict)",
-  skipped: "var(--status-local)",
-};
-
-/**
- * What an *active* task is actually doing. The measure pass hashes the whole
- * plaintext before any bytes move, so an 800 MB file can sit here for a while
- * with no network activity — labelling it "Uploading" made that read as a hang.
- */
-const UPLOAD_PHASE_TEXT: Record<UploadPhase, string> = {
-  measuring: "Hashing",
-  announcing: "Preparing",
-  uploading: "Uploading",
-  done: "Uploaded",
-};
-
-/**
- * Google-Drive-style upload progress: a floating card pinned to the bottom
- * right of the viewport. Expanded it lists each file with its own bar; the
- * header shows aggregate progress and collapses to a compact card. When every
- * task finishes without errors the card collapses and auto-dismisses; failures
- * stay open so the user can read them before clearing the queue.
- */
-function UploadQueue({
-  tasks,
-  speedBps,
-  activeId,
-  onDismiss,
-}: {
-  tasks: UploadTask[];
-  speedBps: number;
-  activeId: string | null;
-  onDismiss: () => void;
-}) {
-  const [collapsed, setCollapsed] = useState(false);
-  const [completedCollapsed, setCompletedCollapsed] = useState(false);
-  const prevAllDone = useRef(false);
-
-  const totalBytes = tasks.reduce((sum, task) => sum + task.sizeBytes, 0);
-  const completedBytes = tasks.reduce((sum, task) => sum + task.completedBytes, 0);
-  const overallPct = totalBytes === 0 ? 0 : (completedBytes / totalBytes) * 100;
-
-  const activeCount = tasks.filter((task) => task.status === "queued" || task.status === "active").length;
-  const errorCount = tasks.filter((task) => task.status === "error").length;
-  const doneCount = tasks.filter((task) => task.status === "done").length;
-  const allDone = tasks.length > 0 && activeCount === 0;
-  // Failures always stay expanded so the user can read why before clearing;
-  // otherwise the user's chevron choice rules, and a completed batch collapses.
-  const expanded = errorCount > 0 ? true : !collapsed && !completedCollapsed;
-
-  // Auto-collapse then auto-dismiss only at the moment the last task finishes
-  // (not on every render, so a stale completed queue from a previous visit
-  // does not pop open or vanish a second after the page loads). All state
-  // updates are deferred behind timers to stay outside the render loop.
-  useEffect(() => {
-    const wasDone = prevAllDone.current;
-    prevAllDone.current = allDone;
-    if (allDone && !wasDone) {
-      if (errorCount > 0) return;
-      const collapseAt = setTimeout(() => setCompletedCollapsed(true), 1000);
-      const dismissAt = setTimeout(onDismiss, 4500);
-      return () => {
-        clearTimeout(collapseAt);
-        clearTimeout(dismissAt);
-      };
-    }
-    // A new batch started after a completed one: re-open the list.
-    if (!allDone && wasDone) {
-      const reopen = setTimeout(() => setCompletedCollapsed(false), 0);
-      return () => clearTimeout(reopen);
-    }
-  }, [allDone, errorCount, onDismiss]);
-
-  if (tasks.length === 0) return null;
-
-  // The active task's phase decides the verb, so "Hashing a 800 MB file" is not
-  // misreported as "Uploading" while the measure pass holds.
-  const activeTask = tasks.find((task) => task.id === activeId) ?? tasks.find((task) => task.status === "active");
-  const activeVerb = activeTask ? UPLOAD_PHASE_TEXT[activeTask.phase] : "Uploading";
-  const heading = activeCount > 0
-    ? `${activeVerb} ${activeCount} file${activeCount === 1 ? "" : "s"}`
-    : errorCount > 0
-      ? `${errorCount} upload${errorCount === 1 ? "" : "s"} failed`
-      : `Uploaded ${doneCount} file${doneCount === 1 ? "" : "s"}`;
-
-  return (
-    <div
-      role="status"
-      aria-live="polite"
-      className="fixed bottom-4 right-4 z-50 w-[22rem] max-w-[calc(100vw-2rem)] rounded-xl border border-border bg-card shadow-lg overflow-hidden"
-    >
-      <button
-        type="button"
-        onClick={() => setCollapsed((value) => !value)}
-        aria-expanded={expanded}
-        className="w-full flex items-center justify-between gap-3 px-4 py-2.5 text-left transition-colors hover:bg-secondary/50"
-      >
-        <span className="flex items-center gap-2 min-w-0">
-          <Icon
-            name={errorCount > 0 ? "warning" : activeCount > 0 ? "upload" : "check"}
-            size={16}
-            className={activeCount > 0 ? "text-foreground animate-pulse" : "text-foreground"}
-          />
-          <span className="text-xs font-medium text-foreground truncate">{heading}</span>
-        </span>
-        <span className="flex items-center gap-2 shrink-0">
-          {activeCount > 0 && speedBps > 0 ? (
-            <span className="text-[10px] font-mono text-muted-foreground">{formatBytes(speedBps)}/s</span>
-          ) : (
-            <span className="text-[10px] font-mono text-muted-foreground">{Math.round(overallPct)}%</span>
-          )}
-          <Icon name="chevron-down" size={14} className={expanded ? "rotate-180 text-muted-foreground" : "text-muted-foreground"} />
-        </span>
-      </button>
-
-      {!expanded && (
-        <div className="px-4 pb-2">
-          <Progress value={overallPct} />
-        </div>
-      )}
-
-      {expanded && (
-        <div className="border-t border-border max-h-72 overflow-y-auto">
-          <div className="px-4 py-2">
-            <Progress value={overallPct} />
-          </div>
-          {tasks.map((task) => {
-            const pct = task.sizeBytes === 0 ? 0 : (task.completedBytes / task.sizeBytes) * 100;
-            const active = task.id === activeId;
-            return (
-              <div key={task.id} className="px-4 py-2.5 border-t border-border last:border-0">
-                <div className="flex items-center justify-between gap-3">
-                  <span className="text-xs font-medium text-foreground truncate">{task.name}</span>
-                  <span className="text-[10px] shrink-0" style={{ color: UPLOAD_STATUS_COLOR[task.status] }}>
-                    {task.status === "active"
-                      ? UPLOAD_PHASE_TEXT[task.phase]
-                      : UPLOAD_STATUS_TEXT[task.status]}
-                    {active && speedBps > 0 ? ` · ${formatBytes(speedBps)}/s` : ""}
-                  </span>
-                </div>
-                <div className="mt-1.5">
-                  <Progress value={pct} />
-                </div>
-                <div className="mt-1 text-[10px] font-mono text-muted-foreground">
-                  {formatBytes(task.completedBytes)} / {formatBytes(task.sizeBytes)}
-                  {task.totalShards > 0 ? ` · ${task.completedShards}/${task.totalShards} shards` : ""}
-                  {task.error ? ` · ${task.error}` : ""}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
-
-      {allDone && errorCount === 0 && (
-        <div className="flex items-center justify-between border-t border-border px-4 py-1.5">
-          <span className="text-[10px] text-muted-foreground">All uploads finished</span>
-          <button type="button" onClick={onDismiss} className="text-[10px] text-muted-foreground hover:text-foreground">
-            Dismiss
-          </button>
-        </div>
-      )}
-    </div>
   );
 }
 
@@ -587,9 +393,9 @@ export function FilesClient() {
   const [nodes, setNodes] = useState<RelayNode[]>([]);
   const [targetNode, setTargetNode] = useState<string | null>(null);
   const [currentFolderId, setCurrentFolderId] = useState<string | null>(null);
-  const [uploads, setUploads] = useState<UploadTask[]>([]);
-  const [activeUploadId, setActiveUploadId] = useState<string | null>(null);
-  const [speedBps, setSpeedBps] = useState(0);
+  // Upload queue state lives in the global provider so its widget survives
+  // navigating away from Files mid-upload (the upload loop keeps running).
+  const { tasks: uploads, setTasks: setUploads, setActiveId, reportProgress, reportPath } = useUpload();
   const [actionError, setActionError] = useState<string | null>(null);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
   // Set when a download failed because no trusted node host was known, or when
@@ -601,10 +407,11 @@ export function FilesClient() {
   // an upload completes, so this catches a second identical file selected in
   // the same batch (or before the refresh lands) without a round trip.
   const sessionHashes = useRef<Set<string>>(new Set());
-  // Live byte count and the per-file progress sink. Uploads run sequentially, so
-  // the hook's single onProgress callback is routed to the active task.
-  const liveBytesRef = useRef(0);
+  // Per-file progress/path sinks. Uploads run sequentially, so the hook's
+  // single onProgress callback and the shard path reporter are routed to the
+  // active task.
   const progressHandlerRef = useRef<((event: UploadProgressEvent) => void) | null>(null);
+  const pathHandlerRef = useRef<((path: string) => void) | null>(null);
   // Path the last shard actually used (local P2P / relay / buffer). Captured in
   // transferPostShard and written to the activity log on completion, where the
   // catalog no longer records how the bytes arrived.
@@ -665,29 +472,6 @@ export function FilesClient() {
     };
   }, []);
 
-  // Sample the live byte counter every 500ms to derive a transfer rate. Using a
-  // timer rather than per-event deltas keeps the displayed speed steady and lets
-  // it decay to zero when a shard stalls. The rate is reset by the upload
-  // handler when a task starts/finishes, so this effect only subscribes.
-  useEffect(() => {
-    if (!activeUploadId) return;
-    let lastBytes = liveBytesRef.current;
-    let lastAt = Date.now();
-    const timer = setInterval(() => {
-      const now = Date.now();
-      const bytes = liveBytesRef.current;
-      const seconds = (now - lastAt) / 1000;
-      if (seconds > 0) {
-        const instant = Math.max(0, (bytes - lastBytes) / seconds);
-        // Exponential smoothing so the number does not jitter every tick.
-        setSpeedBps((previous) => (previous === 0 ? instant : previous * 0.5 + instant * 0.5));
-      }
-      lastBytes = bytes;
-      lastAt = now;
-    }, 500);
-    return () => clearInterval(timer);
-  }, [activeUploadId]);
-
   const onProgress = useCallback((event: UploadProgressEvent) => {
     progressHandlerRef.current?.(event);
   }, []);
@@ -714,9 +498,11 @@ export function FilesClient() {
         onProgress: dto.onProgress,
       });
       // Record the successful path even if a later shard fails, so the activity
-      // entry reflects how far the transfer actually got.
-      if (result.success) activePathRef.current = activityPathFromTransfer(result.path);
-      if (!result.success) {
+      // entry (and the upload widget) reflects how the bytes actually travelled.
+      if (result.success) {
+        activePathRef.current = activityPathFromTransfer(result.path);
+        pathHandlerRef.current?.(result.path);
+      } else {
         throw new Error(result.error ?? "shard transfer failed");
       }
       return { buffer_id: "", status: result.path };
@@ -743,6 +529,9 @@ export function FilesClient() {
       // fallback covers shard fetches regardless.
       void ensureNodeTrusted(targetNode);
       const chosen = Array.from(fileList);
+      // Name the receiving node up front so the widget can say where shards go.
+      const targetNodeName =
+        nodes.find((node) => node.node_id === targetNode)?.display_name ?? shortId(targetNode);
       const tasks: UploadTask[] = chosen.map((file) => ({
         id: crypto.randomUUID(),
         name: file.name,
@@ -752,6 +541,7 @@ export function FilesClient() {
         totalShards: 0,
         phase: "measuring",
         status: "queued",
+        targetNodeName,
       }));
       setUploads((previous) => [...previous, ...tasks]);
       const skipped: string[] = [];
@@ -763,23 +553,13 @@ export function FilesClient() {
       for (let index = 0; index < chosen.length; index += 1) {
         const file = chosen[index]!;
         const task = tasks[index]!;
-        liveBytesRef.current = 0;
         activePathRef.current = undefined;
-        setSpeedBps(0);
-        setActiveUploadId(task.id);
+        setActiveId(task.id);
         const updateTask = (patch: Partial<UploadTask>) => {
           setUploads((previous) => previous.map((t) => (t.id === task.id ? { ...t, ...patch } : t)));
         };
-        progressHandlerRef.current = (event) => {
-          liveBytesRef.current = event.completedBytes;
-          updateTask({
-            completedBytes: event.completedBytes,
-            completedShards: event.completedShards,
-            totalShards: event.totalShards,
-            phase: event.phase,
-            status: "active",
-          });
-        };
+        progressHandlerRef.current = (event) => reportProgress(task.id, event);
+        pathHandlerRef.current = (path) => reportPath(task.id, path);
 
         try {
           // Measure once so an exact-content duplicate is rejected before any
@@ -826,8 +606,8 @@ export function FilesClient() {
       }
 
       progressHandlerRef.current = null;
-      setActiveUploadId(null);
-      setSpeedBps(0);
+      pathHandlerRef.current = null;
+      setActiveId(null);
       if (skipped.length > 0) {
         setActionError(
           skipped.length === 1
@@ -838,7 +618,7 @@ export function FilesClient() {
       // Allow re-selecting the same file in a later upload.
       if (fileInputRef.current) fileInputRef.current.value = "";
     },
-    [targetNode, upload, refresh, files, onProgress, currentFolderId, shardSizeBytes],
+    [targetNode, nodes, upload, refresh, files, onProgress, currentFolderId, shardSizeBytes, setUploads, setActiveId, reportProgress, reportPath],
   );
 
   const handleDownload = useCallback(
@@ -1155,13 +935,8 @@ export function FilesClient() {
 
   return (
     <div className="mx-auto max-w-6xl space-y-8 p-6">
-      <UploadQueue
-        tasks={uploads}
-        speedBps={speedBps}
-        activeId={activeUploadId}
-        onDismiss={() => setUploads([])}
-      />
-
+      {/* The upload queue widget is rendered globally by UploadProvider so it
+          survives navigating away from this page mid-upload. */}
       <PageHeader
         eyebrow="Storage"
         title="Backups"
