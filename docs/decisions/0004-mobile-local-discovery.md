@@ -11,6 +11,14 @@ Plan §7a flagged that mDNS + WebRTC reliability on mobile depends on the Expo w
 - Path A (local discovery/transfer) is attempted **foreground only**. The app does not attempt local discovery while backgrounded.
 - When local-network permission is denied, the app shows an **explicit message** explaining local transfer is unavailable, then silently falls back to the Relay path for all transfers.
 
+## Addendum (Phase 15)
+The "config plugins where available, native escape hatch if needed" clause was
+resolved at Phase 15: reliable mDNS + WebRTC cannot run in Expo Go, so the
+mobile client adopts a CNG development build with concrete modules
+(`react-native-zeroconf`, `react-native-webrtc`, `react-native-sse`). The
+foreground-only and permission-denial-fallback decisions below are unchanged.
+See [ADR-0007](0007-mobile-native-and-sdk.md).
+
 ## Consequences
 - Positive: keeps the mobile app on the standard Expo/EAS build pipeline as long as possible; foreground-only avoids the iOS/Android background execution complexity (entitlements, foreground services) entirely for v1.
 - Negative: no offline local sync while the app is backgrounded — a background-arriving file only transfers locally the next time the app is foregrounded (or arrives via Path C/Relay buffer in the meantime).

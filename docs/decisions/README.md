@@ -12,3 +12,4 @@ This directory contains ADRs — records of significant architectural decisions.
 | [0004](0004-mobile-local-discovery.md) | Mobile Local Discovery Approach | Accepted |
 | [0005](0005-garbage-collection-policy.md) | Garbage Collection Default Policy | Accepted |
 | [0006](0006-self-hosted-node-bootstrap-pairing.md) | Self-Hosted Node Bootstrap Pairing | Accepted |
+| [0007](0007-mobile-native-and-sdk.md) | Mobile Native Build & Shared Client SDK | Accepted |
