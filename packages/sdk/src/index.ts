@@ -59,6 +59,9 @@ export type {
   RecipientSources,
 } from "./envelopes/envelopes.js";
 
+export { listConflicts } from "./conflicts/conflicts.js";
+export type { ConflictEntry, ConflictDeps } from "./conflicts/conflicts.js";
+
 export { toCatalogEntry } from "./catalog/catalog.js";
 export type {
   RelayFileVersion,

@@ -30,7 +30,14 @@ import {
 
 import { SHARD_SIZE_BYTES } from "@repo/core";
 import type { ConnectionState } from "@repo/relay-client";
-import { downloadFile, toCatalogEntry, uploadFile, type SessionInfo } from "@repo/sdk";
+import {
+  downloadFile,
+  listConflicts,
+  toCatalogEntry,
+  uploadFile,
+  type ConflictEntry,
+  type SessionInfo,
+} from "@repo/sdk";
 import type { TransferPath } from "@repo/transfer-manager";
 import {
   NodeClient,
@@ -82,6 +89,7 @@ import {
 import { createMobileUploadDeps } from "./src/upload/deps";
 import { fileUriSource } from "./src/upload/source";
 import { mobileDownloadDeps } from "./src/download/deps";
+import { fetchMobileFileKey } from "./src/download/keys";
 import { decryptFileNames, decryptFolderNames, decryptTombstoneNames } from "./src/download/names";
 import { mobileFolderMutations } from "./src/folders/mutations";
 import { mobileRecoveryClient } from "./src/recovery/client";
@@ -126,7 +134,7 @@ export default function App() {
   const [trusted, setTrusted] = React.useState<TrustedNode[]>([]);
 
   // ── Conflict inbox (ADR-0003) ─────────────────────────────────────────────
-  const [conflicts, setConflicts] = React.useState<{ file_id: string; versions: number[] }[]>([]);
+  const [conflicts, setConflicts] = React.useState<ConflictEntry[]>([]);
 
   // ── Upload ────────────────────────────────────────────────────────────────
   const [uploadStatus, setUploadStatus] = React.useState<string | null>(null);
@@ -463,7 +471,8 @@ export default function App() {
   }, [code, codeStatus]);
 
   // Conflict inbox: the Relay returns per-version `conflict_status`, so no
-  // separate endpoint is needed.
+  // separate endpoint is needed. Derivation is shared with web via the SDK,
+  // with the mobile FEK resolver injected for name decryption.
   const loadConflicts = React.useCallback(async () => {
     if (!authed) return;
     setBusy("loading-conflicts");
@@ -471,22 +480,18 @@ export default function App() {
     try {
       const files: RelayFile[] = await relayFiles();
       setConflicts(
-        files
-          .map((file) => ({
-            file_id: file.file_id,
-            versions: file.versions
-              .filter((v) => v.conflict_status === "flagged")
-              .map((v) => v.version_number)
-              .sort((a, b) => a - b),
-          }))
-          .filter((c) => c.versions.length > 0),
+        await listConflicts({
+          listCatalog: async () => files.map(toCatalogEntry),
+          resolveFileKey: (fileId) =>
+            device ? fetchMobileFileKey(device, fileId) : Promise.resolve(null),
+        }),
       );
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(null);
     }
-  }, [authed]);
+  }, [authed, device]);
 
   const resolveConflict = React.useCallback(
     async (fileId: string) => {
@@ -1262,13 +1267,13 @@ export default function App() {
         <Button title="Load conflicts" onPress={() => void loadConflicts()} disabled={!authed || busy !== null} />
         {conflicts.length === 0 && <Text style={styles.hint}>No unresolved conflicts.</Text>}
         {conflicts.map((c) => (
-          <View key={c.file_id} style={styles.radioRow}>
+          <View key={c.fileId} style={styles.radioRow}>
             <Text style={styles.hint}>
-              {c.file_id.slice(0, 12)}… · version{c.versions.length === 1 ? "" : "s"} {c.versions.join(", ")}
+              {c.name} · version{c.versions.length === 1 ? "" : "s"} {c.versions.join(", ")}
             </Text>
             <Button
-              title={busy === `resolving-${c.file_id}` ? "Resolving…" : "Resolve"}
-              onPress={() => void resolveConflict(c.file_id)}
+              title={busy === `resolving-${c.fileId}` ? "Resolving…" : "Resolve"}
+              onPress={() => void resolveConflict(c.fileId)}
               disabled={busy !== null}
             />
           </View>

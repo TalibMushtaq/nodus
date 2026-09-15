@@ -1,5 +1,15 @@
 # Changelog
 
+## [2026-09-15] - Shared conflict inbox derivation; named mobile conflicts
+
+**What changed:** Moved the ADR-0003 conflict-inbox derivation into `packages/sdk/src/conflicts/` as `listConflicts(deps)` (catalog lister + FEK resolver injected). Web's `lib/conflicts.ts` is now a binding over the cached catalog and its local/Relay-envelope key resolution. The mobile conflict section uses the shared derivation too, so conflicts now show decrypted file names (falling back to a short id) instead of raw ids.
+
+**Why:** Conflict derivation and name resolution were duplicated; the shared version keeps the "render the conflict even without a key" behavior identical on both clients.
+
+**Impact:** `packages/sdk` (new `src/conflicts/`, index exports), `apps/web/lib/conflicts.ts`, `apps/mobile/App.tsx`. Verified: SDK build/lint/test (12), web lint/typecheck/test (194), mobile lint/typecheck/test/bundle.
+
+**Follow-ups:** `sync-state` cursor allocation remains platform-specific by design (IndexedDB transaction vs SQLite exclusive transaction).
+
 ## [2026-09-15] - Shared catalog projections; mobile storage status
 
 **What changed:** Moved the Relay file/folder catalog types and the `toCatalogEntry` flattening projection (latest version, storage-status rollup, flagged-version list) into `packages/sdk/src/catalog/`. Web's `lib/catalog.ts` re-exports them and keeps only its IndexedDB cache functions. The mobile file list now uses `toCatalogEntry` to show each file's storage status and a "conflict" marker.
