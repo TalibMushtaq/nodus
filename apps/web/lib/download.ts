@@ -7,11 +7,7 @@
 
 import { NodeClient, identityPrivateKey, nodusBaseUrl } from "@repo/relay-client";
 import type { StoredDeviceIdentity } from "@repo/relay-client";
-import {
-  ShardUnavailableError,
-  type DownloadDeps,
-  type RelayFileLocation,
-} from "@repo/sdk";
+import { ShardUnavailableError, type DownloadDeps } from "@repo/sdk";
 
 import { getCachedCatalog } from "./catalog";
 import { fetchAndOpenFileKey } from "./envelopes";

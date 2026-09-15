@@ -14,7 +14,7 @@ import type {
   UploadResult,
   UploadSource,
 } from "@repo/sdk";
-import type { UploadDeps, UploadFileOptions as SdkUploadFileOptions } from "@repo/sdk";
+import type { UploadFileOptions as SdkUploadFileOptions } from "@repo/sdk";
 
 export type {
   UploadDeps,
