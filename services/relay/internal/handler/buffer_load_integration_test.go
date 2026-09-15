@@ -58,3 +58,39 @@ func TestBufferUploadSustainedLoad(t *testing.T) {
 		require.Equal(t, "RELAY_BUFFERED", h.shardStatus(t, h.fileID, version, i))
 	}
 }
+
+// BenchmarkBufferUpload measures one Path C shard upload end to end (handler +
+// cache/DB work + buffer write) against real Postgres. Run with:
+//
+//	TEST_DATABASE_URL=... go test ./internal/handler -run '^$' -bench BenchmarkBufferUpload
+//
+// It skips without TEST_DATABASE_URL, like the other integration tests.
+func BenchmarkBufferUpload(b *testing.B) {
+	h := setupBufferHarness(b)
+
+	const version = 3
+	// The upload handler validates the shard index against the version row, so
+	// the seeded shard_count must cover the benchmark's iteration count.
+	_, err := h.pool.Exec(h.ctx,
+		`INSERT INTO file_versions (file_id, version_number, conflict_status, version_hash, shard_count, created_at)
+		 VALUES ($1, $2, 'none', 'vhash-bench', $3, NOW()) ON CONFLICT DO NOTHING`,
+		h.fileID, version, b.N)
+	require.NoError(b, err)
+
+	body := []byte("encrypted-shard-bench")
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		md := uploadMetadata{
+			FileID:        h.fileID,
+			VersionNumber: version,
+			ShardIndex:    i,
+			Size:          int64(len(body)),
+			TransferID:    fmt.Sprintf("bench-%d", i),
+			TargetNode:    h.nodeID,
+			SourceDevice:  "bench",
+		}
+		if rr := h.uploadShard(b, md, body, ""); rr.Code != 201 {
+			b.Fatalf("shard %d: HTTP %d: %s", i, rr.Code, rr.Body.String())
+		}
+	}
+}

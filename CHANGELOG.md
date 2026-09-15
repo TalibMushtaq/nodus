@@ -1,5 +1,15 @@
 # Changelog
 
+## [2026-09-15] - Buffer upload benchmark
+
+**What changed:** Added `BenchmarkBufferUpload` (integration-gated) measuring one Path C shard upload end to end against real Postgres; the shared harness/helpers now take `testing.TB` so both tests and benchmarks can use them. Documented the `-bench` invocation in `docs/architecture/phase18-validation.md`.
+
+**Why:** The Phase 18 load item had only a correctness smoke test; a numbers-producing benchmark closes the noted gap.
+
+**Impact:** `services/relay/internal/handler/buffer_integration_test.go`, `buffer_load_integration_test.go`, `docs/architecture/phase18-validation.md`. Verified: Go handler package compiles/vets; tests skip without `TEST_DATABASE_URL`.
+
+**Follow-ups:** The benchmark seeds a version row sized to `b.N`, so it is not suitable for huge iteration counts against a small scratch DB.
+
 ## [2026-09-15] - Mobile move file between folders
 
 **What changed:** Added a `move` mutation (`FILE_CREATED` upsert reusing the existing name ciphertext with a new `parent_folder_id`) and a "Move here" action on file rows, shown only when the file is not already in the open folder.

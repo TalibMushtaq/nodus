@@ -35,7 +35,7 @@ type bufferHarness struct {
 	fileID    string
 }
 
-func setupBufferHarness(t *testing.T) *bufferHarness {
+func setupBufferHarness(t testing.TB) *bufferHarness {
 	t.Helper()
 	url := os.Getenv("TEST_DATABASE_URL")
 	if url == "" {
@@ -118,7 +118,7 @@ func blake3Hex(data []byte) string {
 
 // uploadShard drives the BufferUpload handler with the given metadata; an empty
 // hash is computed from the body to keep call sites terse.
-func (h *bufferHarness) uploadShard(t *testing.T, md uploadMetadata, body []byte, hashOverride string) *httptest.ResponseRecorder {
+func (h *bufferHarness) uploadShard(t testing.TB, md uploadMetadata, body []byte, hashOverride string) *httptest.ResponseRecorder {
 	t.Helper()
 	hash := hashOverride
 	if hash == "" {
@@ -142,7 +142,7 @@ func (h *bufferHarness) uploadShard(t *testing.T, md uploadMetadata, body []byte
 }
 
 // shardStatus reads the file_locations status for a (file, version, shard, node).
-func (h *bufferHarness) shardStatus(t *testing.T, fileID string, versionNumber, shardIndex int) string {
+func (h *bufferHarness) shardStatus(t testing.TB, fileID string, versionNumber, shardIndex int) string {
 	t.Helper()
 	var status string
 	err := h.pool.QueryRow(h.ctx,

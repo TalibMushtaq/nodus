@@ -16,7 +16,8 @@ TypeScript tests run in the normal suites.
 
 ## Gaps
 
-- The load test is a correctness smoke test, not a throughput benchmark; a
-  numbers-producing buffer benchmark is still open.
+- The load test is a correctness smoke test; a companion
+  `BenchmarkBufferUpload` (same file) produces per-upload numbers when run with
+  `-bench` against `TEST_DATABASE_URL`.
 - The "Internet unavailable" coverage is at the transport level; a full
   client-app-with-Router-down rehearsal (web/mobile UI) is not automated.
