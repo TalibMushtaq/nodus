@@ -34,6 +34,30 @@ export type {
 } from "./upload/uploader.js";
 export { uploadKey } from "./upload/upload-progress.js";
 export type { UploadProgress } from "./upload/upload-progress.js";
+
+export {
+  decodeRecipientPublicKey,
+  decodeEnvelope,
+  encodeEnvelope,
+  sealFekForRecipientIdentity,
+  sealFekForRecipients,
+  openFekFromEnvelope,
+  openFolderKeyFromEnvelopes,
+  collectRecipients,
+  envelopeEvent,
+  folderEnvelopeEvent,
+} from "./envelopes/envelopes.js";
+export type {
+  RecipientKind,
+  EnvelopeRecipient,
+  RelayEnvelope,
+  RelayFolderEnvelope,
+  EnvelopeSummary,
+  EnvelopeExport,
+  EnvelopeDeviceInfo,
+  EnvelopeNodeInfo,
+  RecipientSources,
+} from "./envelopes/envelopes.js";
 export { PersistentWebRtcSession, WebRtcSessionCache } from "./transfer/webrtc-session.js";
 export type {
   PersistentSessionDeps,

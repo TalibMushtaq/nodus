@@ -1,5 +1,15 @@
 # Changelog
 
+## [2026-09-15] - Shared FEK envelopes in @repo/sdk
+
+**What changed:** Moved the FEK envelope crypto/encoding, the recipient collector and the envelope event builders from `apps/web/lib/envelopes.ts` into `packages/sdk/src/envelopes/`. `collectRecipients` now takes injected `listDevices`/`listNodes` sources instead of importing the web catalogue. Web's `envelopes.ts` re-exports the pure API and keeps only its `/api/envelopes*` fetch wrappers, binding the collector to the web device/node catalogue; all existing callers (uploader, download, security, folder/recovery flows) are unchanged.
+
+**Why:** Sealing/opening a FEK is required on both clients (upload publishes envelopes, download consumes them), and the encoding has subtle conventions (node hex vs device base64 keys) that must not be reimplemented per platform.
+
+**Impact:** `packages/sdk` (new `src/envelopes/`, index exports), `apps/web/lib/envelopes.ts`. Verified: SDK build/lint, web lint/typecheck/test (194).
+
+**Follow-ups:** Native still needs its own envelope fetch/event transport and SQLite key store; `apps/web/lib/keys.ts` remains IndexedDB-only.
+
 ## [2026-09-15] - Shared Path C uploader in @repo/sdk
 
 **What changed:** Moved the two-pass Path C uploader (`uploadFile`, `measurePlaintext`, and the result/progress types) from `apps/web/lib/uploader.ts` into `packages/sdk/src/upload/`. It now reads bytes through a platform-neutral `UploadSource` (`name`/`size`/`read(offset, length)`) instead of a browser `File`, and `postShard` uses the SDK's `BufferedShardUpload`. The resumable progress record and `uploadKey` moved to the SDK; web's `upload-progress.ts` keeps only its IndexedDB accessors and re-exports the type. Web's `uploader.ts` is now a thin `File`→`UploadSource` binding, so `use-uploader`, `files-client`, `upload-provider` and the uploader tests are unchanged.
