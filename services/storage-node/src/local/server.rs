@@ -60,6 +60,13 @@ pub struct LocalState {
     /// Separate limiter for `/nodus/webrtc/offer`: each accepted offer creates
     /// a session, so it must not share the challenge budget.
     pub offer_limiter: Arc<RateLimiter>,
+    /// Dedicated nonce store for offline recovery (ADR-0002): recovery hands
+    /// out key material, so it must not share the ordinary auth nonce budget
+    /// (a consumed recovery nonce and a consumed auth nonce are different
+    /// ceremonies).
+    pub recovery_nonces: Arc<NonceStore>,
+    /// Per-IP limiter for `/nodus/recovery/challenge`.
+    pub recovery_limiter: Arc<RateLimiter>,
     /// Derived Relay HTTP base (ws→http, /ws dropped), reused for the
     /// `/pairing/sessions/verify` fallback. `None` disables the fallback.
     pub relay_http_base: Option<String>,
@@ -118,6 +125,58 @@ struct PairConfirm {
     device_public_key: String,
 }
 
+// ── Offline recovery (ADR-0002) ──────────────────────────────────────────
+
+/// Challenge for the offline "lost phone" flow; `recovery_public_key` is the
+/// account recovery Ed25519 key (base64) the node found sealed in its
+/// envelopes, so the client can check its phrase before spending the nonce.
+#[derive(Serialize)]
+struct RecoveryChallenge {
+    nonce: String,
+    ttl_seconds: u64,
+    account_id: String,
+    recovery_public_key: String,
+}
+
+#[derive(Deserialize)]
+struct RecoveryRequest {
+    nonce: String,
+    /// Ed25519 signature over the nonce bytes by the *recovery* key, hex.
+    signature: String,
+    device_id: String,
+    /// Raw Ed25519 pubkey bytes of the new device (base64).
+    device_public_key: String,
+}
+
+#[derive(Serialize)]
+struct RecoveryResult {
+    status: &'static str,
+    account_id: String,
+    device_id: String,
+}
+
+#[derive(Serialize)]
+struct RecoveryFileEnvelope {
+    file_id: String,
+    recipient_id: String,
+    recipient_kind: String,
+    encrypted_key: String,
+}
+
+#[derive(Serialize)]
+struct RecoveryFolderEnvelope {
+    folder_id: String,
+    recipient_id: String,
+    recipient_kind: String,
+    encrypted_key: String,
+}
+
+#[derive(Serialize)]
+struct RecoveryEnvelopes {
+    file_envelopes: Vec<RecoveryFileEnvelope>,
+    folder_envelopes: Vec<RecoveryFolderEnvelope>,
+}
+
 #[derive(Serialize, Deserialize)]
 pub struct LocalError {
     pub error: String,
@@ -140,6 +199,10 @@ pub fn make_router(state: LocalState) -> Router {
         .route("/nodus/challenge", post(challenge))
         .route("/nodus/auth", post(auth))
         .route("/nodus/pair", post(pair))
+        // Offline recovery (ADR-0002): challenge → signed recovery → envelopes.
+        .route("/nodus/recovery/challenge", post(recovery_challenge))
+        .route("/nodus/recovery", post(recovery_auth))
+        .route("/nodus/recovery/envelopes", get(recovery_envelopes))
         .route("/nodus/shard/{object_id}", get(handle_shard_fetch))
         .route(
             "/nodus/webrtc/offer",
@@ -195,6 +258,11 @@ pub async fn spawn(
         offer_limiter: Arc::new(RateLimiter::new(
             super::auth::WEBRTC_OFFER_RATE_WINDOW,
             super::auth::WEBRTC_OFFER_RATE_LIMIT,
+        )),
+        recovery_nonces: Arc::new(NonceStore::default()),
+        recovery_limiter: Arc::new(RateLimiter::new(
+            super::auth::RECOVERY_RATE_WINDOW,
+            super::auth::RECOVERY_RATE_LIMIT,
         )),
         relay_http_base: relay_http,
         // Bound the Relay pairing-verify call (#9): a black-holed relay IP
@@ -328,6 +396,171 @@ async fn auth(
     Ok(Json(AuthResult {
         status: "ok",
         node_id: state.identity.node_id.clone(),
+    }))
+}
+
+// ── Offline recovery handlers (ADR-0002) ─────────────────────────────────
+
+/// The account recovery public key (base64) recorded in the node's envelopes.
+/// Its `recipient_id` on a recovery envelope IS that key, which is how the node
+/// can challenge a recovering client without any Relay data.
+async fn recovery_recipient(db: &SqlitePool) -> Result<Option<String>, LocalError> {
+    sqlx::query_scalar::<_, String>(
+        "SELECT recipient_id FROM key_envelopes WHERE recipient_kind = 'recovery'
+         UNION
+         SELECT recipient_id FROM folder_key_envelopes WHERE recipient_kind = 'recovery'
+         LIMIT 1",
+    )
+    .fetch_optional(db)
+    .await
+    .map_err(internal_err)
+}
+
+async fn node_account_id(db: &SqlitePool) -> Result<Option<String>, LocalError> {
+    sqlx::query_scalar::<_, String>("SELECT account_id FROM node_account WHERE id = 1")
+        .fetch_optional(db)
+        .await
+        .map_err(internal_err)
+}
+
+async fn recovery_challenge(
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    State(state): State<LocalState>,
+) -> Result<Json<RecoveryChallenge>, LocalError> {
+    // Tighter budget than the ordinary challenge: recovery is the highest-value
+    // LAN ceremony (it hands out key material to a phrase holder).
+    if !state.recovery_limiter.check_and_record(addr.ip()).await {
+        return Err(LocalError {
+            error: "rate_limited".into(),
+            message: "too many recovery requests; try again shortly".into(),
+        });
+    }
+    let Some(account_id) = node_account_id(&state.db).await? else {
+        return Err(LocalError {
+            error: "no_account".into(),
+            message: "this node is not paired to an account".into(),
+        });
+    };
+    let Some(recovery_public_key) = recovery_recipient(&state.db).await? else {
+        return Err(LocalError {
+            error: "recovery_unavailable".into(),
+            message: "this account has no recovery key enrolled".into(),
+        });
+    };
+    let nonce = state.recovery_nonces.issue().await.ok_or_else(|| LocalError {
+        error: "overloaded".into(),
+        message: "recovery nonce store is at capacity; retry in 30s".into(),
+    })?;
+    Ok(Json(RecoveryChallenge {
+        nonce,
+        ttl_seconds: super::auth::NONCE_TTL.as_secs(),
+        account_id,
+        recovery_public_key,
+    }))
+}
+
+/// Prove the recovery phrase (an Ed25519 signature over the nonce), register
+/// the new device locally, and return the account id. No Relay involved.
+async fn recovery_auth(
+    State(state): State<LocalState>,
+    Json(req): Json<RecoveryRequest>,
+) -> Result<Json<RecoveryResult>, LocalError> {
+    if !state.recovery_nonces.consume(&req.nonce).await {
+        return Err(LocalError {
+            error: "invalid_nonce".into(),
+            message: "recovery nonce was not issued, is expired, or already used".into(),
+        });
+    }
+    let Some(account_id) = node_account_id(&state.db).await? else {
+        return Err(LocalError {
+            error: "no_account".into(),
+            message: "this node is not paired to an account".into(),
+        });
+    };
+    let recovery_key_b64 = recovery_recipient(&state.db).await?.ok_or_else(|| LocalError {
+        error: "recovery_unavailable".into(),
+        message: "this account has no recovery key enrolled".into(),
+    })?;
+    let recovery_key = base64_decode(&recovery_key_b64)?;
+    let device_pubkey = decode_pubkey(&req.device_public_key)?;
+
+    // Verify before any mutable state; a bad signature must not touch devices.
+    verify_signature(&recovery_key, req.nonce.as_bytes(), &req.signature).map_err(|e| LocalError {
+        error: "bad_signature".into(),
+        message: format!("recovery signature verification failed: {e}"),
+    })?;
+
+    let now = now_iso();
+    sqlx::query(
+        "INSERT INTO devices (device_id, public_key_bytes, status, created_at, paired_at)
+         VALUES (?, ?, 'ACTIVE', ?, ?)
+         ON CONFLICT(device_id) DO UPDATE SET
+            public_key_bytes = excluded.public_key_bytes,
+            status = 'ACTIVE',
+            paired_at = excluded.paired_at,
+            revoked_at = NULL",
+    )
+    .bind(&req.device_id)
+    .bind(&device_pubkey)
+    .bind(&now)
+    .bind(&now)
+    .execute(&state.db)
+    .await
+    .map_err(internal_err)?;
+
+    state.telemetry.local_auth();
+    Ok(Json(RecoveryResult {
+        status: "ok",
+        account_id,
+        device_id: req.device_id,
+    }))
+}
+
+/// Serve the account's recovery-sealed envelopes to an authenticated device so
+/// it can unlock file/folder keys with no Internet. Only `recipient_kind =
+/// 'recovery'` rows are ever returned; device/node envelopes stay private.
+async fn recovery_envelopes(
+    State(state): State<LocalState>,
+    headers: HeaderMap,
+) -> Result<Json<RecoveryEnvelopes>, LocalError> {
+    let (caller, _is_device, timestamp, _signature) = parse_signed_headers(&headers)?;
+    let message = format!("{caller}:recovery-envelopes:{timestamp}");
+    verify_signed_caller(&state.db, &headers, message.as_bytes()).await?;
+
+    let file_rows = sqlx::query_as::<_, (String, String, String, String)>(
+        "SELECT file_id, recipient_id, recipient_kind, encrypted_key
+         FROM key_envelopes WHERE recipient_kind = 'recovery'",
+    )
+    .fetch_all(&state.db)
+    .await
+    .map_err(internal_err)?;
+    let folder_rows = sqlx::query_as::<_, (String, String, String, String)>(
+        "SELECT folder_id, recipient_id, recipient_kind, encrypted_key
+         FROM folder_key_envelopes WHERE recipient_kind = 'recovery'",
+    )
+    .fetch_all(&state.db)
+    .await
+    .map_err(internal_err)?;
+
+    Ok(Json(RecoveryEnvelopes {
+        file_envelopes: file_rows
+            .into_iter()
+            .map(|(file_id, recipient_id, recipient_kind, encrypted_key)| RecoveryFileEnvelope {
+                file_id,
+                recipient_id,
+                recipient_kind,
+                encrypted_key,
+            })
+            .collect(),
+        folder_envelopes: folder_rows
+            .into_iter()
+            .map(|(folder_id, recipient_id, recipient_kind, encrypted_key)| RecoveryFolderEnvelope {
+                folder_id,
+                recipient_id,
+                recipient_kind,
+                encrypted_key,
+            })
+            .collect(),
     }))
 }
 
@@ -751,6 +984,18 @@ async fn store_device_conn(
     .await
     .map_err(internal_err)?;
 
+    // Remember the account binding (ADR-0002): the offline recovery endpoints
+    // need it later, and pairing is the only moment the node learns it.
+    sqlx::query(
+        "INSERT INTO node_account (id, account_id, paired_at) VALUES (1, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET account_id = excluded.account_id, paired_at = excluded.paired_at",
+    )
+    .bind(account_id)
+    .bind(&now)
+    .execute(&mut *conn)
+    .await
+    .map_err(internal_err)?;
+
     Ok(Json(PairConfirm {
         node_id: node_id.to_string(),
         account_id: account_id.to_string(),
@@ -799,7 +1044,10 @@ impl IntoResponse for LocalError {
         let status = match self.error.as_str() {
             "rate_limited" | "overloaded" => StatusCode::TOO_MANY_REQUESTS,
             "unauthorized" => StatusCode::UNAUTHORIZED,
-            "not_found" => StatusCode::NOT_FOUND,
+            // Recovery preconditions read as "not found" rather than a bad
+            // request: the caller asked a valid question of a node that has no
+            // account binding / no recovery enrollment.
+            "not_found" | "no_account" | "recovery_unavailable" => StatusCode::NOT_FOUND,
             _ => StatusCode::BAD_REQUEST,
         };
         (status, Json(self)).into_response()
@@ -851,11 +1099,175 @@ mod tests {
                 Duration::from_secs(10),
                 super::super::auth::WEBRTC_OFFER_RATE_LIMIT,
             )),
+            recovery_nonces: Arc::new(NonceStore::default()),
+            recovery_limiter: Arc::new(RateLimiter::new(
+                Duration::from_secs(10),
+                super::super::auth::RECOVERY_RATE_LIMIT,
+            )),
             relay_http_base: None,
             http: reqwest::Client::new(),
             telemetry: crate::telemetry::Telemetry::new(),
         };
         (make_router(state), db, identity, dir)
+    }
+
+    /// Seed a recovery-enabled node: account binding + one recovery envelope
+    /// whose recipient_id is the account recovery public key.
+    async fn seed_recovery(db: &SqlitePool, recovery_pub_b64: &str) {
+        sqlx::query(
+            "INSERT INTO node_account (id, account_id, paired_at) VALUES (1, 'acct-recover', 'now')",
+        )
+        .execute(db)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO key_envelopes (file_id, recipient_id, recipient_kind, encrypted_key, created_at)
+             VALUES ('file-r', ?, 'recovery', 'opaque', 'now')",
+        )
+        .bind(recovery_pub_b64)
+        .execute(db)
+        .await
+        .unwrap();
+    }
+
+    fn b64(bytes: &[u8]) -> String {
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    }
+
+    #[tokio::test]
+    async fn test_offline_recovery_round_trip() {
+        let (app, db, _id, _dir) = setup_test_server().await;
+        let recovery = SigningKey::from_bytes(&[3u8; 32]);
+        let recovery_pub = b64(&recovery.verifying_key().to_bytes());
+        seed_recovery(&db, &recovery_pub).await;
+
+        let addr: SocketAddr = "192.168.1.60:5555".parse().unwrap();
+
+        // 1. Challenge advertises the account + recovery key.
+        let mut req = Request::builder()
+            .uri("/nodus/recovery/challenge")
+            .method("POST")
+            .body(Body::empty())
+            .unwrap();
+        req.extensions_mut().insert(ConnectInfo(addr));
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let json: serde_json::Value =
+            serde_json::from_slice(&resp.into_body().collect().await.unwrap().to_bytes()).unwrap();
+        assert_eq!(json["account_id"], "acct-recover");
+        assert_eq!(json["recovery_public_key"], recovery_pub);
+        let nonce = json["nonce"].as_str().unwrap().to_string();
+
+        // 2. Recover: sign the nonce with the recovery key.
+        let device = SigningKey::from_bytes(&[4u8; 32]);
+        let signature = hex::encode(recovery.sign(nonce.as_bytes()).to_bytes());
+        let body = serde_json::json!({
+            "nonce": nonce,
+            "signature": signature,
+            "device_id": "dev-recovered",
+            "device_public_key": b64(&device.verifying_key().to_bytes()),
+        });
+        let req = Request::builder()
+            .uri("/nodus/recovery")
+            .method("POST")
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // The new device is registered and active on the node.
+        let status: String =
+            sqlx::query_scalar("SELECT status FROM devices WHERE device_id = 'dev-recovered'")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert_eq!(status, "ACTIVE");
+
+        // 3. Fetch recovery envelopes with a signed device request.
+        let ts = chrono::Utc::now().timestamp_millis();
+        let message = format!("dev-recovered:recovery-envelopes:{ts}");
+        let sig = hex::encode(device.sign(message.as_bytes()).to_bytes());
+        let req = Request::builder()
+            .uri("/nodus/recovery/envelopes")
+            .method("GET")
+            .header("x-nodus-device-id", "dev-recovered")
+            .header("x-nodus-timestamp", ts.to_string())
+            .header("x-nodus-signature", sig)
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let json: serde_json::Value =
+            serde_json::from_slice(&resp.into_body().collect().await.unwrap().to_bytes()).unwrap();
+        assert_eq!(json["file_envelopes"][0]["file_id"], "file-r");
+        assert!(json["folder_envelopes"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_offline_recovery_rejects_bad_signature() {
+        let (app, db, _id, _dir) = setup_test_server().await;
+        let recovery = SigningKey::from_bytes(&[3u8; 32]);
+        seed_recovery(&db, &b64(&recovery.verifying_key().to_bytes())).await;
+
+        let addr: SocketAddr = "192.168.1.61:5555".parse().unwrap();
+        let mut req = Request::builder()
+            .uri("/nodus/recovery/challenge")
+            .method("POST")
+            .body(Body::empty())
+            .unwrap();
+        req.extensions_mut().insert(ConnectInfo(addr));
+        let resp = app.clone().oneshot(req).await.unwrap();
+        let json: serde_json::Value =
+            serde_json::from_slice(&resp.into_body().collect().await.unwrap().to_bytes()).unwrap();
+        let nonce = json["nonce"].as_str().unwrap().to_string();
+
+        // A signature from the wrong key must not register the device.
+        let attacker = SigningKey::from_bytes(&[9u8; 32]);
+        let body = serde_json::json!({
+            "nonce": nonce,
+            "signature": hex::encode(attacker.sign(nonce.as_bytes()).to_bytes()),
+            "device_id": "dev-attacker",
+            "device_public_key": b64(&attacker.verifying_key().to_bytes()),
+        });
+        let req = Request::builder()
+            .uri("/nodus/recovery")
+            .method("POST")
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        // `bad_signature` shares the generic 400 mapping with device auth.
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM devices WHERE device_id = 'dev-attacker'")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[tokio::test]
+    async fn test_offline_recovery_unavailable_without_enrollment() {
+        let (app, db, _id, _dir) = setup_test_server().await;
+        // Account bound, but no recovery envelope.
+        sqlx::query(
+            "INSERT INTO node_account (id, account_id, paired_at) VALUES (1, 'acct-no-rec', 'now')",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+
+        let addr: SocketAddr = "192.168.1.62:5555".parse().unwrap();
+        let mut req = Request::builder()
+            .uri("/nodus/recovery/challenge")
+            .method("POST")
+            .body(Body::empty())
+            .unwrap();
+        req.extensions_mut().insert(ConnectInfo(addr));
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]

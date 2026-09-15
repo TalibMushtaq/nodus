@@ -28,6 +28,12 @@ pub const CHALLENGE_RATE_WINDOW: Duration = Duration::from_secs(10);
 pub const WEBRTC_OFFER_RATE_LIMIT: usize = 30;
 /// Sliding window for the WebRTC offer rate limiter.
 pub const WEBRTC_OFFER_RATE_WINDOW: Duration = Duration::from_secs(10);
+/// Max offline-recovery challenge requests allowed per IP within the window.
+/// Recovery hands out key material to whoever holds the phrase, so it gets its
+/// own (tighter) budget rather than sharing the generic challenge limiter.
+pub const RECOVERY_RATE_LIMIT: usize = 5;
+/// Sliding window for the recovery challenge rate limiter.
+pub const RECOVERY_RATE_WINDOW: Duration = Duration::from_secs(60);
 /// Hard cap on outstanding unconsumed nonces across all clients.
 pub const NONCE_OUTSTANDING_CAP: usize = 500;
 

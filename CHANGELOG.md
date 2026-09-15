@@ -1,5 +1,15 @@
 # Changelog
 
+## [2026-09-15] - Rust node: offline recovery endpoints
+
+**What changed:** Implemented the Storage Node half of ADR-0002's offline "lost phone" path. A new `node_account` table (migration) records the account binding at pairing time (both the local-push and Relay-verify paths). New LAN endpoints: `POST /nodus/recovery/challenge` (returns the account id + the recovery public key found in the node's recovery envelopes, plus a dedicated nonce), `POST /nodus/recovery` (verifies an Ed25519 signature over the nonce with the recovery key, then registers the new device locally), and `GET /nodus/recovery/envelopes` (signed device request; returns only `recipient_kind = 'recovery'` file/folder envelopes). Recovery has its own nonce store and a tighter per-IP rate limit, and `no_account`/`recovery_unavailable` map to 404.
+
+**Why:** This is the node prerequisite for recovering with no Internet (plan §24); the ADR notes previously flagged the missing account binding as the blocker.
+
+**Impact:** `services/storage-node` (`local/server.rs`, `local/auth.rs`, new migration). Verified: `cargo test` (201 passed, incl. 3 new recovery tests: round-trip, bad-signature rejection with no device insert, unenrolled-account 404).
+
+**Follow-ups:** Protocol schemas for the three responses and the client (mobile/SDK) offline recovery flow are next; the endpoints are LAN-only and assume the node holds recovery envelopes.
+
 ## [2026-09-15] - Offline recovery: document the design gap; honest mobile message
 
 **What changed:** Surveyed the Rust node for the deferred ADR-0002 offline recovery path and recorded the concrete gaps in the ADR: the node persists no account identifier (`devices` has no `account_id`; only `pairing_sessions` carry one at redemption), the recovery public key is only implicit in `key_envelopes`, and new challenge/recovery/envelope-fetch endpoints with their own nonce + rate limits are needed. The mobile recovery flow now checks connectivity and tells the user "offline Storage-Node recovery is not available yet" instead of surfacing a bare network error.
