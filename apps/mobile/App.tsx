@@ -81,6 +81,7 @@ import { fileUriSource } from "./src/upload/source";
 import { mobileDownloadDeps } from "./src/download/deps";
 import { decryptFileNames, decryptFolderNames, decryptTombstoneNames } from "./src/download/names";
 import { mobileFolderMutations } from "./src/folders/mutations";
+import { mobileRecoveryClient } from "./src/recovery/client";
 import { saveAndShare } from "./src/download/save";
 import { loadOrCreateDevice } from "./src/storage";
 import { getPreference, setPreference } from "./src/store/preferences";
@@ -144,6 +145,9 @@ export default function App() {
 
   // ── Settings ──────────────────────────────────────────────────────────────
   const [shardSizeBytes, setShardSizeBytes] = React.useState<number>(SHARD_SIZE_BYTES);
+
+  // ── Recovery (ADR-0002) ───────────────────────────────────────────────────
+  const [recoveryPhraseInput, setRecoveryPhraseInput] = React.useState("");
 
   // ── Foreground gate (ADR-0004: Path A is foreground-only) ─────────────────
   const appActiveRef = React.useRef(true);
@@ -270,6 +274,38 @@ export default function App() {
     // Persist so the choice survives a restart; the uploader reads it per upload.
     void setPreference("shardSizeBytes", String(bytes));
   }, []);
+
+  // Recover a lost device from the phrase: prove it to the Relay, register this
+  // device, then unlock the account's recovery-sealed file/folder keys.
+  const recoverAccount = React.useCallback(async () => {
+    if (!device) return;
+    const phrase = recoveryPhraseInput.trim();
+    if (!email.trim() || !phrase) {
+      setError("Enter your account email and recovery phrase.");
+      return;
+    }
+    setBusy("recovering");
+    setError(null);
+    setNotice(null);
+    try {
+      const client = mobileRecoveryClient();
+      const result = await client.recover(email, phrase, device);
+      if (!result.ok || !result.session) throw new Error(result.error ?? "recovery failed");
+      // Keep the phrase locally (revealable on Security) before unlocking keys.
+      await client.save(result.session.account_id, phrase);
+      const unlocked = await client.materialize(phrase);
+      // The native adapter captured the session token from the recover response.
+      setSession(result.session);
+      setRecoveryPhraseInput("");
+      setNotice(
+        `Recovered. Unlocked ${unlocked.files} file and ${unlocked.folders} folder key(s).`,
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(null);
+    }
+  }, [device, email, recoveryPhraseInput]);
 
   const loadNodes = React.useCallback(async () => {
     if (!authed) return;
@@ -1079,6 +1115,26 @@ export default function App() {
           title={busy === "creating-folder" ? "Creating…" : "Create folder"}
           onPress={() => void createFolder()}
           disabled={!authed || busy !== null || folderNameInput.trim() === ""}
+        />
+      </Section>
+
+      <Section title="12 · Recover account">
+        <Text style={styles.hint}>
+          Uses the account email above and your 24-word recovery phrase (ADR-0002).
+        </Text>
+        <TextInput
+          style={styles.input}
+          value={recoveryPhraseInput}
+          onChangeText={setRecoveryPhraseInput}
+          placeholder="recovery phrase (24 words)"
+          autoCapitalize="none"
+          autoCorrect={false}
+          multiline
+        />
+        <Button
+          title={busy === "recovering" ? "Recovering…" : "Recover account"}
+          onPress={() => void recoverAccount()}
+          disabled={busy !== null || !email.trim() || !recoveryPhraseInput.trim()}
         />
       </Section>
 

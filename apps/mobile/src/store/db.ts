@@ -87,6 +87,15 @@ const MIGRATIONS: string[] = [
       value TEXT NOT NULL
     );
   `,
+
+  // Migration 4: the account recovery phrase (ADR-0002), revealed on demand.
+  `
+    CREATE TABLE IF NOT EXISTS recovery (
+      account_id TEXT PRIMARY KEY,
+      phrase     TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+  `,
 ];
 
 let dbPromise: Promise<SQLite.SQLiteDatabase> | null = null;

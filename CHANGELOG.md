@@ -1,5 +1,15 @@
 # Changelog
 
+## [2026-09-15] - Mobile account recovery
+
+**What changed:** The mobile app can recover an account from its 24-word phrase (ADR-0002). Added a SQLite recovery store (migration 4) and a native recovery client binding over the shared SDK client; the native HTTP adapter now also captures the session ID from `/auth/recovery`. A "Recover account" section takes the email (from sign-in) and phrase, recovers + registers this device, saves the phrase locally (revealable), and unlocks recovery-sealed file/folder keys, reporting how many were unlocked.
+
+**Why:** Phase 16's lost-device flow; recovery is the offline escape hatch when every device is lost.
+
+**Impact:** `apps/mobile` (`store/db.ts`, `recovery/*`, `adapters.ts`, `App.tsx`). Verified: mobile lint, typecheck, tests, expo export.
+
+**Follow-ups:** Local-only recovery with no Internet (plan §24: discover node → authenticate → recover key material) still requires Relay reachability for the challenge; the node-local path is not implemented.
+
 ## [2026-09-15] - Shared account recovery client in @repo/sdk
 
 **What changed:** Moved the ADR-0002 recovery logic from `apps/web/lib/recovery.ts` into `packages/sdk/src/recovery/` as `createRecoveryClient(deps)` — phrase generation/validation, public-key derivation, challenge signing, online recovery, recovery-sealed key materialization, and enrollment — with the phrase store, Relay HTTP, and file/folder key writers injected. Web's `recovery.ts` is now a binding over the SDK using IndexedDB and the `/api` proxies; all exported names are unchanged.

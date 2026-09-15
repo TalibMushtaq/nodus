@@ -108,9 +108,10 @@ export function createNativeRelayHttp(): RelayHttp {
         }
       }
 
-      // Capture the session ID on the auth responses that return it, and drop
-      // it on logout, so no SDK service or screen ever handles the raw token.
-      if (res.ok && (path === "/auth/login" || path === "/auth/register")) {
+      // Capture the session ID on the auth responses that return it (login,
+      // register, and recovery all mint a session), and drop it on logout, so
+      // no SDK service or screen ever handles the raw token.
+      if (res.ok && (path === "/auth/login" || path === "/auth/register" || path === "/auth/recovery")) {
         const accessToken = (json as AuthTokenBody | undefined)?.access_token;
         if (accessToken) await setSessionToken(accessToken);
       } else if (path === "/auth/logout") {
