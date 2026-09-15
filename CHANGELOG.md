@@ -1,5 +1,15 @@
 # Changelog
 
+## [2026-09-15] - Shared file event builders; mobile file rename/delete
+
+**What changed:** Moved the file metadata event builders (`fileUpsertEvent`, `fileDeletedEvent`, `conflictResolvedEvent`) from `apps/web/lib/file-events.ts` into `packages/sdk/src/files/` (web re-exports them). Added `apps/mobile/src/files/mutations.ts` and UI actions so files can be renamed (re-encrypted name via the FEK, emitted as `FILE_CREATED`) and soft-deleted (emitted as `TOMBSTONE_CREATED`, confirmed, restorable).
+
+**Why:** Files could be uploaded/downloaded/deleted only via folders on mobile; rename and delete are basic parity and reuse the exact event shapes the Relay/node project.
+
+**Impact:** `packages/sdk` (new `src/files/`, index exports), `apps/web/lib/file-events.ts`, `apps/mobile` (`files/mutations.ts`, `App.tsx`). Verified: SDK build/lint/test, web lint/typecheck/test (194), mobile lint/typecheck/test/bundle.
+
+**Follow-ups:** No move-between-folders action (rename keeps the current parent); only files, not folders, use it.
+
 ## [2026-09-15] - Mobile recovery-phrase reveal
 
 **What changed:** The mobile Security section can reveal the stored account recovery phrase (ADR-0002) and copy it to the clipboard, with an explicit warning that the words grant account access. The phrase comes from the SQLite recovery store for the current account.

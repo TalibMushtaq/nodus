@@ -92,6 +92,7 @@ import { fileUriSource } from "./src/upload/source";
 import { mobileDownloadDeps } from "./src/download/deps";
 import { fetchMobileFileKey } from "./src/download/keys";
 import { decryptFileNames, decryptFolderNames, decryptTombstoneNames } from "./src/download/names";
+import { mobileFileMutations } from "./src/files/mutations";
 import { mobileFolderMutations } from "./src/folders/mutations";
 import { mobileRecoveryClient } from "./src/recovery/client";
 import { sqliteRecoveryStore } from "./src/recovery/store";
@@ -147,6 +148,8 @@ export default function App() {
   const [files, setFiles] = React.useState<RelayFile[]>([]);
   const [fileNames, setFileNames] = React.useState<Record<string, string | null>>({});
   const [downloadStatus, setDownloadStatus] = React.useState<string | null>(null);
+  /** New name for the Rename action on a file row. */
+  const [fileNameInput, setFileNameInput] = React.useState("");
 
   // ── Tombstones (soft-delete) ──────────────────────────────────────────────
   const [tombstones, setTombstones] = React.useState<RelayTombstone[]>([]);
@@ -717,6 +720,57 @@ export default function App() {
     [device],
   );
 
+  const renameFile = React.useCallback(
+    async (file: RelayFile) => {
+      const name = fileNameInput.trim();
+      if (!device || !name) return;
+      setBusy(`renaming-file-${file.file_id}`);
+      setError(null);
+      setNotice(null);
+      try {
+        await mobileFileMutations(wsRef.current!, device).rename(file, name);
+        setFileNameInput("");
+        await loadFiles();
+        setNotice("File renamed.");
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setBusy(null);
+      }
+    },
+    [device, fileNameInput, loadFiles],
+  );
+
+  const deleteFile = React.useCallback(
+    (file: RelayFile) => {
+      Alert.alert("Delete file", "Soft-delete this file? It can be restored from Deleted files.", [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Delete",
+          style: "destructive",
+          onPress: () => {
+            void (async () => {
+              if (!device) return;
+              setBusy(`deleting-file-${file.file_id}`);
+              setError(null);
+              setNotice(null);
+              try {
+                await mobileFileMutations(wsRef.current!, device).remove(file.file_id);
+                await loadFiles();
+                setNotice("File deleted.");
+              } catch (err) {
+                setError(err instanceof Error ? err.message : String(err));
+              } finally {
+                setBusy(null);
+              }
+            })();
+          },
+        },
+      ]);
+    },
+    [device, loadFiles],
+  );
+
   const loadTombstones = React.useCallback(async () => {
     if (!authed) return;
     setBusy("loading-tombstones");
@@ -1104,13 +1158,31 @@ export default function App() {
               {toCatalogEntry(f).storage_status ?? "unknown"}
               {toCatalogEntry(f).conflicted_versions.length > 0 ? " · conflict" : ""}
             </Text>
-            <Button
-              title={busy === `downloading-${f.file_id}` ? "Downloading…" : "Download"}
-              onPress={() => void downloadOne(f)}
-              disabled={busy !== null}
-            />
+            <View style={styles.buttonRow}>
+              <Button
+                title={busy === `downloading-${f.file_id}` ? "Downloading…" : "Download"}
+                onPress={() => void downloadOne(f)}
+                disabled={busy !== null}
+              />
+              <Button
+                title={busy === `renaming-file-${f.file_id}` ? "Renaming…" : "Rename"}
+                onPress={() => void renameFile(f)}
+                disabled={busy !== null || fileNameInput.trim() === ""}
+              />
+              <Button
+                title={busy === `deleting-file-${f.file_id}` ? "Deleting…" : "Delete"}
+                onPress={() => deleteFile(f)}
+                disabled={busy !== null}
+              />
+            </View>
           </View>
         ))}
+        <TextInput
+          style={styles.input}
+          value={fileNameInput}
+          onChangeText={setFileNameInput}
+          placeholder="new file name (for Rename)"
+        />
         {downloadStatus && <Text style={styles.hint}>{downloadStatus}</Text>}
       </Section>
 
