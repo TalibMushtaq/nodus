@@ -1,5 +1,15 @@
 # Changelog
 
+## [2026-09-15] - Mobile folder create/rename/delete
+
+**What changed:** The mobile app can now create, rename, and soft-delete folders. `folders/mutations.ts` binds the SDK's `createFolderMutations` to the device identity, SQLite key store, sync-sequence allocator, Relay event batches, native device/node catalogue, and bulk folder-envelope fetch. The Folders section gained a name input plus Create, and Rename/Delete per folder (delete asks for confirmation and lands in Deleted files).
+
+**Why:** Read-only folder listing was half the feature; mutations complete folder parity and exercise the shared folder-key durability gate and envelope distribution on native.
+
+**Impact:** `apps/mobile` (`folders/mutations.ts`, `App.tsx`). Verified: mobile typecheck, tests, expo export.
+
+**Follow-ups:** No folder navigation/tree (folders are a flat list, and uploads still target the root); folder rename re-encrypts the name with the existing key as intended.
+
 ## [2026-09-15] - Shared folder mutations in @repo/sdk
 
 **What changed:** Moved folder create/rename/delete and the FOLDER_CREATED/DELETED event builders from `apps/web/lib/{folder-mutations,folder-events}.ts` into `packages/sdk/src/folders/` as `createFolderMutations(deps)` (device identity, key store, sequence allocator, event-batch sender, recipient sources, folder-envelope lister) plus `folderCreatedEvent`/`folderDeletedEvent`. Web's `folder-mutations.ts` is now a React hook binding over the SDK and `folder-events.ts` re-exports the builders; all callers unchanged.

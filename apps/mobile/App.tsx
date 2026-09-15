@@ -79,6 +79,7 @@ import { createMobileUploadDeps } from "./src/upload/deps";
 import { fileUriSource } from "./src/upload/source";
 import { mobileDownloadDeps } from "./src/download/deps";
 import { decryptFileNames, decryptFolderNames, decryptTombstoneNames } from "./src/download/names";
+import { mobileFolderMutations } from "./src/folders/mutations";
 import { saveAndShare } from "./src/download/save";
 import { loadOrCreateDevice } from "./src/storage";
 import { getPreference, setPreference } from "./src/store/preferences";
@@ -138,6 +139,7 @@ export default function App() {
   // ── Folders ───────────────────────────────────────────────────────────────
   const [folders, setFolders] = React.useState<RelayFolder[]>([]);
   const [folderNames, setFolderNames] = React.useState<Record<string, string | null>>({});
+  const [folderNameInput, setFolderNameInput] = React.useState("");
 
   // ── Settings ──────────────────────────────────────────────────────────────
   const [shardSizeBytes, setShardSizeBytes] = React.useState<number>(SHARD_SIZE_BYTES);
@@ -521,6 +523,79 @@ export default function App() {
       setBusy(null);
     }
   }, [authed, device]);
+
+  const createFolder = React.useCallback(async () => {
+    const name = folderNameInput.trim();
+    if (!device || !name) return;
+    setBusy("creating-folder");
+    setError(null);
+    setNotice(null);
+    try {
+      await mobileFolderMutations(wsRef.current!, device, session).create(name, null);
+      setFolderNameInput("");
+      await loadFolders();
+      setNotice("Folder created.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(null);
+    }
+  }, [device, session, folderNameInput, loadFolders]);
+
+  const renameFolder = React.useCallback(
+    async (folder: RelayFolder) => {
+      const name = folderNameInput.trim();
+      if (!device || !name) return;
+      setBusy(`renaming-${folder.folder_id}`);
+      setError(null);
+      setNotice(null);
+      try {
+        await mobileFolderMutations(wsRef.current!, device, session).rename(
+          folder.folder_id,
+          folder.parent_folder_id,
+          name,
+        );
+        setFolderNameInput("");
+        await loadFolders();
+        setNotice("Folder renamed.");
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setBusy(null);
+      }
+    },
+    [device, session, folderNameInput, loadFolders],
+  );
+
+  const deleteFolder = React.useCallback(
+    (folder: RelayFolder) => {
+      Alert.alert("Delete folder", "Soft-delete this folder? It can be restored from Deleted files.", [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Delete",
+          style: "destructive",
+          onPress: () => {
+            void (async () => {
+              if (!device) return;
+              setBusy(`deleting-${folder.folder_id}`);
+              setError(null);
+              setNotice(null);
+              try {
+                await mobileFolderMutations(wsRef.current!, device, session).remove(folder.folder_id);
+                await loadFolders();
+                setNotice("Folder deleted.");
+              } catch (err) {
+                setError(err instanceof Error ? err.message : String(err));
+              } finally {
+                setBusy(null);
+              }
+            })();
+          },
+        },
+      ]);
+    },
+    [device, session, loadFolders],
+  );
 
   // Download the newest version, decrypt, and hand to the share sheet.
   const downloadOne = React.useCallback(
@@ -955,11 +1030,36 @@ export default function App() {
         />
         {folders.length === 0 && <Text style={styles.hint}>No folders loaded.</Text>}
         {folders.map((f) => (
-          <Text key={f.folder_id} style={styles.hint}>
-            {folderNames[f.folder_id] ?? `${f.folder_id.slice(0, 12)}…`}
-            {f.parent_folder_id ? " (nested)" : ""}
-          </Text>
+          <View key={f.folder_id} style={styles.radioRow}>
+            <Text style={styles.hint}>
+              {folderNames[f.folder_id] ?? `${f.folder_id.slice(0, 12)}…`}
+              {f.parent_folder_id ? " (nested)" : ""}
+            </Text>
+            <View style={styles.buttonRow}>
+              <Button
+                title={busy === `renaming-${f.folder_id}` ? "Renaming…" : "Rename"}
+                onPress={() => void renameFolder(f)}
+                disabled={busy !== null || folderNameInput.trim() === ""}
+              />
+              <Button
+                title={busy === `deleting-${f.folder_id}` ? "Deleting…" : "Delete"}
+                onPress={() => deleteFolder(f)}
+                disabled={busy !== null}
+              />
+            </View>
+          </View>
         ))}
+        <TextInput
+          style={styles.input}
+          value={folderNameInput}
+          onChangeText={setFolderNameInput}
+          placeholder="new folder name (for Create / Rename)"
+        />
+        <Button
+          title={busy === "creating-folder" ? "Creating…" : "Create folder"}
+          onPress={() => void createFolder()}
+          disabled={!authed || busy !== null || folderNameInput.trim() === ""}
+        />
       </Section>
 
       <Section title="Trusted nodes (this device)">
