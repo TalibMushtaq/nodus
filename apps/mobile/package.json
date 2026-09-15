@@ -30,6 +30,8 @@
   },
   "devDependencies": {
     "@types/react": "~19.2.2",
+    "eslint": "9.39.5",
+    "eslint-config-expo": "57.0.2",
     "typescript": "~6.0.3",
     "vitest": "4.1.11"
   },
@@ -39,6 +41,7 @@
     "ios": "expo run:ios",
     "web": "expo start --web",
     "build": "expo export --platform android",
+    "lint": "eslint .",
     "check-types": "tsc --noEmit",
     "test": "vitest run"
   },

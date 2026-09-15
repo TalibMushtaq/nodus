@@ -2,15 +2,16 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { encryptName, generateFileEncryptionKey } from "@repo/core";
 import type { StoredDeviceIdentity } from "@repo/relay-client";
 
-// The key lookups talk to SQLite/Relay (and pull in expo modules); mock both so
-// this test covers only the decrypt-and-tolerate-failure logic.
-vi.mock("../keys", () => ({ fetchMobileFileKey: vi.fn() }));
-vi.mock("../folder-keys", () => ({ fetchMobileFolderKey: vi.fn() }));
-
 import { fetchMobileFileKey } from "../keys";
 import { fetchMobileFolderKey } from "../folder-keys";
 import { decryptFileNames, decryptFolderNames } from "../names";
 import type { RelayFile, RelayFolder } from "../../relay";
+
+// The key lookups talk to SQLite/Relay (and pull in expo modules); mock both so
+// this test covers only the decrypt-and-tolerate-failure logic. `vi.mock` is
+// hoisted above the imports, so the mocked modules are what `names` resolves.
+vi.mock("../keys", () => ({ fetchMobileFileKey: vi.fn() }));
+vi.mock("../folder-keys", () => ({ fetchMobileFolderKey: vi.fn() }));
 
 const device: StoredDeviceIdentity = {
   device_id: "dev-1",

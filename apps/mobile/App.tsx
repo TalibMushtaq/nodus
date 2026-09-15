@@ -187,6 +187,9 @@ export default function App() {
       });
     } else {
       ws.stop();
+      // The socket is stopped and has no callback to report it, so reflect the
+      // reset directly. This is a one-shot transition on sign-out, not a loop.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setWsState("disconnected");
     }
     return () => ws.stop();
@@ -214,6 +217,8 @@ export default function App() {
         }
       })();
     } else {
+      // Sign-out tear-down: clear once so no stale manager is used.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setTransferManager(null);
     }
     return () => {

@@ -1,5 +1,15 @@
 # Changelog
 
+## [2026-09-15] - Mobile lint + dedicated CI job
+
+**What changed:** Added an ESLint setup to `apps/mobile` (`eslint.config.mjs` using `eslint-config-expo`, ESLint 9, `lint: eslint .`) and a dedicated `mobile` job in `.github/workflows/ci-ts.yml` that builds the app's workspace deps, then runs lint, typecheck, tests, and `expo export`. Fixed the two lint errors it surfaced (`set-state-in-effect` on the sign-out transitions, with explanatory disables) and small style warnings. `pnpm-workspace.yaml` now allows `unrs-resolver`'s postinstall (pulled in transitively by the Expo ESLint config).
+
+**Why:** The mobile app had no lint or independent CI signal; `turbo lint` skipped it entirely, and a mobile-only breakage had to be inferred from the combined TS job.
+
+**Impact:** `apps/mobile` (config, package.json, small fixes), `.github/workflows/ci-ts.yml`, `pnpm-workspace.yaml`, `pnpm-lock.yaml`. Verified: mobile lint (clean), tests, typecheck, expo export; `turbo lint` now includes mobile.
+
+**Follow-ups:** Expo's config runs ESLint 9 (eslint-plugin-react is not yet ESLint-10 compatible); the repo root stays on ESLint 10.
+
 ## [2026-09-15] - Foreground-only Path A on mobile
 
 **What changed:** The mobile transfer manager's attempt path can now gate Path A behind a predicate; the app passes an `AppState`-backed `canAttemptLocal` so direct LAN (local-signaling) transfers are only attempted while the app is foregrounded, falling through to Path B/C/D otherwise. This implements ADR-0004's "Path A foreground only" decision.

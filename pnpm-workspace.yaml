@@ -5,3 +5,5 @@ packages:
   - "services/*"
 allowBuilds:
   esbuild: true
+  # Native resolver pulled in by eslint-config-expo; its postinstall is safe.
+  unrs-resolver: true

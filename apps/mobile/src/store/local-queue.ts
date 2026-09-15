@@ -41,7 +41,7 @@ function toItem(row: QueueRow): QueueItem {
 
 export class SqliteLocalQueue implements LocalQueue {
   private items: QueueItem[] = [];
-  private listeners: Array<() => void> = [];
+  private listeners: (() => void)[] = [];
   private pending: Promise<unknown> = Promise.resolve();
 
   /** Load persisted items once at startup, oldest first (FIFO retry order). */
