@@ -1,5 +1,15 @@
 # Changelog
 
+## [2026-09-15] - Show the mobile transfer path
+
+**What changed:** `createMobileUploadDeps` accepts an `onPath` callback and reports the path each successful shard used (`result.path` from the transfer manager); the app stores the last path and shows "Last shard path: …" with a human label (Direct LAN / Direct via Relay / Relay buffer / Queued), mirroring the web `TransferPathBanner`.
+
+**Why:** Once shards route through the A→B→C→D chain, the user needs to see which path is actually in use (or that transfers are stuck on the buffer/queue).
+
+**Impact:** `apps/mobile` (`upload/deps.ts`, `App.tsx`). Verified: mobile typecheck, tests, expo export.
+
+**Follow-ups:** Only the *last* path is shown; a per-transfer breakdown and a persistent banner live in the web client but are not ported.
+
 ## [2026-09-15] - Drain the mobile Path D queue on Relay reconnect
 
 **What changed:** The app now calls the transfer manager's `notifyConnectivityRestored()` when the Relay socket transitions to `connected`, so shards parked in the SQLite Path D queue are retried automatically after connectivity returns instead of only on the next manual upload.

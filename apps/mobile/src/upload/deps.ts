@@ -18,7 +18,7 @@ import {
   signDeviceMessage,
   type StoredDeviceIdentity,
 } from "@repo/relay-client";
-import type { ShardTransferRequest } from "@repo/transfer-manager";
+import type { ShardTransferRequest, TransferPath } from "@repo/transfer-manager";
 
 import { relayDevices, relayNodes } from "../relay";
 import type { MobileTransferManager } from "../transfer/manager";
@@ -37,6 +37,8 @@ export function createMobileUploadDeps(
   ws: MobileWs,
   device: StoredDeviceIdentity,
   transfer?: MobileTransferManager | null,
+  /** Reports the path each successful shard used, so the UI can show it. */
+  onPath?: (path: TransferPath) => void,
 ): UploadDeps {
   const sign = (message: string) => signDeviceMessage(identityPrivateKey(device), message);
 
@@ -59,6 +61,7 @@ export function createMobileUploadDeps(
       };
       const result = await transfer.manager.uploadShard(request);
       if (!result.success) throw new Error(result.error ?? "shard transfer failed");
+      onPath?.(result.path);
       return result;
     },
     sendEventBatch: (events) => ws.sendEventBatch(events),

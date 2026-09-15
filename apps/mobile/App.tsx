@@ -28,6 +28,7 @@ import {
 
 import type { ConnectionState } from "@repo/relay-client";
 import { downloadFile, uploadFile, type SessionInfo } from "@repo/sdk";
+import type { TransferPath } from "@repo/transfer-manager";
 import {
   NodeClient,
   NodeClientError,
@@ -107,6 +108,7 @@ export default function App() {
 
   // ── Upload ────────────────────────────────────────────────────────────────
   const [uploadStatus, setUploadStatus] = React.useState<string | null>(null);
+  const [lastPath, setLastPath] = React.useState<TransferPath | null>(null);
   const [transferManager, setTransferManager] = React.useState<MobileTransferManager | null>(null);
 
   // ── Download ──────────────────────────────────────────────────────────────
@@ -357,7 +359,7 @@ export default function App() {
         originId: device.device_id,
         targetNode: target,
         sourceDevice: device.device_id,
-        deps: createMobileUploadDeps(wsRef.current!, device, transferManager),
+        deps: createMobileUploadDeps(wsRef.current!, device, transferManager, setLastPath),
         onProgress: (event) =>
           setUploadStatus(`${event.phase} · shard ${event.completedShards}/${event.totalShards}`),
       });
@@ -645,6 +647,7 @@ export default function App() {
           disabled={!authed || !device || busy !== null}
         />
         {uploadStatus && <Text style={styles.hint}>{uploadStatus}</Text>}
+        {lastPath && <Text style={styles.hint}>Last shard path: {transferPathLabel(lastPath)}</Text>}
         <Text style={styles.hint}>
           Uploads to {selectedNode ? "the selected node" : "the primary node"} and seals the key to
           all your devices and nodes.
@@ -710,6 +713,22 @@ function Section({ title, children }: { title: string; children: React.ReactNode
       {children}
     </View>
   );
+}
+
+/** Human label for a transfer path (mirrors the web TransferPathBanner text). */
+function transferPathLabel(path: TransferPath): string {
+  switch (path) {
+    case "local_signaling":
+      return "Direct LAN (local signaling)";
+    case "relay_signaling":
+      return "Direct (Relay signaling)";
+    case "buffer_relay":
+      return "Relay buffer";
+    case "local_queue":
+      return "Queued on device";
+    default:
+      return path;
+  }
 }
 
 const styles = StyleSheet.create({
