@@ -423,14 +423,33 @@ stage 7b in §28 (inserted between 7a and 8).
       A/B→C→D bridge, `TransferPathBanner`; web still skips active mDNS per decision D)
  
 ## Phase 15 — Expo Mobile Client
- 
-- [ ] Scaffold Expo application structure
+
+> **Progress (2026-09-15, in flight):** native build + adapter boundary chosen in
+> `docs/decisions/0007-mobile-native-and-sdk.md`. First slice landed:
+> `packages/sdk` exists (auth/device/format/connectivity/zip) and `apps/web` is
+> migrating onto it; the Relay `/ws` accepts bearer; the DataChannel done-marker
+> mismatch is fixed; `apps/mobile` has the native module set, `expo-build-properties`
+> / mDNS / multicast config, native `RelayHttp`+`SecureStore` adapters, session
+> auth, §7b pairing-code issuance, native mDNS browse + permission-denied
+> fallback, a bearer-authenticated Relay WebSocket, and the shared transfer
+> chain (`createAttemptPath` + `WebRtcSessionCache`) moved into `packages/sdk`
+> with the browser binding still green; and mobile SQLite local state
+> (`src/store/`: trusted nodes, Path D queue, path cache), and the native
+> Path A/B bindings (`src/transfer/`: react-native-webrtc factory, signed relay
+> channel, Path C poster). Still open: the shared SDK `LocalStore` contract +
+> catalogue/keys tables, mobile upload/download, and the rest of the web
+> migration + mobile tests/CI.
+
+- [x] Scaffold Expo application structure (native development build per ADR-0007)
 - [ ] Reuse `packages/sdk` where portable; native/mobile-specific pieces per Phase 0 decision
+      (SDK created and consuming auth/device/utils; catalog/keys/envelopes/transfer still to move)
 - [ ] mDNS discovery (Mobile) & Path A/B fallback logic
-- [ ] First-time pairing flow (Mobile UI): pairing-code entry screens (plan §7b);
+- [ ] First-time pairing flow (Mobile UI): pairing-code issuance screens (plan §7b);
       **QR-based scanner deferred (non-goal)** — may later encode
       `{relay_url, code}` and reuse the same redemption
+      (issuance + `GET /nodes` polling implemented; local device↔node trust screen retained)
 - [ ] Apply Phase 0 mobile-discovery decision (foreground/background policy, Expo vs. native)
+      (Expo-vs-native resolved by ADR-0007; foreground-only enforcement still to implement)
 - [ ] Local network permission prompt handling + denial fallback UX (§7a)
 
 ## Phase 16 — Device / Key Recovery

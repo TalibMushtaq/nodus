@@ -34,7 +34,7 @@ Four components, one protocol:
 | Component | Directory | Stack | Status |
 |---|---|---|---|
 | **Web client** | `apps/web` | Next.js + `packages/ui` (Tailwind v4) | UI ported; session auth wired; live sync TBD |
-| **Mobile client** | `apps/mobile` | React Native / Expo | Scaffold only |
+| **Mobile client** | `apps/mobile` | React Native / Expo | Phase 15 in progress — native shell, session auth, pairing-code issuance |
 | **Storage Node** | `services/storage-node` | Rust, SQLite | Sync + object store implemented |
 | **Relay** | `services/relay` | Go, PostgreSQL, Redis | Control plane + buffer implemented |
 
