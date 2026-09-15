@@ -16,6 +16,8 @@ import type { MobileWs } from "../ws";
 
 export interface MobileFileMutations {
   rename(file: RelayFile, newName: string): Promise<void>;
+  /** Re-parent a file without re-encrypting its name (the FEK is unchanged). */
+  move(file: RelayFile, parentFolderId: string | null): Promise<void>;
   remove(fileId: string): Promise<void>;
 }
 
@@ -32,6 +34,21 @@ export function mobileFileMutations(ws: MobileWs, device: StoredDeviceIdentity):
         }),
       ]);
       if (ack && ack.ok === false) throw new Error(ack.reason ?? "rename rejected");
+    },
+
+    async move(file, parentFolderId) {
+      // A move is the same FILE_CREATED upsert as a rename, but the name
+      // ciphertext is reused verbatim; without it the projection would blank
+      // the name, so refuse rather than emit a partial upsert.
+      if (!file.encrypted_name) throw new Error("This file has no stored name to move.");
+      const sequence = await nextOriginSequence(device.device_id);
+      const ack = await ws.sendEventBatch([
+        fileUpsertEvent(device.device_id, sequence, file.file_id, {
+          parentFolderId,
+          encryptedName: file.encrypted_name,
+        }),
+      ]);
+      if (ack && ack.ok === false) throw new Error(ack.reason ?? "move rejected");
     },
 
     async remove(fileId) {

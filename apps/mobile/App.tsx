@@ -741,6 +741,26 @@ export default function App() {
     [device, fileNameInput, loadFiles],
   );
 
+  const moveFile = React.useCallback(
+    async (file: RelayFile) => {
+      if (!device) return;
+      setBusy(`moving-file-${file.file_id}`);
+      setError(null);
+      setNotice(null);
+      try {
+        // Move into the folder currently open in the browser.
+        await mobileFileMutations(wsRef.current!, device).move(file, currentFolderId);
+        await loadFiles();
+        setNotice("File moved.");
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setBusy(null);
+      }
+    },
+    [device, currentFolderId, loadFiles],
+  );
+
   const deleteFile = React.useCallback(
     (file: RelayFile) => {
       Alert.alert("Delete file", "Soft-delete this file? It can be restored from Deleted files.", [
@@ -1169,6 +1189,13 @@ export default function App() {
                 onPress={() => void renameFile(f)}
                 disabled={busy !== null || fileNameInput.trim() === ""}
               />
+              {(f.parent_folder_id ?? null) !== currentFolderId && (
+                <Button
+                  title={busy === `moving-file-${f.file_id}` ? "Moving…" : "Move here"}
+                  onPress={() => void moveFile(f)}
+                  disabled={busy !== null}
+                />
+              )}
               <Button
                 title={busy === `deleting-file-${f.file_id}` ? "Deleting…" : "Delete"}
                 onPress={() => deleteFile(f)}

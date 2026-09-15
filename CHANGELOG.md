@@ -1,5 +1,15 @@
 # Changelog
 
+## [2026-09-15] - Mobile move file between folders
+
+**What changed:** Added a `move` mutation (`FILE_CREATED` upsert reusing the existing name ciphertext with a new `parent_folder_id`) and a "Move here" action on file rows, shown only when the file is not already in the open folder.
+
+**Why:** Renames kept the parent, so files could not be reorganised on mobile.
+
+**Impact:** `apps/mobile` (`files/mutations.ts`, `App.tsx`). Verified: mobile lint, typecheck, tests, expo export.
+
+**Follow-ups:** Moving requires a stored encrypted name (a file with none is refused rather than blanked); folder moves are not supported.
+
 ## [2026-09-15] - Shared file event builders; mobile file rename/delete
 
 **What changed:** Moved the file metadata event builders (`fileUpsertEvent`, `fileDeletedEvent`, `conflictResolvedEvent`) from `apps/web/lib/file-events.ts` into `packages/sdk/src/files/` (web re-exports them). Added `apps/mobile/src/files/mutations.ts` and UI actions so files can be renamed (re-encrypted name via the FEK, emitted as `FILE_CREATED`) and soft-deleted (emitted as `TOMBSTONE_CREATED`, confirmed, restorable).
