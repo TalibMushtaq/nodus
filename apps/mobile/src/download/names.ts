@@ -8,7 +8,7 @@
 import { decryptName } from "@repo/core";
 import type { StoredDeviceIdentity } from "@repo/relay-client";
 
-import type { RelayFile } from "../relay";
+import type { RelayFile, RelayTombstone } from "../relay";
 import { fetchMobileFileKey } from "./keys";
 
 export async function decryptFileNames(
@@ -28,6 +28,33 @@ export async function decryptFileNames(
       } catch {
         // Missing/undecryptable envelope: show the id, not an error.
         names[file.file_id] = null;
+      }
+    }),
+  );
+  return names;
+}
+
+/**
+ * Decrypt names for soft-deleted items. Folder names use folder keys, which
+ * mobile does not resolve yet, so only file tombstones decrypt; the rest fall
+ * back to the id.
+ */
+export async function decryptTombstoneNames(
+  device: StoredDeviceIdentity,
+  items: RelayTombstone[],
+): Promise<Record<string, string | null>> {
+  const names: Record<string, string | null> = {};
+  await Promise.all(
+    items.map(async (item) => {
+      if (item.entity_type !== "file" || !item.encrypted_name) {
+        names[item.entity_id] = null;
+        return;
+      }
+      try {
+        const fek = await fetchMobileFileKey(device, item.entity_id);
+        names[item.entity_id] = fek ? decryptName(item.encrypted_name, fek) : null;
+      } catch {
+        names[item.entity_id] = null;
       }
     }),
   );

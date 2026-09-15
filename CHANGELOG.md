@@ -1,5 +1,15 @@
 # Changelog
 
+## [2026-09-15] - Mobile soft-delete (tombstone) view
+
+**What changed:** The mobile app lists soft-deleted items and can restore or permanently delete them. `relay.ts` gained tombstone types plus `relayTombstones`/`relayPurgeTombstone`/`relayRestoreTombstone`; `download/names.ts` gained `decryptTombstoneNames` (file tombstones decrypt via the FEK, folders fall back to the id until folder keys land). Purge asks for confirmation via a native dialog.
+
+**Why:** Soft-delete/restore/purge is part of the ADR-0003/§29a surface and was web-only.
+
+**Impact:** `apps/mobile` (`relay.ts`, `download/names.ts`, `App.tsx`). Verified: mobile typecheck, tests, expo export.
+
+**Follow-ups:** Folder tombstones show ids only (no folder-key support yet), and per-node purge progress is fetched but not rendered per node.
+
 ## [2026-09-15] - Mobile node ping and node names
 
 **What changed:** Added `relayPingNode`/`relayRenameNode` and a Ping action on each storage node in the mobile node list, which now also shows the node's `display_name` when set (falling back to the id).

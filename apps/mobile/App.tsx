@@ -54,14 +54,18 @@ import {
   relayPingDevice,
   relayPingNode,
   relayRegisterDevice,
+  relayPurgeTombstone,
   relayResolveConflict,
+  relayRestoreTombstone,
   relayRevokeDevice,
   relaySession,
+  relayTombstones,
   type PairingCode,
   type PairingSession,
   type RelayDevice,
   type RelayFile,
   type RelayNode,
+  type RelayTombstone,
 } from "./src/relay";
 import { MobileWs } from "./src/ws";
 import {
@@ -71,7 +75,7 @@ import {
 import { createMobileUploadDeps } from "./src/upload/deps";
 import { fileUriSource } from "./src/upload/source";
 import { mobileDownloadDeps } from "./src/download/deps";
-import { decryptFileNames } from "./src/download/names";
+import { decryptFileNames, decryptTombstoneNames } from "./src/download/names";
 import { saveAndShare } from "./src/download/save";
 import { loadOrCreateDevice } from "./src/storage";
 import {
@@ -122,6 +126,10 @@ export default function App() {
   const [files, setFiles] = React.useState<RelayFile[]>([]);
   const [fileNames, setFileNames] = React.useState<Record<string, string | null>>({});
   const [downloadStatus, setDownloadStatus] = React.useState<string | null>(null);
+
+  // ── Tombstones (soft-delete) ──────────────────────────────────────────────
+  const [tombstones, setTombstones] = React.useState<RelayTombstone[]>([]);
+  const [tombstoneNames, setTombstoneNames] = React.useState<Record<string, string | null>>({});
 
   const [error, setError] = React.useState<string | null>(null);
   const [notice, setNotice] = React.useState<string | null>(null);
@@ -515,6 +523,72 @@ export default function App() {
     [device],
   );
 
+  const loadTombstones = React.useCallback(async () => {
+    if (!authed) return;
+    setBusy("loading-tombstones");
+    setError(null);
+    try {
+      const list = await relayTombstones();
+      setTombstones(list);
+      setTombstoneNames(device ? await decryptTombstoneNames(device, list) : {});
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(null);
+    }
+  }, [authed, device]);
+
+  const restoreTombstone = React.useCallback(
+    async (item: RelayTombstone) => {
+      setBusy(`restoring-${item.entity_id}`);
+      setError(null);
+      setNotice(null);
+      try {
+        await relayRestoreTombstone(item.entity_type, item.entity_id);
+        setNotice("Restored across your nodes.");
+        await loadTombstones();
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setBusy(null);
+      }
+    },
+    [loadTombstones],
+  );
+
+  const purgeTombstone = React.useCallback(
+    (item: RelayTombstone) => {
+      Alert.alert(
+        "Delete permanently",
+        "This removes the data from every storage node and cannot be undone.",
+        [
+          { text: "Cancel", style: "cancel" },
+          {
+            text: "Delete",
+            style: "destructive",
+            onPress: () => {
+              void (async () => {
+                setBusy(`purging-${item.entity_id}`);
+                setError(null);
+                setNotice(null);
+                try {
+                  await relayPurgeTombstone(item.entity_type, item.entity_id);
+                  setNotice("Permanent delete requested.");
+                  await loadTombstones();
+                } catch (err) {
+                  setError(err instanceof Error ? err.message : String(err));
+                } finally {
+                  setBusy(null);
+                }
+              })();
+            },
+          },
+        ],
+      );
+    },
+    [loadTombstones],
+  );
+
   const scan = React.useCallback(async () => {
     setBusy("scanning");
     setError(null);
@@ -785,6 +859,36 @@ export default function App() {
                 title={busy === `revoking-${d.device_id}` ? "Revoking…" : "Revoke"}
                 onPress={() => revokeDevice(d)}
                 disabled={busy !== null || d.status !== "ACTIVE"}
+              />
+            </View>
+          </View>
+        ))}
+      </Section>
+
+      <Section title="9 · Deleted files">
+        <Button
+          title="Load deleted"
+          onPress={() => void loadTombstones()}
+          disabled={!authed || busy !== null}
+        />
+        {tombstones.length === 0 && <Text style={styles.hint}>Nothing soft-deleted.</Text>}
+        {tombstones.map((t) => (
+          <View key={`${t.entity_type}:${t.entity_id}`} style={styles.radioRow}>
+            <Text style={styles.hint}>
+              {tombstoneNames[t.entity_id] ?? `${t.entity_id.slice(0, 12)}…`} · {t.entity_type} ·
+              purge after {t.purge_after.slice(0, 10)}
+              {t.purge_requested_at ? " · purging" : ""}
+            </Text>
+            <View style={styles.buttonRow}>
+              <Button
+                title={busy === `restoring-${t.entity_id}` ? "Restoring…" : "Restore"}
+                onPress={() => void restoreTombstone(t)}
+                disabled={busy !== null}
+              />
+              <Button
+                title={busy === `purging-${t.entity_id}` ? "Deleting…" : "Delete"}
+                onPress={() => purgeTombstone(t)}
+                disabled={busy !== null}
               />
             </View>
           </View>

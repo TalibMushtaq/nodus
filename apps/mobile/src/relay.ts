@@ -204,6 +204,54 @@ export async function relayResolveConflict(fileId: string): Promise<{ status: st
   return post(`/files/${encodeURIComponent(fileId)}/conflicts/resolve`);
 }
 
+/** Per-node soft-delete/purge progress for one tombstone. */
+export interface TombstoneNodeStatus {
+  node_id: string;
+  deleted_at: string | null;
+  purged_at: string | null;
+}
+
+export type TombstoneEntityType = "file" | "folder";
+
+/** A soft-deleted item as returned by `GET /tombstones`. */
+export interface RelayTombstone {
+  entity_type: TombstoneEntityType;
+  entity_id: string;
+  encrypted_name: string | null;
+  deleted_at: string;
+  purge_after: string;
+  purge_requested_at: string | null;
+  nodes: TombstoneNodeStatus[];
+}
+
+export async function relayTombstones(): Promise<RelayTombstone[]> {
+  return getJson<RelayTombstone[]>("/tombstones");
+}
+
+/** Permanently delete a tombstoned item (asks every node to purge it). */
+export async function relayPurgeTombstone(
+  entityType: TombstoneEntityType,
+  entityId: string,
+): Promise<void> {
+  const res = await http.request(
+    `/tombstones/${encodeURIComponent(entityType)}/${encodeURIComponent(entityId)}`,
+    { method: "DELETE" },
+  );
+  if (!res.ok) throw new Error(res.error ?? `purge failed: HTTP ${res.status}`);
+}
+
+/** Restore a soft-deleted item across nodes. */
+export async function relayRestoreTombstone(
+  entityType: TombstoneEntityType,
+  entityId: string,
+): Promise<void> {
+  const res = await http.request(
+    `/tombstones/${encodeURIComponent(entityType)}/${encodeURIComponent(entityId)}/restore`,
+    { method: "POST" },
+  );
+  if (!res.ok) throw new Error(res.error ?? `restore failed: HTTP ${res.status}`);
+}
+
 export async function relayEnvelopes(fileId: string): Promise<RelayEnvelope[]> {
   return getJson<RelayEnvelope[]>(`/envelopes?file_id=${encodeURIComponent(fileId)}`);
 }
