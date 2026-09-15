@@ -27,6 +27,7 @@ import {
   View,
 } from "react-native";
 
+import { SHARD_SIZE_BYTES } from "@repo/core";
 import type { ConnectionState } from "@repo/relay-client";
 import { downloadFile, uploadFile, type SessionInfo } from "@repo/sdk";
 import type { TransferPath } from "@repo/transfer-manager";
@@ -78,6 +79,7 @@ import { mobileDownloadDeps } from "./src/download/deps";
 import { decryptFileNames, decryptTombstoneNames } from "./src/download/names";
 import { saveAndShare } from "./src/download/save";
 import { loadOrCreateDevice } from "./src/storage";
+import { getPreference, setPreference } from "./src/store/preferences";
 import {
   addTrustedNode,
   getTrustedNodes,
@@ -131,6 +133,9 @@ export default function App() {
   const [tombstones, setTombstones] = React.useState<RelayTombstone[]>([]);
   const [tombstoneNames, setTombstoneNames] = React.useState<Record<string, string | null>>({});
 
+  // ── Settings ──────────────────────────────────────────────────────────────
+  const [shardSizeBytes, setShardSizeBytes] = React.useState<number>(SHARD_SIZE_BYTES);
+
   const [error, setError] = React.useState<string | null>(null);
   const [notice, setNotice] = React.useState<string | null>(null);
   const [busy, setBusy] = React.useState<string | null>(null);
@@ -139,6 +144,9 @@ export default function App() {
     void (async () => {
       setDevice(await loadOrCreateDevice());
       setTrusted(await getTrustedNodes());
+      // Restore the shard-size preference (falls back to the 8 MiB default).
+      const storedShardSize = await getPreference("shardSizeBytes");
+      if (storedShardSize) setShardSizeBytes(Number(storedShardSize) || SHARD_SIZE_BYTES);
       // A stored session token restores the signed-in state across launches.
       if (await getSessionToken()) {
         setSession(await relaySession());
@@ -227,6 +235,12 @@ export default function App() {
       setSession(null);
       setBusy(null);
     }
+  }, []);
+
+  const chooseShardSize = React.useCallback((bytes: number) => {
+    setShardSizeBytes(bytes);
+    // Persist so the choice survives a restart; the uploader reads it per upload.
+    void setPreference("shardSizeBytes", String(bytes));
   }, []);
 
   const loadNodes = React.useCallback(async () => {
@@ -455,6 +469,7 @@ export default function App() {
         originId: device.device_id,
         targetNode: target,
         sourceDevice: device.device_id,
+        shardSizeBytes,
         deps: createMobileUploadDeps(wsRef.current!, device, transferManager, setLastPath),
         onProgress: (event) =>
           setUploadStatus(`${event.phase} · shard ${event.completedShards}/${event.totalShards}`),
@@ -467,7 +482,7 @@ export default function App() {
     } finally {
       setBusy(null);
     }
-  }, [device, selectedNode, nodes, transferManager]);
+  }, [device, selectedNode, nodes, transferManager, shardSizeBytes]);
 
   const loadFiles = React.useCallback(async () => {
     if (!authed) return;
@@ -893,6 +908,22 @@ export default function App() {
             </View>
           </View>
         ))}
+      </Section>
+
+      <Section title="10 · Settings">
+        <Text style={styles.hint}>
+          Shard size: {Math.round(shardSizeBytes / (1024 * 1024))} MB (applies to new uploads)
+        </Text>
+        <View style={styles.buttonRow}>
+          {[4, 8, 16].map((mb) => (
+            <Button
+              key={mb}
+              title={shardSizeBytes === mb * 1024 * 1024 ? `${mb} MB ✓` : `${mb} MB`}
+              onPress={() => chooseShardSize(mb * 1024 * 1024)}
+              disabled={busy !== null}
+            />
+          ))}
+        </View>
       </Section>
 
       <Section title="Trusted nodes (this device)">

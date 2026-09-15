@@ -1,5 +1,15 @@
 # Changelog
 
+## [2026-09-15] - Mobile shard-size setting
+
+**What changed:** Added a SQLite-backed key/value preferences store (migration 3) and a Settings section in the mobile app to pick 4/8/16 MB shard sizes. The choice persists across restarts and is passed to `uploadFile` as `shardSizeBytes` for new uploads (the 8 MiB `SHARD_SIZE_BYTES` default when unset).
+
+**Why:** Shard size is a per-account performance/FEC trade-off the web client exposes; mobile had no way to change it.
+
+**Impact:** `apps/mobile` (`store/db.ts`, `store/preferences.ts`, `App.tsx`). Verified: mobile typecheck, tests, expo export.
+
+**Follow-ups:** Only shard size is exposed; web also has theme and sync preferences, and existing resumable uploads correctly keep their original shard boundaries.
+
 ## [2026-09-15] - Mobile soft-delete (tombstone) view
 
 **What changed:** The mobile app lists soft-deleted items and can restore or permanently delete them. `relay.ts` gained tombstone types plus `relayTombstones`/`relayPurgeTombstone`/`relayRestoreTombstone`; `download/names.ts` gained `decryptTombstoneNames` (file tombstones decrypt via the FEK, folders fall back to the id until folder keys land). Purge asks for confirmation via a native dialog.

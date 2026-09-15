@@ -79,6 +79,14 @@ const MIGRATIONS: string[] = [
       sequence  INTEGER NOT NULL
     );
   `,
+
+  // Migration 3: small non-secret key/value preferences (shard size, etc.).
+  `
+    CREATE TABLE IF NOT EXISTS preferences (
+      key   TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
+  `,
 ];
 
 let dbPromise: Promise<SQLite.SQLiteDatabase> | null = null;
