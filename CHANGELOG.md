@@ -1,5 +1,15 @@
 # Changelog
 
+## [2026-09-15] - Mobile recovery-phrase reveal
+
+**What changed:** The mobile Security section can reveal the stored account recovery phrase (ADR-0002) and copy it to the clipboard, with an explicit warning that the words grant account access. The phrase comes from the SQLite recovery store for the current account.
+
+**Why:** The phrase is generated/stored on the device but was not viewable on mobile, so a user could not back it up after registration.
+
+**Impact:** `apps/mobile/App.tsx`. Verified: mobile lint, typecheck, tests, expo export.
+
+**Follow-ups:** Regenerating/rotating the recovery key (which requires re-sealing every locally-held FEK/folder key to the new recovery identity) is not ported; only reveal/copy.
+
 ## [2026-09-15] - ADR-0008: non-extractable device keys (proposed)
 
 **What changed:** Added `docs/decisions/0008-non-extractable-device-keys.md` (Proposed) covering the only remaining unchecked open item. It explains why a non-extractable Ed25519 signing key cannot also decrypt FEK envelopes (X25519 is derived from the Ed25519 seed), proposes separate signing and X25519 envelope keys with the X25519 public key published in the catalogue, and notes the Relay/Rust/client protocol change plus account migration it requires. ADR index and the Todo annotation updated.

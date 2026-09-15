@@ -16,6 +16,7 @@ import "./src/compat";
 // keychain as a bearer credential. No JWT is involved.
 
 import * as React from "react";
+import * as Clipboard from "expo-clipboard";
 import * as DocumentPicker from "expo-document-picker";
 import {
   Alert,
@@ -93,6 +94,7 @@ import { fetchMobileFileKey } from "./src/download/keys";
 import { decryptFileNames, decryptFolderNames, decryptTombstoneNames } from "./src/download/names";
 import { mobileFolderMutations } from "./src/folders/mutations";
 import { mobileRecoveryClient } from "./src/recovery/client";
+import { sqliteRecoveryStore } from "./src/recovery/store";
 import { registerBackgroundSync } from "./src/background/sync";
 import { saveAndShare } from "./src/download/save";
 import { loadOrCreateDevice } from "./src/storage";
@@ -166,6 +168,8 @@ export default function App() {
   // ── Security: key-envelope coverage ───────────────────────────────────────
   const [envelopeSummary, setEnvelopeSummary] = React.useState<EnvelopeSummary[]>([]);
   const [securityStatus, setSecurityStatus] = React.useState<string | null>(null);
+  /** Revealed recovery phrase, or null when hidden/not loaded. */
+  const [revealedPhrase, setRevealedPhrase] = React.useState<string | null>(null);
 
   // ── Foreground gate (ADR-0004: Path A is foreground-only) ─────────────────
   const appActiveRef = React.useRef(true);
@@ -813,6 +817,28 @@ export default function App() {
     }
   }, [authed]);
 
+  const revealPhrase = React.useCallback(async () => {
+    if (!session) return;
+    setBusy("revealing-phrase");
+    setError(null);
+    setNotice(null);
+    try {
+      const phrase = await sqliteRecoveryStore.load(session.account_id);
+      setRevealedPhrase(phrase);
+      if (!phrase) setNotice("No recovery phrase is stored on this device for this account.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(null);
+    }
+  }, [session]);
+
+  const copyPhrase = React.useCallback(async () => {
+    if (!revealedPhrase) return;
+    await Clipboard.setStringAsync(revealedPhrase);
+    setNotice("Recovery phrase copied to the clipboard.");
+  }, [revealedPhrase]);
+
   const scan = React.useCallback(async () => {
     setBusy("scanning");
     setError(null);
@@ -1252,6 +1278,22 @@ export default function App() {
           disabled={!authed || busy !== null}
         />
         {securityStatus && <Text style={styles.hint}>{securityStatus}</Text>}
+
+        <View style={styles.spacer} />
+        <Button
+          title={revealedPhrase ? "Hide recovery phrase" : "Reveal recovery phrase"}
+          onPress={() => (revealedPhrase ? setRevealedPhrase(null) : void revealPhrase())}
+          disabled={!authed || busy !== null}
+        />
+        {revealedPhrase && (
+          <>
+            <Text style={styles.hint}>
+              Anyone with these words can recover the account. Keep them offline.
+            </Text>
+            <Text style={styles.code}>{revealedPhrase}</Text>
+            <Button title="Copy phrase" onPress={() => void copyPhrase()} disabled={busy !== null} />
+          </>
+        )}
       </Section>
 
       <Section title="Trusted nodes (this device)">
