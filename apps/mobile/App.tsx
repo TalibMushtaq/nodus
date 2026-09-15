@@ -143,6 +143,8 @@ export default function App() {
   const [folders, setFolders] = React.useState<RelayFolder[]>([]);
   const [folderNames, setFolderNames] = React.useState<Record<string, string | null>>({});
   const [folderNameInput, setFolderNameInput] = React.useState("");
+  /** Current folder for the browser; null is the root. */
+  const [currentFolderId, setCurrentFolderId] = React.useState<string | null>(null);
 
   // ── Settings ──────────────────────────────────────────────────────────────
   const [shardSizeBytes, setShardSizeBytes] = React.useState<number>(SHARD_SIZE_BYTES);
@@ -540,6 +542,7 @@ export default function App() {
         originId: device.device_id,
         targetNode: target,
         sourceDevice: device.device_id,
+        parentFolderId: currentFolderId,
         shardSizeBytes,
         deps: createMobileUploadDeps(wsRef.current!, device, transferManager, setLastPath),
         onProgress: (event) =>
@@ -553,7 +556,7 @@ export default function App() {
     } finally {
       setBusy(null);
     }
-  }, [device, selectedNode, nodes, transferManager, shardSizeBytes]);
+  }, [device, selectedNode, nodes, transferManager, shardSizeBytes, currentFolderId]);
 
   const loadFiles = React.useCallback(async () => {
     if (!authed) return;
@@ -594,7 +597,8 @@ export default function App() {
     setError(null);
     setNotice(null);
     try {
-      await mobileFolderMutations(wsRef.current!, device, session).create(name, null);
+      // Create inside the folder currently open in the browser.
+      await mobileFolderMutations(wsRef.current!, device, session).create(name, currentFolderId);
       setFolderNameInput("");
       await loadFolders();
       setNotice("Folder created.");
@@ -603,7 +607,7 @@ export default function App() {
     } finally {
       setBusy(null);
     }
-  }, [device, session, folderNameInput, loadFolders]);
+  }, [device, session, folderNameInput, currentFolderId, loadFolders]);
 
   const renameFolder = React.useCallback(
     async (folder: RelayFolder) => {
@@ -858,6 +862,24 @@ export default function App() {
       ? `nodus://pair?node_id=${encodeURIComponent(pending.node_id ?? selectedNode ?? "")}&pubkey=${encodeURIComponent(device.public_key)}&token=${encodeURIComponent(pending.token)}`
       : null;
 
+  // Folder browser projections: children of the current folder and the path
+  // from root, so navigation and uploads agree on "where am I".
+  const folderLabel = (f: RelayFolder) => folderNames[f.folder_id] ?? `${f.folder_id.slice(0, 12)}…`;
+  const visibleFolders = folders.filter((f) => (f.parent_folder_id ?? null) === currentFolderId);
+  const visibleFiles = files.filter((f) => (f.parent_folder_id ?? null) === currentFolderId);
+  const folderTrail = (() => {
+    const trail: RelayFolder[] = [];
+    const byId = new Map(folders.map((f) => [f.folder_id, f]));
+    let id = currentFolderId;
+    for (let guard = 0; id && guard < 64; guard += 1) {
+      const folder = byId.get(id);
+      if (!folder) break;
+      trail.unshift(folder);
+      id = folder.parent_folder_id;
+    }
+    return trail;
+  })();
+
   return (
     <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
       <Text style={styles.title}>Pair a Storage Node</Text>
@@ -998,8 +1020,11 @@ export default function App() {
 
       <Section title="7 · Download a file">
         <Button title="Load files" onPress={() => void loadFiles()} disabled={!authed || busy !== null} />
-        {files.length === 0 && <Text style={styles.hint}>No files loaded.</Text>}
-        {files.map((f) => (
+        <Text style={styles.hint}>
+          In: Root{folderTrail.map((f) => ` / ${folderLabel(f)}`).join("")}
+        </Text>
+        {visibleFiles.length === 0 && <Text style={styles.hint}>No files here.</Text>}
+        {visibleFiles.map((f) => (
           <View key={f.file_id} style={styles.radioRow}>
             <Text style={styles.hint}>
               {fileNames[f.file_id] ?? `${f.file_id.slice(0, 12)}…`} · {f.versions.length} version
@@ -1091,14 +1116,25 @@ export default function App() {
           onPress={() => void loadFolders()}
           disabled={!authed || busy !== null}
         />
-        {folders.length === 0 && <Text style={styles.hint}>No folders loaded.</Text>}
-        {folders.map((f) => (
+        <Text style={styles.hint}>
+          In: Root{folderTrail.map((f) => ` / ${folderLabel(f)}`).join("")}
+        </Text>
+        {currentFolderId !== null && (
+          <Button
+            title="◂ Up"
+            onPress={() => {
+              const parent = folders.find((f) => f.folder_id === currentFolderId)?.parent_folder_id ?? null;
+              setCurrentFolderId(parent);
+            }}
+            disabled={busy !== null}
+          />
+        )}
+        {visibleFolders.length === 0 && <Text style={styles.hint}>No subfolders here.</Text>}
+        {visibleFolders.map((f) => (
           <View key={f.folder_id} style={styles.radioRow}>
-            <Text style={styles.hint}>
-              {folderNames[f.folder_id] ?? `${f.folder_id.slice(0, 12)}…`}
-              {f.parent_folder_id ? " (nested)" : ""}
-            </Text>
+            <Text style={styles.hint}>{folderLabel(f)}</Text>
             <View style={styles.buttonRow}>
+              <Button title="Open" onPress={() => setCurrentFolderId(f.folder_id)} disabled={busy !== null} />
               <Button
                 title={busy === `renaming-${f.folder_id}` ? "Renaming…" : "Rename"}
                 onPress={() => void renameFolder(f)}
@@ -1116,10 +1152,10 @@ export default function App() {
           style={styles.input}
           value={folderNameInput}
           onChangeText={setFolderNameInput}
-          placeholder="new folder name (for Create / Rename)"
+          placeholder="new subfolder name (for Create / Rename)"
         />
         <Button
-          title={busy === "creating-folder" ? "Creating…" : "Create folder"}
+          title={busy === "creating-folder" ? "Creating…" : "Create here"}
           onPress={() => void createFolder()}
           disabled={!authed || busy !== null || folderNameInput.trim() === ""}
         />

@@ -1,5 +1,15 @@
 # Changelog
 
+## [2026-09-15] - Mobile folder navigation and upload-into-folder
+
+**What changed:** The mobile Folders section is now a browser: a "In: Root / …" breadcrumb built by walking `parent_folder_id`, an Up control, per-folder Open/Rename/Delete, and a "Create here" action. Uploads carry `parentFolderId: currentFolderId`, and the Downloads list shows only the files in the current folder. Folder mutations create into the open folder.
+
+**Why:** Folders were a flat list and every upload landed at the root, so folder structure could not actually be used on mobile.
+
+**Impact:** `apps/mobile/App.tsx`. Verified: mobile lint, typecheck, tests, expo export.
+
+**Follow-ups:** No move/upload-into-arbitrary-folder picker (navigation only); nested breadcrumb buttons may crowd long paths.
+
 ## [2026-09-15] - Phase 18 validation: buffer load test + coverage map
 
 **What changed:** Added `TestBufferUploadSustainedLoad` (integration-gated) uploading 50 concurrent shards of one version and asserting each reaches `RELAY_BUFFERED`, plus `docs/architecture/phase18-validation.md` mapping every Phase 18 scenario (Internet down, Relay rebuild, offline convergence, conflicts, reconciliation, buffer load, security) to the test or code that covers it. Marked the Phase 18 simulation/load items and the Phase 16 recovery items accordingly, noting the ADR-0002 deferral of offline node recovery.
