@@ -17,9 +17,18 @@ export default defineConfig({
     css: false,
   },
   resolve: {
-    alias: {
-      "@repo/relay-client": resolve(import.meta.dirname, "../../packages/relay-client/src/index.ts"),
-      "server-only": resolve(import.meta.dirname, "./test/server-only.ts"),
-    },
+    alias: [
+      {
+        find: /^@repo\/relay-client$/,
+        replacement: resolve(import.meta.dirname, "../../packages/relay-client/src/index.ts"),
+      },
+      // Exact match: the workspace package's dist/ build is not guaranteed in
+      // the test run, so tests resolve the SDK's TypeScript source directly.
+      {
+        find: /^@repo\/sdk$/,
+        replacement: resolve(import.meta.dirname, "../../packages/sdk/src/index.ts"),
+      },
+      { find: "server-only", replacement: resolve(import.meta.dirname, "./test/server-only.ts") },
+    ],
   },
 });

@@ -1,26 +1,14 @@
 import { createDeviceIdentity } from "@repo/relay-client";
 import type { StoredDeviceIdentity } from "@repo/relay-client";
+import { isStoredDeviceIdentity, DEVICE_IDENTITY_KEY } from "@repo/sdk";
 
-// Device identity persistence. Unlike a session/JWT this keypair is the
-// device's long-lived identity (Ed25519), stays in localStorage, and never
-// leaves the client — the Relay only ever sees the id + public key.
+// Device identity persistence. Unlike a session this keypair is the device's
+// long-lived Ed25519 identity, stays in localStorage, and never leaves the
+// client — the Relay only ever sees the id + public key. The structural
+// validation is shared with native via @repo/sdk so both platforms agree on
+// what a valid record is.
 
-export const DEVICE_IDENTITY_KEY = "nodus.device.identity";
-
-function isStoredDeviceIdentity(value: unknown): value is StoredDeviceIdentity {
-  if (typeof value !== "object" || value === null) {
-    return false;
-  }
-  const identity = value as Record<string, unknown>;
-  return (
-    typeof identity.device_id === "string" &&
-    identity.device_id.length > 0 &&
-    typeof identity.public_key === "string" &&
-    identity.public_key.length > 0 &&
-    typeof identity.private_key === "string" &&
-    identity.private_key.length > 0
-  );
-}
+export { DEVICE_IDENTITY_KEY };
 
 /**
  * Returns the browser's persistent device identity, generating + storing one

@@ -15,6 +15,7 @@
     "@repo/core": "workspace:*",
     "@repo/protocol": "workspace:*",
     "@repo/relay-client": "workspace:*",
+    "@repo/sdk": "workspace:*",
     "@repo/transfer-manager": "workspace:*",
     "@repo/ui": "workspace:*",
     "@repo/webrtc-transport": "workspace:*",

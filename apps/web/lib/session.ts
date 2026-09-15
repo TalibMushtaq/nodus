@@ -1,15 +1,12 @@
 import { redirect } from "next/navigation";
+
+import type { SessionInfo } from "@repo/sdk";
+
 import { relayFetch } from "./relay";
 
-/** The §2 session body the Relay returns for auth/session and login/register. */
-export interface SessionInfo {
-  account_id: string;
-  device_id: string;
-  /** ISO-8601 UTC expiry of the current session. */
-  session_expires_at: string;
-  /** Account recovery Ed25519 public key (base64); null when not enrolled. */
-  recovery_public_key?: string | null;
-}
+// The §2 session body is defined once in @repo/sdk so server and client (and
+// native) cannot drift; re-exported here for existing importers.
+export type { SessionInfo };
 
 /**
  * Resolves the current session from the request cookie via the Relay. Null
