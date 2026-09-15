@@ -10,7 +10,7 @@
 import { createAuthClient, type SessionInfo } from "@repo/sdk";
 import type { StoredDeviceIdentity } from "@repo/relay-client";
 
-import { createNativeRelayHttp, getSessionToken } from "./adapters";
+import { RELAY_BASE, createNativeRelayHttp, getSessionToken } from "./adapters";
 
 export { RELAY_BASE, getSessionToken } from "./adapters";
 
@@ -56,7 +56,17 @@ export interface RelayFileVersion {
   created_at: string;
 }
 
-/** One file with its versions as returned by `GET /files`. */
+/** A physical shard location row from `GET /files` (file_locations). */
+export interface RelayFileLocation {
+  version_number: number;
+  shard_index: number;
+  node_id: string;
+  status: string;
+  hash: string | null;
+  size_bytes: number | null;
+}
+
+/** One file with its versions and shard locations as returned by `GET /files`. */
 export interface RelayFile {
   file_id: string;
   parent_folder_id: string | null;
@@ -64,6 +74,15 @@ export interface RelayFile {
   created_at: string;
   updated_at: string;
   versions: RelayFileVersion[];
+  locations: RelayFileLocation[];
+}
+
+/** A file-key envelope as returned by `GET /envelopes?file_id=`. */
+export interface RelayEnvelope {
+  file_id: string;
+  recipient_id: string;
+  recipient_kind: string;
+  encrypted_key: string;
 }
 
 async function getJson<T>(path: string): Promise<T> {
@@ -145,4 +164,25 @@ export async function relayFiles(): Promise<RelayFile[]> {
  */
 export async function relayResolveConflict(fileId: string): Promise<{ status: string; resolved: number }> {
   return post(`/files/${encodeURIComponent(fileId)}/conflicts/resolve`);
+}
+
+export async function relayEnvelopes(fileId: string): Promise<RelayEnvelope[]> {
+  return getJson<RelayEnvelope[]>(`/envelopes?file_id=${encodeURIComponent(fileId)}`);
+}
+
+/**
+ * Fetch a stored shard's raw ciphertext through the Relay (design A fallback).
+ * The Relay resolves the account from the bearer session and pulls the object
+ * from whichever node holds it; the SDK adapter's JSON path cannot return raw
+ * bytes, so this reads the response body directly.
+ */
+export async function fetchRelayShard(hash: string): Promise<Uint8Array> {
+  const token = await getSessionToken();
+  const res = await fetch(`${RELAY_BASE}/shards/${encodeURIComponent(hash)}`, {
+    headers: token ? { authorization: `Bearer ${token}` } : undefined,
+  });
+  if (!res.ok) {
+    throw new Error(`relay shard fetch failed: HTTP ${res.status}`);
+  }
+  return new Uint8Array(await res.arrayBuffer());
 }

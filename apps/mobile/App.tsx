@@ -27,7 +27,7 @@ import {
 } from "react-native";
 
 import type { ConnectionState } from "@repo/relay-client";
-import { uploadFile, type SessionInfo } from "@repo/sdk";
+import { downloadFile, uploadFile, type SessionInfo } from "@repo/sdk";
 import {
   NodeClient,
   NodeClientError,
@@ -63,6 +63,8 @@ import {
 } from "./src/transfer/manager";
 import { createMobileUploadDeps } from "./src/upload/deps";
 import { fileUriSource } from "./src/upload/source";
+import { mobileDownloadDeps } from "./src/download/deps";
+import { saveAndShare } from "./src/download/save";
 import { loadOrCreateDevice } from "./src/storage";
 import {
   addTrustedNode,
@@ -105,6 +107,10 @@ export default function App() {
   // ── Upload ────────────────────────────────────────────────────────────────
   const [uploadStatus, setUploadStatus] = React.useState<string | null>(null);
   const [transferManager, setTransferManager] = React.useState<MobileTransferManager | null>(null);
+
+  // ── Download ──────────────────────────────────────────────────────────────
+  const [files, setFiles] = React.useState<RelayFile[]>([]);
+  const [downloadStatus, setDownloadStatus] = React.useState<string | null>(null);
 
   const [error, setError] = React.useState<string | null>(null);
   const [notice, setNotice] = React.useState<string | null>(null);
@@ -355,6 +361,56 @@ export default function App() {
     }
   }, [device, selectedNode, nodes, transferManager]);
 
+  const loadFiles = React.useCallback(async () => {
+    if (!authed) return;
+    setBusy("loading-files");
+    setError(null);
+    try {
+      setFiles(await relayFiles());
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(null);
+    }
+  }, [authed]);
+
+  // Download the newest version, decrypt, and hand to the share sheet.
+  const downloadOne = React.useCallback(
+    async (file: RelayFile) => {
+      if (!device) return;
+      const latest = [...file.versions].sort((a, b) => b.version_number - a.version_number)[0];
+      if (!latest) {
+        setError("file has no versions");
+        return;
+      }
+      setBusy(`downloading-${file.file_id}`);
+      setError(null);
+      setNotice(null);
+      setDownloadStatus("decrypting…");
+      try {
+        const result = await downloadFile({
+          fileId: file.file_id,
+          versionNumber: latest.version_number,
+          shardCount: latest.shard_count,
+          encryptedName: file.encrypted_name,
+          expectedVersionHash: latest.version_hash,
+          deps: mobileDownloadDeps(device),
+        });
+        const name = result.name ?? `${file.file_id}.bin`;
+        setDownloadStatus(`saving ${name}…`);
+        await saveAndShare(result.data, name);
+        setDownloadStatus(`downloaded ${name} (${result.data.length} bytes)`);
+        setNotice("Download complete.");
+      } catch (err) {
+        setDownloadStatus(null);
+        setError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setBusy(null);
+      }
+    },
+    [device],
+  );
+
   const scan = React.useCallback(async () => {
     setBusy("scanning");
     setError(null);
@@ -579,6 +635,25 @@ export default function App() {
           Uploads to {selectedNode ? "the selected node" : "the primary node"} and seals the key to
           all your devices and nodes.
         </Text>
+      </Section>
+
+      <Section title="7 · Download a file">
+        <Button title="Load files" onPress={() => void loadFiles()} disabled={!authed || busy !== null} />
+        {files.length === 0 && <Text style={styles.hint}>No files loaded.</Text>}
+        {files.map((f) => (
+          <View key={f.file_id} style={styles.radioRow}>
+            <Text style={styles.hint}>
+              {f.file_id.slice(0, 12)}… · {f.versions.length} version
+              {f.versions.length === 1 ? "" : "s"}
+            </Text>
+            <Button
+              title={busy === `downloading-${f.file_id}` ? "Downloading…" : "Download"}
+              onPress={() => void downloadOne(f)}
+              disabled={busy !== null}
+            />
+          </View>
+        ))}
+        {downloadStatus && <Text style={styles.hint}>{downloadStatus}</Text>}
       </Section>
 
       <Section title="Trusted nodes (this device)">

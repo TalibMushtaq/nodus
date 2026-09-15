@@ -1,5 +1,15 @@
 # Changelog
 
+## [2026-09-15] - Mobile download/decrypt and share
+
+**What changed:** The Expo app can list files and download+decrypt one to the OS share sheet. `download/deps.ts` supplies native `DownloadDeps` (FEK from SQLite or the device's sealed Relay envelope via `openFekFromEnvelope`, shard locations from `GET /files`, shard bytes from a trusted LAN node with a Relay `/shards/{hash}` fallback), and `download/save.ts` writes the plaintext to the cache dir (chunked base64) and opens the share sheet. `relay.ts` gained `RelayFileLocation`/`locations`/`RelayEnvelope`, `relayEnvelopes`, and a raw `fetchRelayShard`. The app gained a Files/Download section.
+
+**Why:** Download is the other half of parity and closes the loop on the shared envelope/keys/decrypt code on native.
+
+**Impact:** `apps/mobile` (`download/*`, `relay.ts`, `App.tsx`). Verified: mobile typecheck and `expo export --platform android` (856 modules).
+
+**Follow-ups:** Downloaded names are decrypted but the file list shows ids only (no catalogue/keys-backed name cache yet); no progress bar for download, and large files hold the whole plaintext in memory before saving (same as web).
+
 ## [2026-09-15] - Shared download/decrypt core in @repo/sdk
 
 **What changed:** Moved `downloadFile` (fetch → verify BLAKE3 → decrypt → reassemble → decrypt name) and its error types/`DownloadDeps`/`RelayFileLocation` from `apps/web/lib/download.ts` into `packages/sdk/src/download/`. Web's `download.ts` re-exports the core and keeps `browserDownloadDeps` (IndexedDB/locally cached FEK, LAN node fetch with Relay fallback) plus `fetchShardViaRelay`; all existing callers are unchanged.
