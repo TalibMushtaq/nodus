@@ -1,5 +1,15 @@
 # Changelog
 
+## [2026-09-15] - Tests for the offline recovery node client
+
+**What changed:** Added `packages/relay-client/tests/local-recovery.test.ts` covering the three new `NodeClient` methods: the challenge parses, `recover` posts a signature that verifies against the recovery public key over the nonce, `recoveryEnvelopes` sends a device-signed `"{id}:recovery-envelopes:{ts}"` request, and a non-ok response maps to `NodeClientError`. relay-client tests went from 46 to 50.
+
+**Why:** The offline recovery client is security-relevant (it proves the phrase and fetches key material); the signature shapes must be locked by tests.
+
+**Impact:** `packages/relay-client/tests/`. Verified: relay-client lint and 50 tests.
+
+**Follow-ups:** The mobile fallback that calls these methods is not unit-tested (needs an expo/SQLite harness).
+
 ## [2026-09-15] - Offline recovery: protocol schemas, node client, mobile flow
 
 **What changed:** Completed the client half of ADR-0002's offline recovery. Added HTTP-only protocol schemas (`local-recovery.ts`: challenge/request/result/envelopes) and three `NodeClient` methods that speak to the node's LAN recovery endpoints (`recoveryChallenge`, `recover`, `recoveryEnvelopes`). New `apps/mobile/src/recovery/offline.ts` runs the whole flow against the first paired LAN node: challenge, local phrase check, signed recovery (registering the device), fetch recovery-sealed envelopes, unlock file/folder keys, and record the node as trusted. The mobile recovery action now tries the Relay when online and falls back to the LAN node when offline, reporting how many keys were unlocked and that Relay features wait for Internet.
