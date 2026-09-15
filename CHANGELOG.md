@@ -1,5 +1,15 @@
 # Changelog
 
+## [2026-09-15] - Phase 18 security review
+
+**What changed:** Added `docs/security/phase18-review.md`, a static review confirming (a) the Relay only ever handles AES-GCM ciphertext shards and opaque FEK/folder-key envelopes, never plaintext, and (b) device revocation deletes the device's file- and folder-key envelopes so it loses future key access without rotating every file key. Linked it from `docs/security/README.md` and checked the Phase 18 security item. Documented that the "non-exportable WebCrypto Ed25519" open item is blocked by ADR-0001's Ed25519→X25519 envelope derivation and needs its own ADR.
+
+**Why:** Completes the Phase 18 security-review deliverable and records why the WebCrypto item cannot be done as a drive-by change.
+
+**Impact:** `docs/security/phase18-review.md`, `docs/security/README.md`, `Todo.md`. Docs only.
+
+**Follow-ups:** The review is code-level; a penetration test and the remaining Phase 18 simulations/load tests are separate.
+
 ## [2026-09-15] - Mobile account recovery
 
 **What changed:** The mobile app can recover an account from its 24-word phrase (ADR-0002). Added a SQLite recovery store (migration 4) and a native recovery client binding over the shared SDK client; the native HTTP adapter now also captures the session ID from `/auth/recovery`. A "Recover account" section takes the email (from sign-in) and phrase, recovers + registers this device, saves the phrase locally (revealable), and unlocks recovery-sealed file/folder keys, reporting how many were unlocked.

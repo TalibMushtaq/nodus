@@ -475,9 +475,9 @@ stage 7b in §28 (inserted between 7a and 8).
 - [ ] Simulate: disk corruption / missing objects → reconciliation repair
       path (§21a) exercised
 - [ ] Load test Relay buffer under sustained Path C usage
-- [ ] Security review pass: confirm Relay never sees plaintext file keys or
+- [x] Security review pass: confirm Relay never sees plaintext file keys or
       shard contents, confirm revoked devices lose access without full
-      account key rotation
+      account key rotation — see `docs/security/phase18-review.md`
 
 ---
 
@@ -502,6 +502,7 @@ but should be resolved before the phase that depends on them:
       plan §7b); QR format deferred (non-goal)
 
 - [ ] Replace the device private key stored in `localStorage` with a non-exportable WebCrypto Ed25519 key persisted in IndexedDB, and refactor the identity/signing API to use the key handle instead of exposing `private_key`.
+      **Blocked by ADR-0001:** opening a FEK envelope needs X25519 derived from the Ed25519 private seed, which a non-extractable key cannot provide; a correct fix gives the device a separate non-extractable X25519 keypair, publishes its public key, and seals to it directly — a Relay/Rust/client protocol change. See the follow-up in `docs/security/phase18-review.md`. Requires its own ADR.
 
 ### Phase 14 follow-ups (tracked so they don't disappear when the Phase 14 boxes are checked)
 
