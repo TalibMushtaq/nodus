@@ -1,5 +1,15 @@
 # Changelog
 
+## [2026-09-15] - SDK tests for catalog, conflicts, folders, recovery
+
+**What changed:** Added unit tests for the modules shared in this session: catalog flattening (`toCatalogEntry` storage-status rollup, flagged versions, empty file), conflict-list derivation (name decryption, encrypted-but-locked fallback, no-name fallback), folder mutations (create persists the key then distributes envelopes, rename re-encrypts, delete emits a tombstone, rename without a key fails), and the recovery client (matching phrase recovers + normalizes the stored phrase, mismatched phrase is rejected before spending the nonce, `materialize` unlocks recovery-sealed FEKs). SDK tests went from 12 to 26.
+
+**Why:** These modules are now the single implementation for both clients; they had no coverage of their own outside the web tests that happened to exercise them.
+
+**Impact:** `packages/sdk/tests/`. Verified: SDK lint and 26 tests.
+
+**Follow-ups:** No tests for the `sync-state`/platform storage adapters (IndexedDB/SQLite), which need their own harnesses.
+
 ## [2026-09-15] - Buffer upload benchmark
 
 **What changed:** Added `BenchmarkBufferUpload` (integration-gated) measuring one Path C shard upload end to end against real Postgres; the shared harness/helpers now take `testing.TB` so both tests and benchmarks can use them. Documented the `-bench` invocation in `docs/architecture/phase18-validation.md`.
