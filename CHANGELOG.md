@@ -1,5 +1,15 @@
 # Changelog
 
+## [2026-09-15] - Drain the mobile Path D queue on Relay reconnect
+
+**What changed:** The app now calls the transfer manager's `notifyConnectivityRestored()` when the Relay socket transitions to `connected`, so shards parked in the SQLite Path D queue are retried automatically after connectivity returns instead of only on the next manual upload.
+
+**Why:** The manager supports the drain hook, but nothing on mobile was triggering it, so deferred shards could sit indefinitely.
+
+**Impact:** `apps/mobile/App.tsx`. Verified: mobile typecheck, tests, expo export.
+
+**Follow-ups:** The drain's success/failure is not surfaced in the UI (no transfer-path banner/status on mobile yet).
+
 ## [2026-09-15] - Mobile test runner
 
 **What changed:** Added vitest to `apps/mobile` (`vitest.config.mts`, `test: vitest run`) and a first test covering name decryption (`src/download/__tests__/names.test.ts`): a real FEK round-trips an encrypted name, and an unopenable/missing envelope or a throwing key lookup yields `null` instead of failing the listing. The app's `turbo test` now runs mobile tests (previously a no-op), and CI's existing `turbo test` step picks them up. Tests run in Node and cover only platform-neutral logic; anything touching expo-* native modules is validated via a dev build.

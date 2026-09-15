@@ -175,6 +175,14 @@ export default function App() {
     };
   }, [session, device]);
 
+  // When the Relay socket comes back, retry the shards parked in the Path D
+  // queue. The manager's connectivity hook is what actually drains them.
+  React.useEffect(() => {
+    if (wsState === "connected" && transferManager) {
+      transferManager.localQueue.notifyConnectivityRestored();
+    }
+  }, [wsState, transferManager]);
+
   const signIn = React.useCallback(async () => {
     setBusy("signing-in");
     setError(null);
