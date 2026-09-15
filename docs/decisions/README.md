@@ -13,3 +13,4 @@ This directory contains ADRs — records of significant architectural decisions.
 | [0005](0005-garbage-collection-policy.md) | Garbage Collection Default Policy | Accepted |
 | [0006](0006-self-hosted-node-bootstrap-pairing.md) | Self-Hosted Node Bootstrap Pairing | Accepted |
 | [0007](0007-mobile-native-and-sdk.md) | Mobile Native Build & Shared Client SDK | Accepted |
+| [0008](0008-non-extractable-device-keys.md) | Non-Extractable Device Keys | Proposed |

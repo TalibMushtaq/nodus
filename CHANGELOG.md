@@ -1,5 +1,15 @@
 # Changelog
 
+## [2026-09-15] - ADR-0008: non-extractable device keys (proposed)
+
+**What changed:** Added `docs/decisions/0008-non-extractable-device-keys.md` (Proposed) covering the only remaining unchecked open item. It explains why a non-extractable Ed25519 signing key cannot also decrypt FEK envelopes (X25519 is derived from the Ed25519 seed), proposes separate signing and X25519 envelope keys with the X25519 public key published in the catalogue, and notes the Relay/Rust/client protocol change plus account migration it requires. ADR index and the Todo annotation updated.
+
+**Why:** The item was blocked by ADR-0001; recording the design makes it actionable and prevents a drive-by change that would break decryption.
+
+**Impact:** `docs/decisions/0008-*.md`, `docs/decisions/README.md`, `Todo.md`. Docs only.
+
+**Follow-ups:** Accepting ADR-0008 commits to the catalogue/migration work; until then the Todo item stays open by design.
+
 ## [2026-09-15] - Shared conflict inbox derivation; named mobile conflicts
 
 **What changed:** Moved the ADR-0003 conflict-inbox derivation into `packages/sdk/src/conflicts/` as `listConflicts(deps)` (catalog lister + FEK resolver injected). Web's `lib/conflicts.ts` is now a binding over the cached catalog and its local/Relay-envelope key resolution. The mobile conflict section uses the shared derivation too, so conflicts now show decrypted file names (falling back to a short id) instead of raw ids.
