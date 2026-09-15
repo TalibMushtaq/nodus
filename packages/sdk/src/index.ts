@@ -21,6 +21,19 @@ export { createAttemptPath } from "./transfer/attempt-path.js";
 export type { AttemptPathDeps, BufferedShardUpload } from "./transfer/attempt-path.js";
 export { createSignedRelayChannel } from "./transfer/relay-signaling.js";
 export type { RelayChannelDeps } from "./transfer/relay-signaling.js";
+
+export { uploadFile, measurePlaintext, DEFAULT_SHARD_CONCURRENCY } from "./upload/uploader.js";
+export type {
+  UploadSource,
+  UploadDeps,
+  UploadFileOptions,
+  FileMeasurement,
+  UploadProgressEvent,
+  UploadPhase,
+  UploadResult,
+} from "./upload/uploader.js";
+export { uploadKey } from "./upload/upload-progress.js";
+export type { UploadProgress } from "./upload/upload-progress.js";
 export { PersistentWebRtcSession, WebRtcSessionCache } from "./transfer/webrtc-session.js";
 export type {
   PersistentSessionDeps,

@@ -1,0 +1,465 @@
+// Path C client uploader (shared by web and native): shard an encrypted file,
+// emit the catalog sync events the Relay needs, and hand each encrypted shard
+// to the injected `postShard` (the Transfer Manager routes it across paths).
+//
+// Two passes over the source (not two buffers):
+//   pass 1 — hash plaintext + count shards, then per-shard encryption and
+//            upload. A `FILE_VERSION_ADDED` event needs `shard_count` and a
+//            whole-file `version_hash` *before* any shard is accepted, so the
+//            first pass is unavoidable. It reads sequentially and discards each
+//            chunk, so peak memory stays at one shard.
+//
+// The FEK is persisted *before* the events are emitted (via deps.putFileKey):
+// without that gate a reload would leave ciphertext whose key no longer exists.
+//
+// All side effects are injected through `UploadDeps` and the byte reader is the
+// platform-neutral `UploadSource`, so the browser hook, the native app, and the
+// Node e2e harness share this exact code with different backends.
+
+import {
+  SHARD_SIZE_BYTES,
+  createPlaintextHasher,
+  encryptName,
+  encryptShard,
+  generateFileEncryptionKey,
+  hashShard,
+  packEncryptedShard,
+} from "@repo/core";
+import type { FileId, ShardIndex } from "@repo/core";
+import { EventTypes } from "@repo/protocol";
+import type { BatchAckPayload, EventPayload } from "@repo/protocol";
+
+import type { BufferedShardUpload } from "../transfer/attempt-path.js";
+import type { UploadProgress } from "./upload-progress.js";
+import { uploadKey } from "./upload-progress.js";
+
+/**
+ * Platform-neutral byte source for an upload. The web passes a `File`; native
+ * passes an expo-file-system handle. Reads are random-access so the uploader
+ * can encrypt shard `i` without loading the whole file.
+ */
+export interface UploadSource {
+  name: string;
+  size: number;
+  /** Read `length` bytes at `offset`; returns fewer only at EOF. */
+  read(offset: number, length: number): Promise<Uint8Array>;
+}
+
+export interface UploadDeps {
+  postShard(dto: BufferedShardUpload): Promise<unknown>;
+  /** Resolve with the batch ack; reject/throw to abort the upload. */
+  sendEventBatch(events: EventPayload[]): Promise<BatchAckPayload | void>;
+  allocateSequence(originId: string): Promise<number>;
+  putFileKey(fileId: string, fek: Uint8Array): Promise<void>;
+  getFileKey(fileId: string): Promise<Uint8Array | undefined>;
+  saveProgress(progress: UploadProgress): Promise<void>;
+  getProgress(fileId: string, versionNumber: number): Promise<UploadProgress | undefined>;
+  markShardComplete(fileId: string, versionNumber: number, shardIndex: number, hash: string): Promise<void>;
+  clearProgress?(fileId: string, versionNumber: number): Promise<void>;
+  /**
+   * Sign the per-shard integrity manifest with the device key. When absent, no
+   * manifest event is emitted and the node falls back to content-addressing
+   * only. Returns a hex Ed25519 signature over the canonical
+   * `"nodus-shard-manifest:v1:{file_id}:{version}:{blake3(hashes.join(','))}"`.
+   */
+  signManifest?: (message: string) => string | Promise<string>;
+  /**
+   * Seal + publish the FEK for the account's other devices/nodes (§25 F2).
+   * Called after the file/version events are announced (so the FK target
+   * exists) and on every resume, so a transient failure is retried.
+   */
+  publishEnvelopes?(fileId: string, fek: Uint8Array): Promise<void>;
+}
+
+export interface UploadFileOptions {
+  source: UploadSource;
+  /** The emitting device id — becomes each event's origin_id. */
+  originId: string;
+  targetNode: string;
+  sourceDevice?: string;
+  fileId?: string;
+  versionNumber?: number;
+  /** Precomputed plaintext hash from `measurePlaintext` (skips the measure pass). */
+  versionHash?: string;
+  /** Precomputed shard count from `measurePlaintext`. */
+  shardCount?: number;
+  /** Folder the file belongs to; null/undefined places it at the root. */
+  parentFolderId?: string | null;
+  /**
+   * How many shards may be in flight at once. Shards are independent content-
+   * addressed objects, so overlapping them hides per-shard transport setup
+   * instead of serializing it. Peak memory is bounded by this many shards.
+   * Defaults to `DEFAULT_SHARD_CONCURRENCY`.
+   */
+  shardConcurrency?: number;
+  /**
+   * Plaintext bytes per shard. Defaults to `SHARD_SIZE_BYTES` (8 MiB). On a
+   * resume the *stored* size wins, so a preference change mid-upload cannot
+   * shift shard boundaries under already-completed shards.
+   */
+  shardSizeBytes?: number;
+  deps: UploadDeps;
+  onProgress?: (event: UploadProgressEvent) => void;
+}
+
+/**
+ * Default number of shards uploaded concurrently. Kept in step with the
+ * transfer manager's own `maxConcurrency` (4) so the two pools do not fight.
+ */
+export const DEFAULT_SHARD_CONCURRENCY = 4;
+
+/** Result of one sequential read that hashes the plaintext and counts shards. */
+export interface FileMeasurement {
+  /** BLAKE3 hex of the whole plaintext version. */
+  versionHash: string;
+  /** Shard count for the version (>= 1 even for an empty file). */
+  shardCount: number;
+}
+
+/**
+ * Hash the plaintext and count shards in one sequential read.
+ *
+ * Exposed so the upload UI can detect a duplicate before committing, then hand
+ * the measurement to `uploadFile` so the bytes are not read a second time. An
+ * empty file still measures one zero-length shard to satisfy `shard_count >= 1`.
+ */
+export async function measurePlaintext(
+  source: UploadSource,
+  onProgress?: (event: UploadProgressEvent) => void,
+  shardSize: number = SHARD_SIZE_BYTES,
+): Promise<FileMeasurement> {
+  const size = shardSize > 0 ? shardSize : SHARD_SIZE_BYTES;
+  const hasher = createPlaintextHasher();
+  let count = 0;
+  let bytesRead = 0;
+  for (let offset = 0; offset < source.size; offset += size) {
+    const chunk = await source.read(offset, Math.min(size, source.size - offset));
+    hasher.update(chunk);
+    count += 1;
+    bytesRead += chunk.length;
+    onProgress?.({
+      phase: "measuring",
+      // The file id is not allocated yet; the consumer attributes progress by
+      // the active task, so an empty id is fine during the measure pass.
+      fileId: "",
+      fileName: source.name,
+      completedBytes: bytesRead,
+      totalBytes: source.size,
+      completedShards: count,
+      totalShards: count,
+    });
+  }
+  return { versionHash: hasher.digest(), shardCount: Math.max(1, count) };
+}
+
+export type UploadPhase = "measuring" | "announcing" | "uploading" | "done";
+
+/** Byte-accurate progress event. `completedBytes` drives the bar and speed. */
+export interface UploadProgressEvent {
+  phase: UploadPhase;
+  /** Empty during the measure pass (the file id does not exist yet). */
+  fileId: string;
+  fileName: string;
+  /** Plaintext bytes processed/uploaded so far. */
+  completedBytes: number;
+  /** Plaintext size of the whole file. */
+  totalBytes: number;
+  completedShards: number;
+  totalShards: number;
+}
+
+export interface UploadResult {
+  fileId: string;
+  versionNumber: number;
+  shardCount: number;
+  versionHash: string;
+  resumed: boolean;
+}
+
+function event(originId: string, sequence: number, type: EventPayload["type"], payload: Record<string, unknown>): EventPayload {
+  return {
+    event_id: crypto.randomUUID() as EventPayload["event_id"],
+    origin_id: originId,
+    origin_sequence: sequence,
+    type,
+    payload,
+    timestamp: new Date().toISOString(),
+  };
+}
+
+/**
+ * Upload one file. Idempotent-by-resume: an incomplete progress record with a
+ * persisted FEK skips pass 1, re-emits events only if they were never acked,
+ * and re-sends only the shards not yet RELAY_BUFFERED.
+ */
+export async function uploadFile(options: UploadFileOptions): Promise<UploadResult> {
+  const { source, originId, targetNode, sourceDevice, deps, onProgress } = options;
+  const parentFolderId = options.parentFolderId ?? null;
+  const fileId = options.fileId ?? crypto.randomUUID();
+  const versionNumber = options.versionNumber ?? 1;
+  const transferId = uploadKey(fileId, versionNumber);
+  const fileSize = source.size;
+
+  const existing = await deps.getProgress(fileId, versionNumber);
+  const existingKey = await deps.getFileKey(fileId);
+
+  let fek: Uint8Array;
+  let totalShards: number;
+  let versionHash: string;
+  let encryptedName: string;
+  let announced: boolean;
+  let completedShards: number[];
+  /** BLAKE3 hex of each uploaded packed shard, indexed by shard index. */
+  let shardHashes: string[];
+  let resumed = false;
+  /** Plaintext bytes per shard for THIS upload (see the resume note). */
+  let shardSize: number;
+
+  if (existing && existingKey && existing.totalShards > 0) {
+    // Resume. A complete record is a no-op so a retry after success is cheap.
+    if (existing.completedShards.length >= existing.totalShards) {
+      await deps.clearProgress?.(fileId, versionNumber);
+      return { fileId, versionNumber, shardCount: existing.totalShards, versionHash: existing.versionHash, resumed: true };
+    }
+    fek = existingKey;
+    totalShards = existing.totalShards;
+    versionHash = existing.versionHash;
+    encryptedName = existing.encryptedName;
+    announced = existing.announced;
+    completedShards = [...existing.completedShards];
+    // Older progress records predate per-shard hashes; an empty list simply
+    // means the manifest cannot be emitted for this resume.
+    shardHashes = existing.shardHashes ? [...existing.shardHashes] : [];
+    // The stored size must win: the shard boundaries were fixed at announce
+    // time, so a changed preference cannot retroactively move them.
+    shardSize = existing.shardSizeBytes ?? SHARD_SIZE_BYTES;
+    resumed = true;
+  } else {
+    fek = generateFileEncryptionKey();
+    shardSize = options.shardSizeBytes ?? SHARD_SIZE_BYTES;
+    // Reuse a caller-supplied measurement (the UI measures once to dedupe) so
+    // an accepted upload does not read the plaintext a second time.
+    const measured =
+      options.versionHash !== undefined && options.shardCount !== undefined
+        ? { versionHash: options.versionHash, shardCount: options.shardCount }
+        : await measurePlaintext(source, onProgress, shardSize);
+    totalShards = measured.shardCount;
+    versionHash = measured.versionHash;
+    encryptedName = encryptName(source.name, fek);
+    announced = false;
+    completedShards = [];
+    shardHashes = [];
+
+    // Durability gate: persist the FEK before anything references the file.
+    await deps.putFileKey(fileId, fek);
+    await deps.saveProgress({
+      transferId,
+      fileId,
+      versionNumber,
+      targetNode,
+      totalShards,
+      versionHash,
+      encryptedName,
+      announced: false,
+      completedShards: [],
+      shardSizeBytes: shardSize,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+  }
+
+  if (!announced) {
+    onProgress?.({
+      phase: "announcing",
+      fileId,
+      fileName: source.name,
+      completedBytes: 0,
+      totalBytes: fileSize,
+      completedShards: completedShards.length,
+      totalShards,
+    });
+    const created = await deps.allocateSequence(originId);
+    const version = await deps.allocateSequence(originId);
+    const ack = await deps.sendEventBatch([
+      // parent_folder_id is projected by the FILE_CREATED upsert on both the
+      // Relay and the node; FILE_VERSION_ADDED carries it too so a receiver
+      // that first learns of the file from the version event still nests it.
+      event(originId, created, EventTypes.FILE_CREATED, {
+        file_id: fileId,
+        parent_folder_id: parentFolderId,
+        encrypted_name: encryptedName,
+      }),
+      event(originId, version, EventTypes.FILE_VERSION_ADDED, {
+        file_id: fileId,
+        parent_folder_id: parentFolderId,
+        version_number: versionNumber,
+        shard_count: totalShards,
+        version_hash: versionHash,
+        encrypted_name: encryptedName,
+      }),
+    ]);
+    if (ack && ack.ok === false) {
+      throw new Error(`sync event batch rejected: ${ack.reason ?? "unknown"}`);
+    }
+    await deps.saveProgress({
+      transferId,
+      fileId,
+      versionNumber,
+      targetNode,
+      totalShards,
+      versionHash,
+      encryptedName,
+      announced: true,
+      completedShards,
+      shardSizeBytes: shardSize,
+      createdAt: existing?.createdAt ?? new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+  }
+
+  // Distribute the FEK before shards move, so any recipient that observes the
+  // file can decrypt. Runs on every attempt (including resume) for retryability.
+  await deps.publishEnvelopes?.(fileId, fek);
+
+  // Pass 2: encrypt + upload the shards not already buffered. Shards are
+  // independent objects, so they run through a small bounded worker pool rather
+  // than strictly one-at-a-time. Peak memory stays bounded by `shardConcurrency`.
+  const done = new Set(completedShards);
+  // Plaintext size of the shard at `index` (the last shard is the remainder; an
+  // empty file still has one zero-length shard).
+  const shardPlaintextSize = (index: number): number =>
+    Math.min(shardSize, Math.max(0, fileSize - index * shardSize));
+
+  // Plaintext bytes already committed by a prior attempt, so a resumed upload's
+  // progress starts where it left off instead of at zero.
+  let committedBytes = 0;
+  for (const index of done) committedBytes += shardPlaintextSize(index);
+  // Bytes reported by in-flight shards, summed into the bar so parallel shards
+  // don't make progress lurch or regress.
+  const inflight = new Map<number, number>();
+  const report = () => {
+    let sent = 0;
+    for (const bytes of inflight.values()) sent += bytes;
+    onProgress?.({
+      phase: "uploading",
+      fileId,
+      fileName: source.name,
+      completedBytes: Math.min(committedBytes + sent, fileSize),
+      totalBytes: fileSize,
+      completedShards: done.size,
+      totalShards,
+    });
+  };
+
+  const pendingShards: number[] = [];
+  for (let index = 0; index < totalShards; index += 1) {
+    if (!done.has(index)) pendingShards.push(index);
+  }
+
+  let cursor = 0;
+  // First failure wins; workers stop claiming new shards so the pool drains the
+  // in-flight ones (their completions are still recorded for resume) and then
+  // the error surfaces to the caller.
+  let abortError: unknown = null;
+
+  const worker = async (): Promise<void> => {
+    for (;;) {
+      if (abortError !== null) return;
+      const index = pendingShards[cursor];
+      if (index === undefined) return;
+      cursor += 1;
+
+      const offset = index * shardSize;
+      const chunk = await source.read(offset, Math.min(shardSize, fileSize - offset));
+      const encrypted = encryptShard({ fileId: fileId as FileId, index: index as ShardIndex, data: chunk }, fek);
+      // The stored/uploaded blob is nonce||ciphertext; the nonce must travel with
+      // the bytes or the shard can never be decrypted again (F2b).
+      const packed = packEncryptedShard(encrypted);
+      const shardHash = hashShard(packed);
+
+      inflight.set(index, 0);
+      report();
+      try {
+        await deps.postShard({
+          fileId,
+          versionNumber,
+          shardIndex: index,
+          hash: shardHash,
+          // The Relay verifies the packed blob's length/hash, not the plaintext size.
+          size: packed.length,
+          targetNode,
+          transferId,
+          sourceDevice,
+          data: packed,
+          // In-shard byte progress. Path C and the WebRTC paths report it; Path D
+          // (deferred queue) cannot and simply omits it.
+          onProgress: (sentBytes) => {
+            inflight.set(index, sentBytes);
+            report();
+          },
+        });
+      } catch (err) {
+        // Drop this shard's in-flight bytes so the bar doesn't count a failure.
+        inflight.delete(index);
+        throw err;
+      }
+
+      await deps.markShardComplete(fileId, versionNumber, index, shardHash);
+      shardHashes[index] = shardHash;
+      inflight.delete(index);
+      done.add(index);
+      committedBytes += shardPlaintextSize(index);
+      report();
+    }
+  };
+
+  const concurrency = Math.max(
+    1,
+    Math.min(options.shardConcurrency ?? DEFAULT_SHARD_CONCURRENCY, pendingShards.length || 1),
+  );
+  const workers = Array.from({ length: concurrency }, async () => {
+    try {
+      await worker();
+    } catch (err) {
+      if (abortError === null) abortError = err;
+    }
+  });
+  await Promise.all(workers);
+  if (abortError !== null) throw abortError;
+
+  // Publish the signed per-shard manifest once every shard is buffered. Runs on
+  // every attempt, including a resume, so a manifest lost to a crash is retried.
+  if (deps.signManifest) {
+    const hashes = Array.from({ length: totalShards }, (_, i) => shardHashes[i]);
+    if (hashes.every((h): h is string => typeof h === "string")) {
+      const manifestHash = hashShard(new TextEncoder().encode(hashes.join(",")));
+      const signature = await deps.signManifest(
+        `nodus-shard-manifest:v1:${fileId}:${versionNumber}:${manifestHash}`,
+      );
+      const sequence = await deps.allocateSequence(originId);
+      const ack = await deps.sendEventBatch([
+        event(originId, sequence, EventTypes.FILE_SHARD_MANIFEST, {
+          file_id: fileId,
+          version_number: versionNumber,
+          shard_hashes: hashes,
+          signature,
+        }),
+      ]);
+      if (ack && ack.ok === false) {
+        throw new Error(`shard manifest batch rejected: ${ack.reason ?? "unknown"}`);
+      }
+    }
+  }
+
+  await deps.clearProgress?.(fileId, versionNumber);
+  onProgress?.({
+    phase: "done",
+    fileId,
+    fileName: source.name,
+    completedBytes: fileSize,
+    totalBytes: fileSize,
+    completedShards: totalShards,
+    totalShards,
+  });
+  return { fileId, versionNumber, shardCount: totalShards, versionHash, resumed };
+}

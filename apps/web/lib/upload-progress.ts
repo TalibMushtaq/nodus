@@ -14,41 +14,12 @@
 // Node e2e harness uses a file-backed store where the source survives a kill.
 
 import { STORE_UPLOAD_PROGRESS, idbDelete, idbGet, idbGetAll, idbPut } from "./db";
+import { uploadKey, type UploadProgress } from "@repo/sdk";
 
-export interface UploadProgress {
-  /** `${fileId}:${versionNumber}` — the store's key. */
-  transferId: string;
-  fileId: string;
-  versionNumber: number;
-  targetNode: string;
-  totalShards: number;
-  /** BLAKE3 hex of the whole plaintext, from upload pass 1. */
-  versionHash: string;
-  /** FEK-encrypted filename (see @repo/core encryptName). */
-  encryptedName: string;
-  /**
-   * Plaintext bytes per shard used for this upload. Persisted so a resume keeps
-   * the original boundaries even if the user changes the shard-size preference.
-   * Optional: records written before configurable shards lack it (8 MiB).
-   */
-  shardSizeBytes?: number;
-  /** True once FILE_CREATED + FILE_VERSION_ADDED have been acknowledged. */
-  announced: boolean;
-  /** Shard indices confirmed RELAY_BUFFERED by a successful postShard. */
-  completedShards: number[];
-  /**
-   * BLAKE3 hex of each uploaded packed shard, indexed by shard index. Persisted
-   * so a resumed upload can still publish the signed per-shard manifest
-   * (audit #22). Optional: records written before the manifest feature lack it.
-   */
-  shardHashes?: string[];
-  createdAt: string;
-  updatedAt: string;
-}
-
-export function uploadKey(fileId: string, versionNumber: number): string {
-  return `${fileId}:${versionNumber}`;
-}
+// The record and its key are defined in @repo/sdk so web and native persist the
+// same shape; this module adds the browser's IndexedDB accessors on top.
+export { uploadKey };
+export type { UploadProgress };
 
 export async function saveUploadProgress(progress: UploadProgress): Promise<void> {
   await idbPut<UploadProgress>(STORE_UPLOAD_PROGRESS, progress);

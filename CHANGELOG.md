@@ -1,5 +1,15 @@
 # Changelog
 
+## [2026-09-15] - Shared Path C uploader in @repo/sdk
+
+**What changed:** Moved the two-pass Path C uploader (`uploadFile`, `measurePlaintext`, and the result/progress types) from `apps/web/lib/uploader.ts` into `packages/sdk/src/upload/`. It now reads bytes through a platform-neutral `UploadSource` (`name`/`size`/`read(offset, length)`) instead of a browser `File`, and `postShard` uses the SDK's `BufferedShardUpload`. The resumable progress record and `uploadKey` moved to the SDK; web's `upload-progress.ts` keeps only its IndexedDB accessors and re-exports the type. Web's `uploader.ts` is now a thin `File`→`UploadSource` binding, so `use-uploader`, `files-client`, `upload-provider` and the uploader tests are unchanged.
+
+**Why:** The uploader is the last large piece of browser-welded client logic; the native app needs the identical shard/encrypt/resume/manifest behavior, and copying it would guarantee drift.
+
+**Impact:** `packages/sdk` (new `src/upload/`, index exports, `tests/uploader.test.ts`), `apps/web/lib/{uploader,upload-progress}.ts`. Verified: SDK build/lint/test (12), web lint/typecheck/test (194).
+
+**Follow-ups:** The native side still needs an expo-file-system-backed `UploadSource` and expo-document-picker wiring, plus the envelope-sealing/keys stores which remain web-only (IndexedDB). The web e2e harness still constructs its own upload deps around the SDK entry point.
+
 ## [2026-09-15] - Phase 15 groundwork: shared client SDK, native mobile shell, WS/Bearer + shard-frame fixes
 
 **What changed:** Foundation for the Expo mobile client (plan stage 15), plus two cross-stack correctness fixes found while mapping the transfer path.
