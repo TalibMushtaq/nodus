@@ -8,7 +8,8 @@
 import { decryptName } from "@repo/core";
 import type { StoredDeviceIdentity } from "@repo/relay-client";
 
-import type { RelayFile, RelayTombstone } from "../relay";
+import type { RelayFile, RelayFolder, RelayTombstone } from "../relay";
+import { fetchMobileFolderKey } from "./folder-keys";
 import { fetchMobileFileKey } from "./keys";
 
 export async function decryptFileNames(
@@ -35,9 +36,35 @@ export async function decryptFileNames(
 }
 
 /**
- * Decrypt names for soft-deleted items. Folder names use folder keys, which
- * mobile does not resolve yet, so only file tombstones decrypt; the rest fall
- * back to the id.
+ * Decrypt folder names, using each folder's key (local or sealed envelope).
+ * A folder with no key for this device renders as null so the UI falls back to
+ * the id.
+ */
+export async function decryptFolderNames(
+  device: StoredDeviceIdentity,
+  folders: RelayFolder[],
+): Promise<Record<string, string | null>> {
+  const names: Record<string, string | null> = {};
+  await Promise.all(
+    folders.map(async (folder) => {
+      if (!folder.encrypted_name) {
+        names[folder.folder_id] = null;
+        return;
+      }
+      try {
+        const key = await fetchMobileFolderKey(device, folder.folder_id);
+        names[folder.folder_id] = key ? decryptName(folder.encrypted_name, key) : null;
+      } catch {
+        names[folder.folder_id] = null;
+      }
+    }),
+  );
+  return names;
+}
+
+/**
+ * Decrypt names for soft-deleted items. Folder names use folder keys; file
+ * tombstones use the FEK. Anything this device cannot open falls back to the id.
  */
 export async function decryptTombstoneNames(
   device: StoredDeviceIdentity,
@@ -46,13 +73,17 @@ export async function decryptTombstoneNames(
   const names: Record<string, string | null> = {};
   await Promise.all(
     items.map(async (item) => {
-      if (item.entity_type !== "file" || !item.encrypted_name) {
+      if (!item.encrypted_name) {
         names[item.entity_id] = null;
         return;
       }
       try {
-        const fek = await fetchMobileFileKey(device, item.entity_id);
-        names[item.entity_id] = fek ? decryptName(item.encrypted_name, fek) : null;
+        // Files decrypt with the FEK; folders with the folder key.
+        const key =
+          item.entity_type === "file"
+            ? await fetchMobileFileKey(device, item.entity_id)
+            : await fetchMobileFolderKey(device, item.entity_id);
+        names[item.entity_id] = key ? decryptName(item.encrypted_name, key) : null;
       } catch {
         names[item.entity_id] = null;
       }

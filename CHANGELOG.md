@@ -1,5 +1,15 @@
 # Changelog
 
+## [2026-09-15] - Mobile folder list with decrypted names
+
+**What changed:** The mobile app lists folders with decrypted names. `relay.ts` gained `RelayFolder`/`RelayFolderEnvelope` types plus `relayFolders`/`relayFolderEnvelopes`; `download/folder-keys.ts` resolves a folder key (shared SQLite key table, else the device's sealed folder envelope via `openFolderKeyFromEnvelopes`); `download/names.ts` gained `decryptFolderNames` and tombstone decryption now handles folders too. The app has a Folders section.
+
+**Why:** Folders are the main remaining catalogue gap, and folder-name decryption reuses the same key-envelope primitive already implemented.
+
+**Impact:** `apps/mobile` (`relay.ts`, `download/folder-keys.ts`, `download/names.ts`, `App.tsx`, tests). Verified: mobile typecheck, tests (3), expo export.
+
+**Follow-ups:** Read-only — creating/renaming/deleting folders (and distributing folder keys) is still web-only; folder navigation/tree is not built.
+
 ## [2026-09-15] - Mobile shard-size setting
 
 **What changed:** Added a SQLite-backed key/value preferences store (migration 3) and a Settings section in the mobile app to pick 4/8/16 MB shard sizes. The choice persists across restarts and is passed to `uploadFile` as `shardSizeBytes` for new uploads (the 8 MiB `SHARD_SIZE_BYTES` default when unset).

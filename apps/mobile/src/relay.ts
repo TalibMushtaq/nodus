@@ -7,7 +7,7 @@
  * These helpers are the typed, app-facing calls on top of that boundary.
  */
 
-import { createAuthClient, type SessionInfo } from "@repo/sdk";
+import { createAuthClient, type RecipientKind, type SessionInfo } from "@repo/sdk";
 import type { StoredDeviceIdentity } from "@repo/relay-client";
 
 import { RELAY_BASE, createNativeRelayHttp, getSessionToken } from "./adapters";
@@ -81,7 +81,24 @@ export interface RelayFile {
 export interface RelayEnvelope {
   file_id: string;
   recipient_id: string;
-  recipient_kind: string;
+  recipient_kind: RecipientKind;
+  encrypted_key: string;
+}
+
+/** A folder as returned by `GET /folders`. */
+export interface RelayFolder {
+  folder_id: string;
+  parent_folder_id: string | null;
+  encrypted_name: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/** A folder-key envelope as returned by `GET /folder-envelopes`. */
+export interface RelayFolderEnvelope {
+  folder_id: string;
+  recipient_id: string;
+  recipient_kind: RecipientKind;
   encrypted_key: string;
 }
 
@@ -254,6 +271,15 @@ export async function relayRestoreTombstone(
 
 export async function relayEnvelopes(fileId: string): Promise<RelayEnvelope[]> {
   return getJson<RelayEnvelope[]>(`/envelopes?file_id=${encodeURIComponent(fileId)}`);
+}
+
+export async function relayFolders(): Promise<RelayFolder[]> {
+  return getJson<RelayFolder[]>("/folders");
+}
+
+/** Bulk folder-key envelopes: one request opens every folder name. */
+export async function relayFolderEnvelopes(): Promise<RelayFolderEnvelope[]> {
+  return getJson<RelayFolderEnvelope[]>("/folder-envelopes");
 }
 
 /**

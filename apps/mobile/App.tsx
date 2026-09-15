@@ -49,6 +49,7 @@ import {
   relayCreatePairingSession,
   relayDevices,
   relayFiles,
+  relayFolders,
   relayLogin,
   relayLogout,
   relayNodes,
@@ -65,6 +66,7 @@ import {
   type PairingSession,
   type RelayDevice,
   type RelayFile,
+  type RelayFolder,
   type RelayNode,
   type RelayTombstone,
 } from "./src/relay";
@@ -76,7 +78,7 @@ import {
 import { createMobileUploadDeps } from "./src/upload/deps";
 import { fileUriSource } from "./src/upload/source";
 import { mobileDownloadDeps } from "./src/download/deps";
-import { decryptFileNames, decryptTombstoneNames } from "./src/download/names";
+import { decryptFileNames, decryptFolderNames, decryptTombstoneNames } from "./src/download/names";
 import { saveAndShare } from "./src/download/save";
 import { loadOrCreateDevice } from "./src/storage";
 import { getPreference, setPreference } from "./src/store/preferences";
@@ -132,6 +134,10 @@ export default function App() {
   // ── Tombstones (soft-delete) ──────────────────────────────────────────────
   const [tombstones, setTombstones] = React.useState<RelayTombstone[]>([]);
   const [tombstoneNames, setTombstoneNames] = React.useState<Record<string, string | null>>({});
+
+  // ── Folders ───────────────────────────────────────────────────────────────
+  const [folders, setFolders] = React.useState<RelayFolder[]>([]);
+  const [folderNames, setFolderNames] = React.useState<Record<string, string | null>>({});
 
   // ── Settings ──────────────────────────────────────────────────────────────
   const [shardSizeBytes, setShardSizeBytes] = React.useState<number>(SHARD_SIZE_BYTES);
@@ -494,6 +500,21 @@ export default function App() {
       // Decrypt display names where this device can open the file's key
       // envelope; failures fall back to the id in the list.
       setFileNames(device ? await decryptFileNames(device, list) : {});
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(null);
+    }
+  }, [authed, device]);
+
+  const loadFolders = React.useCallback(async () => {
+    if (!authed) return;
+    setBusy("loading-folders");
+    setError(null);
+    try {
+      const list = await relayFolders();
+      setFolders(list);
+      setFolderNames(device ? await decryptFolderNames(device, list) : {});
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -924,6 +945,21 @@ export default function App() {
             />
           ))}
         </View>
+      </Section>
+
+      <Section title="11 · Folders">
+        <Button
+          title="Load folders"
+          onPress={() => void loadFolders()}
+          disabled={!authed || busy !== null}
+        />
+        {folders.length === 0 && <Text style={styles.hint}>No folders loaded.</Text>}
+        {folders.map((f) => (
+          <Text key={f.folder_id} style={styles.hint}>
+            {folderNames[f.folder_id] ?? `${f.folder_id.slice(0, 12)}…`}
+            {f.parent_folder_id ? " (nested)" : ""}
+          </Text>
+        ))}
       </Section>
 
       <Section title="Trusted nodes (this device)">
