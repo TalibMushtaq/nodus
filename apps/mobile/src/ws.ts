@@ -10,10 +10,14 @@
  */
 
 import { RelayWsClient, relayWsEndpoint, type ConnectionState } from "@repo/relay-client";
+import { MessageTypes, type BatchAckPayload, type EventPayload } from "@repo/protocol";
 
 import { currentSessionToken, RELAY_BASE } from "./adapters";
 
 type MessageHandler = (payload: unknown) => void;
+
+/** How long to wait for a `batch_ack` before failing the batch. */
+const EVENT_ACK_TIMEOUT_MS = 10_000;
 
 export interface MobileWsCallbacks {
   onStateChange?: (state: ConnectionState) => void;
@@ -30,6 +34,8 @@ type RNWebSocketCtor = new (
 
 export class MobileWs {
   private client: RelayWsClient | null = null;
+  /** Serializes event batches: the Relay's `batch_ack` carries no correlation id. */
+  private batchTail: Promise<unknown> = Promise.resolve();
 
   get state(): ConnectionState {
     return this.client?.connectionState ?? "disconnected";
@@ -81,5 +87,32 @@ export class MobileWs {
    */
   on(type: string, handler: MessageHandler): () => void {
     return this.client?.on(type, handler) ?? (() => undefined);
+  }
+
+  /**
+   * Send one sync-event batch and resolve with its ack.
+   *
+   * The Relay's `batch_ack` carries no correlation id, so batches are chained:
+   * two overlapping batches must not race for the same ack. Mirrors the web
+   * `useEventBatch` helper.
+   */
+  sendEventBatch(events: EventPayload[]): Promise<BatchAckPayload> {
+    const run = () =>
+      new Promise<BatchAckPayload>((resolve, reject) => {
+        let off: () => void = () => undefined;
+        const timer = setTimeout(() => {
+          off();
+          reject(new Error("timed out waiting for batch_ack"));
+        }, EVENT_ACK_TIMEOUT_MS);
+        off = this.on("batch_ack", (payload) => {
+          clearTimeout(timer);
+          off();
+          resolve(payload as BatchAckPayload);
+        });
+        this.send(MessageTypes.EVENT_BATCH, { events });
+      });
+    const next = this.batchTail.then(run, run);
+    this.batchTail = next.catch(() => undefined);
+    return next;
   }
 }

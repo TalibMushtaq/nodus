@@ -103,6 +103,22 @@ export async function relayNodes(): Promise<RelayNode[]> {
   return getJson<RelayNode[]>("/nodes");
 }
 
+/** Device shape returned by `GET /devices` (used for envelope recipients). */
+export interface RelayDevice {
+  device_id: string;
+  account_id: string;
+  public_key: string;
+  status: string;
+  display_name?: string | null;
+  created_at: string;
+  revoked_at?: string | null;
+  last_seen_at?: string | null;
+}
+
+export async function relayDevices(): Promise<RelayDevice[]> {
+  return getJson<RelayDevice[]>("/devices");
+}
+
 /** Idempotent upsert so CreatePairingSession can find the device's key. */
 export async function relayRegisterDevice(device: StoredDeviceIdentity): Promise<void> {
   await post("/devices/register", { device_id: device.device_id, public_key: device.public_key });

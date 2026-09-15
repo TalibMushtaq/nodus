@@ -16,6 +16,7 @@ import "./src/compat";
 // keychain as a bearer credential. No JWT is involved.
 
 import * as React from "react";
+import * as DocumentPicker from "expo-document-picker";
 import {
   Button,
   ScrollView,
@@ -26,7 +27,7 @@ import {
 } from "react-native";
 
 import type { ConnectionState } from "@repo/relay-client";
-import type { SessionInfo } from "@repo/sdk";
+import { uploadFile, type SessionInfo } from "@repo/sdk";
 import {
   NodeClient,
   NodeClientError,
@@ -56,6 +57,8 @@ import {
   type RelayNode,
 } from "./src/relay";
 import { MobileWs } from "./src/ws";
+import { createMobileUploadDeps } from "./src/upload/deps";
+import { fileUriSource } from "./src/upload/source";
 import { loadOrCreateDevice } from "./src/storage";
 import {
   addTrustedNode,
@@ -94,6 +97,9 @@ export default function App() {
 
   // ── Conflict inbox (ADR-0003) ─────────────────────────────────────────────
   const [conflicts, setConflicts] = React.useState<{ file_id: string; versions: number[] }[]>([]);
+
+  // ── Upload ────────────────────────────────────────────────────────────────
+  const [uploadStatus, setUploadStatus] = React.useState<string | null>(null);
 
   const [error, setError] = React.useState<string | null>(null);
   const [notice, setNotice] = React.useState<string | null>(null);
@@ -274,6 +280,46 @@ export default function App() {
       setBusy(null);
     }
   }, [device, authed, selectedNode]);
+
+  // Pick a file and run the shared Path C uploader against the selected node
+  // (or the primary). Shards are encrypted, announced to the Relay, and sealed
+  // to every recipient via the injected upload deps.
+  const uploadPicked = React.useCallback(async () => {
+    if (!device) return;
+    const target =
+      selectedNode ?? nodes.find((n) => n.is_primary)?.node_id ?? nodes[0]?.node_id;
+    if (!target) {
+      setError("Load your nodes and select a target first.");
+      return;
+    }
+
+    const picked = await DocumentPicker.getDocumentAsync({ copyToCacheDirectory: true });
+    if (picked.canceled || !picked.assets?.[0]) return;
+    const asset = picked.assets[0];
+
+    setBusy("uploading");
+    setError(null);
+    setNotice(null);
+    setUploadStatus("measuring…");
+    try {
+      const result = await uploadFile({
+        source: fileUriSource(asset.uri, asset.name ?? "upload.bin", asset.size ?? 0),
+        originId: device.device_id,
+        targetNode: target,
+        sourceDevice: device.device_id,
+        deps: createMobileUploadDeps(wsRef.current!, device),
+        onProgress: (event) =>
+          setUploadStatus(`${event.phase} · shard ${event.completedShards}/${event.totalShards}`),
+      });
+      setUploadStatus(`done · ${result.shardCount} shard(s) · ${result.versionHash.slice(0, 12)}…`);
+      setNotice("Upload complete.");
+    } catch (err) {
+      setUploadStatus(null);
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(null);
+    }
+  }, [device, selectedNode, nodes]);
 
   const scan = React.useCallback(async () => {
     setBusy("scanning");
@@ -486,6 +532,19 @@ export default function App() {
           onPress={() => void authenticateOnDevice()}
           disabled={!probe || busy !== null}
         />
+      </Section>
+
+      <Section title="6 · Upload a file">
+        <Button
+          title="Pick and upload"
+          onPress={() => void uploadPicked()}
+          disabled={!authed || !device || busy !== null}
+        />
+        {uploadStatus && <Text style={styles.hint}>{uploadStatus}</Text>}
+        <Text style={styles.hint}>
+          Uploads to {selectedNode ? "the selected node" : "the primary node"} and seals the key to
+          all your devices and nodes.
+        </Text>
       </Section>
 
       <Section title="Trusted nodes (this device)">

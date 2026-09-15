@@ -1,5 +1,15 @@
 # Changelog
 
+## [2026-09-15] - Mobile path C uploader wiring
+
+**What changed:** The Expo app can now pick a file and upload it through the shared SDK uploader. Added SQLite stores for the per-file FEK (`store/keys.ts`), resumable upload progress (`store/upload-progress.ts`), and the per-origin sync sequence (`store/sync-state.ts`, allocated in an exclusive transaction), plus a second DB migration. `upload/source.ts` builds an `UploadSource` from a picked file URI via expo-file-system's byte-range base64 read; `upload/deps.ts` wires the SDK's injectable deps to native shard transport (Path C), serialized `event_batch` sends, SQLite persistence, the device signing key, and §25 envelope publication to every active device/node. `MobileWs.sendEventBatch` mirrors the web ack-correlation helper, `relayDevices()` was added, and the app gained an upload section.
+
+**Why:** Upload is the first end-to-end use of the moved uploader + envelope + transfer-chain code on native, exercising the whole SDK boundary.
+
+**Impact:** `apps/mobile` (`store/*`, `upload/*`, `ws.ts`, `relay.ts`, `App.tsx`). Verified: mobile typecheck and `expo export --platform android` (796 modules); SDK/web/Go suites unchanged and green.
+
+**Follow-ups:** Shard transport currently goes straight to the Relay buffer (Path C); routing it through the native Transfer Manager (`createMobileAttemptPath`) and adding download/decrypt + catalogue screens are next. The uploader's `postShard` has no byte-progress on native (RN fetch), so the bar advances per shard.
+
 ## [2026-09-15] - Shared FEK envelopes in @repo/sdk
 
 **What changed:** Moved the FEK envelope crypto/encoding, the recipient collector and the envelope event builders from `apps/web/lib/envelopes.ts` into `packages/sdk/src/envelopes/`. `collectRecipients` now takes injected `listDevices`/`listNodes` sources instead of importing the web catalogue. Web's `envelopes.ts` re-exports the pure API and keeps only its `/api/envelopes*` fetch wrappers, binding the collector to the web device/node catalogue; all existing callers (uploader, download, security, folder/recovery flows) are unchanged.

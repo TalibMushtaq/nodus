@@ -49,6 +49,36 @@ const MIGRATIONS: string[] = [
       last_success_at INTEGER NOT NULL
     );
   `,
+
+  // Migration 2: Path C upload state — the per-file FEK, the resumable upload
+  // progress record, and the per-origin sync sequence counter.
+  `
+    CREATE TABLE IF NOT EXISTS file_keys (
+      file_id TEXT PRIMARY KEY,
+      fek     BLOB NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS upload_progress (
+      transfer_id      TEXT PRIMARY KEY,
+      file_id          TEXT NOT NULL,
+      version_number   INTEGER NOT NULL,
+      target_node      TEXT NOT NULL,
+      total_shards     INTEGER NOT NULL,
+      version_hash     TEXT NOT NULL,
+      encrypted_name   TEXT NOT NULL,
+      shard_size_bytes INTEGER,
+      announced        INTEGER NOT NULL,
+      completed_shards TEXT NOT NULL,
+      shard_hashes     TEXT,
+      created_at       TEXT NOT NULL,
+      updated_at       TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS sync_state (
+      origin_id TEXT PRIMARY KEY,
+      sequence  INTEGER NOT NULL
+    );
+  `,
 ];
 
 let dbPromise: Promise<SQLite.SQLiteDatabase> | null = null;
