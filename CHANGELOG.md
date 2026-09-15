@@ -1,5 +1,15 @@
 # Changelog
 
+## [2026-09-15] - Foreground-only Path A on mobile
+
+**What changed:** The mobile transfer manager's attempt path can now gate Path A behind a predicate; the app passes an `AppState`-backed `canAttemptLocal` so direct LAN (local-signaling) transfers are only attempted while the app is foregrounded, falling through to Path B/C/D otherwise. This implements ADR-0004's "Path A foreground only" decision.
+
+**Why:** Browsing/discovery and direct LAN transfers are not reliable while backgrounded (and iOS suspends the app), so the chain must not pay a negotiation timeout trying.
+
+**Impact:** `apps/mobile` (`transfer/manager.ts`, `transfer/attempt-path.ts`, `App.tsx`). Verified: mobile typecheck, tests, expo export.
+
+**Follow-ups:** Enforcement is at transfer-attempt time; discovery is user-triggered (already foreground). Background sync is Phase 17.
+
 ## [2026-09-15] - Mobile folder create/rename/delete
 
 **What changed:** The mobile app can now create, rename, and soft-delete folders. `folders/mutations.ts` binds the SDK's `createFolderMutations` to the device identity, SQLite key store, sync-sequence allocator, Relay event batches, native device/node catalogue, and bulk folder-envelope fetch. The Folders section gained a name input plus Create, and Rename/Delete per folder (delete asks for confirmation and lands in Deleted files).

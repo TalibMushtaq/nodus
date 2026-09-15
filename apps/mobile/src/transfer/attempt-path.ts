@@ -34,6 +34,12 @@ export interface MobileAttemptPathDeps {
   relay: MobileRelaySocket;
   /** Share persistent WebRTC sessions across shards; the app owns the cache. */
   sessionCache?: WebRtcSessionCache;
+  /**
+   * Whether local (Path A) transfers may run. Defaults to always-allowed; the
+   * app passes an AppState-backed predicate so Path A stays foreground-only
+   * (ADR-0004).
+   */
+  canAttemptLocal?: () => boolean;
 }
 
 export function createMobileAttemptPath(deps: MobileAttemptPathDeps): AttemptPathFn {
@@ -60,8 +66,9 @@ export function createMobileAttemptPath(deps: MobileAttemptPathDeps): AttemptPat
     sessionCache: deps.sessionCache,
     resolveLocalHost: async (nodeId) =>
       (await getTrustedNodes()).find((n) => n.node_id === nodeId)?.host ?? null,
-    // Native has no mixed-content rule and always ships a peer connection.
-    canAttemptLocalPath: () => true,
+    // Native has no mixed-content rule and always ships a peer connection, but
+    // Path A is gated on the app being foregrounded (ADR-0004).
+    canAttemptLocalPath: () => deps.canAttemptLocal?.() ?? true,
     canAttemptRelaySignaling: () => true,
     peerConnectionFactory: createNativePeerConnectionFactory(),
   });

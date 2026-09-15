@@ -19,6 +19,7 @@ import * as React from "react";
 import * as DocumentPicker from "expo-document-picker";
 import {
   Alert,
+  AppState,
   Button,
   ScrollView,
   StyleSheet,
@@ -144,6 +145,9 @@ export default function App() {
   // ── Settings ──────────────────────────────────────────────────────────────
   const [shardSizeBytes, setShardSizeBytes] = React.useState<number>(SHARD_SIZE_BYTES);
 
+  // ── Foreground gate (ADR-0004: Path A is foreground-only) ─────────────────
+  const appActiveRef = React.useRef(true);
+
   const [error, setError] = React.useState<string | null>(null);
   const [notice, setNotice] = React.useState<string | null>(null);
   const [busy, setBusy] = React.useState<string | null>(null);
@@ -160,6 +164,15 @@ export default function App() {
         setSession(await relaySession());
       }
     })();
+  }, []);
+
+  // Track foreground/background so direct LAN transfer is only attempted while
+  // the app is active (ADR-0004). The transfer manager reads this live.
+  React.useEffect(() => {
+    const sub = AppState.addEventListener("change", (state) => {
+      appActiveRef.current = state === "active";
+    });
+    return () => sub.remove();
   }, []);
 
   // Bring the Relay socket up once we have both a session and the device id
@@ -187,7 +200,9 @@ export default function App() {
     if (session && device) {
       void (async () => {
         try {
-          const tm = await createMobileTransferManager(device, wsRef.current!);
+          const tm = await createMobileTransferManager(device, wsRef.current!, {
+            canAttemptLocal: () => appActiveRef.current,
+          });
           if (cancelled) {
             tm.close();
             return;

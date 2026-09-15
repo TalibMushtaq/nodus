@@ -22,6 +22,15 @@ export interface MobileTransferManager {
   close: () => void;
 }
 
+export interface MobileTransferManagerOptions {
+  /**
+   * Whether local (Path A) transfers may run. ADR-0004 keeps discovery and
+   * direct LAN transfer foreground-only, so the app passes an AppState-backed
+   * predicate; when it is false the chain skips straight to Path B/C/D.
+   */
+  canAttemptLocal?: () => boolean;
+}
+
 /**
  * Create and hydrate a transfer manager for `device`. Hydration loads the
  * persisted path cache and deferred queue before the manager is used, so a
@@ -30,6 +39,7 @@ export interface MobileTransferManager {
 export async function createMobileTransferManager(
   device: StoredDeviceIdentity,
   ws: MobileWs,
+  options: MobileTransferManagerOptions = {},
 ): Promise<MobileTransferManager> {
   const localQueue = new SqliteLocalQueue();
   const pathCache = new SqlitePathCache();
@@ -46,6 +56,7 @@ export async function createMobileTransferManager(
       isConnected: () => ws.isConnected,
     },
     sessionCache,
+    canAttemptLocal: options.canAttemptLocal,
   });
 
   const manager = new TransferManager(attemptPath, undefined, pathCache, localQueue);
