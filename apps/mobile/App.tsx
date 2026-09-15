@@ -30,7 +30,7 @@ import {
 
 import { SHARD_SIZE_BYTES } from "@repo/core";
 import type { ConnectionState } from "@repo/relay-client";
-import { downloadFile, uploadFile, type SessionInfo } from "@repo/sdk";
+import { downloadFile, toCatalogEntry, uploadFile, type SessionInfo } from "@repo/sdk";
 import type { TransferPath } from "@repo/transfer-manager";
 import {
   NodeClient,
@@ -1069,7 +1069,9 @@ export default function App() {
           <View key={f.file_id} style={styles.radioRow}>
             <Text style={styles.hint}>
               {fileNames[f.file_id] ?? `${f.file_id.slice(0, 12)}…`} · {f.versions.length} version
-              {f.versions.length === 1 ? "" : "s"}
+              {f.versions.length === 1 ? "" : "s"} ·{" "}
+              {toCatalogEntry(f).storage_status ?? "unknown"}
+              {toCatalogEntry(f).conflicted_versions.length > 0 ? " · conflict" : ""}
             </Text>
             <Button
               title={busy === `downloading-${f.file_id}` ? "Downloading…" : "Download"}

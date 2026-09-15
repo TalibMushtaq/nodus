@@ -59,6 +59,15 @@ export type {
   RecipientSources,
 } from "./envelopes/envelopes.js";
 
+export { toCatalogEntry } from "./catalog/catalog.js";
+export type {
+  RelayFileVersion,
+  RelayFile,
+  CatalogEntry,
+  RelayFolder,
+  FolderEntry,
+} from "./catalog/catalog.js";
+
 export { createRecoveryClient } from "./recovery/recovery.js";
 export type {
   RecoveryClient,

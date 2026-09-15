@@ -2,107 +2,25 @@
 // (Relay `GET /files`) so the dashboard can render without a round trip, and
 // keyed by file_id for idempotent upserts. The stored `encrypted_name` is
 // opaque here — callers decrypt it with the local FEK from lib/keys.ts.
+//
+// The types and the flattening projection (`toCatalogEntry`) live in @repo/sdk
+// so web and native agree on storage status / conflict rollups; this module
+// adds the browser's IndexedDB cache on top.
+
+import { toCatalogEntry } from "@repo/sdk";
+import type { CatalogEntry, FolderEntry, RelayFile, RelayFolder } from "@repo/sdk";
 
 import { STORE_CATALOG, STORE_FOLDERS, idbDelete, idbGetAll, idbPut } from "./db";
 
-/** A file version as returned by the Relay. */
-export interface RelayFileVersion {
-  version_number: number;
-  shard_count: number;
-  version_hash: string;
-  conflict_status: string;
-  created_at: string;
-}
-
-/** A physical location row as returned by the Relay (file_locations). */
-export interface RelayFileLocation {
-  version_number: number;
-  shard_index: number;
-  node_id: string;
-  status: string;
-  /** BLAKE3 hex of the encrypted shard; null until the shard is uploaded. */
-  hash: string | null;
-  size_bytes: number | null;
-}
-
-/** One file with its versions and current locations (GET /files). */
-export interface RelayFile {
-  file_id: string;
-  parent_folder_id: string | null;
-  encrypted_name: string | null;
-  created_at: string;
-  updated_at: string;
-  versions: RelayFileVersion[];
-  locations: RelayFileLocation[];
-}
-
-/** Locally cached catalog row — a flattened, UI-friendly projection. */
-export interface CatalogEntry {
-  file_id: string;
-  parent_folder_id: string | null;
-  encrypted_name: string | null;
-  created_at: string;
-  updated_at: string;
-  latest_version_number: number | null;
-  shard_count: number | null;
-  version_hash: string | null;
-  conflict_status: string | null;
-  /**
-   * Version numbers whose `conflict_status` is `flagged` (ADR-0003). The latest
-   * version's status alone is not enough: a preserved sibling can be any
-   * version, so the inbox needs every flagged version.
-   */
-  conflicted_versions: number[];
-  /** Rollup of the latest version's location statuses. */
-  storage_status: "stored" | "buffered" | "transferring" | "unknown" | null;
-  /** Per-shard locations (all versions) — the download path's manifest. */
-  locations: RelayFileLocation[];
-  cached_at: string;
-}
-
-/** Latest version wins; ties (shouldn't happen) resolve to the highest number. */
-function latestVersion(file: RelayFile): RelayFileVersion | null {
-  if (file.versions.length === 0) return null;
-  return file.versions.reduce((a, b) => (b.version_number > a.version_number ? b : a));
-}
-
-/**
- * Collapse per-shard location statuses into one label. Relay statuses are
- * free-text, so treat unknown values as "unknown" rather than guessing.
- */
-function summarizeStorageStatus(file: RelayFile, latest: RelayFileVersion | null): CatalogEntry["storage_status"] {
-  if (!latest) return null;
-  const statuses = file.locations
-    .filter((l) => l.version_number === latest.version_number)
-    .map((l) => l.status);
-  if (statuses.length === 0) return null;
-  if (statuses.some((s) => s === "UPLOADING" || s === "RELAY_BUFFERED")) return "buffered";
-  if (statuses.some((s) => s === "NODE_RECEIVING" || s === "NODE_VERIFIED")) return "transferring";
-  if (statuses.every((s) => s === "NODE_STORED")) return "stored";
-  return "unknown";
-}
-
-export function toCatalogEntry(file: RelayFile): CatalogEntry {
-  const latest = latestVersion(file);
-  return {
-    file_id: file.file_id,
-    parent_folder_id: file.parent_folder_id,
-    encrypted_name: file.encrypted_name,
-    created_at: file.created_at,
-    updated_at: file.updated_at,
-    latest_version_number: latest?.version_number ?? null,
-    shard_count: latest?.shard_count ?? null,
-    version_hash: latest?.version_hash ?? null,
-    conflict_status: latest?.conflict_status ?? null,
-    conflicted_versions: file.versions
-      .filter((v) => v.conflict_status === "flagged")
-      .map((v) => v.version_number)
-      .sort((a, b) => a - b),
-    storage_status: summarizeStorageStatus(file, latest),
-    locations: file.locations,
-    cached_at: new Date().toISOString(),
-  };
-}
+export { toCatalogEntry };
+export type {
+  RelayFileVersion,
+  RelayFileLocation,
+  RelayFile,
+  CatalogEntry,
+  RelayFolder,
+  FolderEntry,
+} from "@repo/sdk";
 
 /** Newest-cached first, matching the devices/node list convention. */
 export async function getCachedCatalog(): Promise<CatalogEntry[]> {
@@ -135,20 +53,6 @@ export async function pruneCatalog(keepFileIds: Set<string>): Promise<void> {
 }
 
 // ── Folder tree (Phase 14 F1) ────────────────────────────────────────
-
-/** A folder as returned by the Relay (`GET /folders`). */
-export interface RelayFolder {
-  folder_id: string;
-  parent_folder_id: string | null;
-  encrypted_name: string | null;
-  created_at: string;
-  updated_at: string;
-}
-
-/** Locally cached folder row. */
-export interface FolderEntry extends RelayFolder {
-  cached_at: string;
-}
 
 export async function getCachedFolders(): Promise<FolderEntry[]> {
   const folders = await idbGetAll<FolderEntry>(STORE_FOLDERS);

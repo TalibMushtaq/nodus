@@ -1,5 +1,15 @@
 # Changelog
 
+## [2026-09-15] - Shared catalog projections; mobile storage status
+
+**What changed:** Moved the Relay file/folder catalog types and the `toCatalogEntry` flattening projection (latest version, storage-status rollup, flagged-version list) into `packages/sdk/src/catalog/`. Web's `lib/catalog.ts` re-exports them and keeps only its IndexedDB cache functions. The mobile file list now uses `toCatalogEntry` to show each file's storage status and a "conflict" marker.
+
+**Why:** Storage-status/conflict rollup logic is pure and must not diverge between clients; mobile previously showed only a version count.
+
+**Impact:** `packages/sdk` (new `src/catalog/`, index exports), `apps/web/lib/catalog.ts`, `apps/mobile/App.tsx`. Verified: SDK build/lint/test (12), web lint/typecheck/test (194), mobile lint/typecheck/bundle.
+
+**Follow-ups:** `sync-state` and `conflicts` derivation remain web-only; mobile lists conflicts via the Relay's per-version status rather than a shared derivation.
+
 ## [2026-09-15] - Mobile security / envelope coverage screen
 
 **What changed:** Added a Security section to the mobile app. `relay.ts` gained `relayEnvelopeSummary`/`relayEnvelopeExport` and the `EnvelopeSummary` type; the screen lists per-recipient key-envelope coverage (file/folder counts + last updated) and can export the ciphertext-only envelope backup to the share sheet via the existing `saveAndShare`.
