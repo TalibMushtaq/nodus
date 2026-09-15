@@ -439,10 +439,18 @@ stage 7b in §28 (inserted between 7a and 8).
 > management, soft-delete restore/purge, settings, and a vitest suite wired into
 > `turbo test`.
 >
-> **Still open (tracked below):** remaining `apps/web/lib` → SDK migration
-> (`keys`, `catalog`, `sync-state`, `conflicts`, `recovery`), a dedicated mobile
-> CI job, folder navigation/upload-into-folder, and the mobile recovery flow
-> (Phase 16).
+> **SDK migration:** the transferable `apps/web/lib` logic now lives in
+> `packages/sdk` and web binds to it — auth/device, format/connectivity/zip,
+> envelopes, uploader, download, transfer path + WebRTC session + relay
+> signaling, catalog projections, conflict inbox, folder events/mutations,
+> file events, recovery + re-seal. Only `keys.ts` and `sync-state.ts` remain
+> platform-specific by design (IndexedDB transaction vs SQLite exclusive
+> transaction), alongside the app-only transport (BFF proxies, DOM, pickers).
+>
+> **Done in this pass:** dedicated mobile CI job (lint/typecheck/test/export),
+> mobile folder navigation + upload-into-folder, file rename/move/soft-delete,
+> recovery flow (recover/reveal/rotate), security/envelope screen, background
+> Path D drain, and SDK tests for the moved modules.
 
 - [x] Scaffold Expo application structure (native development build per ADR-0007)
 - [x] Reuse `packages/sdk` where portable; native/mobile-specific pieces per Phase 0 decision

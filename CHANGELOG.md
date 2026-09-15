@@ -1,5 +1,15 @@
 # Changelog
 
+## [2026-09-15] - Docs: mobile status and SDK migration summary
+
+**What changed:** Updated the Phase 15 progress note in `Todo.md` to record that the transferable web logic now lives in `@repo/sdk` (only `keys.ts`/`sync-state.ts` remain platform-specific by design) and to list the features completed this pass, and refreshed the README mobile-client status row.
+
+**Why:** The tracking docs understated the mobile client's state and the extent of the SDK migration.
+
+**Impact:** `Todo.md`, `README.md`. Docs only.
+
+**Follow-ups:** None.
+
 ## [2026-09-15] - Shared recovery re-seal; mobile recovery-key rotation
 
 **What changed:** Moved the recovery re-seal logic (open every key this device can, seal it to recovery, batch the envelope events) from `apps/web/lib/use-recovery-reseal.ts` into `packages/sdk/src/recovery/reseal.ts` as `resealRecoveryKeys(deps, publicKey)`; web's hook is now a binding. Added `apps/mobile/src/recovery/rotate.ts` and a "Regenerate recovery key" action that generates a new phrase, enrolls its public key (dropping the old recovery envelopes), re-seals all openable keys, stores the new phrase, and shows it once along with a re-seal summary.
