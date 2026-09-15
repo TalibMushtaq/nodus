@@ -1,5 +1,15 @@
 # Changelog
 
+## [2026-09-15] - Mobile node ping and node names
+
+**What changed:** Added `relayPingNode`/`relayRenameNode` and a Ping action on each storage node in the mobile node list, which now also shows the node's `display_name` when set (falling back to the id).
+
+**Why:** Completes the devices/nodes management parity for mobile; operators can probe a node and identify it by name.
+
+**Impact:** `apps/mobile` (`relay.ts`, `App.tsx`). Verified: mobile typecheck, expo export.
+
+**Follow-ups:** Node renaming is exposed in `relay.ts` but not yet in the UI.
+
 ## [2026-09-15] - Mobile device management
 
 **What changed:** Added device list, ping and revoke to the mobile app. `relay.ts` gained `relayRevokeDevice`, `relayRenameDevice` and `relayPingDevice` over the existing bearer calls; the app has a Devices section that lists devices (with a "this device" marker), probes reachability, and revokes after a native confirm dialog — revoking the current device signs out immediately, matching the web client's warning.

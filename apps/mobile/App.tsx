@@ -52,6 +52,7 @@ import {
   relayLogout,
   relayNodes,
   relayPingDevice,
+  relayPingNode,
   relayRegisterDevice,
   relayResolveConflict,
   relayRevokeDevice,
@@ -293,6 +294,20 @@ export default function App() {
     try {
       await relayPingDevice(target.device_id);
       setNotice("Ping sent — see the device's status.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(null);
+    }
+  }, []);
+
+  const pingNode = React.useCallback(async (target: RelayNode) => {
+    setBusy(`pinging-node-${target.node_id}`);
+    setError(null);
+    setNotice(null);
+    try {
+      await relayPingNode(target.node_id);
+      setNotice("Ping sent to node — see its status.");
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -660,8 +675,14 @@ export default function App() {
               style={[styles.nodeLabel, selectedNode === n.node_id && styles.nodeSelected]}
               onPress={() => setSelectedNode(n.node_id)}
             >
-              {n.node_id.slice(0, 12)}…{n.is_primary ? " (primary)" : ""} — {n.status}
+              {n.display_name ?? `${n.node_id.slice(0, 12)}…`}
+              {n.is_primary ? " (primary)" : ""} — {n.status}
             </Text>
+            <Button
+              title={busy === `pinging-node-${n.node_id}` ? "Pinging…" : "Ping"}
+              onPress={() => void pingNode(n)}
+              disabled={busy !== null || n.status !== "ACTIVE"}
+            />
           </View>
         ))}
         <View style={styles.spacer} />

@@ -122,6 +122,22 @@ export async function relayNodes(): Promise<RelayNode[]> {
   return getJson<RelayNode[]>("/nodes");
 }
 
+/** Manual reachability probe for a storage node over its WS connection. */
+export async function relayPingNode(nodeId: string): Promise<void> {
+  const res = await http.request(`/nodes/${encodeURIComponent(nodeId)}/ping`, { method: "POST" });
+  if (!res.ok) throw new Error(res.error ?? `ping failed: HTTP ${res.status}`);
+}
+
+/** Assign (or clear, with "") a node's display name. */
+export async function relayRenameNode(nodeId: string, name: string): Promise<string | null> {
+  const res = await http.request<{ display_name?: string | null }>(
+    `/nodes/${encodeURIComponent(nodeId)}`,
+    { method: "PATCH", body: { name } },
+  );
+  if (!res.ok) throw new Error(res.error ?? `rename failed: HTTP ${res.status}`);
+  return res.json?.display_name ?? null;
+}
+
 /** Device shape returned by `GET /devices` (used for envelope recipients). */
 export interface RelayDevice {
   device_id: string;
