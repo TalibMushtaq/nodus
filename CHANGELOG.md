@@ -1,5 +1,15 @@
 # Changelog
 
+## [2026-09-15] - Mobile test runner
+
+**What changed:** Added vitest to `apps/mobile` (`vitest.config.mts`, `test: vitest run`) and a first test covering name decryption (`src/download/__tests__/names.test.ts`): a real FEK round-trips an encrypted name, and an unopenable/missing envelope or a throwing key lookup yields `null` instead of failing the listing. The app's `turbo test` now runs mobile tests (previously a no-op), and CI's existing `turbo test` step picks them up. Tests run in Node and cover only platform-neutral logic; anything touching expo-* native modules is validated via a dev build.
+
+**Why:** Mobile had no tests at all, so `turbo test` silently passed; the shared SDK is well covered but the mobile bindings were not.
+
+**Impact:** `apps/mobile` (`package.json`, `vitest.config.mts`, `src/download/__tests__/`), `pnpm-lock.yaml`. Verified: mobile tests (2), mobile typecheck, expo export; SDK/web suites unchanged.
+
+**Follow-ups:** Only pure logic is unit-tested; expo-sqlite stores and RN UI have no coverage (would need jest-expo + native mocks). No dedicated CI job yet — coverage rides on the existing turbo steps.
+
 ## [2026-09-15] - Mobile file list decrypts names
 
 **What changed:** The mobile Files section now shows decrypted filenames. Extracted `fetchMobileFileKey` (SQLite key, else the device's sealed Relay envelope) into `download/keys.ts` so the downloader and the new `download/names.ts` share one FEK-resolution path; `decryptFileNames` decrypts each file's name in parallel and returns null per file on a missing/undecryptable envelope. The app's `loadFiles` populates a name map and the list renders the name, falling back to the id.
