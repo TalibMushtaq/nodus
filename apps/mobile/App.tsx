@@ -18,6 +18,7 @@ import "./src/compat";
 import * as React from "react";
 import * as Clipboard from "expo-clipboard";
 import * as DocumentPicker from "expo-document-picker";
+import * as Network from "expo-network";
 import {
   Alert,
   AppState,
@@ -320,6 +321,15 @@ export default function App() {
     setError(null);
     setNotice(null);
     try {
+      // Recovery currently proves the phrase to the Relay. The offline
+      // Storage-Node path is deferred by ADR-0002, so say that explicitly
+      // instead of surfacing a bare network error.
+      const net = await Network.getNetworkStateAsync();
+      if (net.isInternetReachable === false) {
+        throw new Error(
+          "Recovery needs Internet — the offline Storage-Node recovery path is not available yet.",
+        );
+      }
       const client = mobileRecoveryClient();
       const result = await client.recover(email, phrase, device);
       if (!result.ok || !result.session) throw new Error(result.error ?? "recovery failed");

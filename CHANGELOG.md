@@ -1,5 +1,15 @@
 # Changelog
 
+## [2026-09-15] - Offline recovery: document the design gap; honest mobile message
+
+**What changed:** Surveyed the Rust node for the deferred ADR-0002 offline recovery path and recorded the concrete gaps in the ADR: the node persists no account identifier (`devices` has no `account_id`; only `pairing_sessions` carry one at redemption), the recovery public key is only implicit in `key_envelopes`, and new challenge/recovery/envelope-fetch endpoints with their own nonce + rate limits are needed. The mobile recovery flow now checks connectivity and tells the user "offline Storage-Node recovery is not available yet" instead of surfacing a bare network error.
+
+**Why:** The offline path cannot be implemented correctly without persisting the node→account binding; recording that makes the deferral actionable and avoids a misleading client error.
+
+**Impact:** `docs/decisions/0002-recovery-mechanism.md`, `apps/mobile/App.tsx`. Verified: mobile lint/typecheck/test/export.
+
+**Follow-ups:** Implementing the offline path needs the node account-persistence design plus the new endpoints, per the ADR notes.
+
 ## [2026-09-15] - Docs: mobile status and SDK migration summary
 
 **What changed:** Updated the Phase 15 progress note in `Todo.md` to record that the transferable web logic now lives in `@repo/sdk` (only `keys.ts`/`sync-state.ts` remain platform-specific by design) and to list the features completed this pass, and refreshed the README mobile-client status row.
