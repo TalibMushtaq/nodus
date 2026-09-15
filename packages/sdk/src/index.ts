@@ -58,6 +58,19 @@ export type {
   EnvelopeNodeInfo,
   RecipientSources,
 } from "./envelopes/envelopes.js";
+
+export {
+  downloadFile,
+  MissingEnvelopeError,
+  ShardUnavailableError,
+  ShardIntegrityError,
+} from "./download/download.js";
+export type {
+  DownloadDeps,
+  DownloadFileOptions,
+  DownloadResult,
+  RelayFileLocation,
+} from "./download/download.js";
 export { PersistentWebRtcSession, WebRtcSessionCache } from "./transfer/webrtc-session.js";
 export type {
   PersistentSessionDeps,

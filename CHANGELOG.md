@@ -1,5 +1,15 @@
 # Changelog
 
+## [2026-09-15] - Shared download/decrypt core in @repo/sdk
+
+**What changed:** Moved `downloadFile` (fetch → verify BLAKE3 → decrypt → reassemble → decrypt name) and its error types/`DownloadDeps`/`RelayFileLocation` from `apps/web/lib/download.ts` into `packages/sdk/src/download/`. Web's `download.ts` re-exports the core and keeps `browserDownloadDeps` (IndexedDB/locally cached FEK, LAN node fetch with Relay fallback) plus `fetchShardViaRelay`; all existing callers are unchanged.
+
+**Why:** Downloading is the counterpart to the uploader and must run identically on native; the fetch/verify/decrypt ordering is exactly the logic that should not drift.
+
+**Impact:** `packages/sdk` (new `src/download/`, index exports), `apps/web/lib/download.ts`. Verified: SDK build/lint, web lint/typecheck/test (194).
+
+**Follow-ups:** Native still needs its own download deps (envelope open + relay shard fetch + share sheet); conflict/tombstone listing remains web-only.
+
 ## [2026-09-15] - Route mobile shards through the transfer manager
 
 **What changed:** Added `apps/mobile/src/transfer/manager.ts` (`createMobileTransferManager`), which hydrates the SQLite path cache and deferred queue and builds the shared `TransferManager` over the native A→B→C→D attempt path with a shared `WebRtcSessionCache`. The app now creates the manager once authed (tearing it down on sign-out), and the uploader's `postShard` routes each shard through `manager.uploadShard` when available, falling back to a direct Relay-buffer post otherwise. So a mobile upload now tries local signaling → Relay signaling → Relay buffer → persistent queue instead of always Path C.
