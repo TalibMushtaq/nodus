@@ -1,5 +1,15 @@
 # Changelog
 
+## [2026-09-15] - Shared folder mutations in @repo/sdk
+
+**What changed:** Moved folder create/rename/delete and the FOLDER_CREATED/DELETED event builders from `apps/web/lib/{folder-mutations,folder-events}.ts` into `packages/sdk/src/folders/` as `createFolderMutations(deps)` (device identity, key store, sequence allocator, event-batch sender, recipient sources, folder-envelope lister) plus `folderCreatedEvent`/`folderDeletedEvent`. Web's `folder-mutations.ts` is now a React hook binding over the SDK and `folder-events.ts` re-exports the builders; all callers unchanged.
+
+**Why:** Mobile needs folder create/rename/delete (and the folder-key durability gate + envelope distribution) without reimplementing the ordering that web already got right.
+
+**Impact:** `packages/sdk` (new `src/folders/`, index exports), `apps/web/lib/{folder-mutations,folder-events}.ts`. Verified: SDK build/lint, web lint/typecheck/test (194).
+
+**Follow-ups:** Mobile folder mutation UI is next; folder navigation/tree is still not built.
+
 ## [2026-09-15] - Mobile folder list with decrypted names
 
 **What changed:** The mobile app lists folders with decrypted names. `relay.ts` gained `RelayFolder`/`RelayFolderEnvelope` types plus `relayFolders`/`relayFolderEnvelopes`; `download/folder-keys.ts` resolves a folder key (shared SQLite key table, else the device's sealed folder envelope via `openFolderKeyFromEnvelopes`); `download/names.ts` gained `decryptFolderNames` and tombstone decryption now handles folders too. The app has a Folders section.

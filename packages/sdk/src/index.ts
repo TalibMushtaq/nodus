@@ -59,6 +59,9 @@ export type {
   RecipientSources,
 } from "./envelopes/envelopes.js";
 
+export { createFolderMutations, folderCreatedEvent, folderDeletedEvent } from "./folders/folders.js";
+export type { FolderMutationDeps, FolderMutations } from "./folders/folders.js";
+
 export {
   downloadFile,
   MissingEnvelopeError,
