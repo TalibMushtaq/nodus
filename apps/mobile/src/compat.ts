@@ -8,6 +8,9 @@
  * extra native dependency needed to talk to a LAN storage node.
  */
 
+import { getRandomValues, randomUUID } from "expo-crypto";
+import SSEEventSource from "react-native-sse";
+
 const g = globalThis as Record<PropertyKey, unknown>;
 
 // ── base64 (RFC 4648) ───────────────────────────────────────────────────────
@@ -119,4 +122,71 @@ if (AbortSignalGlobal && typeof AbortSignalGlobal.timeout !== "function") {
     );
     return signal;
   };
+}
+
+// ── UTF-8 decoder ───────────────────────────────────────────────────────────
+// @repo/core's decryptName reads plaintext filenames back out with
+// `TextDecoder`, which Hermes does not provide.
+if (typeof g.TextDecoder === "undefined") {
+  class TextDecoderImpl {
+    readonly encoding = "utf-8";
+    decode(input?: ArrayBuffer | ArrayBufferView): string {
+      if (!input) return "";
+      const bytes =
+        input instanceof ArrayBuffer
+          ? new Uint8Array(input)
+          : new Uint8Array(input.buffer, input.byteOffset, input.byteLength);
+      let out = "";
+      for (let i = 0; i < bytes.length; ) {
+        const byte = bytes[i]!;
+        let code: number;
+        if (byte < 0x80) {
+          code = byte;
+          i += 1;
+        } else if (byte < 0xe0) {
+          code = ((byte & 0x1f) << 6) | (bytes[i + 1]! & 0x3f);
+          i += 2;
+        } else if (byte < 0xf0) {
+          code = ((byte & 0x0f) << 12) | ((bytes[i + 1]! & 0x3f) << 6) | (bytes[i + 2]! & 0x3f);
+          i += 3;
+        } else {
+          code =
+            ((byte & 0x07) << 18) |
+            ((bytes[i + 1]! & 0x3f) << 12) |
+            ((bytes[i + 2]! & 0x3f) << 6) |
+            (bytes[i + 3]! & 0x3f);
+          i += 4;
+        }
+        if (code > 0xffff) {
+          const adjusted = code - 0x10000;
+          out += String.fromCharCode(0xd800 + (adjusted >> 10), 0xdc00 + (adjusted & 0x3ff));
+        } else {
+          out += String.fromCharCode(code);
+        }
+      }
+      return out;
+    }
+  }
+  g.TextDecoder = TextDecoderImpl;
+}
+
+// ── Web Crypto subset ───────────────────────────────────────────────────────
+// @noble/* and the SDK call `crypto.getRandomValues` (key generation, UUIDs)
+// and `crypto.randomUUID`. Hermes ships neither; expo-crypto provides both.
+const cryptoGlobal = (g.crypto as Record<string, unknown> | undefined) ?? {};
+if (typeof cryptoGlobal.getRandomValues !== "function") {
+  cryptoGlobal.getRandomValues = getRandomValues;
+}
+if (typeof cryptoGlobal.randomUUID !== "function") {
+  cryptoGlobal.randomUUID = randomUUID;
+}
+g.crypto = cryptoGlobal;
+
+// ── EventSource ─────────────────────────────────────────────────────────────
+// Path A trickles inbound ICE candidates over SSE. React Native has no
+// EventSource, so @repo/webrtc-transport's local signaling would otherwise
+// never open its candidate stream and a direct LAN transfer could not
+// negotiate; react-native-sse fills exactly that gap.
+if (typeof g.EventSource === "undefined") {
+  g.EventSource = SSEEventSource;
 }
