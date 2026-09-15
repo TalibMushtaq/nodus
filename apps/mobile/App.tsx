@@ -57,6 +57,10 @@ import {
   type RelayNode,
 } from "./src/relay";
 import { MobileWs } from "./src/ws";
+import {
+  createMobileTransferManager,
+  type MobileTransferManager,
+} from "./src/transfer/manager";
 import { createMobileUploadDeps } from "./src/upload/deps";
 import { fileUriSource } from "./src/upload/source";
 import { loadOrCreateDevice } from "./src/storage";
@@ -100,6 +104,7 @@ export default function App() {
 
   // ── Upload ────────────────────────────────────────────────────────────────
   const [uploadStatus, setUploadStatus] = React.useState<string | null>(null);
+  const [transferManager, setTransferManager] = React.useState<MobileTransferManager | null>(null);
 
   const [error, setError] = React.useState<string | null>(null);
   const [notice, setNotice] = React.useState<string | null>(null);
@@ -131,6 +136,35 @@ export default function App() {
       setWsState("disconnected");
     }
     return () => ws.stop();
+  }, [session, device]);
+
+  // Build the transfer manager once authed: it hydrates the SQLite queue/path
+  // cache and owns the WebRTC sessions, so it must be torn down on sign-out.
+  React.useEffect(() => {
+    let cancelled = false;
+    let created: MobileTransferManager | null = null;
+    if (session && device) {
+      void (async () => {
+        try {
+          const tm = await createMobileTransferManager(device, wsRef.current!);
+          if (cancelled) {
+            tm.close();
+            return;
+          }
+          created = tm;
+          setTransferManager(tm);
+        } catch (err) {
+          setError(err instanceof Error ? err.message : String(err));
+        }
+      })();
+    } else {
+      setTransferManager(null);
+    }
+    return () => {
+      cancelled = true;
+      created?.close();
+      setTransferManager(null);
+    };
   }, [session, device]);
 
   const signIn = React.useCallback(async () => {
@@ -307,7 +341,7 @@ export default function App() {
         originId: device.device_id,
         targetNode: target,
         sourceDevice: device.device_id,
-        deps: createMobileUploadDeps(wsRef.current!, device),
+        deps: createMobileUploadDeps(wsRef.current!, device, transferManager),
         onProgress: (event) =>
           setUploadStatus(`${event.phase} · shard ${event.completedShards}/${event.totalShards}`),
       });
@@ -319,7 +353,7 @@ export default function App() {
     } finally {
       setBusy(null);
     }
-  }, [device, selectedNode, nodes]);
+  }, [device, selectedNode, nodes, transferManager]);
 
   const scan = React.useCallback(async () => {
     setBusy("scanning");

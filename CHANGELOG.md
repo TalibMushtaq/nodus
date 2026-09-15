@@ -1,5 +1,15 @@
 # Changelog
 
+## [2026-09-15] - Route mobile shards through the transfer manager
+
+**What changed:** Added `apps/mobile/src/transfer/manager.ts` (`createMobileTransferManager`), which hydrates the SQLite path cache and deferred queue and builds the shared `TransferManager` over the native A→B→C→D attempt path with a shared `WebRtcSessionCache`. The app now creates the manager once authed (tearing it down on sign-out), and the uploader's `postShard` routes each shard through `manager.uploadShard` when available, falling back to a direct Relay-buffer post otherwise. So a mobile upload now tries local signaling → Relay signaling → Relay buffer → persistent queue instead of always Path C.
+
+**Why:** The whole point of the shared transfer chain is that shards prefer a direct/local path; going straight to the buffer left A/B/D unused on mobile.
+
+**Impact:** `apps/mobile` (`transfer/manager.ts`, `upload/deps.ts`, `App.tsx`). Verified: mobile typecheck and `expo export --platform android` (849 modules).
+
+**Follow-ups:** A mobile path banner/status surface (web has `TransferPathBanner`) and real-device validation of Path A/B are still pending; Path D drains on Relay reconnect via the manager's connectivity hook, which the app does not yet trigger explicitly (it relies on a fresh upload).
+
 ## [2026-09-15] - Mobile path C uploader wiring
 
 **What changed:** The Expo app can now pick a file and upload it through the shared SDK uploader. Added SQLite stores for the per-file FEK (`store/keys.ts`), resumable upload progress (`store/upload-progress.ts`), and the per-origin sync sequence (`store/sync-state.ts`, allocated in an exclusive transaction), plus a second DB migration. `upload/source.ts` builds an `UploadSource` from a picked file URI via expo-file-system's byte-range base64 read; `upload/deps.ts` wires the SDK's injectable deps to native shard transport (Path C), serialized `event_batch` sends, SQLite persistence, the device signing key, and §25 envelope publication to every active device/node. `MobileWs.sendEventBatch` mirrors the web ack-correlation helper, `relayDevices()` was added, and the app gained an upload section.

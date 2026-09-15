@@ -18,8 +18,10 @@ import {
   signDeviceMessage,
   type StoredDeviceIdentity,
 } from "@repo/relay-client";
+import type { ShardTransferRequest } from "@repo/transfer-manager";
 
 import { relayDevices, relayNodes } from "../relay";
+import type { MobileTransferManager } from "../transfer/manager";
 import { getFileKey, putFileKey } from "../store/keys";
 import { nextOriginSequence } from "../store/sync-state";
 import {
@@ -31,11 +33,34 @@ import {
 import { postShard } from "../transfer/buffer";
 import type { MobileWs } from "../ws";
 
-export function createMobileUploadDeps(ws: MobileWs, device: StoredDeviceIdentity): UploadDeps {
+export function createMobileUploadDeps(
+  ws: MobileWs,
+  device: StoredDeviceIdentity,
+  transfer?: MobileTransferManager | null,
+): UploadDeps {
   const sign = (message: string) => signDeviceMessage(identityPrivateKey(device), message);
 
   return {
-    postShard: (dto) => postShard(dto),
+    // Route each shard through the Transfer Manager when available so the
+    // A→B→C→D chain (and its persistent queue) applies; otherwise post straight
+    // to the Relay buffer.
+    postShard: async (dto) => {
+      if (!transfer) return postShard(dto);
+      const request: ShardTransferRequest = {
+        transferId: dto.transferId,
+        fileId: dto.fileId,
+        versionNumber: dto.versionNumber,
+        shardIndex: dto.shardIndex,
+        data: dto.data,
+        hash: dto.hash,
+        targetNode: dto.targetNode as unknown as ShardTransferRequest["targetNode"],
+        sourceDevice: dto.sourceDevice,
+        onProgress: dto.onProgress,
+      };
+      const result = await transfer.manager.uploadShard(request);
+      if (!result.success) throw new Error(result.error ?? "shard transfer failed");
+      return result;
+    },
     sendEventBatch: (events) => ws.sendEventBatch(events),
     allocateSequence: (originId) => nextOriginSequence(originId),
     putFileKey,
