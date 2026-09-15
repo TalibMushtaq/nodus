@@ -21,10 +21,16 @@ func (wsCookieSessionStore) CreateSession(context.Context, string, string) (stri
 	return "", nil
 }
 func (wsCookieSessionStore) LookupSession(_ context.Context, rawID string) (*auth.Session, error) {
-	if rawID != "browser-session" {
+	// Both credential transports (browser cookie, native bearer) resolve to
+	// the same store; distinct tokens only make each test's intent legible.
+	switch rawID {
+	case "browser-session":
+		return &auth.Session{AccountID: "acct-browser", DeviceID: "device-browser"}, nil
+	case "native-session":
+		return &auth.Session{AccountID: "acct-native", DeviceID: "device-native"}, nil
+	default:
 		return nil, auth.ErrSessionInvalid
 	}
-	return &auth.Session{AccountID: "acct-browser", DeviceID: "device-browser"}, nil
 }
 func (wsCookieSessionStore) TouchSession(context.Context, string) error        { return nil }
 func (wsCookieSessionStore) RevokeSession(context.Context, string) error       { return nil }
@@ -61,6 +67,38 @@ func TestWebSocketCookieHandshakeAuthenticatesSession(t *testing.T) {
 	_, payload, err := conn.ReadMessage()
 	require.NoError(t, err)
 	require.Contains(t, string(payload), "session_cookie_verified")
+}
+
+// A native (Expo) client has no browser cookie jar, so the WS handshake must
+// accept the same opaque session ID as `Authorization: Bearer`. It must also
+// omit Origin (native stacks do not send one) — otherwise the Phase 14a browser
+// rejection would close the socket before the bearer ever resolved.
+func TestWebSocketBearerHandshakeAuthenticatesNativeClient(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	h := hub.New(nil)
+	go h.Run(ctx)
+
+	cfg := &config.Config{SessionCookieName: "nodus_session"}
+	server := httptest.NewServer(WebSocket(h, nil, nil, nil, wsCookieSessionStore{}, cfg, nil, nil))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	header := http.Header{"Authorization": {"Bearer native-session"}}
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, header)
+	require.NoError(t, err)
+	defer conn.Close()
+
+	// Drain the node challenge the server sends on every accepted handshake.
+	_, _, err = conn.ReadMessage()
+	require.NoError(t, err)
+
+	h.SendToAccount("acct-native", []byte(`{"type":"bearer_session_verified"}`))
+	_ = conn.SetReadDeadline(time.Now().Add(time.Second))
+	_, payload, err := conn.ReadMessage()
+	require.NoError(t, err)
+	require.Contains(t, string(payload), "bearer_session_verified")
 }
 
 func TestWebSocketRejectsUnauthenticatedBrowser(t *testing.T) {

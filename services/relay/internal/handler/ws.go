@@ -118,11 +118,16 @@ func WebSocket(h *hub.Hub, pool *db.Pool, rClient *rdb.Client, buf *buffer.Buffe
 		}
 
 		// Browser WebSocket handshakes authenticate via the session cookie
-		// (?token= JWT removed in Phase 7a §1). Storage Nodes authenticate
-		// separately through the Ed25519 challenge-response below, so a missing
-		// cookie here only leaves the client's AccountID/DeviceID unset.
-		if cookie, err := r.Cookie(cfg.SessionCookieName); store != nil && err == nil && cookie.Value != "" {
-			if sess, err := store.LookupSession(r.Context(), cookie.Value); err == nil {
+		// (?token= JWT removed in Phase 7a §1). Native clients (the Expo app)
+		// have no browser cookie jar, so they present the same opaque session
+		// ID as `Authorization: Bearer`; resolving both forms through
+		// auth.AuthenticateRequest keeps the WS gateway on exactly one session
+		// model instead of growing a WS-only token path. Storage Nodes stay
+		// anonymous here and authenticate separately via the Ed25519
+		// challenge-response below, so an unresolved handshake only leaves
+		// AccountID/DeviceID unset.
+		if store != nil {
+			if sess, _, err := auth.AuthenticateRequest(r, store, cfg); err == nil && sess != nil {
 				client.AccountID = sess.AccountID
 				client.DeviceID = sess.DeviceID
 				client.IsAuthenticated = true
