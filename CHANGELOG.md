@@ -1,5 +1,15 @@
 # Changelog
 
+## [2026-09-15] - Mobile background queue drain
+
+**What changed:** Added `apps/mobile/src/background/sync.ts`, a headless `expo-background-task`/`expo-task-manager` job that drains the SQLite Path D queue by posting parked shards to the Relay buffer (Path C) using the stored session token. It is defined at module scope (imported from `index.ts` so it exists for headless runs), registered once from the app, and stops at the first failure so an offline Relay is retried next run. Per ADR-0004 it deliberately avoids Path A in the background. The `expo-background-task` config plugin is registered in `app.json`.
+
+**Why:** Deferred shards previously only retried while the app was foregrounded and connected; background delivery is the Phase 17 requirement.
+
+**Impact:** `apps/mobile` (`src/background/sync.ts`, `index.ts`, `app.json`, `App.tsx`). Verified: mobile lint, typecheck, tests, expo export.
+
+**Follow-ups:** Cadence and reliability are OS-controlled (WorkManager on Android, BGTaskScheduler on iOS); the task drains Path D only and does no publish/subscribe. Offline cache strategy is the existing SQLite `src/store/*`.
+
 ## [2026-09-15] - Phase 18 security review
 
 **What changed:** Added `docs/security/phase18-review.md`, a static review confirming (a) the Relay only ever handles AES-GCM ciphertext shards and opaque FEK/folder-key envelopes, never plaintext, and (b) device revocation deletes the device's file- and folder-key envelopes so it loses future key access without rotating every file key. Linked it from `docs/security/README.md` and checked the Phase 18 security item. Documented that the "non-exportable WebCrypto Ed25519" open item is blocked by ADR-0001's Ed25519→X25519 envelope derivation and needs its own ADR.

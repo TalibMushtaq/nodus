@@ -1,5 +1,9 @@
 import { registerRootComponent } from 'expo';
 
+// Define the background queue-drain task before the app mounts; the OS may run
+// this entry point headlessly, and the task must exist in that context.
+import './src/background/sync';
+
 import App from './App';
 
 // registerRootComponent calls AppRegistry.registerComponent('main', () => App);

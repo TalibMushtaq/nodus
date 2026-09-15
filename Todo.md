@@ -461,9 +461,14 @@ stage 7b in §28 (inserted between 7a and 8).
 
 ## Phase 17 — Mobile Background Sync
 
-- [ ] Implement background sync per Phase 0 decision (foreground service /
+- [x] Implement background sync per Phase 0 decision (foreground service /
       WorkManager on Android; entitlement-gated background execution on iOS)
-- [ ] Offline database/cache strategy for the mobile client
+      — `apps/mobile/src/background/sync.ts` uses `expo-background-task` /
+      `expo-task-manager` to drain the Path D queue via the Relay buffer
+      (background Path A is deliberately skipped per ADR-0004).
+- [x] Offline database/cache strategy for the mobile client — SQLite in
+      `apps/mobile/src/store/` (trusted nodes, Path D queue, path cache, file
+      keys, upload progress, sync sequence, preferences, recovery phrase).
 
 ## Phase 18 — Failure / Recovery / Stress Testing
 

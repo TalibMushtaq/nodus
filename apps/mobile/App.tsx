@@ -82,6 +82,7 @@ import { mobileDownloadDeps } from "./src/download/deps";
 import { decryptFileNames, decryptFolderNames, decryptTombstoneNames } from "./src/download/names";
 import { mobileFolderMutations } from "./src/folders/mutations";
 import { mobileRecoveryClient } from "./src/recovery/client";
+import { registerBackgroundSync } from "./src/background/sync";
 import { saveAndShare } from "./src/download/save";
 import { loadOrCreateDevice } from "./src/storage";
 import { getPreference, setPreference } from "./src/store/preferences";
@@ -168,6 +169,12 @@ export default function App() {
         setSession(await relaySession());
       }
     })();
+  }, []);
+
+  // Register the periodic background queue drain (Phase 17); best-effort and
+  // unavailable on some platforms, so a failure is ignored.
+  React.useEffect(() => {
+    void registerBackgroundSync().catch(() => undefined);
   }, []);
 
   // Track foreground/background so direct LAN transfer is only attempted while
