@@ -1,5 +1,15 @@
 # Changelog
 
+## [2026-09-15] - Shared recovery re-seal; mobile recovery-key rotation
+
+**What changed:** Moved the recovery re-seal logic (open every key this device can, seal it to recovery, batch the envelope events) from `apps/web/lib/use-recovery-reseal.ts` into `packages/sdk/src/recovery/reseal.ts` as `resealRecoveryKeys(deps, publicKey)`; web's hook is now a binding. Added `apps/mobile/src/recovery/rotate.ts` and a "Regenerate recovery key" action that generates a new phrase, enrolls its public key (dropping the old recovery envelopes), re-seals all openable keys, stores the new phrase, and shows it once along with a re-seal summary.
+
+**Why:** Rotation is the only way to recover from a leaked phrase, and it was web-only; the ordering (enroll first, then re-seal) must be shared to be correct.
+
+**Impact:** `packages/sdk` (new `src/recovery/reseal.ts`, index exports), `apps/web/lib/use-recovery-reseal.ts`, `apps/mobile` (`recovery/rotate.ts`, `App.tsx`). Verified: SDK lint/test (26), web lint/typecheck/test (194), mobile lint/typecheck/test/bundle.
+
+**Follow-ups:** Re-seal can only cover keys this device can open; skipped counts are surfaced but not itemized.
+
 ## [2026-09-15] - SDK tests for catalog, conflicts, folders, recovery
 
 **What changed:** Added unit tests for the modules shared in this session: catalog flattening (`toCatalogEntry` storage-status rollup, flagged versions, empty file), conflict-list derivation (name decryption, encrypted-but-locked fallback, no-name fallback), folder mutations (create persists the key then distributes envelopes, rename re-encrypts, delete emits a tombstone, rename without a key fails), and the recovery client (matching phrase recovers + normalizes the stored phrase, mismatched phrase is rejected before spending the nonce, `materialize` unlocks recovery-sealed FEKs). SDK tests went from 12 to 26.

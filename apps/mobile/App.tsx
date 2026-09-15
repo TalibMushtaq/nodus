@@ -95,6 +95,7 @@ import { decryptFileNames, decryptFolderNames, decryptTombstoneNames } from "./s
 import { mobileFileMutations } from "./src/files/mutations";
 import { mobileFolderMutations } from "./src/folders/mutations";
 import { mobileRecoveryClient } from "./src/recovery/client";
+import { rotateRecoveryKey } from "./src/recovery/rotate";
 import { sqliteRecoveryStore } from "./src/recovery/store";
 import { registerBackgroundSync } from "./src/background/sync";
 import { saveAndShare } from "./src/download/save";
@@ -913,6 +914,43 @@ export default function App() {
     setNotice("Recovery phrase copied to the clipboard.");
   }, [revealedPhrase]);
 
+  // Regenerate the recovery key: enroll the new public key, re-seal every key
+  // this device can open, and reveal the new phrase once.
+  const rotateRecovery = React.useCallback(() => {
+    if (!device || !session) return;
+    Alert.alert(
+      "Regenerate recovery key",
+      "This replaces your recovery phrase and re-seals your keys to the new one. Record the new phrase immediately.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Regenerate",
+          style: "destructive",
+          onPress: () => {
+            void (async () => {
+              setBusy("rotating-recovery");
+              setError(null);
+              setNotice(null);
+              setSecurityStatus(null);
+              try {
+                const { phrase, resealed } = await rotateRecoveryKey(wsRef.current!, device, session);
+                // Show the new phrase so it can be recorded before it is hidden.
+                setRevealedPhrase(phrase);
+                setSecurityStatus(
+                  `New phrase shown above. Re-sealed ${resealed.files} file / ${resealed.folders} folder key(s), skipped ${resealed.skipped}.`,
+                );
+              } catch (err) {
+                setError(err instanceof Error ? err.message : String(err));
+              } finally {
+                setBusy(null);
+              }
+            })();
+          },
+        },
+      ],
+    );
+  }, [device, session]);
+
   const scan = React.useCallback(async () => {
     setBusy("scanning");
     setError(null);
@@ -1393,6 +1431,13 @@ export default function App() {
             <Button title="Copy phrase" onPress={() => void copyPhrase()} disabled={busy !== null} />
           </>
         )}
+
+        <View style={styles.spacer} />
+        <Button
+          title={busy === "rotating-recovery" ? "Regenerating…" : "Regenerate recovery key"}
+          onPress={() => rotateRecovery()}
+          disabled={!authed || busy !== null}
+        />
       </Section>
 
       <Section title="Trusted nodes (this device)">

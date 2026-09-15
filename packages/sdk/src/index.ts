@@ -73,6 +73,9 @@ export type {
   FolderEntry,
 } from "./catalog/catalog.js";
 
+export { resealRecoveryKeys } from "./recovery/reseal.js";
+export type { ResealDeps, ResealResult } from "./recovery/reseal.js";
+
 export { createRecoveryClient } from "./recovery/recovery.js";
 export type {
   RecoveryClient,
