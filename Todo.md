@@ -218,8 +218,10 @@ layer only* — device identity (asymmetric key), Storage Node identity
       every session)
 - [x] WebSocket: browser WS handshake authenticates via session cookie
       (`?token=` removed)
-- [ ] Mobile (Phase 15 when reached): same session model via secure platform
-      storage (requirement §8 identity matrix preserved)
+- [x] Mobile (Phase 15 when reached): same session model via secure platform
+      storage — the opaque session ID is held in expo-secure-store and sent as
+      `Authorization: Bearer` (`apps/mobile/src/adapters.ts`); §8 identity matrix
+      preserved (device identity is a separate Ed25519 keypair).
 
 ## Phase 7b — Self-Hosted Storage Node Bootstrap via Pairing Code (plan §7b)
 
