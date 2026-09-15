@@ -1,5 +1,15 @@
 # Changelog
 
+## [2026-09-15] - Mobile device management
+
+**What changed:** Added device list, ping and revoke to the mobile app. `relay.ts` gained `relayRevokeDevice`, `relayRenameDevice` and `relayPingDevice` over the existing bearer calls; the app has a Devices section that lists devices (with a "this device" marker), probes reachability, and revokes after a native confirm dialog — revoking the current device signs out immediately, matching the web client's warning.
+
+**Why:** Device revocation (ADR-0001) is required on every client, and the mobile app had no way to manage paired devices.
+
+**Impact:** `apps/mobile` (`relay.ts`, `App.tsx`). Verified: mobile typecheck, tests, expo export.
+
+**Follow-ups:** Device renaming is wired in `relay.ts` but not yet surfaced in the UI; node management (ping/rename) is still web-only.
+
 ## [2026-09-15] - Show the mobile transfer path
 
 **What changed:** `createMobileUploadDeps` accepts an `onPath` callback and reports the path each successful shard used (`result.path` from the transfer manager); the app stores the last path and shows "Last shard path: …" with a human label (Direct LAN / Direct via Relay / Relay buffer / Queued), mirroring the web `TransferPathBanner`.

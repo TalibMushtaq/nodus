@@ -18,6 +18,7 @@ import "./src/compat";
 import * as React from "react";
 import * as DocumentPicker from "expo-document-picker";
 import {
+  Alert,
   Button,
   ScrollView,
   StyleSheet,
@@ -45,15 +46,19 @@ import {
   getSessionToken,
   relayCreatePairingCode,
   relayCreatePairingSession,
+  relayDevices,
   relayFiles,
   relayLogin,
   relayLogout,
   relayNodes,
+  relayPingDevice,
   relayRegisterDevice,
   relayResolveConflict,
+  relayRevokeDevice,
   relaySession,
   type PairingCode,
   type PairingSession,
+  type RelayDevice,
   type RelayFile,
   type RelayNode,
 } from "./src/relay";
@@ -88,6 +93,7 @@ export default function App() {
   if (wsRef.current === null) wsRef.current = new MobileWs();
   const [nodes, setNodes] = React.useState<RelayNode[]>([]);
   const [selectedNode, setSelectedNode] = React.useState<string | null>(null);
+  const [devices, setDevices] = React.useState<RelayDevice[]>([]);
 
   // ── §7b bootstrap: pairing code issuance + node-appearance polling ────────
   const [code, setCode] = React.useState<PairingCode | null>(null);
@@ -226,6 +232,73 @@ export default function App() {
       setBusy(null);
     }
   }, [authed]);
+
+  const loadDevices = React.useCallback(async () => {
+    if (!authed) return;
+    setBusy("loading-devices");
+    setError(null);
+    try {
+      setDevices(await relayDevices());
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(null);
+    }
+  }, [authed]);
+
+  const revokeDevice = React.useCallback(
+    (target: RelayDevice) => {
+      const isSelf = device?.device_id === target.device_id;
+      Alert.alert(
+        "Revoke device",
+        isSelf
+          ? "This is the current device. Revoking it signs you out immediately."
+          : `Revoke ${target.display_name ?? `${target.device_id.slice(0, 12)}…`}? It loses access to new key envelopes.`,
+        [
+          { text: "Cancel", style: "cancel" },
+          {
+            text: "Revoke",
+            style: "destructive",
+            onPress: () => {
+              void (async () => {
+                setBusy(`revoking-${target.device_id}`);
+                setError(null);
+                setNotice(null);
+                try {
+                  await relayRevokeDevice(target.device_id);
+                  if (isSelf) {
+                    setSession(null);
+                  } else {
+                    setDevices(await relayDevices());
+                  }
+                  setNotice("Device revoked.");
+                } catch (err) {
+                  setError(err instanceof Error ? err.message : String(err));
+                } finally {
+                  setBusy(null);
+                }
+              })();
+            },
+          },
+        ],
+      );
+    },
+    [device],
+  );
+
+  const pingDevice = React.useCallback(async (target: RelayDevice) => {
+    setBusy(`pinging-${target.device_id}`);
+    setError(null);
+    setNotice(null);
+    try {
+      await relayPingDevice(target.device_id);
+      setNotice("Ping sent — see the device's status.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(null);
+    }
+  }, []);
 
   // §7b: mint a bootstrap code, snapshot the current node set, and let the
   // polling effect below detect the node once `nodus node pair` completes.
@@ -673,6 +746,30 @@ export default function App() {
         {downloadStatus && <Text style={styles.hint}>{downloadStatus}</Text>}
       </Section>
 
+      <Section title="8 · Devices">
+        <Button title="Load devices" onPress={() => void loadDevices()} disabled={!authed || busy !== null} />
+        {devices.map((d) => (
+          <View key={d.device_id} style={styles.radioRow}>
+            <Text style={styles.hint}>
+              {d.display_name ?? `${d.device_id.slice(0, 12)}…`}
+              {d.device_id === device?.device_id ? " (this device)" : ""} · {d.status}
+            </Text>
+            <View style={styles.buttonRow}>
+              <Button
+                title={busy === `pinging-${d.device_id}` ? "Pinging…" : "Ping"}
+                onPress={() => void pingDevice(d)}
+                disabled={busy !== null || d.status !== "ACTIVE"}
+              />
+              <Button
+                title={busy === `revoking-${d.device_id}` ? "Revoking…" : "Revoke"}
+                onPress={() => revokeDevice(d)}
+                disabled={busy !== null || d.status !== "ACTIVE"}
+              />
+            </View>
+          </View>
+        ))}
+      </Section>
+
       <Section title="Trusted nodes (this device)">
         {trusted.length === 0 && <Text style={styles.hint}>Nothing paired yet.</Text>}
         {trusted.map((t) => (
@@ -746,6 +843,7 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   radioRow: { marginVertical: 2 },
+  buttonRow: { flexDirection: "row", justifyContent: "space-between", marginVertical: 4 },
   nodeLabel: { color: "#111", paddingVertical: 4 },
   nodeSelected: { color: "#1a73e8", fontWeight: "600" },
   mono: {

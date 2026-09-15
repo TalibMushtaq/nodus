@@ -138,6 +138,28 @@ export async function relayDevices(): Promise<RelayDevice[]> {
   return getJson<RelayDevice[]>("/devices");
 }
 
+/** Revoke a device (also kills its sessions); required by ADR-0001. */
+export async function relayRevokeDevice(deviceId: string): Promise<void> {
+  const res = await http.request(`/devices/${encodeURIComponent(deviceId)}`, { method: "DELETE" });
+  if (!res.ok) throw new Error(res.error ?? `revoke failed: HTTP ${res.status}`);
+}
+
+/** Assign (or clear, with "") a device's display name. */
+export async function relayRenameDevice(deviceId: string, name: string): Promise<string | null> {
+  const res = await http.request<{ display_name?: string | null }>(
+    `/devices/${encodeURIComponent(deviceId)}`,
+    { method: "PATCH", body: { name } },
+  );
+  if (!res.ok) throw new Error(res.error ?? `rename failed: HTTP ${res.status}`);
+  return res.json?.display_name ?? null;
+}
+
+/** Manual reachability probe (Relay sends a ping over the device's WS). */
+export async function relayPingDevice(deviceId: string): Promise<void> {
+  const res = await http.request(`/devices/${encodeURIComponent(deviceId)}/ping`, { method: "POST" });
+  if (!res.ok) throw new Error(res.error ?? `ping failed: HTTP ${res.status}`);
+}
+
 /** Idempotent upsert so CreatePairingSession can find the device's key. */
 export async function relayRegisterDevice(device: StoredDeviceIdentity): Promise<void> {
   await post("/devices/register", { device_id: device.device_id, public_key: device.public_key });
