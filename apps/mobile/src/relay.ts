@@ -1,14 +1,21 @@
 /**
- * Thin Relay HTTP client for the mobile pairing flow (Relay Path B).
+ * Thin Relay HTTP client for the mobile app.
  *
- * The web pairing screen performs these same calls inline; on mobile they are
- * factored out so App.tsx stays about state, not transport. Everything here is
- * plain `fetch` — no WS needed for the Phase 11 pairing flow.
+ * All credential handling now lives in the @repo/sdk native adapter
+ * (`src/adapters.ts`): it attaches the opaque bearer session and captures the
+ * session ID the Relay returns to `X-Nodus-Client: mobile` on login/register.
+ * These helpers are the typed, app-facing calls on top of that boundary.
  */
 
-import type { StoredDeviceIdentity } from "@repo/relay-client/device-identity";
+import { createAuthClient, type SessionInfo } from "@repo/sdk";
+import type { StoredDeviceIdentity } from "@repo/relay-client";
 
-export const RELAY_BASE = process.env.EXPO_PUBLIC_RELAY_URL ?? "http://localhost:8080";
+import { createNativeRelayHttp, getSessionToken } from "./adapters";
+
+export { RELAY_BASE, getSessionToken } from "./adapters";
+
+const http = createNativeRelayHttp();
+const auth = createAuthClient(http);
 
 /** Node shape returned by `GET /nodes`. */
 export interface RelayNode {
@@ -18,15 +25,25 @@ export interface RelayNode {
   capabilities: string[];
   status: string;
   is_primary: boolean;
+  display_name?: string | null;
+  last_seen_at?: string | null;
+  used_bytes?: number;
+  total_bytes?: number;
   created_at: string;
 }
 
-/** Session shape returned by `POST /pairing/sessions`. */
+/** Session shape returned by `POST /pairing/sessions` (Phase 11 local trust). */
 export interface PairingSession {
   token: string;
   expires_at: string;
   node_id?: string;
   device_id?: string;
+}
+
+/** One-time bootstrap code from `POST /pairing/codes` (§7b). */
+export interface PairingCode {
+  code: string;
+  expires_at: string;
 }
 
 /** One file version as returned by `GET /files`. */
@@ -49,64 +66,60 @@ export interface RelayFile {
   versions: RelayFileVersion[];
 }
 
-async function json<T>(
-	url: string,
-	init: { method?: string; token?: string; body?: unknown; mobileAuth?: boolean } = {},
-): Promise<T> {
-	const headers: Record<string, string> = { "content-type": "application/json" };
-	if (init.token) headers.authorization = `Bearer ${init.token}`;
-	if (init.mobileAuth) headers["x-nodus-client"] = "mobile";
-  const res = await fetch(url, {
-    method: init.method ?? "GET",
-    headers,
-    body: init.body === undefined ? undefined : JSON.stringify(init.body),
-  });
-  if (!res.ok) {
-    throw new Error(`${init.method ?? "GET"} ${url} failed: HTTP ${res.status}: ${await res.text()}`);
-  }
-  return (await res.json()) as T;
+async function getJson<T>(path: string): Promise<T> {
+  const res = await http.request<T>(path);
+  if (!res.ok) throw new Error(`GET ${path} failed: HTTP ${res.status}${res.error ? `: ${res.error}` : ""}`);
+  return res.json as T;
 }
 
+async function post<T>(path: string, body?: unknown): Promise<T> {
+  const res = await http.request<T>(path, { method: "POST", body });
+  if (!res.ok) throw new Error(`POST ${path} failed: HTTP ${res.status}${res.error ? `: ${res.error}` : ""}`);
+  return res.json as T;
+}
+
+/**
+ * Sign in and return the persisted session token. The native adapter has
+ * already stored the token under the secure-store session key, so callers only
+ * need it as an "authenticated" signal.
+ */
 export async function relayLogin(email: string, password: string, device: StoredDeviceIdentity): Promise<string> {
-	const body = await json<{ access_token: string }>(`${RELAY_BASE}/auth/login`, {
-		method: "POST",
-		mobileAuth: true,
-		body: { email, password, device_id: device.device_id, device_public_key: device.public_key },
-  });
-  return body.access_token;
+  const result = await auth.login(email, password, device);
+  if (!result.ok) throw new Error(result.error ?? "sign-in failed");
+  const token = await getSessionToken();
+  if (!token) throw new Error("sign-in succeeded but the Relay issued no session");
+  return token;
 }
 
-export async function relayNodes(jwt: string): Promise<RelayNode[]> {
-  return json<RelayNode[]>(`${RELAY_BASE}/nodes`, { token: jwt });
+export async function relaySession(): Promise<SessionInfo | null> {
+  return auth.fetchSession();
+}
+
+export async function relayLogout(): Promise<void> {
+  await auth.logout();
+}
+
+export async function relayNodes(): Promise<RelayNode[]> {
+  return getJson<RelayNode[]>("/nodes");
 }
 
 /** Idempotent upsert so CreatePairingSession can find the device's key. */
-export async function relayRegisterDevice(
-  jwt: string,
-  device: StoredDeviceIdentity,
-): Promise<void> {
-  await json<Record<string, unknown>>(`${RELAY_BASE}/devices/register`, {
-    method: "POST",
-    token: jwt,
-    body: { device_id: device.device_id, public_key: device.public_key },
-  });
+export async function relayRegisterDevice(device: StoredDeviceIdentity): Promise<void> {
+  await post("/devices/register", { device_id: device.device_id, public_key: device.public_key });
 }
 
-export async function relayCreatePairingSession(
-  jwt: string,
-  nodeId: string,
-  deviceId: string,
-): Promise<PairingSession> {
-  return json<PairingSession>(`${RELAY_BASE}/pairing/sessions`, {
-    method: "POST",
-    token: jwt,
-    body: { node_id: nodeId, device_id: deviceId },
-  });
+export async function relayCreatePairingSession(nodeId: string, deviceId: string): Promise<PairingSession> {
+  return post<PairingSession>("/pairing/sessions", { node_id: nodeId, device_id: deviceId });
+}
+
+/** Mint a one-time §7b bootstrap code; the plaintext is returned only here. */
+export async function relayCreatePairingCode(): Promise<PairingCode> {
+  return post<PairingCode>("/pairing/codes");
 }
 
 /** Catalog with per-version `conflict_status` (ADR-0003 inbox source). */
-export async function relayFiles(jwt: string): Promise<RelayFile[]> {
-  return json<RelayFile[]>(`${RELAY_BASE}/files`, { token: jwt });
+export async function relayFiles(): Promise<RelayFile[]> {
+  return getJson<RelayFile[]>("/files");
 }
 
 /**
@@ -114,12 +127,6 @@ export async function relayFiles(jwt: string): Promise<RelayFile[]> {
  * cookie for the WebSocket event path, so the Relay exposes this REST endpoint;
  * it marks the file's flagged versions resolved and notifies connected nodes.
  */
-export async function relayResolveConflict(
-  jwt: string,
-  fileId: string,
-): Promise<{ status: string; resolved: number }> {
-  return json<{ status: string; resolved: number }>(
-    `${RELAY_BASE}/files/${encodeURIComponent(fileId)}/conflicts/resolve`,
-    { method: "POST", token: jwt },
-  );
+export async function relayResolveConflict(fileId: string): Promise<{ status: string; resolved: number }> {
+  return post(`/files/${encodeURIComponent(fileId)}/conflicts/resolve`);
 }

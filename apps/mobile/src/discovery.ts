@@ -18,6 +18,8 @@ import {
   nodusBaseUrl,
 } from "@repo/relay-client/local-discovery";
 
+import { browseNodes } from "./mdns";
+
 /** Reachable storage node found on the LAN sweep. */
 export interface LanCandidate {
   host: string;
@@ -79,4 +81,34 @@ export async function scanLan(myIp: string): Promise<LanCandidate[]> {
   );
 
   return results.sort((a, b) => a.host.localeCompare(b.host));
+}
+
+/** Outcome of a discovery attempt, including whether local access was allowed. */
+export interface DiscoveryOutcome {
+  candidates: LanCandidate[];
+  /** False when the OS denied local-network access (mDNS browse error). */
+  permitted: boolean;
+  method: "mdns" | "lan_sweep" | "none";
+}
+
+/**
+ * Discover nodes, preferring native mDNS and falling back to the /24 sweep.
+ *
+ * The fallback matters on two fronts: mDNS may be blocked by an OEM or the
+ * permission denied, and the sweep covers a node whose mDNS advert was missed.
+ * When the permission is denied we still run the sweep, but the caller is told
+ * `permitted: false` so it can show the ADR-0004 fallback message.
+ */
+export async function discoverNodes(): Promise<DiscoveryOutcome> {
+  const mdns = await browseNodes();
+  if (mdns.permitted && mdns.candidates.length > 0) {
+    return { candidates: mdns.candidates, permitted: true, method: "mdns" };
+  }
+
+  const myIp = await myLanV4();
+  if (!myIp) {
+    return { candidates: mdns.candidates, permitted: mdns.permitted, method: "none" };
+  }
+  const swept = await scanLan(myIp);
+  return { candidates: swept, permitted: mdns.permitted, method: "lan_sweep" };
 }

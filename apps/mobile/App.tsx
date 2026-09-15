@@ -1,18 +1,21 @@
 import "./src/compat";
 
-// Storage Node pairing & LAN discovery — mobile client.
+// Nodus mobile client.
 //
-// Mirrors the web pairing screen (apps/web/app/pair/page.tsx) so the two
-// clients behave identically: Relay Path B issues the token, the LAN listener
-// on the node redeems it. Unlike the web app (which skips active mDNS), mobile
-// offers a LAN sweep in addition to manual host entry — see
-// src/discovery.ts for the Exo-Go-compatible trade-off vs native mDNS.
+// Two distinct pairing flows are exposed here and must not be conflated
+// (plan §7):
+//  1. Account → new Storage Node bootstrap (§7b): the app mints a one-time
+//     NODUS-XXXX-XXXX code, shows it with the operator's relay URL, and polls
+//     `GET /nodes` until the node runs `nodus node pair` and appears.
+//  2. Device ↔ node local trust (Phase 11): an already-registered node is
+//     paired/authenticated over the LAN using a Relay-issued, device-bound
+//     token.
 //
-// The device's Ed25519 keypair lives only in the OS keychain (expo-secure-store),
-// never leaves the device, and is what binds + signs pairing tokens.
+// Authentication is the shared opaque session: the @repo/sdk native adapter
+// captures the session ID the Relay returns to mobile and keeps it in the OS
+// keychain as a bearer credential. No JWT is involved.
 
 import * as React from "react";
-import * as SecureStore from "expo-secure-store";
 import {
   Button,
   ScrollView,
@@ -22,6 +25,8 @@ import {
   View,
 } from "react-native";
 
+import type { ConnectionState } from "@repo/relay-client";
+import type { SessionInfo } from "@repo/sdk";
 import {
   NodeClient,
   NodeClientError,
@@ -33,24 +38,30 @@ import {
   type StoredDeviceIdentity,
 } from "@repo/relay-client/device-identity";
 
-import { myLanV4, probeHost, scanLan, type LanCandidate } from "./src/discovery";
+import { discoverNodes, probeHost, type LanCandidate } from "./src/discovery";
 import {
+  getSessionToken,
+  relayCreatePairingCode,
   relayCreatePairingSession,
   relayFiles,
   relayLogin,
+  relayLogout,
   relayNodes,
   relayRegisterDevice,
   relayResolveConflict,
+  relaySession,
+  type PairingCode,
   type PairingSession,
   type RelayFile,
   type RelayNode,
 } from "./src/relay";
+import { MobileWs } from "./src/ws";
+import { loadOrCreateDevice } from "./src/storage";
 import {
   addTrustedNode,
   getTrustedNodes,
-  loadOrCreateDevice,
   type TrustedNode,
-} from "./src/storage";
+} from "./src/store/trusted-nodes";
 
 export default function App() {
   // ── device identity (created on first launch, key output of this app) ────
@@ -59,11 +70,20 @@ export default function App() {
   // ── relay auth + catalog ──────────────────────────────────────────────────
   const [email, setEmail] = React.useState("");
   const [password, setPassword] = React.useState("");
-  const [jwt, setJwt] = React.useState<string | null>(null);
+  const [session, setSession] = React.useState<SessionInfo | null>(null);
+  const authed = session !== null;
+  const [wsState, setWsState] = React.useState<ConnectionState>("disconnected");
+  const wsRef = React.useRef<MobileWs | null>(null);
+  if (wsRef.current === null) wsRef.current = new MobileWs();
   const [nodes, setNodes] = React.useState<RelayNode[]>([]);
   const [selectedNode, setSelectedNode] = React.useState<string | null>(null);
 
-  // ── token issuance (RELAY_PATH_B) ─────────────────────────────────────────
+  // ── §7b bootstrap: pairing code issuance + node-appearance polling ────────
+  const [code, setCode] = React.useState<PairingCode | null>(null);
+  const [codeStatus, setCodeStatus] = React.useState<string | null>(null);
+  const baselineNodes = React.useRef<string[]>([]);
+
+  // ── Phase 11 token issuance (device ↔ node local trust) ──────────────────
   const [pending, setPending] = React.useState<PairingSession | null>(null);
 
   // ── LAN discovery + local pairing ─────────────────────────────────────────
@@ -83,18 +103,37 @@ export default function App() {
     void (async () => {
       setDevice(await loadOrCreateDevice());
       setTrusted(await getTrustedNodes());
-      setJwt(await SecureStore.getItemAsync("nodus.relay.session"));
+      // A stored session token restores the signed-in state across launches.
+      if (await getSessionToken()) {
+        setSession(await relaySession());
+      }
     })();
   }, []);
+
+  // Bring the Relay socket up once we have both a session and the device id
+  // (the latter is the presence/heartbeat identity). A 4001 close means the
+  // session is dead, so drop local auth rather than reconnect-looping.
+  React.useEffect(() => {
+    const ws = wsRef.current!;
+    if (session && device) {
+      ws.start(device.device_id, {
+        onStateChange: setWsState,
+        onAuthError: () => setSession(null),
+      });
+    } else {
+      ws.stop();
+      setWsState("disconnected");
+    }
+    return () => ws.stop();
+  }, [session, device]);
 
   const signIn = React.useCallback(async () => {
     setBusy("signing-in");
     setError(null);
     try {
       if (!device) throw new Error("device identity is not ready");
-      const token = await relayLogin(email, password, device);
-      await SecureStore.setItemAsync("nodus.relay.session", token);
-      setJwt(token);
+      await relayLogin(email, password, device);
+      setSession(await relaySession());
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -102,27 +141,87 @@ export default function App() {
     }
   }, [device, email, password]);
 
+  const signOut = React.useCallback(async () => {
+    setBusy("signing-out");
+    setError(null);
+    try {
+      // Revokes the server session and clears the keychain token via the SDK
+      // adapter; the WS effect then tears the socket down.
+      await relayLogout();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSession(null);
+      setBusy(null);
+    }
+  }, []);
+
   const loadNodes = React.useCallback(async () => {
-    if (!jwt) return;
+    if (!authed) return;
     setBusy("loading-nodes");
     setError(null);
     try {
-      setNodes(await relayNodes(jwt));
+      setNodes(await relayNodes());
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(null);
     }
-  }, [jwt]);
+  }, [authed]);
 
-  // Conflicts whose versions the Relay has flagged (unresolved). The relay
-  // returns per-version `conflict_status`, so no separate endpoint is needed.
+  // §7b: mint a bootstrap code, snapshot the current node set, and let the
+  // polling effect below detect the node once `nodus node pair` completes.
+  const createCode = React.useCallback(async () => {
+    if (!authed) return;
+    setBusy("creating-code");
+    setError(null);
+    setNotice(null);
+    try {
+      baselineNodes.current = (await relayNodes()).map((n) => n.node_id);
+      const created = await relayCreatePairingCode();
+      setCode(created);
+      setCodeStatus("waiting");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(null);
+    }
+  }, [authed]);
+
+  // Poll for a node the baseline did not contain: the browser/mobile side only
+  // issues the code, so success is detected by diffing the node catalog.
+  React.useEffect(() => {
+    if (!code || codeStatus !== "waiting") return;
+    let cancelled = false;
+    const timer = setInterval(() => {
+      void (async () => {
+        try {
+          const list = await relayNodes();
+          if (cancelled) return;
+          setNodes(list);
+          const known = new Set(baselineNodes.current);
+          if (list.some((n) => !known.has(n.node_id))) {
+            setCodeStatus("paired");
+          }
+        } catch {
+          // Transient poll failure: keep waiting rather than aborting.
+        }
+      })();
+    }, 3000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [code, codeStatus]);
+
+  // Conflict inbox: the Relay returns per-version `conflict_status`, so no
+  // separate endpoint is needed.
   const loadConflicts = React.useCallback(async () => {
-    if (!jwt) return;
+    if (!authed) return;
     setBusy("loading-conflicts");
     setError(null);
     try {
-      const files: RelayFile[] = await relayFiles(jwt);
+      const files: RelayFile[] = await relayFiles();
       setConflicts(
         files
           .map((file) => ({
@@ -139,16 +238,16 @@ export default function App() {
     } finally {
       setBusy(null);
     }
-  }, [jwt]);
+  }, [authed]);
 
   const resolveConflict = React.useCallback(
     async (fileId: string) => {
-      if (!jwt) return;
+      if (!authed) return;
       setBusy(`resolving-${fileId}`);
       setError(null);
       setNotice(null);
       try {
-        await relayResolveConflict(jwt, fileId);
+        await relayResolveConflict(fileId);
         setNotice("Conflict resolved across your devices and nodes.");
         await loadConflicts();
       } catch (err) {
@@ -157,36 +256,43 @@ export default function App() {
         setBusy(null);
       }
     },
-    [jwt, loadConflicts],
+    [authed, loadConflicts],
   );
 
-  const issueToken = React.useCallback(async () => {    if (!device || !jwt || !selectedNode) return;
+  const issueToken = React.useCallback(async () => {
+    if (!device || !authed || !selectedNode) return;
     setBusy("issuing-token");
     setError(null);
     setNotice(null);
     try {
-      await relayRegisterDevice(jwt, device);
-      setPending(await relayCreatePairingSession(jwt, selectedNode, device.device_id));
+      await relayRegisterDevice(device);
+      setPending(await relayCreatePairingSession(selectedNode, device.device_id));
       setNotice("Token issued — finish locally to pair this device.");
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(null);
     }
-  }, [device, jwt, selectedNode]);
+  }, [device, authed, selectedNode]);
 
   const scan = React.useCallback(async () => {
     setBusy("scanning");
     setError(null);
     setNotice(null);
     try {
-      const myIp = await myLanV4();
-      if (!myIp) {
-        setError("Could not determine this device's LAN IP — enter the node host manually.");
-        return;
+      const result = await discoverNodes();
+      setCandidates(result.candidates);
+      if (!result.permitted) {
+        // ADR-0004: say explicitly that local transfer is unavailable, then
+        // fall back to the Relay — an empty list alone would read as "no nodes".
+        setNotice(
+          "Local network access is off, so Wi-Fi pairing is unavailable — transfers will use the Relay. Enable local access and rescan to pair directly.",
+        );
+      } else if (result.method === "mdns") {
+        setNotice(`Found ${result.candidates.length} node(s) via mDNS.`);
+      } else {
+        setNotice("LAN sweep done. Pick a node below or enter a host manually.");
       }
-      setCandidates(await scanLan(myIp));
-      setNotice("LAN sweep done. Pick a node below or enter a host manually.");
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -288,11 +394,41 @@ export default function App() {
           placeholder="password"
           secureTextEntry
         />
-        <Button title={jwt ? "Signed in" : "Sign in"} onPress={() => void signIn()} disabled={!device || busy !== null || !!jwt} />
+        <Button
+          title={authed ? "Signed in" : "Sign in"}
+          onPress={() => void signIn()}
+          disabled={!device || busy !== null || authed}
+        />
+        {authed && (
+          <>
+            <Text style={styles.hint}>Relay socket: {wsState}</Text>
+            <View style={styles.spacer} />
+            <Button title="Sign out" onPress={() => void signOut()} disabled={busy !== null} />
+          </>
+        )}
       </Section>
 
-      <Section title="2 · Choose your node">
-        <Button title="Load my nodes" onPress={() => void loadNodes()} disabled={!jwt || busy !== null} />
+      <Section title="2 · Add a new Storage Node">
+        <Button
+          title="Create pairing code"
+          onPress={() => void createCode()}
+          disabled={!authed || busy !== null}
+        />
+        {code && (
+          <>
+            <Text style={styles.code}>{code.code}</Text>
+            <Text style={styles.hint}>
+              On the node run: nodus node pair --relay {"<relay-url>"} --code {code.code}
+            </Text>
+            <Text style={codeStatus === "paired" ? styles.ok : styles.hint}>
+              {codeStatus === "paired" ? "Node paired." : "Waiting for the node to redeem the code…"}
+            </Text>
+          </>
+        )}
+      </Section>
+
+      <Section title="3 · Pair this device with an existing node">
+        <Button title="Load my nodes" onPress={() => void loadNodes()} disabled={!authed || busy !== null} />
         {nodes.map((n) => (
           <View key={n.node_id} style={styles.radioRow}>
             <Text
@@ -307,12 +443,12 @@ export default function App() {
         <Button
           title="Issue pairing token"
           onPress={() => void issueToken()}
-          disabled={!jwt || !selectedNode || busy !== null}
+          disabled={!authed || !selectedNode || busy !== null}
         />
         {pairingUrl && <Text style={styles.mono}>{pairingUrl}</Text>}
       </Section>
 
-      <Section title="3 · Find the node on your LAN">
+      <Section title="4 · Find the node on your LAN">
         <Button title="Scan local network" onPress={() => void scan()} disabled={busy !== null} />
         {candidates.map((c) => (
           <Text
@@ -338,7 +474,7 @@ export default function App() {
         )}
       </Section>
 
-      <Section title="4 · Finish locally">
+      <Section title="5 · Finish locally">
         <Button
           title="Pair this device"
           onPress={() => void pairOnDevice()}
@@ -362,7 +498,7 @@ export default function App() {
       </Section>
 
       <Section title="Conflicts (ADR-0003)">
-        <Button title="Load conflicts" onPress={() => void loadConflicts()} disabled={!jwt || busy !== null} />
+        <Button title="Load conflicts" onPress={() => void loadConflicts()} disabled={!authed || busy !== null} />
         {conflicts.length === 0 && <Text style={styles.hint}>No unresolved conflicts.</Text>}
         {conflicts.map((c) => (
           <View key={c.file_id} style={styles.radioRow}>
@@ -418,6 +554,13 @@ const styles = StyleSheet.create({
     backgroundColor: "#f5f5f5",
     padding: 8,
     borderRadius: 4,
+  },
+  code: {
+    marginTop: 8,
+    fontSize: 22,
+    fontWeight: "700",
+    letterSpacing: 2,
+    color: "#111",
   },
   spacer: { height: 8 },
   error: { color: "#c0392b", marginTop: 8 },
