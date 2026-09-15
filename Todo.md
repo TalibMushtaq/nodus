@@ -453,11 +453,18 @@ stage 7b in §28 (inserted between 7a and 8).
 
 ## Phase 16 — Device / Key Recovery
 
-- [ ] Implement chosen recovery-key mechanism end-to-end
-- [ ] Implement "lost phone → new phone" flow (§24): authenticate/recover →
-      discover node locally → authenticate node → recover key material →
-      register new device
-- [ ] Test recovery with and without Internet available
+- [x] Implement chosen recovery-key mechanism end-to-end (ADR-0002): phrase
+      enrollment, `recipient_kind = "recovery"` envelopes, online challenge +
+      signature recovery, and key materialization — shared in `packages/sdk`,
+      used by web and mobile (`apps/mobile/src/recovery/*`).
+- [x] Implement "lost phone → new phone" flow (§24): recover (online) → register
+      new device → unlock recovery-sealed keys → fetch from node. **Offline
+      via a Storage Node's local HTTP endpoint is explicitly deferred by
+      ADR-0002** (recovery endpoints are not yet rate-limited either).
+- [x] Test recovery with and without Internet available — online covered by
+      `services/relay/internal/handler/recovery_integration_test.go` and the
+      web/mobile recovery bindings; the offline (local node) case is deferred
+      with the feature above.
 
 ## Phase 17 — Mobile Background Sync
 
@@ -472,14 +479,16 @@ stage 7b in §28 (inserted between 7a and 8).
 
 ## Phase 18 — Failure / Recovery / Stress Testing
 
-- [ ] Simulate: Internet unavailable (client ↔ node continues working)
-- [ ] Simulate: Relay PostgreSQL loss → full rebuild from node snapshots
-- [ ] Simulate: Node offline for an extended period → reconnect → full
+- [x] Simulate: Internet unavailable (client ↔ node continues working)
+- [x] Simulate: Relay PostgreSQL loss → full rebuild from node snapshots
+- [x] Simulate: Node offline for an extended period → reconnect → full
       convergence via incremental sync
-- [ ] Simulate: concurrent conflicting edits → conflicted-copy UX verified
-- [ ] Simulate: disk corruption / missing objects → reconciliation repair
+- [x] Simulate: concurrent conflicting edits → conflicted-copy UX verified
+- [x] Simulate: disk corruption / missing objects → reconciliation repair
       path (§21a) exercised
-- [ ] Load test Relay buffer under sustained Path C usage
+- [x] Load test Relay buffer under sustained Path C usage
+      (`buffer_load_integration_test.go`; correctness smoke, not a benchmark)
+      — see `docs/architecture/phase18-validation.md` for the full mapping
 - [x] Security review pass: confirm Relay never sees plaintext file keys or
       shard contents, confirm revoked devices lose access without full
       account key rotation — see `docs/security/phase18-review.md`

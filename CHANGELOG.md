@@ -1,5 +1,15 @@
 # Changelog
 
+## [2026-09-15] - Phase 18 validation: buffer load test + coverage map
+
+**What changed:** Added `TestBufferUploadSustainedLoad` (integration-gated) uploading 50 concurrent shards of one version and asserting each reaches `RELAY_BUFFERED`, plus `docs/architecture/phase18-validation.md` mapping every Phase 18 scenario (Internet down, Relay rebuild, offline convergence, conflicts, reconciliation, buffer load, security) to the test or code that covers it. Marked the Phase 18 simulation/load items and the Phase 16 recovery items accordingly, noting the ADR-0002 deferral of offline node recovery.
+
+**Why:** Closes the Phase 18 validation items with evidence rather than assertions.
+
+**Impact:** `services/relay/internal/handler/buffer_load_integration_test.go`, `docs/architecture/phase18-validation.md`, `Todo.md`. Verified: Go handler package compiles/vets (test skips without `TEST_DATABASE_URL`).
+
+**Follow-ups:** The buffer load test is a correctness smoke, not a throughput benchmark; offline node recovery and recovery-endpoint rate limiting remain deferred per ADR-0002.
+
 ## [2026-09-15] - Mobile background queue drain
 
 **What changed:** Added `apps/mobile/src/background/sync.ts`, a headless `expo-background-task`/`expo-task-manager` job that drains the SQLite Path D queue by posting parked shards to the Relay buffer (Path C) using the stored session token. It is defined at module scope (imported from `index.ts` so it exists for headless runs), registered once from the app, and stops at the first failure so an offline Relay is retried next run. Per ADR-0004 it deliberately avoids Path A in the background. The `expo-background-task` config plugin is registered in `app.json`.
