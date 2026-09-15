@@ -49,6 +49,8 @@ import {
   relayCreatePairingCode,
   relayCreatePairingSession,
   relayDevices,
+  relayEnvelopeExport,
+  relayEnvelopeSummary,
   relayFiles,
   relayFolders,
   relayLogin,
@@ -65,6 +67,7 @@ import {
   relayTombstones,
   type PairingCode,
   type PairingSession,
+  type EnvelopeSummary,
   type RelayDevice,
   type RelayFile,
   type RelayFolder,
@@ -151,6 +154,10 @@ export default function App() {
 
   // ── Recovery (ADR-0002) ───────────────────────────────────────────────────
   const [recoveryPhraseInput, setRecoveryPhraseInput] = React.useState("");
+
+  // ── Security: key-envelope coverage ───────────────────────────────────────
+  const [envelopeSummary, setEnvelopeSummary] = React.useState<EnvelopeSummary[]>([]);
+  const [securityStatus, setSecurityStatus] = React.useState<string | null>(null);
 
   // ── Foreground gate (ADR-0004: Path A is foreground-only) ─────────────────
   const appActiveRef = React.useRef(true);
@@ -767,6 +774,40 @@ export default function App() {
     [loadTombstones],
   );
 
+  const loadEnvelopes = React.useCallback(async () => {
+    if (!authed) return;
+    setBusy("loading-envelopes");
+    setError(null);
+    try {
+      setEnvelopeSummary(await relayEnvelopeSummary());
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(null);
+    }
+  }, [authed]);
+
+  // Download the ciphertext-only envelope backup and share it for safekeeping.
+  const exportEnvelopes = React.useCallback(async () => {
+    if (!authed) return;
+    setBusy("exporting-envelopes");
+    setError(null);
+    setNotice(null);
+    try {
+      const backup = await relayEnvelopeExport();
+      const bytes = new TextEncoder().encode(JSON.stringify(backup, null, 2));
+      setSecurityStatus("opening share sheet…");
+      await saveAndShare(bytes, `nodus-envelopes-${Date.now()}.json`);
+      setSecurityStatus("envelope backup shared");
+      setNotice("Envelope backup ready.");
+    } catch (err) {
+      setSecurityStatus(null);
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(null);
+    }
+  }, [authed]);
+
   const scan = React.useCallback(async () => {
     setBusy("scanning");
     setError(null);
@@ -1179,6 +1220,31 @@ export default function App() {
           onPress={() => void recoverAccount()}
           disabled={busy !== null || !email.trim() || !recoveryPhraseInput.trim()}
         />
+      </Section>
+
+      <Section title="13 · Security">
+        <Button
+          title="Load envelope coverage"
+          onPress={() => void loadEnvelopes()}
+          disabled={!authed || busy !== null}
+        />
+        {envelopeSummary.length === 0 && (
+          <Text style={styles.hint}>No envelope coverage loaded.</Text>
+        )}
+        {envelopeSummary.map((s) => (
+          <Text key={`${s.recipient_kind}:${s.recipient_id}`} style={styles.hint}>
+            {s.recipient_kind} {s.recipient_id.slice(0, 12)}… · {s.file_count} file /{" "}
+            {s.folder_count} folder
+            {s.last_updated ? ` · ${s.last_updated.slice(0, 10)}` : ""}
+          </Text>
+        ))}
+        <View style={styles.spacer} />
+        <Button
+          title={busy === "exporting-envelopes" ? "Exporting…" : "Export envelope backup"}
+          onPress={() => void exportEnvelopes()}
+          disabled={!authed || busy !== null}
+        />
+        {securityStatus && <Text style={styles.hint}>{securityStatus}</Text>}
       </Section>
 
       <Section title="Trusted nodes (this device)">

@@ -277,6 +277,24 @@ export async function relayFolders(): Promise<RelayFolder[]> {
   return getJson<RelayFolder[]>("/folders");
 }
 
+/** Per-recipient key-envelope coverage (Security screen). */
+export interface EnvelopeSummary {
+  recipient_id: string;
+  recipient_kind: string;
+  file_count: number;
+  folder_count: number;
+  last_updated: string | null;
+}
+
+export async function relayEnvelopeSummary(): Promise<EnvelopeSummary[]> {
+  return getJson<EnvelopeSummary[]>("/envelopes/summary");
+}
+
+/** Ciphertext-only backup of every envelope, as a JSON string for sharing. */
+export async function relayEnvelopeExport(): Promise<unknown> {
+  return getJson<unknown>("/envelopes/export");
+}
+
 /** Bulk folder-key envelopes: one request opens every folder name. */
 export async function relayFolderEnvelopes(): Promise<RelayFolderEnvelope[]> {
   return getJson<RelayFolderEnvelope[]>("/folder-envelopes");

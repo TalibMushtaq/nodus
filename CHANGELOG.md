@@ -1,5 +1,15 @@
 # Changelog
 
+## [2026-09-15] - Mobile security / envelope coverage screen
+
+**What changed:** Added a Security section to the mobile app. `relay.ts` gained `relayEnvelopeSummary`/`relayEnvelopeExport` and the `EnvelopeSummary` type; the screen lists per-recipient key-envelope coverage (file/folder counts + last updated) and can export the ciphertext-only envelope backup to the share sheet via the existing `saveAndShare`.
+
+**Why:** The Security page was the last major web screen without a mobile counterpart, and the envelope backup is the user's offline key-recovery insurance.
+
+**Impact:** `apps/mobile` (`relay.ts`, `App.tsx`). Verified: mobile lint, typecheck, tests, expo export.
+
+**Follow-ups:** The recovery-phrase reveal/regenerate card and per-recipient revocation controls (web Security page) are not ported; only coverage + backup.
+
 ## [2026-09-15] - Mobile folder navigation and upload-into-folder
 
 **What changed:** The mobile Folders section is now a browser: a "In: Root / …" breadcrumb built by walking `parent_folder_id`, an Up control, per-folder Open/Rename/Delete, and a "Create here" action. Uploads carry `parentFolderId: currentFolderId`, and the Downloads list shows only the files in the current folder. Folder mutations create into the open folder.
