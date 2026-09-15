@@ -209,6 +209,21 @@ export {
   type LocalAuthResultPayload,
 } from "./messages/local-auth.js";
 
+export {
+  LocalRecoveryChallengeSchema,
+  type LocalRecoveryChallenge,
+  LocalRecoveryRequestSchema,
+  type LocalRecoveryRequest,
+  LocalRecoveryResultSchema,
+  type LocalRecoveryResult,
+  LocalRecoveryFileEnvelopeSchema,
+  type LocalRecoveryFileEnvelope,
+  LocalRecoveryFolderEnvelopeSchema,
+  type LocalRecoveryFolderEnvelope,
+  LocalRecoveryEnvelopesSchema,
+  type LocalRecoveryEnvelopes,
+} from "./messages/local-recovery.js";
+
 // ── Event types ────────────────────────────────────────────────────
 
 export {

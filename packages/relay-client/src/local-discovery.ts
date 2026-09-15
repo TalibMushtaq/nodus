@@ -11,6 +11,11 @@ import {
   LocalChallengeResponsePayloadSchema,
   type LocalDiscoveryAdvertisement,
   LocalDiscoveryAdvertisementSchema,
+  type LocalRecoveryChallenge,
+  type LocalRecoveryEnvelopes,
+  LocalRecoveryEnvelopesSchema,
+  type LocalRecoveryResult,
+  type LocalRecoveryRequest,
   PairingRequestPayloadSchema,
 } from "@repo/protocol";
 
@@ -161,6 +166,85 @@ export class NodeClient {
       device_public_key: base64Encode(publicKey),
     });
     return this.post("/nodus/pair", body, timeoutMs);
+  }
+
+  /**
+   * `POST /nodus/recovery/challenge` — offline (LAN) recovery challenge
+   * (ADR-0002). Returns the account id, the account recovery public key, and a
+   * single-use nonce the phrase must sign.
+   */
+  recoveryChallenge(timeoutMs: number = LOCAL_TIMEOUT_MS): Promise<LocalRecoveryChallenge> {
+    return this.post<LocalRecoveryChallenge>("/nodus/recovery/challenge", {}, timeoutMs);
+  }
+
+  /**
+   * `POST /nodus/recovery` — prove the recovery phrase and register this
+   * device locally. Signs the challenge nonce with the phrase-derived recovery
+   * seed; the node verifies it against the key it holds.
+   */
+  recover(
+    params: {
+      /** The new device's id + Ed25519 public key. */
+      deviceId: string;
+      devicePublicKey: Uint8Array;
+      nonce: string;
+      /** Ed25519 seed derived from the recovery phrase. */
+      recoveryPrivateSeed: Uint8Array;
+    },
+    timeoutMs: number = LOCAL_TIMEOUT_MS,
+  ): Promise<LocalRecoveryResult> {
+    const signature = toHex(ed25519.sign(new TextEncoder().encode(params.nonce), params.recoveryPrivateSeed));
+    const body: LocalRecoveryRequest = {
+      nonce: params.nonce,
+      signature,
+      device_id: params.deviceId as LocalRecoveryRequest["device_id"],
+      device_public_key: base64Encode(params.devicePublicKey),
+    };
+    return this.post<LocalRecoveryResult>("/nodus/recovery", body, timeoutMs);
+  }
+
+  /**
+   * `GET /nodus/recovery/envelopes` — fetch the account's recovery-sealed
+   * envelopes using the same stateless signed request as shard fetch, with the
+   * message `"{device_id}:recovery-envelopes:{timestamp_ms}"`.
+   */
+  async recoveryEnvelopes(
+    deviceId: string,
+    privateKey: Uint8Array,
+    timeoutMs: number = LOCAL_TIMEOUT_MS,
+  ): Promise<LocalRecoveryEnvelopes> {
+    const timestamp = Date.now();
+    const message = new TextEncoder().encode(`${deviceId}:recovery-envelopes:${timestamp}`);
+    const signature = toHex(ed25519.sign(message, privateKey));
+    let res: Response;
+    try {
+      res = await fetch(`${this.baseUrl}/nodus/recovery/envelopes`, {
+        headers: {
+          "x-nodus-device-id": deviceId,
+          "x-nodus-timestamp": String(timestamp),
+          "x-nodus-signature": signature,
+        },
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+    } catch (err) {
+      throw new NodeClientError(
+        "network_error",
+        `recovery envelope fetch failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    if (!res.ok) {
+      let parsed: NodeErrorBody;
+      try {
+        parsed = (await res.json()) as NodeErrorBody;
+      } catch {
+        parsed = { message: (await res.text().catch(() => "")) || undefined };
+      }
+      throw new NodeClientError(
+        parsed.error ?? "http_error",
+        parsed.message ?? `HTTP ${res.status}`,
+      );
+    }
+    return LocalRecoveryEnvelopesSchema.parse(await res.json());
   }
 
   /**

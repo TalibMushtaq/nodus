@@ -96,6 +96,7 @@ import { decryptFileNames, decryptFolderNames, decryptTombstoneNames } from "./s
 import { mobileFileMutations } from "./src/files/mutations";
 import { mobileFolderMutations } from "./src/folders/mutations";
 import { mobileRecoveryClient } from "./src/recovery/client";
+import { recoverFromNode } from "./src/recovery/offline";
 import { rotateRecoveryKey } from "./src/recovery/rotate";
 import { sqliteRecoveryStore } from "./src/recovery/store";
 import { registerBackgroundSync } from "./src/background/sync";
@@ -321,26 +322,33 @@ export default function App() {
     setError(null);
     setNotice(null);
     try {
-      // Recovery currently proves the phrase to the Relay. The offline
-      // Storage-Node path is deferred by ADR-0002, so say that explicitly
-      // instead of surfacing a bare network error.
-      const net = await Network.getNetworkStateAsync();
-      if (net.isInternetReachable === false) {
-        throw new Error(
-          "Recovery needs Internet — the offline Storage-Node recovery path is not available yet.",
-        );
-      }
       const client = mobileRecoveryClient();
-      const result = await client.recover(email, phrase, device);
-      if (!result.ok || !result.session) throw new Error(result.error ?? "recovery failed");
-      // Keep the phrase locally (revealable on Security) before unlocking keys.
-      await client.save(result.session.account_id, phrase);
-      const unlocked = await client.materialize(phrase);
-      // The native adapter captured the session token from the recover response.
-      setSession(result.session);
+      const net = await Network.getNetworkStateAsync();
+      const online = net.isInternetReachable !== false;
+
+      if (online) {
+        const result = await client.recover(email, phrase, device);
+        if (!result.ok || !result.session) throw new Error(result.error ?? "recovery failed");
+        // Keep the phrase locally (revealable on Security) before unlocking keys.
+        await client.save(result.session.account_id, phrase);
+        const unlocked = await client.materialize(phrase);
+        // The native adapter captured the session token from the recover response.
+        setSession(result.session);
+        setRecoveryPhraseInput("");
+        setNotice(
+          `Recovered. Unlocked ${unlocked.files} file and ${unlocked.folders} folder key(s).`,
+        );
+        return;
+      }
+
+      // Offline: recover against a paired LAN Storage Node (ADR-0002 §24). No
+      // Relay session is created, so Relay-backed features wait for Internet.
+      const offline = await recoverFromNode(phrase, device);
+      await client.save(offline.accountId, phrase);
+      setTrusted(await getTrustedNodes());
       setRecoveryPhraseInput("");
       setNotice(
-        `Recovered. Unlocked ${unlocked.files} file and ${unlocked.folders} folder key(s).`,
+        `Recovered offline via node ${offline.nodeId.slice(0, 12)}… Unlocked ${offline.files} file and ${offline.folders} folder key(s). Sign in when online for full access.`,
       );
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));

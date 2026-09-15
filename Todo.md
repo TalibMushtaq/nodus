@@ -467,14 +467,16 @@ stage 7b in §28 (inserted between 7a and 8).
       enrollment, `recipient_kind = "recovery"` envelopes, online challenge +
       signature recovery, and key materialization — shared in `packages/sdk`,
       used by web and mobile (`apps/mobile/src/recovery/*`).
-- [x] Implement "lost phone → new phone" flow (§24): recover (online) → register
-      new device → unlock recovery-sealed keys → fetch from node. **Offline
-      via a Storage Node's local HTTP endpoint is explicitly deferred by
-      ADR-0002** (recovery endpoints are not yet rate-limited either).
+- [x] Implement "lost phone → new phone" flow (§24): recover → register new
+      device → unlock recovery-sealed keys → fetch from node, **online and
+      offline**. Offline uses the node's LAN endpoints
+      (`/nodus/recovery/{challenge,envelopes}` + `/nodus/recovery`) added per
+      ADR-0002; the mobile client falls back to the first paired node when the
+      Relay is unreachable (`apps/mobile/src/recovery/offline.ts`).
 - [x] Test recovery with and without Internet available — online covered by
-      `services/relay/internal/handler/recovery_integration_test.go` and the
-      web/mobile recovery bindings; the offline (local node) case is deferred
-      with the feature above.
+      `services/relay/internal/handler/recovery_integration_test.go`; offline
+      covered by the node's `test_offline_recovery_*` tests (round-trip,
+      bad-signature rejection, unenrolled 404).
 
 ## Phase 17 — Mobile Background Sync
 

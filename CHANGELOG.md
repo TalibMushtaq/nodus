@@ -1,5 +1,15 @@
 # Changelog
 
+## [2026-09-15] - Offline recovery: protocol schemas, node client, mobile flow
+
+**What changed:** Completed the client half of ADR-0002's offline recovery. Added HTTP-only protocol schemas (`local-recovery.ts`: challenge/request/result/envelopes) and three `NodeClient` methods that speak to the node's LAN recovery endpoints (`recoveryChallenge`, `recover`, `recoveryEnvelopes`). New `apps/mobile/src/recovery/offline.ts` runs the whole flow against the first paired LAN node: challenge, local phrase check, signed recovery (registering the device), fetch recovery-sealed envelopes, unlock file/folder keys, and record the node as trusted. The mobile recovery action now tries the Relay when online and falls back to the LAN node when offline, reporting how many keys were unlocked and that Relay features wait for Internet.
+
+**Why:** This is the "lost phone → new phone with no Internet" path (plan §24) that ADR-0002 deferred; the node endpoints landed in the previous commit.
+
+**Impact:** `packages/protocol` (`messages/local-recovery.ts`, index exports), `packages/relay-client` (`local-discovery.ts`), `apps/mobile` (`recovery/offline.ts`, `App.tsx`). Verified: protocol build, relay-client tests (46), SDK build/tests (26), web typecheck/test (194), mobile lint/typecheck/test/export.
+
+**Follow-ups:** Offline recovery yields no Relay session, so Relay-backed screens need Internet; the phrase is still required to re-enroll on a fresh account binding. Mobile unit coverage for the offline flow would need a node stub.
+
 ## [2026-09-15] - Rust node: offline recovery endpoints
 
 **What changed:** Implemented the Storage Node half of ADR-0002's offline "lost phone" path. A new `node_account` table (migration) records the account binding at pairing time (both the local-push and Relay-verify paths). New LAN endpoints: `POST /nodus/recovery/challenge` (returns the account id + the recovery public key found in the node's recovery envelopes, plus a dedicated nonce), `POST /nodus/recovery` (verifies an Ed25519 signature over the nonce with the recovery key, then registers the new device locally), and `GET /nodus/recovery/envelopes` (signed device request; returns only `recipient_kind = 'recovery'` file/folder envelopes). Recovery has its own nonce store and a tighter per-IP rate limit, and `no_account`/`recovery_unavailable` map to 404.
