@@ -1,5 +1,15 @@
 # Changelog
 
+## [2026-09-15] - Mobile file list decrypts names
+
+**What changed:** The mobile Files section now shows decrypted filenames. Extracted `fetchMobileFileKey` (SQLite key, else the device's sealed Relay envelope) into `download/keys.ts` so the downloader and the new `download/names.ts` share one FEK-resolution path; `decryptFileNames` decrypts each file's name in parallel and returns null per file on a missing/undecryptable envelope. The app's `loadFiles` populates a name map and the list renders the name, falling back to the id.
+
+**Why:** Listing opaque file ids is unusable; filenames are encrypted with the same FEK the device can already resolve, so decrypting them is a small step that makes the list legible.
+
+**Impact:** `apps/mobile` (`download/keys.ts`, `download/names.ts`, `download/deps.ts`, `App.tsx`). Verified: mobile typecheck and `expo export --platform android`.
+
+**Follow-ups:** One envelope fetch per file (no key cache yet), so a large catalogue does an N+1; the cached catalogue and per-file key cache are still to come.
+
 ## [2026-09-15] - Mobile download/decrypt and share
 
 **What changed:** The Expo app can list files and download+decrypt one to the OS share sheet. `download/deps.ts` supplies native `DownloadDeps` (FEK from SQLite or the device's sealed Relay envelope via `openFekFromEnvelope`, shard locations from `GET /files`, shard bytes from a trusted LAN node with a Relay `/shards/{hash}` fallback), and `download/save.ts` writes the plaintext to the cache dir (chunked base64) and opens the share sheet. `relay.ts` gained `RelayFileLocation`/`locations`/`RelayEnvelope`, `relayEnvelopes`, and a raw `fetchRelayShard`. The app gained a Files/Download section.

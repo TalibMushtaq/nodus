@@ -4,7 +4,7 @@
 // device's sealed Relay envelope; shard locations come from `GET /files`; shard
 // bytes prefer a trusted LAN node and fall back to the Relay's pull-through.
 
-import { openFekFromEnvelope, type DownloadDeps } from "@repo/sdk";
+import { type DownloadDeps } from "@repo/sdk";
 import {
   NodeClient,
   identityPrivateKey,
@@ -12,22 +12,13 @@ import {
   type StoredDeviceIdentity,
 } from "@repo/relay-client";
 
-import { fetchRelayShard, relayEnvelopes, relayFiles } from "../relay";
-import { getFileKey } from "../store/keys";
+import { fetchRelayShard, relayFiles } from "../relay";
 import { getTrustedNodes } from "../store/trusted-nodes";
+import { fetchMobileFileKey } from "./keys";
 
 export function mobileDownloadDeps(device: StoredDeviceIdentity): DownloadDeps {
   return {
-    async fetchFileKey(fileId) {
-      // A locally cached FEK (this device's own upload) avoids a Relay round
-      // trip; otherwise open this device's sealed envelope.
-      const local = await getFileKey(fileId);
-      if (local) return local;
-      const envelopes = await relayEnvelopes(fileId);
-      const mine = envelopes.find((e) => e.recipient_id === device.device_id);
-      if (!mine) return null;
-      return openFekFromEnvelope(mine.encrypted_key, identityPrivateKey(device));
-    },
+    fetchFileKey: (fileId) => fetchMobileFileKey(device, fileId),
 
     async getShardLocations(fileId) {
       const files = await relayFiles();

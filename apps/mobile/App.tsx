@@ -64,6 +64,7 @@ import {
 import { createMobileUploadDeps } from "./src/upload/deps";
 import { fileUriSource } from "./src/upload/source";
 import { mobileDownloadDeps } from "./src/download/deps";
+import { decryptFileNames } from "./src/download/names";
 import { saveAndShare } from "./src/download/save";
 import { loadOrCreateDevice } from "./src/storage";
 import {
@@ -110,6 +111,7 @@ export default function App() {
 
   // ── Download ──────────────────────────────────────────────────────────────
   const [files, setFiles] = React.useState<RelayFile[]>([]);
+  const [fileNames, setFileNames] = React.useState<Record<string, string | null>>({});
   const [downloadStatus, setDownloadStatus] = React.useState<string | null>(null);
 
   const [error, setError] = React.useState<string | null>(null);
@@ -366,13 +368,17 @@ export default function App() {
     setBusy("loading-files");
     setError(null);
     try {
-      setFiles(await relayFiles());
+      const list = await relayFiles();
+      setFiles(list);
+      // Decrypt display names where this device can open the file's key
+      // envelope; failures fall back to the id in the list.
+      setFileNames(device ? await decryptFileNames(device, list) : {});
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(null);
     }
-  }, [authed]);
+  }, [authed, device]);
 
   // Download the newest version, decrypt, and hand to the share sheet.
   const downloadOne = React.useCallback(
@@ -643,7 +649,7 @@ export default function App() {
         {files.map((f) => (
           <View key={f.file_id} style={styles.radioRow}>
             <Text style={styles.hint}>
-              {f.file_id.slice(0, 12)}… · {f.versions.length} version
+              {fileNames[f.file_id] ?? `${f.file_id.slice(0, 12)}…`} · {f.versions.length} version
               {f.versions.length === 1 ? "" : "s"}
             </Text>
             <Button
