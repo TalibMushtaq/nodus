@@ -63,8 +63,14 @@ export function waitForChannelOpen(channel: RTCDataChannel, timeoutMs = 5000): P
  * Send an encrypted shard over a WebRTC DataChannel following the Nodus frame protocol:
  * 1. [text frame] JSON: ShardUploadPayload
  * 2. [binary frames] 16 KB chunks of encrypted payload
- * 3. [text frame] JSON: { "type": "shard_done" }
+ * 3. [text frame] JSON: { "shard_done": true }
  * 4. [text frame] JSON: ShardAckPayload (received from peer)
+ *
+ * The done marker is deliberately `{"shard_done": true}` and not a `type`
+ * field: the Rust Storage Node's `is_shard_done` requires the explicit boolean
+ * (services/storage-node/src/webrtc/session.rs) and ignores any other shape, so
+ * a `{"type":"shard_done"}` frame would never end the transfer and only time
+ * out. This is the single cross-stack contract both peers must agree on.
  */
 export async function sendShard(
   channel: RTCDataChannel,
@@ -115,8 +121,9 @@ export async function sendShard(
     opts.onProgress?.(offset, total);
   }
 
-  // 3. Send done marker
-  channel.send(JSON.stringify({ type: "shard_done" }));
+  // 3. Send done marker — see the frame-protocol note above for why the key
+  // must be `shard_done: true` to interoperate with the Rust receiver.
+  channel.send(JSON.stringify({ shard_done: true }));
 
   // 4. Await ShardAckPayload from receiver
   return await new Promise<ShardAckPayload>((resolve, reject) => {
@@ -193,7 +200,9 @@ export async function receiveShard(opts: ShardReceiveOptions): Promise<{
       if (typeof ev.data === "string") {
         try {
           const parsed = JSON.parse(ev.data);
-          if (parsed.type === "shard_done") {
+          // Accept the canonical Rust-compatible marker plus the legacy
+          // `{"type":"shard_done"}` shape so an old sender can still complete.
+          if (parsed.shard_done === true || parsed.type === "shard_done") {
             handleDone();
           } else {
             // Must be ShardUploadPayload

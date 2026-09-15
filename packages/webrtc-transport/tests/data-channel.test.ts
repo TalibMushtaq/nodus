@@ -67,6 +67,37 @@ describe("WebRTC DataChannel shard transport", () => {
     expect(bytesToHex(blake3(result.data))).toBe(hash);
   });
 
+  it("emits the canonical shard_done marker required by the Rust receiver", async () => {
+    // Guards the cross-stack frame contract: the Rust Storage Node's
+    // `is_shard_done` only recognises `{"shard_done": true}`, so a `type`-keyed
+    // marker would leave an upload hanging until its ack timeout.
+    const [senderChan, receiverChan] = MockRTCDataChannel.createPair();
+    const textFrames: string[] = [];
+    receiverChan.on("message", (ev: MessageEvent) => {
+      if (typeof ev.data === "string") textFrames.push(ev.data);
+    });
+
+    const payload = new Uint8Array([1, 2, 3]);
+    const hash = bytesToHex(blake3(payload));
+
+    const sendPromise = sendShard(senderChan as unknown as RTCDataChannel, {
+      transferId: "tr-done",
+      fileId: "00000000-0000-0000-0000-00000000000d",
+      versionNumber: 1,
+      shardIndex: 0,
+      data: payload,
+      hash,
+    });
+    const recvPromise = receiveShard({
+      channel: receiverChan as unknown as RTCDataChannel,
+      expectedHash: hash,
+      expectedSize: payload.byteLength,
+    });
+
+    await Promise.all([sendPromise, recvPromise]);
+    expect(textFrames).toContain(JSON.stringify({ shard_done: true }));
+  });
+
   it("fails verification and throws on BLAKE3 hash mismatch", async () => {
     const [senderChan, receiverChan] = MockRTCDataChannel.createPair();
 
