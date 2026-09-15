@@ -1,5 +1,15 @@
 # Changelog
 
+## [2026-09-15] - Shared account recovery client in @repo/sdk
+
+**What changed:** Moved the ADR-0002 recovery logic from `apps/web/lib/recovery.ts` into `packages/sdk/src/recovery/` as `createRecoveryClient(deps)` — phrase generation/validation, public-key derivation, challenge signing, online recovery, recovery-sealed key materialization, and enrollment — with the phrase store, Relay HTTP, and file/folder key writers injected. Web's `recovery.ts` is now a binding over the SDK using IndexedDB and the `/api` proxies; all exported names are unchanged.
+
+**Why:** Mobile needs the same recovery phrase → signed nonce → device registration → key unlock flow (Phase 16), and the phrase/`btoa`/nonce ordering must not be reimplemented.
+
+**Impact:** `packages/sdk` (new `src/recovery/`, index exports), `apps/web/lib/recovery.ts`. Verified: SDK build/lint/test (12), web lint/typecheck/test (194).
+
+**Follow-ups:** Mobile recovery UI + a SQLite phrase store are next; the "lost phone with no Internet" local-only path (plan §24) still relies on the node being reachable.
+
 ## [2026-09-15] - Mobile lint + dedicated CI job
 
 **What changed:** Added an ESLint setup to `apps/mobile` (`eslint.config.mjs` using `eslint-config-expo`, ESLint 9, `lint: eslint .`) and a dedicated `mobile` job in `.github/workflows/ci-ts.yml` that builds the app's workspace deps, then runs lint, typecheck, tests, and `expo export`. Fixed the two lint errors it surfaced (`set-state-in-effect` on the sign-out transitions, with explanatory disables) and small style warnings. `pnpm-workspace.yaml` now allows `unrs-resolver`'s postinstall (pulled in transitively by the Expo ESLint config).

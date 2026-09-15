@@ -59,6 +59,14 @@ export type {
   RecipientSources,
 } from "./envelopes/envelopes.js";
 
+export { createRecoveryClient } from "./recovery/recovery.js";
+export type {
+  RecoveryClient,
+  RecoveryDeps,
+  RecoveryLoginResult,
+  RecoveryStore,
+} from "./recovery/recovery.js";
+
 export { createFolderMutations, folderCreatedEvent, folderDeletedEvent } from "./folders/folders.js";
 export type { FolderMutationDeps, FolderMutations } from "./folders/folders.js";
 
