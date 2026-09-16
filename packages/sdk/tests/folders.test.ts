@@ -3,6 +3,12 @@ import { createDeviceIdentity, identityPublicKey } from "@repo/relay-client";
 import type { EventPayload } from "@repo/protocol";
 
 import { createFolderMutations } from "../src/folders/folders.js";
+import { openFolderKeyFromEnvelopes } from "../src/envelopes/envelopes.js";
+import {
+  createEncryptionIdentity,
+  encryptionPrivateKeyBytes,
+  encryptionPublicKeyBytes,
+} from "../src/device/encryption.js";
 
 function harness() {
   const device = createDeviceIdentity();
@@ -78,5 +84,50 @@ describe("createFolderMutations", () => {
     await expect(h.mutations.rename("unknown-folder", null, "x")).rejects.toThrow(
       /no key for that folder/i,
     );
+  });
+
+  it("seals the folder-key self envelope to the device's X25519 key", async () => {
+    const device = createDeviceIdentity();
+    const identity = createEncryptionIdentity();
+    const batches: EventPayload[][] = [];
+    let sequence = 0;
+
+    const mutations = createFolderMutations({
+      device: {
+        deviceId: device.device_id,
+        edPublicKey: identityPublicKey(device),
+        x25519PublicKey: encryptionPublicKeyBytes(identity),
+      },
+      putFolderKey: async () => {},
+      getFolderKey: async () => undefined,
+      resolveFolderKey: async () => null,
+      allocateSequence: async () => (sequence += 1),
+      sendEventBatch: async (events) => {
+        batches.push(events);
+        return undefined;
+      },
+      recipientSources: { listDevices: async () => [], listNodes: async () => [] },
+    });
+
+    const folderId = await mutations.create("Photos", null);
+    const envelope = batches.flat().find((e) => e.type === "FOLDER_KEY_ENVELOPE_ADDED");
+    expect(envelope).toBeDefined();
+
+    // With no local key, the device must be able to reopen the folder name from
+    // its own envelope using only its standalone X25519 private key.
+    const opened = openFolderKeyFromEnvelopes(
+      [
+        {
+          folder_id: folderId,
+          recipient_id: device.device_id,
+          recipient_kind: "device",
+          encrypted_key: envelope!.payload.encrypted_key as string,
+        },
+      ],
+      folderId,
+      device.device_id,
+      encryptionPrivateKeyBytes(identity),
+    );
+    expect(opened).not.toBeNull();
   });
 });

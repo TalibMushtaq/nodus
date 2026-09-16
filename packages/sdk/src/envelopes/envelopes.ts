@@ -238,11 +238,29 @@ export interface RecipientSources {
  * can both verify a signature against it without a separate id mapping.
  */
 export async function collectRecipients(
-  self: { deviceId: string; edPublicKey: Uint8Array; recoveryPublicKey?: string | null },
+  self: {
+    deviceId: string;
+    edPublicKey: Uint8Array;
+    /**
+     * This device's published standalone X25519 key (ADR-0008). Supplying it
+     * makes the self-envelope seal to the same key the device opens with;
+     * omitting it falls back to the Ed25519-derived key for old callers.
+     */
+    x25519PublicKey?: Uint8Array;
+    recoveryPublicKey?: string | null;
+  },
   sources: RecipientSources,
 ): Promise<EnvelopeRecipient[]> {
   const recipients: EnvelopeRecipient[] = [
-    { recipientId: self.deviceId, recipientKind: "device", edPublicKey: self.edPublicKey },
+    {
+      recipientId: self.deviceId,
+      recipientKind: "device",
+      edPublicKey: self.edPublicKey,
+      // Seal this device's own copy to its standalone X25519 key, matching the
+      // opener. Without it the derived-key self-envelope cannot be reopened once
+      // the local key cache is lost (the old fallback that masked this is gone).
+      x25519PublicKey: self.x25519PublicKey,
+    },
   ];
 
   // Recovery is a device-style base64 Ed25519 key (not a node's hex encoding).

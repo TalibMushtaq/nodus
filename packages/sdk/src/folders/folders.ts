@@ -57,7 +57,12 @@ export function folderDeletedEvent(originId: string, sequence: number, folderId:
 }
 
 export interface FolderMutationDeps {
-  device: { deviceId: string; edPublicKey: Uint8Array };
+  /**
+   * `x25519PublicKey` is the device's published standalone X25519 key (ADR-0008),
+   * used to seal this device's own folder-key envelope to the key it opens with;
+   * omit it only for legacy callers that still have the Ed25519-derived key.
+   */
+  device: { deviceId: string; edPublicKey: Uint8Array; x25519PublicKey?: Uint8Array };
   /** Account recovery key (base64) to also seal folder keys to, when enrolled. */
   recoveryPublicKey?: string | null;
   putFolderKey(folderId: string, key: Uint8Array): Promise<void>;
@@ -121,6 +126,7 @@ export function createFolderMutations(deps: FolderMutationDeps): FolderMutations
         {
           deviceId: device.deviceId,
           edPublicKey: device.edPublicKey,
+          x25519PublicKey: device.x25519PublicKey,
           recoveryPublicKey: deps.recoveryPublicKey ?? null,
         },
         deps.recipientSources,

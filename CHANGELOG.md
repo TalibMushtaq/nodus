@@ -1,5 +1,15 @@
 # Changelog
 
+## [2026-09-16] - SDK seals the self envelope with the device X25519 key
+
+**What changed:** `collectRecipients` accepts an optional `self.x25519PublicKey` and seals the self recipient to it, falling back to the Ed25519-derived key only when absent. `createFolderMutations` deps gained `device.x25519PublicKey`. New tests assert the self envelope opens with the standalone X25519 key and *not* the Ed25519-derived key, and that a folder with no local key reopens from its self envelope.
+
+**Why:** Root cause of the self-envelope mismatch — the device opened its own envelope with the standalone X25519 key but sealed it with the derived key, and the removed legacy fallback no longer masks it.
+
+**Impact:** `packages/sdk` (`src/envelopes/envelopes.ts`, `src/folders/folders.ts`, `tests/envelopes.test.ts`, `tests/folders.test.ts`). Verified: SDK 33 tests.
+
+**Follow-ups:** Self-envelopes created before this change were sealed with the derived key and remain unopenable on web (clean-slate posture; no migration).
+
 ## [2026-09-15] - Apply gofmt and rustfmt
 
 **What changed:** Formatted `services/relay/internal/handler/device.go` (gofmt) and `services/storage-node/src/local/server.rs` (rustfmt) after the ADR-0008 and offline-recovery edits; the pre-push hook enforces both.

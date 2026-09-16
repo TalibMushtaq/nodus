@@ -3,6 +3,7 @@ import { generateFileEncryptionKey } from "@repo/core";
 import { createDeviceIdentity, identityPrivateKey, identityPublicKey } from "@repo/relay-client";
 
 import {
+  collectRecipients,
   decodeEncryptionPublicKey,
   openFekFromEnvelope,
   openFekFromEnvelopeX25519,
@@ -60,5 +61,29 @@ describe("FEK envelopes (ADR-0008)", () => {
 
   it("rejects an encryption key that is not 32 bytes", () => {
     expect(() => decodeEncryptionPublicKey(btoa("short"))).toThrow(/32 bytes/);
+  });
+
+  it("seals the self envelope to the device's X25519 key, not the Ed25519 derivation", async () => {
+    const fek = generateFileEncryptionKey();
+    const device = createDeviceIdentity();
+    const identity = createEncryptionIdentity();
+
+    const recipients = await collectRecipients(
+      {
+        deviceId: device.device_id,
+        edPublicKey: identityPublicKey(device),
+        x25519PublicKey: encryptionPublicKeyBytes(identity),
+      },
+      { listDevices: async () => [], listNodes: async () => [] },
+    );
+    const [self] = sealFekForRecipients(fek, recipients);
+
+    // The self recipient must be sealed with the same standalone key the device
+    // opens with. If it had used the Ed25519-derived key, the X25519 open would
+    // fail GCM authentication once the local key cache is gone.
+    const opened = openFekFromEnvelopeX25519(self!.encrypted_key, encryptionPrivateKeyBytes(identity));
+    expect(opened).toEqual(fek);
+    // And it must NOT be openable with the Ed25519-derived key.
+    expect(() => openFekFromEnvelope(self!.encrypted_key, identityPrivateKey(device))).toThrow();
   });
 });
