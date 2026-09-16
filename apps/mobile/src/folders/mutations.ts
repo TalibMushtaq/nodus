@@ -18,11 +18,14 @@ export function mobileFolderMutations(
   ws: MobileWs,
   device: StoredDeviceIdentity,
   session: SessionInfo | null,
+  /** The device's standalone X25519 key, so the self envelope matches its opener. */
+  x25519PublicKey: Uint8Array,
 ): FolderMutations {
   return createFolderMutations({
     device: {
       deviceId: device.device_id,
       edPublicKey: identityPublicKey(device),
+      x25519PublicKey,
     },
     recoveryPublicKey: session?.recovery_public_key ?? null,
     putFolderKey: putFileKey,

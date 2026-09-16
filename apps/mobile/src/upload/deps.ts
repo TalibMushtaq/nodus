@@ -7,6 +7,7 @@
 
 import {
   collectRecipients,
+  encryptionPublicKeyBytes,
   envelopeEvent,
   sealFekForRecipients,
   type UploadDeps,
@@ -24,6 +25,7 @@ import { relayDevices, relayNodes } from "../relay";
 import type { MobileTransferManager } from "../transfer/manager";
 import { getFileKey, putFileKey } from "../store/keys";
 import { nextOriginSequence } from "../store/sync-state";
+import { loadOrCreateEncryptionIdentity } from "../storage";
 import {
   clearUploadProgress,
   getUploadProgress,
@@ -39,6 +41,8 @@ export function createMobileUploadDeps(
   transfer?: MobileTransferManager | null,
   /** Reports the path each successful shard used, so the UI can show it. */
   onPath?: (path: TransferPath) => void,
+  /** Account recovery key (base64) so the phrase can unlock this upload later. */
+  recoveryPublicKey?: string | null,
 ): UploadDeps {
   const sign = (message: string) => signDeviceMessage(identityPrivateKey(device), message);
 
@@ -75,10 +79,20 @@ export function createMobileUploadDeps(
     // Signs the per-shard manifest so the node can verify the whole version.
     signManifest: sign,
     publishEnvelopes: async (fileId, fek) => {
-      // Every active device, storage node, and this device get a sealed copy of
-      // the FEK before shards move, so any recipient can decrypt the file.
+      // Every active device, storage node, this device, and (when enrolled) the
+      // account recovery identity get a sealed copy of the FEK before shards
+      // move, so any recipient can decrypt the file.
+      const encryption = await loadOrCreateEncryptionIdentity();
       const recipients = await collectRecipients(
-        { deviceId: device.device_id, edPublicKey: identityPublicKey(device) },
+        {
+          deviceId: device.device_id,
+          edPublicKey: identityPublicKey(device),
+          // Seal the self envelope to the standalone X25519 key this device
+          // opens with (ADR-0008); the recovery recipient makes the upload
+          // recoverable from the phrase after losing every device.
+          x25519PublicKey: encryptionPublicKeyBytes(encryption),
+          recoveryPublicKey: recoveryPublicKey ?? null,
+        },
         { listDevices: relayDevices, listNodes: relayNodes },
       );
       const sealed = sealFekForRecipients(fek, recipients);

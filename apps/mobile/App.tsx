@@ -34,6 +34,7 @@ import { SHARD_SIZE_BYTES } from "@repo/core";
 import type { ConnectionState } from "@repo/relay-client";
 import {
   downloadFile,
+  encryptionPublicKeyBytes,
   listConflicts,
   toCatalogEntry,
   uploadFile,
@@ -588,7 +589,15 @@ export default function App() {
         sourceDevice: device.device_id,
         parentFolderId: currentFolderId,
         shardSizeBytes,
-        deps: createMobileUploadDeps(wsRef.current!, device, transferManager, setLastPath),
+        deps: createMobileUploadDeps(
+          wsRef.current!,
+          device,
+          transferManager,
+          setLastPath,
+          // Seal the upload to the account recovery key so the phrase can still
+          // unlock it after every device is lost.
+          session?.recovery_public_key,
+        ),
         onProgress: (event) =>
           setUploadStatus(`${event.phase} · shard ${event.completedShards}/${event.totalShards}`),
       });
@@ -600,7 +609,7 @@ export default function App() {
     } finally {
       setBusy(null);
     }
-  }, [device, selectedNode, nodes, transferManager, shardSizeBytes, currentFolderId]);
+  }, [device, session, selectedNode, nodes, transferManager, shardSizeBytes, currentFolderId]);
 
   const loadFiles = React.useCallback(async () => {
     if (!authed) return;
@@ -636,13 +645,18 @@ export default function App() {
 
   const createFolder = React.useCallback(async () => {
     const name = folderNameInput.trim();
-    if (!device || !name) return;
+    if (!device || !encryption || !name) return;
     setBusy("creating-folder");
     setError(null);
     setNotice(null);
     try {
       // Create inside the folder currently open in the browser.
-      await mobileFolderMutations(wsRef.current!, device, session).create(name, currentFolderId);
+      await mobileFolderMutations(
+        wsRef.current!,
+        device,
+        session,
+        encryptionPublicKeyBytes(encryption),
+      ).create(name, currentFolderId);
       setFolderNameInput("");
       await loadFolders();
       setNotice("Folder created.");
@@ -651,21 +665,22 @@ export default function App() {
     } finally {
       setBusy(null);
     }
-  }, [device, session, folderNameInput, currentFolderId, loadFolders]);
+  }, [device, encryption, session, folderNameInput, currentFolderId, loadFolders]);
 
   const renameFolder = React.useCallback(
     async (folder: RelayFolder) => {
       const name = folderNameInput.trim();
-      if (!device || !name) return;
+      if (!device || !encryption || !name) return;
       setBusy(`renaming-${folder.folder_id}`);
       setError(null);
       setNotice(null);
       try {
-        await mobileFolderMutations(wsRef.current!, device, session).rename(
-          folder.folder_id,
-          folder.parent_folder_id,
-          name,
-        );
+        await mobileFolderMutations(
+          wsRef.current!,
+          device,
+          session,
+          encryptionPublicKeyBytes(encryption),
+        ).rename(folder.folder_id, folder.parent_folder_id, name);
         setFolderNameInput("");
         await loadFolders();
         setNotice("Folder renamed.");
@@ -675,7 +690,7 @@ export default function App() {
         setBusy(null);
       }
     },
-    [device, session, folderNameInput, loadFolders],
+    [device, encryption, session, folderNameInput, loadFolders],
   );
 
   const deleteFolder = React.useCallback(
@@ -687,12 +702,17 @@ export default function App() {
           style: "destructive",
           onPress: () => {
             void (async () => {
-              if (!device) return;
+              if (!device || !encryption) return;
               setBusy(`deleting-${folder.folder_id}`);
               setError(null);
               setNotice(null);
               try {
-                await mobileFolderMutations(wsRef.current!, device, session).remove(folder.folder_id);
+                await mobileFolderMutations(
+                  wsRef.current!,
+                  device,
+                  session,
+                  encryptionPublicKeyBytes(encryption),
+                ).remove(folder.folder_id);
                 await loadFolders();
                 setNotice("Folder deleted.");
               } catch (err) {
@@ -705,7 +725,7 @@ export default function App() {
         },
       ]);
     },
-    [device, session, loadFolders],
+    [device, encryption, session, loadFolders],
   );
 
   // Download the newest version, decrypt, and hand to the share sheet.

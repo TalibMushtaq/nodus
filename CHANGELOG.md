@@ -1,5 +1,15 @@
 # Changelog
 
+## [2026-09-16] - Mobile uploads seal the self and recovery recipients
+
+**What changed:** `createMobileUploadDeps` now takes `recoveryPublicKey` and, in `publishEnvelopes`, seals this device's own envelope to its standalone X25519 key (`loadOrCreateEncryptionIdentity`) and adds the account recovery recipient; `App.tsx` passes `session.recovery_public_key`. `mobileFolderMutations` takes the device X25519 key so folder self-envelopes match the opener.
+
+**Why:** Mobile file uploads omitted the recovery recipient, so files uploaded from mobile were unrecoverable via the recovery phrase; folder self-envelopes were sealed to the Ed25519-derived key the device can no longer open.
+
+**Impact:** `apps/mobile` (`src/upload/deps.ts`, `src/folders/mutations.ts`, `App.tsx`). Verified: mobile `tsc --noEmit`.
+
+**Follow-ups:** Mobile uploads still rely on `session.recovery_public_key` being present in the Relay session.
+
 ## [2026-09-16] - Web seals self-envelopes to the device X25519 key
 
 **What changed:** Web uploads (`use-uploader.ts`) and folder creation (`folder-mutations.ts`) pass the device's standalone X25519 public key (`encryptionPublicKeyBytes(getOrCreateEncryptionIdentity())`) as the `self` recipient; `lib/envelopes.ts` re-exports the helper and accepts the field.
