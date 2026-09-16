@@ -166,66 +166,34 @@ export function sealFekForRecipients(
   }));
 }
 
-/** Open this device's envelope with its Ed25519 private seed (legacy path). */
+/**
+ * Open an envelope with an Ed25519 seed's derived X25519 key. Still used for
+ * the account recovery identity, whose key comes from the recovery phrase
+ * (ADR-0002); devices use `openFekFromEnvelopeX25519` instead.
+ */
 export function openFekFromEnvelope(encoded: string, edPrivateSeed: Uint8Array): Uint8Array {
   return openFekEnvelope(decodeEnvelope(encoded), ed25519PrivateToX25519(edPrivateSeed));
 }
 
-/** Open this device's envelope with its standalone X25519 private key (ADR-0008). */
+/** Open a device's envelope with its standalone X25519 private key (ADR-0008). */
 export function openFekFromEnvelopeX25519(encoded: string, x25519PrivateKey: Uint8Array): Uint8Array {
   return openFekEnvelope(decodeEnvelope(encoded), x25519PrivateKey);
 }
 
 /**
- * Open a device's envelope trying its published X25519 key first, then the
- * legacy Ed25519→X25519 derivation. An envelope is sealed to exactly one of
- * them (ADR-0008), so the first failure just means it is the other kind.
- */
-export function openFekWithFallback(
-  encoded: string,
-  keys: { x25519PrivateKey?: Uint8Array; edPrivateSeed?: Uint8Array },
-): Uint8Array {
-  if (keys.x25519PrivateKey) {
-    try {
-      return openFekFromEnvelopeX25519(encoded, keys.x25519PrivateKey);
-    } catch (err) {
-      // Not sealed to the published X25519 key. Fall through to the legacy key
-      // when one is available; otherwise rethrow the X25519 failure.
-      if (!keys.edPrivateSeed) throw err;
-    }
-  }
-  if (!keys.edPrivateSeed) {
-    throw new Error("openFekWithFallback: no key available to open the envelope");
-  }
-  return openFekFromEnvelope(encoded, keys.edPrivateSeed);
-}
-
-/**
- * Open this device's folder-key envelope from an already-fetched list. Kept
- * separate from fetching so the folder tree can fetch once and open N
- * envelopes without N round trips.
+ * Open this device's folder-key envelope from an already-fetched list with its
+ * X25519 encryption key. Kept separate from fetching so the folder tree can
+ * fetch once and open N envelopes without N round trips.
  */
 export function openFolderKeyFromEnvelopes(
   envelopes: RelayFolderEnvelope[],
   folderId: string,
   deviceId: string,
-  edPrivateSeed: Uint8Array,
+  x25519PrivateKey: Uint8Array,
 ): Uint8Array | null {
   const mine = envelopes.find((e) => e.folder_id === folderId && e.recipient_id === deviceId);
   if (!mine) return null;
-  return openFekFromEnvelope(mine.encrypted_key, edPrivateSeed);
-}
-
-/** As `openFolderKeyFromEnvelopes`, but tries the X25519 key first (ADR-0008). */
-export function openFolderKeyWithFallback(
-  envelopes: RelayFolderEnvelope[],
-  folderId: string,
-  deviceId: string,
-  keys: { x25519PrivateKey?: Uint8Array; edPrivateSeed?: Uint8Array },
-): Uint8Array | null {
-  const mine = envelopes.find((e) => e.folder_id === folderId && e.recipient_id === deviceId);
-  if (!mine) return null;
-  return openFekWithFallback(mine.encrypted_key, keys);
+  return openFekFromEnvelopeX25519(mine.encrypted_key, x25519PrivateKey);
 }
 
 /**

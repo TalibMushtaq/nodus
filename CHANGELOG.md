@@ -1,5 +1,15 @@
 # Changelog
 
+## [2026-09-15] - Drop the legacy Ed25519-derived envelope fallback
+
+**What changed:** With the clean-slate cutover there are no legacy envelopes to preserve, so the X25519-then-Ed25519 fallback is gone. `openFekWithFallback` and `openFolderKeyWithFallback` were removed; `openFolderKeyFromEnvelopes` now opens with the device's X25519 key. Mobile file/folder key resolution uses `openFekFromEnvelopeX25519`/`openFolderKeyFromEnvelopes` (no `identityPrivateKey`). `openFekFromEnvelope` remains solely for the account recovery identity, whose key is derived from the phrase.
+
+**Why:** The fallback existed only to read pre-ADR-0008 development envelopes; keeping it would preserve dead code and a second key path.
+
+**Impact:** `packages/sdk` (envelopes, index), `apps/web/lib/envelopes.ts`, `apps/mobile` (`download/keys.ts`, `download/folder-keys.ts`). Verified: SDK 31, web 191 + lint + typecheck, mobile lint/typecheck/3 tests.
+
+**Follow-ups:** None; a production migration would reintroduce an explicit migration step, not a silent fallback.
+
 ## [2026-09-15] - ADR-0008 phase 3b: web non-extractable signer cutover
 
 **What changed:** Rewired the web client off the exportable Ed25519 seed. `lib/device.ts` now creates a non-extractable WebCrypto Ed25519 `CryptoKey`, persists it in the new `device_keys` IndexedDB store (DB v6), and exposes `{ identity, signer }`; only the public identity is written to localStorage. `AuthProvider` loads it post-SSR and provides `signer`; the transfer provider, uploader manifest signing, LAN auth, shard fetch, pairing, and auto-pair all sign through `signer.sign`. Envelope opening uses the separate X25519 encryption identity only (`fetchAndOpenFileKey`/`openFolderKeyFromEnvelopes` dropped their `edSeed` parameters). SDK/relay-client APIs were narrowed to `DevicePublicIdentity` and a `DeviceMessageSigner`; `NodeClient.authenticate`/`fetchShard` take a signer instead of a private key; `createFolderMutations` takes an injected `resolveFolderKey`. Removed the exportable-seed code and the migration-only `resealKeysForSelf` helper plus its web/mobile actions (development clean-slate: legacy envelopes are disposable). `clearLocalDatabase` keeps `device_keys` (identity, not content).

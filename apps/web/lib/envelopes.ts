@@ -13,7 +13,7 @@ import {
   folderEnvelopeEvent,
   encryptionPrivateKeyBytes,
   openFekFromEnvelopeX25519,
-  openFolderKeyWithFallback,
+  openFolderKeyFromEnvelopes as sdkOpenFolderKeyFromEnvelopes,
   sealFekForRecipientIdentity,
   sealFekForRecipients,
 } from "@repo/sdk";
@@ -113,9 +113,12 @@ export function openFolderKeyFromEnvelopes(
   folderId: string,
   deviceId: string,
 ): Uint8Array | null {
-  return openFolderKeyWithFallback(envelopes, folderId, deviceId, {
-    x25519PrivateKey: encryptionPrivateKeyBytes(getOrCreateEncryptionIdentity()),
-  });
+  return sdkOpenFolderKeyFromEnvelopes(
+    envelopes,
+    folderId,
+    deviceId,
+    encryptionPrivateKeyBytes(getOrCreateEncryptionIdentity()),
+  );
 }
 
 /** Collect this account's recipients using the web device/node catalogue. */

@@ -1,12 +1,12 @@
 // Resolve a file's FEK on this device.
 //
 // Prefers the locally persisted key (this device's own upload), then opens this
-// device's sealed Relay envelope. Shared by the download deps and the name
-// decryption used by the file list, so both take the same path (and see the
-// same `null` when no envelope exists for this device).
+// device's sealed Relay envelope with its X25519 encryption identity (ADR-0008).
+// Shared by the download deps and the name decryption used by the file list, so
+// both take the same path (and see the same `null` when no envelope exists).
 
-import { encryptionPrivateKeyBytes, openFekWithFallback } from "@repo/sdk";
-import { identityPrivateKey, type StoredDeviceIdentity } from "@repo/relay-client";
+import { encryptionPrivateKeyBytes, openFekFromEnvelopeX25519 } from "@repo/sdk";
+import type { StoredDeviceIdentity } from "@repo/relay-client";
 
 import { relayEnvelopes } from "../relay";
 import { loadOrCreateEncryptionIdentity } from "../storage";
@@ -22,10 +22,6 @@ export async function fetchMobileFileKey(
   const envelopes = await relayEnvelopes(fileId);
   const mine = envelopes.find((e) => e.recipient_id === device.device_id);
   if (!mine) return null;
-  // Try the published X25519 key (ADR-0008) then the legacy Ed25519-derived key.
   const encryption = await loadOrCreateEncryptionIdentity();
-  return openFekWithFallback(mine.encrypted_key, {
-    x25519PrivateKey: encryptionPrivateKeyBytes(encryption),
-    edPrivateSeed: identityPrivateKey(device),
-  });
+  return openFekFromEnvelopeX25519(mine.encrypted_key, encryptionPrivateKeyBytes(encryption));
 }
