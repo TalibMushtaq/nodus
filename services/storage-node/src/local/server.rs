@@ -447,10 +447,14 @@ async fn recovery_challenge(
             message: "this account has no recovery key enrolled".into(),
         });
     };
-    let nonce = state.recovery_nonces.issue().await.ok_or_else(|| LocalError {
-        error: "overloaded".into(),
-        message: "recovery nonce store is at capacity; retry in 30s".into(),
-    })?;
+    let nonce = state
+        .recovery_nonces
+        .issue()
+        .await
+        .ok_or_else(|| LocalError {
+            error: "overloaded".into(),
+            message: "recovery nonce store is at capacity; retry in 30s".into(),
+        })?;
     Ok(Json(RecoveryChallenge {
         nonce,
         ttl_seconds: super::auth::NONCE_TTL.as_secs(),
@@ -477,17 +481,21 @@ async fn recovery_auth(
             message: "this node is not paired to an account".into(),
         });
     };
-    let recovery_key_b64 = recovery_recipient(&state.db).await?.ok_or_else(|| LocalError {
-        error: "recovery_unavailable".into(),
-        message: "this account has no recovery key enrolled".into(),
-    })?;
+    let recovery_key_b64 = recovery_recipient(&state.db)
+        .await?
+        .ok_or_else(|| LocalError {
+            error: "recovery_unavailable".into(),
+            message: "this account has no recovery key enrolled".into(),
+        })?;
     let recovery_key = base64_decode(&recovery_key_b64)?;
     let device_pubkey = decode_pubkey(&req.device_public_key)?;
 
     // Verify before any mutable state; a bad signature must not touch devices.
-    verify_signature(&recovery_key, req.nonce.as_bytes(), &req.signature).map_err(|e| LocalError {
-        error: "bad_signature".into(),
-        message: format!("recovery signature verification failed: {e}"),
+    verify_signature(&recovery_key, req.nonce.as_bytes(), &req.signature).map_err(|e| {
+        LocalError {
+            error: "bad_signature".into(),
+            message: format!("recovery signature verification failed: {e}"),
+        }
     })?;
 
     let now = now_iso();
@@ -545,20 +553,24 @@ async fn recovery_envelopes(
     Ok(Json(RecoveryEnvelopes {
         file_envelopes: file_rows
             .into_iter()
-            .map(|(file_id, recipient_id, recipient_kind, encrypted_key)| RecoveryFileEnvelope {
-                file_id,
-                recipient_id,
-                recipient_kind,
-                encrypted_key,
-            })
+            .map(
+                |(file_id, recipient_id, recipient_kind, encrypted_key)| RecoveryFileEnvelope {
+                    file_id,
+                    recipient_id,
+                    recipient_kind,
+                    encrypted_key,
+                },
+            )
             .collect(),
         folder_envelopes: folder_rows
             .into_iter()
-            .map(|(folder_id, recipient_id, recipient_kind, encrypted_key)| RecoveryFolderEnvelope {
-                folder_id,
-                recipient_id,
-                recipient_kind,
-                encrypted_key,
+            .map(|(folder_id, recipient_id, recipient_kind, encrypted_key)| {
+                RecoveryFolderEnvelope {
+                    folder_id,
+                    recipient_id,
+                    recipient_kind,
+                    encrypted_key,
+                }
             })
             .collect(),
     }))

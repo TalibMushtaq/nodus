@@ -92,9 +92,9 @@ type DeviceResponse struct {
 	// device has published one (ADR-0008).
 	EncryptionPublicKey *string    `json:"encryption_public_key,omitempty"`
 	Status              string     `json:"status"`
-	DisplayName *string    `json:"display_name,omitempty"`
-	CreatedAt   time.Time  `json:"created_at"`
-	RevokedAt   *time.Time `json:"revoked_at,omitempty"`
+	DisplayName         *string    `json:"display_name,omitempty"`
+	CreatedAt           time.Time  `json:"created_at"`
+	RevokedAt           *time.Time `json:"revoked_at,omitempty"`
 	// Last WS heartbeat/registration. Nil for devices seen before presence was
 	// persisted, which the web client renders as "unknown" rather than "offline".
 	LastSeenAt *time.Time `json:"last_seen_at,omitempty"`

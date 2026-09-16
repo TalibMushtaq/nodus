@@ -1,5 +1,13 @@
 # Changelog
 
+## [2026-09-15] - Apply gofmt and rustfmt
+
+**What changed:** Formatted `services/relay/internal/handler/device.go` (gofmt) and `services/storage-node/src/local/server.rs` (rustfmt) after the ADR-0008 and offline-recovery edits; the pre-push hook enforces both.
+
+**Why:** Keep the Go/Rust trees formatted; no behavior change.
+
+**Impact:** `services/relay/internal/handler/device.go`, `services/storage-node/src/local/server.rs`. Verified: gofmt/rustfmt clean, `cargo clippy -- -D warnings` clean.
+
 ## [2026-09-15] - Drop the legacy Ed25519-derived envelope fallback
 
 **What changed:** With the clean-slate cutover there are no legacy envelopes to preserve, so the X25519-then-Ed25519 fallback is gone. `openFekWithFallback` and `openFolderKeyWithFallback` were removed; `openFolderKeyFromEnvelopes` now opens with the device's X25519 key. Mobile file/folder key resolution uses `openFekFromEnvelopeX25519`/`openFolderKeyFromEnvelopes` (no `identityPrivateKey`). `openFekFromEnvelope` remains solely for the account recovery identity, whose key is derived from the phrase.
