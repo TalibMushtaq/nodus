@@ -1,5 +1,13 @@
 # Changelog
 
+## [2026-09-16] - Web seals self-envelopes to the device X25519 key
+
+**What changed:** Web uploads (`use-uploader.ts`) and folder creation (`folder-mutations.ts`) pass the device's standalone X25519 public key (`encryptionPublicKeyBytes(getOrCreateEncryptionIdentity())`) as the `self` recipient; `lib/envelopes.ts` re-exports the helper and accepts the field.
+
+**Why:** The self-envelope was sealed with the Ed25519-derived key while downloads open with the standalone X25519 key, so once the local key cache was lost the device could not reopen its own file/folder keys.
+
+**Impact:** `apps/web/lib` (`use-uploader.ts`, `folder-mutations.ts`, `envelopes.ts`). Verified: web `tsc --noEmit` and 191 tests.
+
 ## [2026-09-16] - SDK seals the self envelope with the device X25519 key
 
 **What changed:** `collectRecipients` accepts an optional `self.x25519PublicKey` and seals the self recipient to it, falling back to the Ed25519-derived key only when absent. `createFolderMutations` deps gained `device.x25519PublicKey`. New tests assert the self envelope opens with the standalone X25519 key and *not* the Ed25519-derived key, and that a folder with no local key reopens from its self envelope.

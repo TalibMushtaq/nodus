@@ -12,6 +12,7 @@ import {
   envelopeEvent,
   folderEnvelopeEvent,
   encryptionPrivateKeyBytes,
+  encryptionPublicKeyBytes,
   openFekFromEnvelopeX25519,
   openFolderKeyFromEnvelopes as sdkOpenFolderKeyFromEnvelopes,
   sealFekForRecipientIdentity,
@@ -34,6 +35,7 @@ export {
   encodeEnvelope,
   envelopeEvent,
   folderEnvelopeEvent,
+  encryptionPublicKeyBytes,
   openFekFromEnvelopeX25519,
   sealFekForRecipientIdentity,
   sealFekForRecipients,
@@ -122,8 +124,12 @@ export function openFolderKeyFromEnvelopes(
 }
 
 /** Collect this account's recipients using the web device/node catalogue. */
-export function collectRecipients(
-  self: { deviceId: string; edPublicKey: Uint8Array; recoveryPublicKey?: string | null },
-): Promise<EnvelopeRecipient[]> {
+export function collectRecipients(self: {
+  deviceId: string;
+  edPublicKey: Uint8Array;
+  /** This device's published X25519 key, so its own envelope seals to the key it opens with. */
+  x25519PublicKey?: Uint8Array;
+  recoveryPublicKey?: string | null;
+}): Promise<EnvelopeRecipient[]> {
   return sdkCollectRecipients(self, { listDevices, listNodes });
 }

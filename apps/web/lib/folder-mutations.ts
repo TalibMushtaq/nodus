@@ -15,8 +15,9 @@ import { useAuth } from "../providers/auth-provider";
 import { useEventBatch } from "./use-event-batch";
 import { nextOriginSequence } from "./sync-state";
 import { getFolderKey, putFolderKey } from "./folder-keys";
-import { fetchFolderEnvelopes, openFolderKeyFromEnvelopes } from "./envelopes";
+import { encryptionPublicKeyBytes, fetchFolderEnvelopes, openFolderKeyFromEnvelopes } from "./envelopes";
 import { listDevices, listNodes } from "./pairing";
+import { getOrCreateEncryptionIdentity } from "./device";
 
 export interface UseFolderMutations extends FolderMutations {
   /** True once a device identity is available. */
@@ -45,6 +46,9 @@ export function useFolderMutations(): UseFolderMutations {
       device: {
         deviceId: device.device_id,
         edPublicKey: identityPublicKey(device),
+        // Seal this device's own folder-key envelope to its standalone X25519
+        // key, matching the opener (ADR-0008).
+        x25519PublicKey: encryptionPublicKeyBytes(getOrCreateEncryptionIdentity()),
       },
       recoveryPublicKey: session?.recovery_public_key ?? null,
       putFolderKey,
