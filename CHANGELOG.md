@@ -1,5 +1,15 @@
 # Changelog
 
+## [2026-09-15] - ADR-0008 phase 1b: clients publish and use the X25519 key
+
+**What changed:** Both clients generate/persist an X25519 encryption identity and publish its public key at login, registration, recovery and device registration. Web stores it in localStorage (`lib/device.ts`) and passes it through the SDK auth/recovery clients; mobile stores it in the keychain (`src/storage.ts`) and threads it through `relayLogin`/`relayRegisterDevice`/recovery. Opening now uses `openFekWithFallback`/`openFolderKeyWithFallback` (try the published X25519 key, then the legacy Ed25519-derived key) in the web download/conflict/tombstone paths and the mobile file/folder key resolution, so envelopes sealed before the migration still open.
+
+**Why:** Publishing the key is what makes senders seal to it; the fallback keeps existing accounts with legacy envelopes working, so phase 1 is a no-op for anyone who does not re-publish.
+
+**Impact:** `packages/sdk` (auth/recovery signatures, envelope fallback helpers), `apps/web` (device, envelopes, recovery, auth-provider + test), `apps/mobile` (storage, relay, download keys/folder-keys, App). Verified: SDK build/tests (30), web lint/typecheck/tests (194), mobile lint/typecheck/tests/export.
+
+**Follow-ups:** Existing envelopes remain sealed to the Ed25519-derived key until each device re-seals (phase 2); web signing is still the exportable Ed25519 seed until phase 3.
+
 ## [2026-09-15] - ADR-0008 phase 1: per-device X25519 encryption keys
 
 **What changed:** Additive plumbing for ADR-0008. Core gains `generateEncryptionKeypair()` (a standalone X25519 keypair). The Relay gains migration 022 (`devices.encryption_public_key`), accepts `device_encryption_public_key` on login/register/recovery and `encryption_public_key` on device registration, preserves an existing key when a request omits it, and returns it from `GET /devices`. The SDK gains a persistent device encryption identity (`device/encryption.ts`, base64 X25519 keypair in the platform secure store), `sealFekForEncryptionKey`/`openFekFromEnvelopeX25519`, `decodeEncryptionPublicKey`, and teaches `collectRecipients`/`sealFekForRecipients` to prefer a recipient's published X25519 key with the Ed25519→X25519 derivation as fallback.

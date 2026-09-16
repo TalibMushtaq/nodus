@@ -119,8 +119,14 @@ async function post<T>(path: string, body?: unknown): Promise<T> {
  * already stored the token under the secure-store session key, so callers only
  * need it as an "authenticated" signal.
  */
-export async function relayLogin(email: string, password: string, device: StoredDeviceIdentity): Promise<string> {
-  const result = await auth.login(email, password, device);
+export async function relayLogin(
+  email: string,
+  password: string,
+  device: StoredDeviceIdentity,
+  /** Published X25519 encryption key (ADR-0008); optional. */
+  encryptionPublicKey?: string,
+): Promise<string> {
+  const result = await auth.login(email, password, device, encryptionPublicKey);
   if (!result.ok) throw new Error(result.error ?? "sign-in failed");
   const token = await getSessionToken();
   if (!token) throw new Error("sign-in succeeded but the Relay issued no session");
@@ -194,8 +200,16 @@ export async function relayPingDevice(deviceId: string): Promise<void> {
 }
 
 /** Idempotent upsert so CreatePairingSession can find the device's key. */
-export async function relayRegisterDevice(device: StoredDeviceIdentity): Promise<void> {
-  await post("/devices/register", { device_id: device.device_id, public_key: device.public_key });
+export async function relayRegisterDevice(
+  device: StoredDeviceIdentity,
+  /** Published X25519 encryption key (ADR-0008); optional. */
+  encryptionPublicKey?: string,
+): Promise<void> {
+  await post("/devices/register", {
+    device_id: device.device_id,
+    public_key: device.public_key,
+    encryption_public_key: encryptionPublicKey,
+  });
 }
 
 export async function relayCreatePairingSession(nodeId: string, deviceId: string): Promise<PairingSession> {

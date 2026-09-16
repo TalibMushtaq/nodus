@@ -25,12 +25,18 @@ export interface AuthResult {
 }
 
 export interface AuthClient {
-  login(email: string, password: string, device: StoredDeviceIdentity): Promise<AuthResult>;
+  login(
+    email: string,
+    password: string,
+    device: StoredDeviceIdentity,
+    encryptionPublicKey?: string,
+  ): Promise<AuthResult>;
   register(
     email: string,
     password: string,
     device: StoredDeviceIdentity,
     recoveryPublicKey?: string,
+    encryptionPublicKey?: string,
   ): Promise<AuthResult>;
   logout(): Promise<void>;
   /** Current session, or null when missing/expired/revoked (Relay 401). */
@@ -51,23 +57,26 @@ export function createAuthClient(http: RelayHttp): AuthClient {
   }
 
   return {
-    login(email, password, device) {
+    login(email, password, device, encryptionPublicKey) {
       // device_id/public_key ride the login body so the Relay auto-registers
-      // the device beside session creation (§2); no separate pairing step.
+      // the device beside session creation (§2); no separate pairing step. The
+      // X25519 encryption key (ADR-0008) is published here too, when present.
       return authenticate("/auth/login", {
         email,
         password,
         device_id: device.device_id,
         device_public_key: device.public_key,
+        device_encryption_public_key: encryptionPublicKey,
       });
     },
 
-    register(email, password, device, recoveryPublicKey) {
+    register(email, password, device, recoveryPublicKey, encryptionPublicKey) {
       return authenticate("/auth/register", {
         email,
         password,
         device_id: device.device_id,
         device_public_key: device.public_key,
+        device_encryption_public_key: encryptionPublicKey,
         recovery_public_key: recoveryPublicKey,
       });
     },

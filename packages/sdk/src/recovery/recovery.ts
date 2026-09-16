@@ -60,7 +60,12 @@ export interface RecoveryClient {
   /** Sign a Relay recovery nonce (hex string) with the phrase's recovery key. */
   signNonce(phrase: string, nonce: string): string;
   /** Online recovery: prove the phrase, register this device, start a session. */
-  recover(email: string, phrase: string, device: StoredDeviceIdentity): Promise<RecoveryLoginResult>;
+  recover(
+    email: string,
+    phrase: string,
+    device: StoredDeviceIdentity,
+    encryptionPublicKey?: string,
+  ): Promise<RecoveryLoginResult>;
   /** Unlock this device's local key stores from recovery-sealed envelopes. */
   materialize(phrase: string): Promise<{ files: number; folders: number }>;
   /** Enroll or rotate the account recovery public key on the Relay. */
@@ -86,7 +91,7 @@ export function createRecoveryClient(deps: RecoveryDeps): RecoveryClient {
 
     signNonce: (phrase, nonce) => signRecoveryChallenge(phrase, new TextEncoder().encode(nonce)),
 
-    async recover(email, phrase, device) {
+    async recover(email, phrase, device, encryptionPublicKey) {
       const challengeRes = await deps.http.request<{
         nonce?: string;
         recovery_public_key?: string;
@@ -110,6 +115,7 @@ export function createRecoveryClient(deps: RecoveryDeps): RecoveryClient {
           signature,
           device_id: device.device_id,
           device_public_key: device.public_key,
+          device_encryption_public_key: encryptionPublicKey,
         },
       });
       if (!res.ok) {

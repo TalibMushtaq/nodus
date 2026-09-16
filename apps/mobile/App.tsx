@@ -39,6 +39,7 @@ import {
   uploadFile,
   type ConflictEntry,
   type SessionInfo,
+  type StoredEncryptionIdentity,
 } from "@repo/sdk";
 import type { TransferPath } from "@repo/transfer-manager";
 import {
@@ -101,7 +102,7 @@ import { rotateRecoveryKey } from "./src/recovery/rotate";
 import { sqliteRecoveryStore } from "./src/recovery/store";
 import { registerBackgroundSync } from "./src/background/sync";
 import { saveAndShare } from "./src/download/save";
-import { loadOrCreateDevice } from "./src/storage";
+import { loadOrCreateDevice, loadOrCreateEncryptionIdentity } from "./src/storage";
 import { getPreference, setPreference } from "./src/store/preferences";
 import {
   addTrustedNode,
@@ -112,6 +113,9 @@ import {
 export default function App() {
   // ── device identity (created on first launch, key output of this app) ────
   const [device, setDevice] = React.useState<StoredDeviceIdentity | null>(null);
+  // X25519 encryption identity (ADR-0008): published to the Relay so peers seal
+  // key envelopes to it directly.
+  const [encryption, setEncryption] = React.useState<StoredEncryptionIdentity | null>(null);
 
   // ── relay auth + catalog ──────────────────────────────────────────────────
   const [email, setEmail] = React.useState("");
@@ -187,6 +191,7 @@ export default function App() {
   React.useEffect(() => {
     void (async () => {
       setDevice(await loadOrCreateDevice());
+      setEncryption(await loadOrCreateEncryptionIdentity());
       setTrusted(await getTrustedNodes());
       // Restore the shard-size preference (falls back to the 8 MiB default).
       const storedShardSize = await getPreference("shardSizeBytes");
@@ -279,14 +284,14 @@ export default function App() {
     setError(null);
     try {
       if (!device) throw new Error("device identity is not ready");
-      await relayLogin(email, password, device);
+      await relayLogin(email, password, device, encryption?.public_key);
       setSession(await relaySession());
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(null);
     }
-  }, [device, email, password]);
+  }, [device, email, password, encryption]);
 
   const signOut = React.useCallback(async () => {
     setBusy("signing-out");
@@ -327,7 +332,7 @@ export default function App() {
       const online = net.isInternetReachable !== false;
 
       if (online) {
-        const result = await client.recover(email, phrase, device);
+        const result = await client.recover(email, phrase, device, encryption?.public_key);
         if (!result.ok || !result.session) throw new Error(result.error ?? "recovery failed");
         // Keep the phrase locally (revealable on Security) before unlocking keys.
         await client.save(result.session.account_id, phrase);
@@ -355,7 +360,7 @@ export default function App() {
     } finally {
       setBusy(null);
     }
-  }, [device, email, recoveryPhraseInput]);
+  }, [device, email, recoveryPhraseInput, encryption]);
 
   const loadNodes = React.useCallback(async () => {
     if (!authed) return;
@@ -544,7 +549,7 @@ export default function App() {
     setError(null);
     setNotice(null);
     try {
-      await relayRegisterDevice(device);
+      await relayRegisterDevice(device, encryption?.public_key);
       setPending(await relayCreatePairingSession(selectedNode, device.device_id));
       setNotice("Token issued — finish locally to pair this device.");
     } catch (err) {
@@ -552,7 +557,7 @@ export default function App() {
     } finally {
       setBusy(null);
     }
-  }, [device, authed, selectedNode]);
+  }, [device, authed, selectedNode, encryption]);
 
   // Pick a file and run the shared Path C uploader against the selected node
   // (or the primary). Shards are encrypted, announced to the Relay, and sealed

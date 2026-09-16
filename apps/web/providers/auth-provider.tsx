@@ -5,7 +5,7 @@ import type { ReactNode } from "react";
 import type { StoredDeviceIdentity } from "@repo/relay-client";
 
 import { fetchSession, login, register, logout } from "../lib/auth-client";
-import { getOrCreateDeviceIdentity } from "../lib/device";
+import { getOrCreateDeviceIdentity, getOrCreateEncryptionIdentity } from "../lib/device";
 import type { SessionInfo } from "../lib/session";
 
 // AuthProvider (re)auths against the Relay-backed session cookie on the
@@ -78,7 +78,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const handleLogin = useCallback(async (email: string, password: string) => {
     const dev = getOrCreateDeviceIdentity();
-    const res = await login(email, password, dev);
+    // Publish the X25519 encryption key alongside the Ed25519 identity so other
+    // devices seal envelopes to it directly (ADR-0008).
+    const res = await login(email, password, dev, getOrCreateEncryptionIdentity().public_key);
     if (!res.ok) {
       return { ok: false, error: res.error };
     }
@@ -90,11 +92,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const handleRegister = useCallback(
     async (email: string, password: string, recoveryPublicKey?: string) => {
       const dev = getOrCreateDeviceIdentity();
+      const encryptionKey = getOrCreateEncryptionIdentity().public_key;
       // Only pass the recovery key when enrolling, so a plain registration keeps
       // its original call shape.
       const res = recoveryPublicKey
-        ? await register(email, password, dev, recoveryPublicKey)
-        : await register(email, password, dev);
+        ? await register(email, password, dev, recoveryPublicKey, encryptionKey)
+        : await register(email, password, dev, undefined, encryptionKey);
       if (!res.ok) {
         return { ok: false, error: res.error };
       }

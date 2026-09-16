@@ -7,11 +7,14 @@
 // IndexedDB phrase store and HTTP proxies.
 
 import { createRecoveryClient } from "@repo/sdk";
+import type { RecoveryLoginResult } from "@repo/sdk";
+import type { StoredDeviceIdentity } from "@repo/relay-client";
 
 import { STORE_RECOVERY, idbDelete, idbGet, idbPut } from "./db";
 import { putFileKey } from "./keys";
 import { putFolderKey } from "./folder-keys";
 import { createWebRelayHttp } from "./adapters";
+import { getOrCreateEncryptionIdentity } from "./device";
 
 export interface RecoveryRecord {
   account_id: string;
@@ -49,7 +52,18 @@ export const saveRecoveryPhrase = client.save;
 export const loadRecoveryPhrase = client.load;
 export const clearRecoveryPhrase = client.clear;
 export const signRecoveryNonce = client.signNonce;
-export const recoverAccount = client.recover;
 export const materializeRecoveryKeys = client.materialize;
 export const enrollRecoveryKey = client.enroll;
 export type { RecoveryLoginResult } from "@repo/sdk";
+
+/**
+ * Recover this account, publishing the fresh device's X25519 encryption key
+ * (ADR-0008) so later uploads can seal envelopes to it directly.
+ */
+export function recoverAccount(
+  email: string,
+  phrase: string,
+  device: StoredDeviceIdentity,
+): Promise<RecoveryLoginResult> {
+  return client.recover(email, phrase, device, getOrCreateEncryptionIdentity().public_key);
+}

@@ -12,6 +12,7 @@ export { getOrCreateDeviceIdentity, isStoredDeviceIdentity, DEVICE_IDENTITY_KEY 
 export {
   createEncryptionIdentity,
   getOrCreateEncryptionIdentity,
+  isStoredEncryptionIdentity,
   encryptionPublicKeyBytes,
   encryptionPrivateKeyBytes,
   ENCRYPTION_IDENTITY_KEY,
@@ -52,7 +53,9 @@ export {
   sealFekForEncryptionKey,
   openFekFromEnvelope,
   openFekFromEnvelopeX25519,
+  openFekWithFallback,
   openFolderKeyFromEnvelopes,
+  openFolderKeyWithFallback,
   collectRecipients,
   decodeEncryptionPublicKey,
   envelopeEvent,

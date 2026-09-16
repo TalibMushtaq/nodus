@@ -177,6 +177,25 @@ export function openFekFromEnvelopeX25519(encoded: string, x25519PrivateKey: Uin
 }
 
 /**
+ * Open a device's envelope trying its published X25519 key first, then the
+ * legacy Ed25519→X25519 derivation. An envelope is sealed to exactly one of
+ * them (ADR-0008), so the first failure just means it is the other kind.
+ */
+export function openFekWithFallback(
+  encoded: string,
+  keys: { x25519PrivateKey?: Uint8Array; edPrivateSeed: Uint8Array },
+): Uint8Array {
+  if (keys.x25519PrivateKey) {
+    try {
+      return openFekFromEnvelopeX25519(encoded, keys.x25519PrivateKey);
+    } catch {
+      // Not sealed to the published X25519 key; fall through to the legacy key.
+    }
+  }
+  return openFekFromEnvelope(encoded, keys.edPrivateSeed);
+}
+
+/**
  * Open this device's folder-key envelope from an already-fetched list. Kept
  * separate from fetching so the folder tree can fetch once and open N
  * envelopes without N round trips.
@@ -190,6 +209,18 @@ export function openFolderKeyFromEnvelopes(
   const mine = envelopes.find((e) => e.folder_id === folderId && e.recipient_id === deviceId);
   if (!mine) return null;
   return openFekFromEnvelope(mine.encrypted_key, edPrivateSeed);
+}
+
+/** As `openFolderKeyFromEnvelopes`, but tries the X25519 key first (ADR-0008). */
+export function openFolderKeyWithFallback(
+  envelopes: RelayFolderEnvelope[],
+  folderId: string,
+  deviceId: string,
+  keys: { x25519PrivateKey?: Uint8Array; edPrivateSeed: Uint8Array },
+): Uint8Array | null {
+  const mine = envelopes.find((e) => e.folder_id === folderId && e.recipient_id === deviceId);
+  if (!mine) return null;
+  return openFekWithFallback(mine.encrypted_key, keys);
 }
 
 /**

@@ -18,6 +18,10 @@ vi.mock("../../lib/device", () => ({
     public_key: "test-public-key",
     private_key: "test-private-key",
   }),
+  getOrCreateEncryptionIdentity: vi.fn().mockReturnValue({
+    public_key: "test-encryption-public-key",
+    private_key: "test-encryption-private-key",
+  }),
 }));
 
 import { login, register, logout, fetchSession } from "../../lib/auth-client";
@@ -100,11 +104,16 @@ describe("AuthProvider", () => {
       screen.getByText("Login").click();
     });
 
-    expect(mockLogin).toHaveBeenCalledWith("test@example.com", "password123", {
-      device_id: "test-device-id",
-      public_key: "test-public-key",
-      private_key: "test-private-key",
-    });
+    expect(mockLogin).toHaveBeenCalledWith(
+      "test@example.com",
+      "password123",
+      {
+        device_id: "test-device-id",
+        public_key: "test-public-key",
+        private_key: "test-private-key",
+      },
+      "test-encryption-public-key",
+    );
     expect(screen.getByTestId("status")).toHaveTextContent("authenticated");
   });
 
@@ -120,11 +129,17 @@ describe("AuthProvider", () => {
       screen.getByText("Register").click();
     });
 
-    expect(mockRegister).toHaveBeenCalledWith("test@example.com", "password123", {
-      device_id: "test-device-id",
-      public_key: "test-public-key",
-      private_key: "test-private-key",
-    });
+    expect(mockRegister).toHaveBeenCalledWith(
+      "test@example.com",
+      "password123",
+      {
+        device_id: "test-device-id",
+        public_key: "test-public-key",
+        private_key: "test-private-key",
+      },
+      undefined,
+      "test-encryption-public-key",
+    );
     expect(screen.getByTestId("status")).toHaveTextContent("authenticated");
   });
 
