@@ -34,6 +34,17 @@ pub const WEBRTC_OFFER_RATE_WINDOW: Duration = Duration::from_secs(10);
 pub const RECOVERY_RATE_LIMIT: usize = 5;
 /// Sliding window for the recovery challenge rate limiter.
 pub const RECOVERY_RATE_WINDOW: Duration = Duration::from_secs(60);
+/// Max recovery signature submissions (`POST /nodus/recovery`) per IP within the
+/// window. Signature verification is CPU work on a phrase-gated ceremony, so it
+/// is limited separately from the challenge budget.
+pub const RECOVERY_AUTH_RATE_LIMIT: usize = 5;
+/// Sliding window for the recovery submission rate limiter.
+pub const RECOVERY_AUTH_RATE_WINDOW: Duration = Duration::from_secs(60);
+/// Max recovery-envelope fetches (`GET /nodus/recovery/envelopes`) per IP within
+/// the window. The request is device-signed, but this caps enumeration volume.
+pub const RECOVERY_ENVELOPES_RATE_LIMIT: usize = 10;
+/// Sliding window for the recovery-envelope rate limiter.
+pub const RECOVERY_ENVELOPES_RATE_WINDOW: Duration = Duration::from_secs(60);
 /// Hard cap on outstanding unconsumed nonces across all clients.
 pub const NONCE_OUTSTANDING_CAP: usize = 500;
 
@@ -91,6 +102,17 @@ impl NonceStore {
             }
             _ => false,
         }
+    }
+
+    /// Report whether a nonce is known and unexpired **without** consuming it.
+    /// Used to verify a signature before redeeming, so an attacker who sniffs a
+    /// nonce cannot burn it with a garbage signature and deny the legitimate
+    /// recovery. Single-use is still enforced by a later `consume`.
+    pub async fn peek(&self, nonce: &str) -> bool {
+        let guard = self.inner.lock().await;
+        guard
+            .get(nonce)
+            .is_some_and(|issued_at| issued_at.elapsed() < self.ttl)
     }
 }
 
@@ -176,6 +198,24 @@ mod tests {
         let nonce = store.issue().await.expect("should issue nonce");
         assert!(store.consume(&nonce).await, "first use should succeed");
         assert!(!store.consume(&nonce).await, "second use must fail");
+    }
+
+    #[tokio::test]
+    async fn peek_observes_without_consuming() {
+        let store = NonceStore::new(Duration::from_secs(30));
+        let nonce = store.issue().await.expect("should issue nonce");
+        assert!(store.peek(&nonce).await, "known nonce peeks true");
+        assert!(store.peek(&nonce).await, "peek leaves the nonce in place");
+        assert!(!store.peek("unknown").await, "unknown nonce peeks false");
+        assert!(store.consume(&nonce).await, "still consumable after peeks");
+        assert!(!store.peek(&nonce).await, "consumed nonce peeks false");
+    }
+
+    #[tokio::test]
+    async fn peek_rejects_expired() {
+        let store = NonceStore::new(Duration::ZERO);
+        let nonce = store.issue().await.expect("should issue nonce");
+        assert!(!store.peek(&nonce).await, "an expired nonce peeks false");
     }
 
     #[tokio::test]

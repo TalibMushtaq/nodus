@@ -1,5 +1,15 @@
 # Changelog
 
+## [2026-09-16] - Verify-then-consume recovery nonces; rate-limit recovery endpoints
+
+**What changed:** `POST /nodus/recovery` now peeks the single-use nonce, verifies the phrase signature, and only then consumes it (the consume doubles as the concurrent double-spend guard), instead of consuming up front. Added `NonceStore::peek`. Added per-IP limiters for `POST /nodus/recovery` (`RECOVERY_AUTH_RATE_LIMIT = 5/min`) and `GET /nodus/recovery/envelopes` (`RECOVERY_ENVELOPES_RATE_LIMIT = 10/min`) and wired them into `LocalState`. Also fixed `tests/webrtc_transfer_test.rs`, which had not compiled since the recovery state fields landed.
+
+**Why:** Consuming the nonce before verifying let a LAN sniffer burn a victim's recovery nonce with a garbage signature (denying a legitimate recovery); the submission/envelope endpoints were also unrate-limited, overstating the "tighter per-IP limit" claim.
+
+**Impact:** `services/storage-node` (`src/local/auth.rs`, `src/local/server.rs`, `tests/webrtc_transfer_test.rs`). Verified: `cargo test` (lib 205 passed, including new `peek`, bad-signature-doesn't-burn-nonce, replay, and rate-limit tests).
+
+**Follow-ups:** `/nodus/auth` keeps the same consume-before-verify order (bounded by its 10/10s challenge limiter); the recovery key's origin in unsigned `KEY_ENVELOPE_ADDED` sync events remains a separate trust note.
+
 ## [2026-09-16] - Relay validates the device encryption public key
 
 **What changed:** Added `normalizeEncryptionPublicKey` (trims; empty is allowed; otherwise requires 32-byte base64 using `curve25519.PointSize`) and applied it on every write path — `RegisterDevice`, `Register`/`Login` (`device_encryption_public_key`) and `Recover` — returning 400 for a malformed key and storing the normalized value. Added `device_test.go` for the helper.

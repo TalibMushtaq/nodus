@@ -97,6 +97,11 @@ async fn test_webrtc_offer_and_ice_endpoint_roundtrip() {
         nonces,
         challenge_limiter,
         offer_limiter,
+        // Recovery endpoints are not exercised here, but LocalState requires them.
+        recovery_nonces: Arc::new(NonceStore::default()),
+        recovery_limiter: Arc::new(RateLimiter::new(Duration::from_secs(10), 100)),
+        recovery_auth_limiter: Arc::new(RateLimiter::new(Duration::from_secs(10), 100)),
+        recovery_envelopes_limiter: Arc::new(RateLimiter::new(Duration::from_secs(10), 100)),
         relay_http_base: None,
         http: reqwest::Client::new(),
         telemetry,

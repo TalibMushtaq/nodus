@@ -67,6 +67,11 @@ pub struct LocalState {
     pub recovery_nonces: Arc<NonceStore>,
     /// Per-IP limiter for `/nodus/recovery/challenge`.
     pub recovery_limiter: Arc<RateLimiter>,
+    /// Per-IP limiter for the recovery signature submission itself, so a client
+    /// cannot hammer signature verification (or a sniffed nonce).
+    pub recovery_auth_limiter: Arc<RateLimiter>,
+    /// Per-IP limiter for recovery-envelope fetches, capping enumeration.
+    pub recovery_envelopes_limiter: Arc<RateLimiter>,
     /// Derived Relay HTTP base (ws→http, /ws dropped), reused for the
     /// `/pairing/sessions/verify` fallback. `None` disables the fallback.
     pub relay_http_base: Option<String>,
@@ -263,6 +268,14 @@ pub async fn spawn(
         recovery_limiter: Arc::new(RateLimiter::new(
             super::auth::RECOVERY_RATE_WINDOW,
             super::auth::RECOVERY_RATE_LIMIT,
+        )),
+        recovery_auth_limiter: Arc::new(RateLimiter::new(
+            super::auth::RECOVERY_AUTH_RATE_WINDOW,
+            super::auth::RECOVERY_AUTH_RATE_LIMIT,
+        )),
+        recovery_envelopes_limiter: Arc::new(RateLimiter::new(
+            super::auth::RECOVERY_ENVELOPES_RATE_WINDOW,
+            super::auth::RECOVERY_ENVELOPES_RATE_LIMIT,
         )),
         relay_http_base: relay_http,
         // Bound the Relay pairing-verify call (#9): a black-holed relay IP
@@ -466,10 +479,25 @@ async fn recovery_challenge(
 /// Prove the recovery phrase (an Ed25519 signature over the nonce), register
 /// the new device locally, and return the account id. No Relay involved.
 async fn recovery_auth(
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     State(state): State<LocalState>,
     Json(req): Json<RecoveryRequest>,
 ) -> Result<Json<RecoveryResult>, LocalError> {
-    if !state.recovery_nonces.consume(&req.nonce).await {
+    // Bound signature-verification work (and attempts on a sniffed nonce) per IP.
+    if !state
+        .recovery_auth_limiter
+        .check_and_record(addr.ip())
+        .await
+    {
+        return Err(LocalError {
+            error: "rate_limited".into(),
+            message: "too many recovery attempts; try again shortly".into(),
+        });
+    }
+    // Peek rather than consume: a sniffed nonce with a garbage signature must not
+    // burn the legitimate recovery. Single-use is enforced by the consume after
+    // the signature verifies.
+    if !state.recovery_nonces.peek(&req.nonce).await {
         return Err(LocalError {
             error: "invalid_nonce".into(),
             message: "recovery nonce was not issued, is expired, or already used".into(),
@@ -497,6 +525,15 @@ async fn recovery_auth(
             message: format!("recovery signature verification failed: {e}"),
         }
     })?;
+
+    // Only now claim the nonce. A false here means a concurrent submission won
+    // the race, so this (valid) attempt must not mint a second device session.
+    if !state.recovery_nonces.consume(&req.nonce).await {
+        return Err(LocalError {
+            error: "invalid_nonce".into(),
+            message: "recovery nonce was not issued, is expired, or already used".into(),
+        });
+    }
 
     let now = now_iso();
     sqlx::query(
@@ -528,9 +565,21 @@ async fn recovery_auth(
 /// it can unlock file/folder keys with no Internet. Only `recipient_kind =
 /// 'recovery'` rows are ever returned; device/node envelopes stay private.
 async fn recovery_envelopes(
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     State(state): State<LocalState>,
     headers: HeaderMap,
 ) -> Result<Json<RecoveryEnvelopes>, LocalError> {
+    // The request is device-signed, but cap enumeration volume per IP anyway.
+    if !state
+        .recovery_envelopes_limiter
+        .check_and_record(addr.ip())
+        .await
+    {
+        return Err(LocalError {
+            error: "rate_limited".into(),
+            message: "too many recovery requests; try again shortly".into(),
+        });
+    }
     let (caller, _is_device, timestamp, _signature) = parse_signed_headers(&headers)?;
     let message = format!("{caller}:recovery-envelopes:{timestamp}");
     verify_signed_caller(&state.db, &headers, message.as_bytes()).await?;
@@ -1116,6 +1165,14 @@ mod tests {
                 Duration::from_secs(10),
                 super::super::auth::RECOVERY_RATE_LIMIT,
             )),
+            recovery_auth_limiter: Arc::new(RateLimiter::new(
+                Duration::from_secs(60),
+                super::super::auth::RECOVERY_AUTH_RATE_LIMIT,
+            )),
+            recovery_envelopes_limiter: Arc::new(RateLimiter::new(
+                Duration::from_secs(60),
+                super::super::auth::RECOVERY_ENVELOPES_RATE_LIMIT,
+            )),
             relay_http_base: None,
             http: reqwest::Client::new(),
             telemetry: crate::telemetry::Telemetry::new(),
@@ -1179,12 +1236,13 @@ mod tests {
             "device_id": "dev-recovered",
             "device_public_key": b64(&device.verifying_key().to_bytes()),
         });
-        let req = Request::builder()
+        let mut req = Request::builder()
             .uri("/nodus/recovery")
             .method("POST")
             .header("content-type", "application/json")
             .body(Body::from(body.to_string()))
             .unwrap();
+        req.extensions_mut().insert(ConnectInfo(addr));
         let resp = app.clone().oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
 
@@ -1200,7 +1258,7 @@ mod tests {
         let ts = chrono::Utc::now().timestamp_millis();
         let message = format!("dev-recovered:recovery-envelopes:{ts}");
         let sig = hex::encode(device.sign(message.as_bytes()).to_bytes());
-        let req = Request::builder()
+        let mut req = Request::builder()
             .uri("/nodus/recovery/envelopes")
             .method("GET")
             .header("x-nodus-device-id", "dev-recovered")
@@ -1208,6 +1266,7 @@ mod tests {
             .header("x-nodus-signature", sig)
             .body(Body::empty())
             .unwrap();
+        req.extensions_mut().insert(ConnectInfo(addr));
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         let json: serde_json::Value =
@@ -1242,12 +1301,13 @@ mod tests {
             "device_id": "dev-attacker",
             "device_public_key": b64(&attacker.verifying_key().to_bytes()),
         });
-        let req = Request::builder()
+        let mut req = Request::builder()
             .uri("/nodus/recovery")
             .method("POST")
             .header("content-type", "application/json")
             .body(Body::from(body.to_string()))
             .unwrap();
+        req.extensions_mut().insert(ConnectInfo(addr));
         let resp = app.oneshot(req).await.unwrap();
         // `bad_signature` shares the generic 400 mapping with device auth.
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
@@ -1258,6 +1318,107 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(count, 0);
+    }
+
+    #[tokio::test]
+    async fn test_recovery_bad_signature_does_not_burn_nonce() {
+        let (app, db, _id, _dir) = setup_test_server().await;
+        let recovery = SigningKey::from_bytes(&[3u8; 32]);
+        let recovery_pub = b64(&recovery.verifying_key().to_bytes());
+        seed_recovery(&db, &recovery_pub).await;
+
+        let addr: SocketAddr = "192.168.1.63:5555".parse().unwrap();
+        let mut req = Request::builder()
+            .uri("/nodus/recovery/challenge")
+            .method("POST")
+            .body(Body::empty())
+            .unwrap();
+        req.extensions_mut().insert(ConnectInfo(addr));
+        let resp = app.clone().oneshot(req).await.unwrap();
+        let json: serde_json::Value =
+            serde_json::from_slice(&resp.into_body().collect().await.unwrap().to_bytes()).unwrap();
+        let nonce = json["nonce"].as_str().unwrap().to_string();
+
+        // A garbage signature over the issued nonce must be rejected without
+        // consuming the nonce, so a sniffer cannot deny the real recovery.
+        let attacker = SigningKey::from_bytes(&[9u8; 32]);
+        let bad = serde_json::json!({
+            "nonce": nonce,
+            "signature": hex::encode(attacker.sign(nonce.as_bytes()).to_bytes()),
+            "device_id": "dev-attacker",
+            "device_public_key": b64(&attacker.verifying_key().to_bytes()),
+        });
+        let mut req = Request::builder()
+            .uri("/nodus/recovery")
+            .method("POST")
+            .header("content-type", "application/json")
+            .body(Body::from(bad.to_string()))
+            .unwrap();
+        req.extensions_mut().insert(ConnectInfo(addr));
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        // The legitimate phrase holder can still use the same nonce.
+        let device = SigningKey::from_bytes(&[4u8; 32]);
+        let good = serde_json::json!({
+            "nonce": nonce,
+            "signature": hex::encode(recovery.sign(nonce.as_bytes()).to_bytes()),
+            "device_id": "dev-recovered",
+            "device_public_key": b64(&device.verifying_key().to_bytes()),
+        });
+        let mut req = Request::builder()
+            .uri("/nodus/recovery")
+            .method("POST")
+            .header("content-type", "application/json")
+            .body(Body::from(good.to_string()))
+            .unwrap();
+        req.extensions_mut().insert(ConnectInfo(addr));
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // And the nonce is now spent, so a replay fails.
+        let mut req = Request::builder()
+            .uri("/nodus/recovery")
+            .method("POST")
+            .header("content-type", "application/json")
+            .body(Body::from(good.to_string()))
+            .unwrap();
+        req.extensions_mut().insert(ConnectInfo(addr));
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_recovery_auth_rate_limited() {
+        let (app, _db, _id, _dir) = setup_test_server().await;
+        let addr: SocketAddr = "192.168.1.64:5555".parse().unwrap();
+
+        // Valid JSON so the handler (and its limiter) runs; the nonce is bogus so
+        // each attempt is a cheap 400 before the limit is hit.
+        let body = serde_json::json!({
+            "nonce": "deadbeef",
+            "signature": "00",
+            "device_id": "dev-1",
+            "device_public_key": b64(&[1u8; 32]),
+        })
+        .to_string();
+        let make_req = || {
+            let mut req = Request::builder()
+                .uri("/nodus/recovery")
+                .method("POST")
+                .header("content-type", "application/json")
+                .body(Body::from(body.clone()))
+                .unwrap();
+            req.extensions_mut().insert(ConnectInfo(addr));
+            req
+        };
+
+        for _ in 0..super::super::auth::RECOVERY_AUTH_RATE_LIMIT {
+            let resp = app.clone().oneshot(make_req()).await.unwrap();
+            assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        }
+        let resp = app.oneshot(make_req()).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
     }
 
     #[tokio::test]
