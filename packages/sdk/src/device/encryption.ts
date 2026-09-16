@@ -40,7 +40,8 @@ export function createEncryptionIdentity(): StoredEncryptionIdentity {
   };
 }
 
-function isStoredEncryptionIdentity(value: unknown): value is StoredEncryptionIdentity {
+/** Structural check shared with synchronous platform stores (web localStorage). */
+export function isStoredEncryptionIdentity(value: unknown): value is StoredEncryptionIdentity {
   if (typeof value !== "object" || value === null) return false;
   const id = value as Record<string, unknown>;
   return (
