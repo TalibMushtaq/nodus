@@ -1,5 +1,15 @@
 # Changelog
 
+## [2026-09-15] - ADR-0008 status: phases 1–3a done, 3b gated
+
+**What changed:** Recorded ADR-0008's phase status in the ADR and Todo: phases 1, 1b, 2 and 3a are implemented and tested; phase 3b (rewire the web client onto the non-extractable signer and delete the exportable seed) is explicitly gated on there being no legacy Ed25519-derived envelopes left, because the seed is their only opener — a browser-verifiable precondition.
+
+**Why:** Phase 3b cannot be shipped blindly without risking unopenable envelopes for accounts that have not migrated; making the gate explicit keeps the item honest.
+
+**Impact:** `docs/decisions/0008-non-extractable-device-keys.md`, `Todo.md`, `CHANGELOG.md`. Docs only.
+
+**Follow-ups:** Implement phase 3b once migration coverage is observable (e.g. all of a device's current envelopes are X25519-sealed), with the web signer wiring and seed deletion.
+
 ## [2026-09-15] - ADR-0008 phase 3a: non-extractable WebCrypto signing primitive
 
 **What changed:** Added `packages/sdk/src/device/webcrypto.ts`: `supportsWebCryptoEd25519`, `generateWebCryptoDeviceKeys` (non-extractable Ed25519 `CryptoKey` + exported public key + device id), and `createDeviceSigner` (a `sign(message) => hex` handle). A test generates a key, asserts it is non-extractable, and verifies the signature with `@noble/curves` over the exact message bytes — the contract the Relay and Rust node enforce. `@noble/curves` added to SDK devDependencies for tests.

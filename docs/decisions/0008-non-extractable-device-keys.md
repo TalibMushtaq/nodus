@@ -1,12 +1,25 @@
 # ADR-0008: Non-Extractable Device Keys (Proposed)
 
 ## Status
-Accepted (2026-09-15) — implemented in phases. Phase 1 (additive) is done:
-devices publish an X25519 encryption key that senders seal to directly, with a
-fallback to the Ed25519→X25519 derivation for devices that have not published
-one. Phase 2 (re-seal each device's existing envelopes to its new key) and
-Phase 3 (switch web signing to a non-extractable WebCrypto Ed25519 key and drop
-the exportable seed) follow.
+Accepted (2026-09-15) — implemented in phases.
+
+- **Phase 1** (done): devices publish an X25519 encryption key; senders seal to
+  it directly, with the Ed25519→X25519 derivation as fallback.
+- **Phase 1b** (done): web and mobile generate/persist the key, publish it on
+  auth/recovery/device-registration, and open with X25519-then-Ed25519 fallback.
+- **Phase 2** (done): `resealKeysForSelf` + web/mobile migration actions move a
+  device's legacy envelopes onto its published X25519 key.
+- **Phase 3a** (done): a tested non-extractable WebCrypto Ed25519 signer
+  primitive (`packages/sdk/src/device/webcrypto.ts`).
+- **Phase 3b** (pending): rewire the web client onto that signer (persist the
+  `CryptoKey` in IndexedDB, expose `sign` via the auth provider, replace the
+  `private_key` call sites, delete the exportable seed).
+
+Phase 3b must not delete the seed until every envelope a device needs has been
+re-sealed (phase 2), because the seed is the only way to open a legacy
+envelope. Concretely: safer to gate seed removal on the device having zero
+legacy (Ed25519-derived) envelopes for its keys, or on an automatic migration
+that re-seals before deleting. That determination needs browser-level testing.
 
 ## Context
 The web client currently persists the device identity as an exportable Ed25519
