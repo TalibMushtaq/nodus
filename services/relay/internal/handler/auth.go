@@ -74,6 +74,12 @@ func Register(pool *db.Pool, store auth.SessionStore, cfg *config.Config) http.H
 			return
 		}
 
+		encryptionKey, valid := normalizeEncryptionPublicKey(req.DeviceEncryptionPublicKey)
+		if !valid {
+			respondError(w, http.StatusBadRequest, "device_encryption_public_key must be a 32-byte base64 X25519 public key")
+			return
+		}
+
 		hashedPassword, err := auth.HashPassword(req.Password)
 		if err != nil {
 			respondError(w, http.StatusInternalServerError, "failed to hash password")
@@ -106,7 +112,7 @@ func Register(pool *db.Pool, store auth.SessionStore, cfg *config.Config) http.H
 		}
 
 		// The first device auto-registers with the account (§2).
-		if _, err := upsertDeviceForAccount(tx, r, req.DeviceID, req.DevicePublicKey, req.DeviceEncryptionPublicKey, accountID); err != nil {
+		if _, err := upsertDeviceForAccount(tx, r, req.DeviceID, req.DevicePublicKey, encryptionKey, accountID); err != nil {
 			respondDeviceUpsertError(w, err)
 			return
 		}
@@ -146,6 +152,12 @@ func Login(pool *db.Pool, store auth.SessionStore, cfg *config.Config) http.Hand
 			return
 		}
 
+		encryptionKey, valid := normalizeEncryptionPublicKey(req.DeviceEncryptionPublicKey)
+		if !valid {
+			respondError(w, http.StatusBadRequest, "device_encryption_public_key must be a 32-byte base64 X25519 public key")
+			return
+		}
+
 		var (
 			accountID         string
 			passwordHash      string
@@ -173,7 +185,7 @@ func Login(pool *db.Pool, store auth.SessionStore, cfg *config.Config) http.Hand
 		// supplied device_id/public_key is upserted for THIS account (ownership
 		// guarded), so first login from a new device needs no separate
 		// /devices/register call.
-		if _, err := upsertDeviceForAccount(pool, r, req.DeviceID, req.DevicePublicKey, req.DeviceEncryptionPublicKey, accountID); err != nil {
+		if _, err := upsertDeviceForAccount(pool, r, req.DeviceID, req.DevicePublicKey, encryptionKey, accountID); err != nil {
 			respondDeviceUpsertError(w, err)
 			return
 		}

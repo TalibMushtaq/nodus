@@ -2,20 +2,40 @@ package handler
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/TalibMushtaq/nodus/services/relay/internal/auth"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/db"
+	"golang.org/x/crypto/curve25519"
 )
 
 // errDeviceOwnedElsewhere is returned by upsertDeviceForAccount when a
 // device_id already exists under a different account; callers map it to 409.
 var errDeviceOwnedElsewhere = errors.New("device_id registered to another account")
+
+// normalizeEncryptionPublicKey trims and validates a device's published X25519
+// encryption key (ADR-0008). An empty/omitted key is allowed — the device keeps
+// (or has) no published key. A non-empty value must be 32-byte base64, however:
+// a malformed key would be stored and later throw in every client's recipient
+// collector, breaking envelope sealing for the whole account.
+func normalizeEncryptionPublicKey(key string) (string, bool) {
+	trimmed := strings.TrimSpace(key)
+	if trimmed == "" {
+		return "", true
+	}
+	decoded, err := base64.StdEncoding.DecodeString(trimmed)
+	if err != nil || len(decoded) != curve25519.PointSize {
+		return "", false
+	}
+	return trimmed, true
+}
 
 type dbQuerier interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
@@ -122,7 +142,13 @@ func RegisterDevice(pool *db.Pool) http.HandlerFunc {
 			return
 		}
 
-		dev, err := upsertDeviceForAccount(pool, r, req.DeviceID, req.PublicKey, req.EncryptionPublicKey, accountID)
+		encryptionKey, ok := normalizeEncryptionPublicKey(req.EncryptionPublicKey)
+		if !ok {
+			respondError(w, http.StatusBadRequest, "encryption_public_key must be a 32-byte base64 X25519 public key")
+			return
+		}
+
+		dev, err := upsertDeviceForAccount(pool, r, req.DeviceID, req.PublicKey, encryptionKey, accountID)
 		if err != nil {
 			respondDeviceUpsertError(w, err)
 			return

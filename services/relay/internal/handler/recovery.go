@@ -238,6 +238,14 @@ func Recover(pool *db.Pool, store auth.SessionStore, cfg *config.Config) http.Ha
 			return
 		}
 
+		// Reject a malformed X25519 key here rather than storing it and breaking
+		// sealing for the whole account later (ADR-0008).
+		encryptionKey, ok := normalizeEncryptionPublicKey(req.DeviceEncryptionPublicKey)
+		if !ok {
+			respondError(w, http.StatusBadRequest, "device_encryption_public_key must be a 32-byte base64 X25519 public key")
+			return
+		}
+
 		var (
 			accountID         string
 			recoveryPublicKey *string
@@ -301,7 +309,7 @@ func Recover(pool *db.Pool, store auth.SessionStore, cfg *config.Config) http.Ha
 
 		// Device upsert and nonce consumption commit together, so a collision
 		// (device owned by another account) leaves the nonce usable.
-		if _, err := upsertDeviceForAccount(tx, r, req.DeviceID, req.DevicePublicKey, req.DeviceEncryptionPublicKey, accountID); err != nil {
+		if _, err := upsertDeviceForAccount(tx, r, req.DeviceID, req.DevicePublicKey, encryptionKey, accountID); err != nil {
 			respondDeviceUpsertError(w, err)
 			return
 		}

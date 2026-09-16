@@ -1,5 +1,13 @@
 # Changelog
 
+## [2026-09-16] - Relay validates the device encryption public key
+
+**What changed:** Added `normalizeEncryptionPublicKey` (trims; empty is allowed; otherwise requires 32-byte base64 using `curve25519.PointSize`) and applied it on every write path — `RegisterDevice`, `Register`/`Login` (`device_encryption_public_key`) and `Recover` — returning 400 for a malformed key and storing the normalized value. Added `device_test.go` for the helper.
+
+**Why:** The X25519 key was stored unvalidated; `decodeEncryptionPublicKey` throws on a malformed value inside every client's `collectRecipients`, so one bad key could break envelope sealing for the whole account.
+
+**Impact:** `services/relay` (`internal/handler/device.go`, `auth.go`, `recovery.go`, new `device_test.go`). Verified: `go build ./...`, `go vet`, `go test -run TestNormalizeEncryptionPublicKey`.
+
 ## [2026-09-16] - Mobile uploads seal the self and recovery recipients
 
 **What changed:** `createMobileUploadDeps` now takes `recoveryPublicKey` and, in `publishEnvelopes`, seals this device's own envelope to its standalone X25519 key (`loadOrCreateEncryptionIdentity`) and adds the account recovery recipient; `App.tsx` passes `session.recovery_public_key`. `mobileFolderMutations` takes the device X25519 key so folder self-envelopes match the opener.
