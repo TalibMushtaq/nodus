@@ -377,7 +377,7 @@ function folderContents(
 }
 
 export function FilesClient() {
-  const { device } = useAuth();
+  const { device, signer } = useAuth();
   const { files, folders, loading, error, refresh, forget, forgetFolder } = useFiles();
   // Device identity and the node catalog are client-only, so the SSR pass would
   // otherwise render the Upload control differently from the client's first
@@ -623,7 +623,7 @@ export function FilesClient() {
 
   const handleDownload = useCallback(
     async (file: FileEntryView) => {
-      if (!device || file.latestVersionNumber == null || file.shardCount == null) return;
+      if (!device || !signer || file.latestVersionNumber == null || file.shardCount == null) return;
       setDownloadingId(file.fileId);
       setActionError(null);
       // Downloads fetch straight from a trusted LAN node, so the path is local
@@ -641,7 +641,7 @@ export function FilesClient() {
           shardCount: file.shardCount,
           encryptedName: file.encryptedName,
           expectedVersionHash: file.versionHash,
-          deps: browserDownloadDeps(device),
+          deps: browserDownloadDeps(device, signer),
         });
         // Save without an intermediate URL leak: revoke once the click is queued.
         const blob = new Blob([result.data as unknown as BlobPart]);
@@ -660,7 +660,7 @@ export function FilesClient() {
         setDownloadingId(null);
       }
     },
-    [device],
+    [device, signer],
   );
 
   const openRename = useCallback((file: FileEntryView) => {
@@ -807,7 +807,7 @@ export function FilesClient() {
   // does not block the whole archive.
   const handleFolderDownload = useCallback(
     async (folder: FolderView) => {
-      if (!device) {
+      if (!device || !signer) {
         setActionError("Sign in to download.");
         return;
       }
@@ -830,7 +830,7 @@ export function FilesClient() {
           folderId: folder.folderId,
           folders,
           files,
-          deps: browserDownloadDeps(device),
+          deps: browserDownloadDeps(device, signer),
           onProgress: (completed, total) => setFolderDownload({ name: folder.name, completed, total }),
         });
         if (archive.fileCount === 0) {
@@ -861,7 +861,7 @@ export function FilesClient() {
         setFolderDownloadId(null);
       }
     },
-    [device, folders, files, folderDownloadId],
+    [device, signer, folders, files, folderDownloadId],
   );
 
   const resync = useCallback(

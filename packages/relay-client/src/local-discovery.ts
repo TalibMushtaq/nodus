@@ -26,6 +26,13 @@ export const NODUS_LOCAL_PORT = 9378;
 const LOCAL_TIMEOUT_MS = 3_000;
 
 /**
+ * Signs a message's UTF-8 bytes and returns a hex-encoded Ed25519 signature.
+ * Web passes a non-extractable WebCrypto handle (ADR-0008); mobile passes a
+ * noble-based wrapper over its keychain seed.
+ */
+export type DeviceMessageSigner = (message: string) => string | Promise<string>;
+
+/**
  * Build the base URL for a discovered/mannually-entered node.
  * Host is whatever the discovery source produced (IP or hostname); the port
  * is fixed by the protocol. DNS-rebinding hardening for browsers is a web-app
@@ -127,17 +134,17 @@ export class NodeClient {
 
   /**
    * `POST /nodus/auth` — prove this device's identity on the LAN. The nonce
-   * is signed with the device's Ed25519 private key (the whole point is that
-   * the private key never leaves the client). The node verifies against the
-   * public key recorded at pairing time and consumes the nonce.
+   * is signed by the injected signer (a non-extractable key handle on web,
+   * ADR-0008); the node verifies against the public key recorded at pairing
+   * time and consumes the nonce.
    */
   async authenticate(
     deviceId: string,
-    privateKey: Uint8Array,
+    sign: DeviceMessageSigner,
   ): Promise<{ ok: true } & Record<string, unknown>> {
     const { nonce } = await this.challenge();
-    const message = new TextEncoder().encode(nonce);
-    const signature = toHex(ed25519.sign(message, privateKey));
+    // The signer signs the nonce's exact UTF-8 bytes.
+    const signature = await sign(nonce);
     // Parsed (not type-cast) so the branded DeviceId is applied by DesignIdSchema.
     const body = LocalChallengeResponsePayloadSchema.parse({
       device_id: deviceId,
@@ -257,13 +264,12 @@ export class NodeClient {
    */
   async fetchShard(
     deviceId: string,
-    privateKey: Uint8Array,
+    sign: DeviceMessageSigner,
     objectId: string,
     timeoutMs: number = LOCAL_TIMEOUT_MS,
   ): Promise<Uint8Array> {
     const timestamp = Date.now();
-    const message = new TextEncoder().encode(`${deviceId}:${objectId}:${timestamp}`);
-    const signature = toHex(ed25519.sign(message, privateKey));
+    const signature = await sign(`${deviceId}:${objectId}:${timestamp}`);
     let res: Response;
     try {
       res = await fetch(`${this.baseUrl}/nodus/shard/${encodeURIComponent(objectId)}`, {

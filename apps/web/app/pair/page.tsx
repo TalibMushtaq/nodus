@@ -24,11 +24,7 @@ import {
   fetchAdvertisement,
   nodusBaseUrl,
 } from "@repo/relay-client/local-discovery";
-import {
-  identityPrivateKey,
-  identityPublicKey,
-  type StoredDeviceIdentity,
-} from "@repo/relay-client/device-identity";
+import { identityPublicKey } from "@repo/relay-client/device-identity";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
@@ -43,19 +39,11 @@ import {
   type PairingSession,
   type RelayNode,
 } from "../../lib/pairing";
-import { getOrCreateDeviceIdentity } from "../../lib/device";
 import { useAuth } from "../../providers/auth-provider";
 
 export default function PairPage() {
   const router = useRouter();
-  const { status, session, logout } = useAuth();
-
-  // Device identity is browser-only (localStorage). The lazy initializer returns
-  // null during the server pass and resolves on the client, following the same
-  // post-SSR bootstrap as the auth provider.
-  const [device] = useState<StoredDeviceIdentity | null>(() =>
-    typeof window === "undefined" ? null : getOrCreateDeviceIdentity(),
-  );
+  const { status, session, logout, device, signer } = useAuth();
 
   // ── session status + node catalog ───────────────────────────────
   const [nodes, setNodes] = useState<RelayNode[]>([]);
@@ -169,18 +157,18 @@ export default function PairPage() {
   }, [device, pending, probe]);
 
   const authenticateOnDevice = useCallback(async () => {
-    if (!device || !probe?.ok) return;
+    if (!device || !signer || !probe?.ok) return;
     setLanResult(null);
     try {
       const client = new NodeClient(nodusBaseUrl(probe.host));
-      await client.authenticate(device.device_id, identityPrivateKey(device));
+      await client.authenticate(device.device_id, (message) => signer.sign(message));
       setLanResult("authenticated — the node accepted this device's signature");
     } catch (err) {
       setLanResult(
         err instanceof NodeClientError ? `auth failed: ${err.message}` : String(err),
       );
     }
-  }, [device, probe]);
+  }, [device, signer, probe]);
 
   const inputCls =
     "flex-1 min-w-[180px] px-3 py-2 text-sm bg-secondary border border-border rounded-xl text-foreground placeholder-muted-foreground outline-none transition-colors focus:border-accent focus:ring-2 focus:ring-accent/20";

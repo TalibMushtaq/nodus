@@ -2,10 +2,10 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
-import type { StoredDeviceIdentity } from "@repo/relay-client";
+import type { DevicePublicIdentity, DeviceSigner } from "@repo/sdk";
 
 import { fetchSession, login, register, logout } from "../lib/auth-client";
-import { getOrCreateDeviceIdentity, getOrCreateEncryptionIdentity } from "../lib/device";
+import { getOrCreateDevice, getOrCreateEncryptionIdentity } from "../lib/device";
 import type { SessionInfo } from "../lib/session";
 
 // AuthProvider (re)auths against the Relay-backed session cookie on the
@@ -25,7 +25,10 @@ export interface AuthResult {
 interface AuthContextValue {
   status: AuthStatus;
   session: SessionInfo | null;
-  device: StoredDeviceIdentity | null;
+  /** Public device identity (device_id + Ed25519 public key). */
+  device: DevicePublicIdentity | null;
+  /** Non-extractable signing handle for this device (ADR-0008). */
+  signer: DeviceSigner | null;
   serverReachable: boolean;
   login: (email: string, password: string) => Promise<AuthResult>;
   /** `recoveryPublicKey` enrolls the account's ADR-0002 recovery identity. */
@@ -39,15 +42,22 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<AuthStatus>("loading");
   const [session, setSession] = useState<SessionInfo | null>(null);
-  const [device, setDevice] = useState<StoredDeviceIdentity | null>(null);
+  const [device, setDevice] = useState<DevicePublicIdentity | null>(null);
+  const [signer, setSigner] = useState<DeviceSigner | null>(null);
   const [serverReachable, setServerReachable] = useState(true);
 
-  // Device identity is generated lazily in the browser only (localStorage).
-  // Same hydration justification as the theme provider: browser-only state
-  // must be read after SSR in an effect, not during render.
+  // The device signing key is a non-extractable WebCrypto handle loaded after
+  // SSR (browser-only); the identity/public half is the only persisted part.
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- deliberate post-SSR bootstrap
-    setDevice(getOrCreateDeviceIdentity());
+    let cancelled = false;
+    getOrCreateDevice().then(({ identity, signer: s }) => {
+      if (cancelled) return;
+      setDevice(identity);
+      setSigner(s);
+    });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const refresh = useCallback(async () => {
@@ -77,10 +87,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const handleLogin = useCallback(async (email: string, password: string) => {
-    const dev = getOrCreateDeviceIdentity();
+    const { identity } = await getOrCreateDevice();
     // Publish the X25519 encryption key alongside the Ed25519 identity so other
     // devices seal envelopes to it directly (ADR-0008).
-    const res = await login(email, password, dev, getOrCreateEncryptionIdentity().public_key);
+    const res = await login(email, password, identity, getOrCreateEncryptionIdentity().public_key);
     if (!res.ok) {
       return { ok: false, error: res.error };
     }
@@ -91,13 +101,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const handleRegister = useCallback(
     async (email: string, password: string, recoveryPublicKey?: string) => {
-      const dev = getOrCreateDeviceIdentity();
+      const { identity } = await getOrCreateDevice();
       const encryptionKey = getOrCreateEncryptionIdentity().public_key;
       // Only pass the recovery key when enrolling, so a plain registration keeps
       // its original call shape.
       const res = recoveryPublicKey
-        ? await register(email, password, dev, recoveryPublicKey, encryptionKey)
-        : await register(email, password, dev, undefined, encryptionKey);
+        ? await register(email, password, identity, recoveryPublicKey, encryptionKey)
+        : await register(email, password, identity, undefined, encryptionKey);
       if (!res.ok) {
         return { ok: false, error: res.error };
       }
@@ -119,13 +129,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       status,
       session,
       device,
+      signer,
       serverReachable,
       login: handleLogin,
       register: handleRegister,
       logout: handleLogout,
       refresh,
     }),
-    [status, session, device, serverReachable, handleLogin, handleRegister, handleLogout, refresh],
+    [status, session, device, signer, serverReachable, handleLogin, handleRegister, handleLogout, refresh],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

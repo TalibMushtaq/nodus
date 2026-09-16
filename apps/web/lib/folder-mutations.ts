@@ -9,13 +9,13 @@
 
 import { useMemo } from "react";
 import { createFolderMutations, type FolderMutations } from "@repo/sdk";
-import { identityPrivateKey, identityPublicKey } from "@repo/relay-client";
+import { identityPublicKey } from "@repo/relay-client";
 
 import { useAuth } from "../providers/auth-provider";
 import { useEventBatch } from "./use-event-batch";
 import { nextOriginSequence } from "./sync-state";
 import { getFolderKey, putFolderKey } from "./folder-keys";
-import { fetchFolderEnvelopes } from "./envelopes";
+import { fetchFolderEnvelopes, openFolderKeyFromEnvelopes } from "./envelopes";
 import { listDevices, listNodes } from "./pairing";
 
 export interface UseFolderMutations extends FolderMutations {
@@ -45,15 +45,22 @@ export function useFolderMutations(): UseFolderMutations {
       device: {
         deviceId: device.device_id,
         edPublicKey: identityPublicKey(device),
-        edPrivateSeed: identityPrivateKey(device),
       },
       recoveryPublicKey: session?.recovery_public_key ?? null,
       putFolderKey,
       getFolderKey,
+      // Local copy first (handled by loadFolderKey), then this device's sealed
+      // folder envelope opened with its X25519 encryption key (ADR-0008).
+      resolveFolderKey: async (folderId) => {
+        try {
+          return openFolderKeyFromEnvelopes(await fetchFolderEnvelopes(), folderId, device.device_id);
+        } catch {
+          return null;
+        }
+      },
       allocateSequence: nextOriginSequence,
       sendEventBatch,
       recipientSources: { listDevices, listNodes },
-      listFolderEnvelopes: fetchFolderEnvelopes,
     });
     return { ...mutations, ready: true };
   }, [device, session, sendEventBatch]);

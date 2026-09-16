@@ -11,12 +11,11 @@ vi.mock("../../lib/auth-client", () => ({
   fetchSession: vi.fn(),
 }));
 
-// Mock device
+// Mock device (ADR-0008: identity is public-only; signing is a handle)
 vi.mock("../../lib/device", () => ({
-  getOrCreateDeviceIdentity: vi.fn().mockReturnValue({
-    device_id: "test-device-id",
-    public_key: "test-public-key",
-    private_key: "test-private-key",
+  getOrCreateDevice: vi.fn().mockResolvedValue({
+    identity: { device_id: "test-device-id", public_key: "test-public-key" },
+    signer: { deviceId: "test-device-id", publicKey: "test-public-key", sign: vi.fn() },
   }),
   getOrCreateEncryptionIdentity: vi.fn().mockReturnValue({
     public_key: "test-encryption-public-key",
@@ -107,11 +106,7 @@ describe("AuthProvider", () => {
     expect(mockLogin).toHaveBeenCalledWith(
       "test@example.com",
       "password123",
-      {
-        device_id: "test-device-id",
-        public_key: "test-public-key",
-        private_key: "test-private-key",
-      },
+      { device_id: "test-device-id", public_key: "test-public-key" },
       "test-encryption-public-key",
     );
     expect(screen.getByTestId("status")).toHaveTextContent("authenticated");
@@ -132,11 +127,7 @@ describe("AuthProvider", () => {
     expect(mockRegister).toHaveBeenCalledWith(
       "test@example.com",
       "password123",
-      {
-        device_id: "test-device-id",
-        public_key: "test-public-key",
-        private_key: "test-private-key",
-      },
+      { device_id: "test-device-id", public_key: "test-public-key" },
       undefined,
       "test-encryption-public-key",
     );

@@ -11,7 +11,7 @@ export {
   fetchAdvertisement,
   parsePairingUrl,
 } from "./local-discovery.js";
-export type { PairingUrlParts } from "./local-discovery.js";
+export type { PairingUrlParts, DeviceMessageSigner } from "./local-discovery.js";
 
 export {
   createDeviceIdentity,

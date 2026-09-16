@@ -7,7 +7,7 @@
 // keys so the UI can be honest about coverage.
 
 import { resealRecoveryKeys, toCatalogEntry, type ResealResult, type SessionInfo } from "@repo/sdk";
-import { identityPrivateKey, type StoredDeviceIdentity } from "@repo/relay-client";
+import type { StoredDeviceIdentity } from "@repo/relay-client";
 
 import { fetchMobileFileKey } from "../download/keys";
 import { fetchMobileFolderKey } from "../download/folder-keys";
@@ -36,7 +36,7 @@ export async function rotateRecoveryKey(
 
   const resealed = await resealRecoveryKeys(
     {
-      device: { deviceId: device.device_id, edPrivateSeed: identityPrivateKey(device) },
+      device: { deviceId: device.device_id },
       listCatalog: async () => (await relayFiles()).map(toCatalogEntry),
       listFolders: relayFolders,
       resolveFileKey: (fileId) => fetchMobileFileKey(device, fileId),

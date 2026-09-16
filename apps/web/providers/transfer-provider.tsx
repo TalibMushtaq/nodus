@@ -13,7 +13,6 @@ import { createBrowserRelayChannel } from "../lib/transfer/relay-signaling";
 import { WebRtcSessionCache } from "../lib/transfer/webrtc-session";
 import { IndexedDBLocalQueue } from "../lib/transfer/local-queue";
 import { IndexedDBPathCache } from "../lib/transfer/path-cache";
-import { identityPrivateKey, signDeviceMessage } from "@repo/relay-client";
 import { useAuth } from "./auth-provider";
 import { useWs } from "./ws-provider";
 
@@ -44,7 +43,7 @@ const TransferContext = createContext<TransferContextValue | null>(null);
  * is backed up without user action once they return.
  */
 export function TransferProvider({ children }: { children: ReactNode }) {
-  const { device } = useAuth();
+  const { device, signer } = useAuth();
   // `send`/`on` drive Path B: the browser's WebRTC offer and ICE trickle to the
   // node as `webrtc_*` envelopes over the same Relay socket the rest of the app
   // uses. Without this the relay_signaling path had no channel and every remote
@@ -63,7 +62,7 @@ export function TransferProvider({ children }: { children: ReactNode }) {
   }, [wsStatus]);
 
   useEffect(() => {
-    if (!device) return;
+    if (!device || !signer) return;
     let cancelled = false;
     const cache = new IndexedDBPathCache();
     const queue = new IndexedDBLocalQueue();
@@ -78,8 +77,9 @@ export function TransferProvider({ children }: { children: ReactNode }) {
         sessionCache,
         deviceId: device.device_id,
         sourceDevice: device.device_id,
-        // Path A requires proving device identity to the node per message.
-        signLocal: (message) => signDeviceMessage(identityPrivateKey(device), message),
+        // Path A requires proving device identity to the node per message; the
+        // signer is a non-extractable handle (ADR-0008).
+        signLocal: (message) => signer.sign(message),
         // Path B (internet WebRTC): signal through the Relay socket. Built per
         // attempt because each shard transfer needs its own signaling state;
         // it returns null when the socket is not up, which makes the executor
@@ -92,7 +92,7 @@ export function TransferProvider({ children }: { children: ReactNode }) {
             toPeer: targetNode,
             // Prove device identity so a compromised Relay cannot inject an
             // offer on this device's behalf.
-            sign: (message) => signDeviceMessage(identityPrivateKey(device), message),
+            sign: (message) => signer.sign(message),
           }),
         // Skip Path B entirely while the Relay socket is down: it cannot signal,
         // and otherwise every shard would burn a negotiation timeout before
@@ -108,7 +108,7 @@ export function TransferProvider({ children }: { children: ReactNode }) {
       queueRef.current = null;
       sessionCache.closeAll();
     };
-  }, [device, wsSend, wsOn]);
+  }, [device, signer, wsSend, wsOn]);
 
   const syncQueued = useCallback(() => setQueuedCount(queueRef.current?.size ?? 0), []);
 

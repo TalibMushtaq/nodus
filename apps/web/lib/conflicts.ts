@@ -4,8 +4,7 @@
 // device's local/Relay-envelope FEK, mirroring the Files page name resolution.
 
 import { listConflicts as sdkListConflicts } from "@repo/sdk";
-import { identityPrivateKey } from "@repo/relay-client";
-import type { StoredDeviceIdentity } from "@repo/relay-client";
+import type { DevicePublicIdentity } from "@repo/sdk";
 
 import { getCachedCatalog } from "./catalog";
 import { getFileKey } from "./keys";
@@ -14,7 +13,7 @@ import { fetchAndOpenFileKey } from "./envelopes";
 export type { ConflictEntry } from "@repo/sdk";
 
 /** Cached files that have at least one `flagged` version, newest first. */
-export function listConflicts(device: StoredDeviceIdentity) {
+export function listConflicts(device: DevicePublicIdentity) {
   return sdkListConflicts({
     listCatalog: getCachedCatalog,
     async resolveFileKey(fileId) {
@@ -23,9 +22,7 @@ export function listConflicts(device: StoredDeviceIdentity) {
       const local = await getFileKey(fileId);
       if (local) return local;
       try {
-        return (
-          (await fetchAndOpenFileKey(fileId, device.device_id, identityPrivateKey(device))) ?? null
-        );
+        return (await fetchAndOpenFileKey(fileId, device.device_id)) ?? null;
       } catch {
         return null;
       }

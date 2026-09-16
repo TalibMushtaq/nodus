@@ -8,7 +8,6 @@
 
 import { useCallback, useState } from "react";
 import { resealRecoveryKeys } from "@repo/sdk";
-import { identityPrivateKey } from "@repo/relay-client";
 
 import { useAuth } from "../providers/auth-provider";
 import { useEventBatch } from "./use-event-batch";
@@ -32,7 +31,7 @@ export function useRecoveryReseal() {
       try {
         return await resealRecoveryKeys(
           {
-            device: { deviceId: device.device_id, edPrivateSeed: identityPrivateKey(device) },
+            device: { deviceId: device.device_id },
             listCatalog: getCachedCatalog,
             listFolders: getCachedFolders,
             // Local FEK first, then this device's Relay envelope; null when this
@@ -41,10 +40,7 @@ export function useRecoveryReseal() {
               const local = await getFileKey(fileId);
               if (local) return local;
               try {
-                return (
-                  (await fetchAndOpenFileKey(fileId, device.device_id, identityPrivateKey(device))) ??
-                  null
-                );
+                return (await fetchAndOpenFileKey(fileId, device.device_id)) ?? null;
               } catch {
                 return null;
               }
@@ -57,7 +53,6 @@ export function useRecoveryReseal() {
                   await fetchFolderEnvelopes(),
                   folderId,
                   device.device_id,
-                  identityPrivateKey(device),
                 );
               } catch {
                 return null;

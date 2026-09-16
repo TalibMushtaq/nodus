@@ -1,4 +1,4 @@
-import type { StoredDeviceIdentity } from "@repo/relay-client";
+import type { DevicePublicIdentity } from "@repo/sdk";
 
 // Client-side gateway to the /pairing proxy route handlers. Authentication is
 // the HttpOnly session cookie managed by Next; these helpers only pass JSON
@@ -167,7 +167,7 @@ export function findNewNode(
   return nodes.find((n) => !known.has(n.node_id));
 }
 
-export async function issuePairingToken(nodeId: string, device: StoredDeviceIdentity): Promise<PairingSession> {
+export async function issuePairingToken(nodeId: string, device: DevicePublicIdentity): Promise<PairingSession> {
   const res = await fetch("/api/pairing/sessions", {
     method: "POST",
     headers: { "content-type": "application/json" },

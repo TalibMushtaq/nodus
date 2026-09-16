@@ -14,10 +14,8 @@ import {
   recoveryIdentityFromPhrase,
   signRecoveryChallenge,
 } from "@repo/core";
-import type { StoredDeviceIdentity } from "@repo/relay-client";
-
 import type { RelayHttp } from "../adapters.js";
-import type { SessionInfo } from "../auth.js";
+import type { DevicePublicIdentity, SessionInfo } from "../auth.js";
 import { openFekFromEnvelope, type EnvelopeExport } from "../envelopes/envelopes.js";
 
 function toBase64(bytes: Uint8Array): string {
@@ -63,7 +61,7 @@ export interface RecoveryClient {
   recover(
     email: string,
     phrase: string,
-    device: StoredDeviceIdentity,
+    device: DevicePublicIdentity,
     encryptionPublicKey?: string,
   ): Promise<RecoveryLoginResult>;
   /** Unlock this device's local key stores from recovery-sealed envelopes. */

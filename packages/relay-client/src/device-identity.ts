@@ -34,13 +34,17 @@ export function createDeviceIdentity(): StoredDeviceIdentity {
   };
 }
 
-/** Rehydrate identity bytes from storage for signing (challenge-response). */
-export function identityPrivateKey(id: StoredDeviceIdentity): Uint8Array {
+/**
+ * Rehydrate identity bytes from storage for signing (challenge-response).
+ * Accepts any record carrying `private_key`; ADR-0008 web identities no longer
+ * store one and sign through a CryptoKey handle instead.
+ */
+export function identityPrivateKey(id: Pick<StoredDeviceIdentity, "private_key">): Uint8Array {
   return base64Decode(id.private_key);
 }
 
 /** Rehydrate identity public-key bytes (used by `NodeClient.pair`). */
-export function identityPublicKey(id: StoredDeviceIdentity): Uint8Array {
+export function identityPublicKey(id: Pick<StoredDeviceIdentity, "public_key">): Uint8Array {
   return base64Decode(id.public_key);
 }
 

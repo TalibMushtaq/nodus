@@ -183,14 +183,19 @@ export function openFekFromEnvelopeX25519(encoded: string, x25519PrivateKey: Uin
  */
 export function openFekWithFallback(
   encoded: string,
-  keys: { x25519PrivateKey?: Uint8Array; edPrivateSeed: Uint8Array },
+  keys: { x25519PrivateKey?: Uint8Array; edPrivateSeed?: Uint8Array },
 ): Uint8Array {
   if (keys.x25519PrivateKey) {
     try {
       return openFekFromEnvelopeX25519(encoded, keys.x25519PrivateKey);
-    } catch {
-      // Not sealed to the published X25519 key; fall through to the legacy key.
+    } catch (err) {
+      // Not sealed to the published X25519 key. Fall through to the legacy key
+      // when one is available; otherwise rethrow the X25519 failure.
+      if (!keys.edPrivateSeed) throw err;
     }
+  }
+  if (!keys.edPrivateSeed) {
+    throw new Error("openFekWithFallback: no key available to open the envelope");
   }
   return openFekFromEnvelope(encoded, keys.edPrivateSeed);
 }
@@ -216,7 +221,7 @@ export function openFolderKeyWithFallback(
   envelopes: RelayFolderEnvelope[],
   folderId: string,
   deviceId: string,
-  keys: { x25519PrivateKey?: Uint8Array; edPrivateSeed: Uint8Array },
+  keys: { x25519PrivateKey?: Uint8Array; edPrivateSeed?: Uint8Array },
 ): Uint8Array | null {
   const mine = envelopes.find((e) => e.folder_id === folderId && e.recipient_id === deviceId);
   if (!mine) return null;

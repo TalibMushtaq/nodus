@@ -9,6 +9,7 @@ import {
   NodeClient,
   identityPrivateKey,
   nodusBaseUrl,
+  signDeviceMessage,
   type StoredDeviceIdentity,
 } from "@repo/relay-client";
 
@@ -32,7 +33,12 @@ export function mobileDownloadDeps(device: StoredDeviceIdentity): DownloadDeps {
       if (host) {
         try {
           const client = new NodeClient(nodusBaseUrl(host));
-          return await client.fetchShard(device.device_id, identityPrivateKey(device), location.hash);
+          // Mobile keeps its Ed25519 seed in the keychain; wrap it as a signer.
+          return await client.fetchShard(
+            device.device_id,
+            (message) => signDeviceMessage(identityPrivateKey(device), message),
+            location.hash,
+          );
         } catch {
           // Unpaired/unreachable/auth-rejected: fall through to the Relay.
         }

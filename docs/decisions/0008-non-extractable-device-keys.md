@@ -1,25 +1,29 @@
 # ADR-0008: Non-Extractable Device Keys (Proposed)
 
 ## Status
-Accepted (2026-09-15) — implemented in phases.
+Accepted (2026-09-15) — implemented.
 
-- **Phase 1** (done): devices publish an X25519 encryption key; senders seal to
-  it directly, with the Ed25519→X25519 derivation as fallback.
-- **Phase 1b** (done): web and mobile generate/persist the key, publish it on
-  auth/recovery/device-registration, and open with X25519-then-Ed25519 fallback.
-- **Phase 2** (done): `resealKeysForSelf` + web/mobile migration actions move a
-  device's legacy envelopes onto its published X25519 key.
-- **Phase 3a** (done): a tested non-extractable WebCrypto Ed25519 signer
-  primitive (`packages/sdk/src/device/webcrypto.ts`).
-- **Phase 3b** (pending): rewire the web client onto that signer (persist the
-  `CryptoKey` in IndexedDB, expose `sign` via the auth provider, replace the
-  `private_key` call sites, delete the exportable seed).
+- **Phase 1**: devices publish an X25519 encryption key; senders seal to it
+  directly, with the Ed25519→X25519 derivation for nodes/recovery (which keep
+  Ed25519 identities).
+- **Phase 1b**: web and mobile generate/persist the key and publish it on
+  auth/recovery/device-registration.
+- **Phase 3a**: a tested non-extractable WebCrypto Ed25519 signer primitive
+  (`packages/sdk/src/device/webcrypto.ts`).
+- **Phase 3b (clean-slate cutover)**: the web client now creates a
+  non-extractable Ed25519 `CryptoKey`, persists it in the `device_keys`
+  IndexedDB store, and signs through a handle exposed by the auth provider; the
+  exportable seed and its loading paths are gone, and all `identityPrivateKey`
+  call sites are replaced by `signer.sign`. Envelope opening uses the separate
+  X25519 encryption identity only.
 
-Phase 3b must not delete the seed until every envelope a device needs has been
-re-sealed (phase 2), because the seed is the only way to open a legacy
-envelope. Concretely: safer to gate seed removal on the device having zero
-legacy (Ed25519-derived) envelopes for its keys, or on an automatic migration
-that re-seals before deleting. That determination needs browser-level testing.
+### Development-only cutover
+This phase was done as a clean-slate cutover during development: existing
+Ed25519-derived envelopes and seeds are treated as disposable, so **no legacy
+envelope migration is implemented or required** (the earlier `resealKeysForSelf`
+migration helper and its UI actions were removed). A production rollout would
+instead need a migration gate before deleting the seed, because the seed is the
+only opener for a pre-ADR-0008 envelope.
 
 ## Context
 The web client currently persists the device identity as an exportable Ed25519

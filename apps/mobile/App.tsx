@@ -50,6 +50,7 @@ import {
 import {
   identityPrivateKey,
   identityPublicKey,
+  signDeviceMessage,
   type StoredDeviceIdentity,
 } from "@repo/relay-client/device-identity";
 
@@ -99,7 +100,6 @@ import { mobileFolderMutations } from "./src/folders/mutations";
 import { mobileRecoveryClient } from "./src/recovery/client";
 import { recoverFromNode } from "./src/recovery/offline";
 import { rotateRecoveryKey } from "./src/recovery/rotate";
-import { resealSelfEnvelopes } from "./src/recovery/self-reseal";
 import { sqliteRecoveryStore } from "./src/recovery/store";
 import { registerBackgroundSync } from "./src/background/sync";
 import { saveAndShare } from "./src/download/save";
@@ -975,27 +975,6 @@ export default function App() {
     );
   }, [device, session]);
 
-  // ADR-0008 phase 2: move this device's legacy envelopes onto its published
-  // X25519 key so the Ed25519 seed is no longer needed to open them.
-  const migrateEnvelopes = React.useCallback(async () => {
-    if (!device || !encryption) return;
-    setBusy("migrating-envelopes");
-    setError(null);
-    setNotice(null);
-    setSecurityStatus(null);
-    try {
-      const result = await resealSelfEnvelopes(wsRef.current!, device, encryption);
-      setSecurityStatus(
-        `Re-sealed ${result.files} file / ${result.folders} folder envelope(s); skipped ${result.skipped}.`,
-      );
-      setNotice("Envelopes migrated to this device's encryption key.");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy(null);
-    }
-  }, [device, encryption]);
-
   const scan = React.useCallback(async () => {
     setBusy("scanning");
     setError(null);
@@ -1077,7 +1056,9 @@ export default function App() {
     setNotice(null);
     try {
       const client = new NodeClient(nodusBaseUrl(probe.host));
-      await client.authenticate(device.device_id, identityPrivateKey(device));
+      await client.authenticate(device.device_id, (message) =>
+        signDeviceMessage(identityPrivateKey(device), message),
+      );
       setNotice("Authenticated — the node accepted this device's signature.");
     } catch (err) {
       setError(err instanceof NodeClientError ? `auth failed: ${err.message}` : String(err));
@@ -1457,12 +1438,6 @@ export default function App() {
         <Button
           title={busy === "exporting-envelopes" ? "Exporting…" : "Export envelope backup"}
           onPress={() => void exportEnvelopes()}
-          disabled={!authed || busy !== null}
-        />
-        <View style={styles.spacer} />
-        <Button
-          title={busy === "migrating-envelopes" ? "Migrating…" : "Migrate my key envelopes"}
-          onPress={() => void migrateEnvelopes()}
           disabled={!authed || busy !== null}
         />
         {securityStatus && <Text style={styles.hint}>{securityStatus}</Text>}

@@ -12,8 +12,7 @@ import {
   envelopeEvent,
   folderEnvelopeEvent,
   encryptionPrivateKeyBytes,
-  openFekFromEnvelope,
-  openFekWithFallback,
+  openFekFromEnvelopeX25519,
   openFolderKeyWithFallback,
   sealFekForRecipientIdentity,
   sealFekForRecipients,
@@ -35,7 +34,7 @@ export {
   encodeEnvelope,
   envelopeEvent,
   folderEnvelopeEvent,
-  openFekFromEnvelope,
+  openFekFromEnvelopeX25519,
   sealFekForRecipientIdentity,
   sealFekForRecipients,
 };
@@ -94,32 +93,28 @@ export async function fetchFolderEnvelopes(): Promise<RelayFolderEnvelope[]> {
 export async function fetchAndOpenFileKey(
   fileId: string,
   deviceId: string,
-  edPrivateSeed: Uint8Array,
 ): Promise<Uint8Array | null> {
   const envelopes = await fetchEnvelopes(fileId);
   const mine = envelopes.find((e) => e.recipient_id === deviceId);
   if (!mine) return null;
-  // Try the published X25519 key (ADR-0008), then the legacy Ed25519-derived
-  // key, so envelopes sealed before the migration still open.
-  return openFekWithFallback(mine.encrypted_key, {
-    x25519PrivateKey: encryptionPrivateKeyBytes(getOrCreateEncryptionIdentity()),
-    edPrivateSeed,
-  });
+  // Envelopes are sealed to this device's X25519 encryption identity (ADR-0008).
+  return openFekFromEnvelopeX25519(
+    mine.encrypted_key,
+    encryptionPrivateKeyBytes(getOrCreateEncryptionIdentity()),
+  );
 }
 
 /**
- * Open this device's folder-key envelope from an already-fetched list, trying
- * the published X25519 key first (ADR-0008) then the Ed25519-derived key.
+ * Open this device's folder-key envelope from an already-fetched list using its
+ * X25519 encryption identity (ADR-0008).
  */
 export function openFolderKeyFromEnvelopes(
   envelopes: RelayFolderEnvelope[],
   folderId: string,
   deviceId: string,
-  edPrivateSeed: Uint8Array,
 ): Uint8Array | null {
   return openFolderKeyWithFallback(envelopes, folderId, deviceId, {
     x25519PrivateKey: encryptionPrivateKeyBytes(getOrCreateEncryptionIdentity()),
-    edPrivateSeed,
   });
 }
 

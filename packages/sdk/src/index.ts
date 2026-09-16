@@ -25,7 +25,7 @@ export {
 } from "./device/webcrypto.js";
 export type { DeviceSigner, WebCryptoDeviceKeys } from "./device/webcrypto.js";
 export { createAuthClient } from "./auth.js";
-export type { AuthClient, AuthResult, SessionInfo } from "./auth.js";
+export type { AuthClient, AuthResult, SessionInfo, DevicePublicIdentity } from "./auth.js";
 
 export { shortId, formatCountdown, formatBytes, timeAgo } from "./format.js";
 export { isRelayOnline, relayStatusLabel } from "./connectivity.js";
@@ -93,7 +93,7 @@ export type {
   FolderEntry,
 } from "./catalog/catalog.js";
 
-export { resealRecoveryKeys, resealKeysToRecipient, resealKeysForSelf } from "./recovery/reseal.js";
+export { resealRecoveryKeys, resealKeysToRecipient } from "./recovery/reseal.js";
 export type { ResealDeps, ResealResult } from "./recovery/reseal.js";
 
 export { createRecoveryClient } from "./recovery/recovery.js";

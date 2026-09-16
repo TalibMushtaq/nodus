@@ -119,7 +119,10 @@ describe("NodeClient", () => {
     globalThis.fetch = fetchMock;
 
     const client = new NodeClient("http://192.168.1.10:9378");
-    await client.authenticate("d1", privateKey);
+    // ADR-0008: callers supply a signer, not a private key.
+    await client.authenticate("d1", (message) =>
+      hex(ed25519.sign(new TextEncoder().encode(message), privateKey)),
+    );
 
     // 1st call : challenge, 2nd: auth with a signature over the nonce bytes.
     expect(fetchMock).toHaveBeenCalledTimes(2);

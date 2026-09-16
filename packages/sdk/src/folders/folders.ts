@@ -17,10 +17,8 @@ import type { BatchAckPayload, EventPayload } from "@repo/protocol";
 import {
   collectRecipients,
   folderEnvelopeEvent,
-  openFolderKeyFromEnvelopes,
   sealFekForRecipients,
   type RecipientSources,
-  type RelayFolderEnvelope,
 } from "../envelopes/envelopes.js";
 
 function baseEvent(
@@ -59,17 +57,21 @@ export function folderDeletedEvent(originId: string, sequence: number, folderId:
 }
 
 export interface FolderMutationDeps {
-  device: { deviceId: string; edPublicKey: Uint8Array; edPrivateSeed: Uint8Array };
+  device: { deviceId: string; edPublicKey: Uint8Array };
   /** Account recovery key (base64) to also seal folder keys to, when enrolled. */
   recoveryPublicKey?: string | null;
   putFolderKey(folderId: string, key: Uint8Array): Promise<void>;
   getFolderKey(folderId: string): Promise<Uint8Array | undefined>;
+  /**
+   * Resolve this device's key for a folder: its locally stored copy, else the
+   * key from its own sealed envelope. Injected so each platform uses its own
+   * encryption key (web X25519 handle, mobile keychain).
+   */
+  resolveFolderKey(folderId: string): Promise<Uint8Array | null>;
   allocateSequence(originId: string): Promise<number>;
   sendEventBatch(events: EventPayload[]): Promise<BatchAckPayload | void>;
   /** Device/node catalogue for folder-key envelope distribution. */
   recipientSources: RecipientSources;
-  /** Bulk fetch of this account's folder-key envelopes. */
-  listFolderEnvelopes(): Promise<RelayFolderEnvelope[]>;
 }
 
 export interface FolderMutations {
@@ -87,8 +89,7 @@ export function createFolderMutations(deps: FolderMutationDeps): FolderMutations
     const local = await deps.getFolderKey(folderId);
     if (local) return local;
     try {
-      const envelopes = await deps.listFolderEnvelopes();
-      return openFolderKeyFromEnvelopes(envelopes, folderId, device.deviceId, device.edPrivateSeed);
+      return await deps.resolveFolderKey(folderId);
     } catch {
       return null;
     }

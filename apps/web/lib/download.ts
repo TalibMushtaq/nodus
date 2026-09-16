@@ -5,9 +5,13 @@
 // locations from the cached catalog, shards from a trusted LAN node with a
 // Relay-mediated fallback) and the Relay shard proxy helper.
 
-import { NodeClient, identityPrivateKey, nodusBaseUrl } from "@repo/relay-client";
-import type { StoredDeviceIdentity } from "@repo/relay-client";
-import { ShardUnavailableError, type DownloadDeps } from "@repo/sdk";
+import { NodeClient, nodusBaseUrl } from "@repo/relay-client";
+import {
+  ShardUnavailableError,
+  type DevicePublicIdentity,
+  type DeviceSigner,
+  type DownloadDeps,
+} from "@repo/sdk";
 
 import { getCachedCatalog } from "./catalog";
 import { fetchAndOpenFileKey } from "./envelopes";
@@ -26,7 +30,10 @@ export type { DownloadDeps, DownloadFileOptions, DownloadResult, RelayFileLocati
  * Browser deps: FEK from the device's envelope, locations from the cached
  * catalog, shards from the trusted LAN node that stores them.
  */
-export function browserDownloadDeps(device: StoredDeviceIdentity): DownloadDeps {
+export function browserDownloadDeps(
+  device: DevicePublicIdentity,
+  signer: DeviceSigner,
+): DownloadDeps {
   return {
     async fetchFileKey(fileId) {
       // Prefer the locally cached FEK (this device's own upload, or a key
@@ -34,7 +41,7 @@ export function browserDownloadDeps(device: StoredDeviceIdentity): DownloadDeps 
       // Relay envelope for a file uploaded elsewhere.
       const local = await getFileKey(fileId);
       if (local) return local;
-      return fetchAndOpenFileKey(fileId, device.device_id, identityPrivateKey(device));
+      return fetchAndOpenFileKey(fileId, device.device_id);
     },
     async getShardLocations(fileId) {
       const catalog = await getCachedCatalog();
@@ -53,7 +60,7 @@ export function browserDownloadDeps(device: StoredDeviceIdentity): DownloadDeps 
         if (host) {
           try {
             const client = new NodeClient(nodusBaseUrl(host));
-            return await client.fetchShard(device.device_id, identityPrivateKey(device), location.hash);
+            return await client.fetchShard(device.device_id, (message) => signer.sign(message), location.hash);
           } catch {
             // Fall through to the Relay path below.
           }

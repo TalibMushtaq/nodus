@@ -2,7 +2,6 @@
 
 import { useCallback } from "react";
 import { encryptName } from "@repo/core";
-import { identityPrivateKey } from "@repo/relay-client";
 
 import { useAuth } from "../providers/auth-provider";
 import { useEventBatch } from "./use-event-batch";
@@ -30,7 +29,7 @@ export function useFileMutations() {
       let fek = await getFileKey(fileId);
       if (!fek) {
         fek =
-          (await fetchAndOpenFileKey(fileId, device.device_id, identityPrivateKey(device))) ?? undefined;
+          (await fetchAndOpenFileKey(fileId, device.device_id)) ?? undefined;
       }
       if (!fek) {
         throw new Error("This device has no key for that file.");

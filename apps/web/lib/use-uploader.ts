@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback } from "react";
-import { identityPrivateKey, identityPublicKey, signDeviceMessage } from "@repo/relay-client";
+import { identityPublicKey } from "@repo/relay-client";
 import type { EventPayload } from "@repo/protocol";
 
 import { useAuth } from "../providers/auth-provider";
@@ -25,7 +25,7 @@ export function useUploader(
   onProgress?: (event: UploadProgressEvent) => void,
   postShardOverride?: (dto: ShardUpload) => Promise<ShardUploadResult>,
 ) {
-  const { device, session } = useAuth();
+  const { device, signer, session } = useAuth();
   const sendEventBatch = useEventBatch();
 
   // Seal the FEK for this device plus every other active device and storage
@@ -65,7 +65,7 @@ export function useUploader(
       parentFolderId?: string | null,
       shardSizeBytes?: number,
     ): Promise<UploadResult> => {
-      if (!device) {
+      if (!device || !signer) {
         throw new Error("no device identity available for upload");
       }
       return uploadFile({
@@ -84,7 +84,7 @@ export function useUploader(
           publishEnvelopes,
           // Sign the per-shard manifest with the device key so the node can
           // authenticate the hashes and reject Relay-substituted shards (#22).
-          signManifest: (message) => signDeviceMessage(identityPrivateKey(device), message),
+          signManifest: (message) => signer.sign(message),
           ...(postShardOverride ? { postShard: postShardOverride } : {}),
         }),
         onProgress,
@@ -94,7 +94,7 @@ export function useUploader(
         shardCount: measurement?.shardCount,
       });
     },
-    [device, sendEventBatch, publishEnvelopes, onProgress, postShardOverride],
+    [device, signer, sendEventBatch, publishEnvelopes, onProgress, postShardOverride],
   );
 
   return { upload, ready: Boolean(device) };

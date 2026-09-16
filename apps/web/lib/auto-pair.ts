@@ -4,9 +4,8 @@ import {
   identityPublicKey,
   nodusBaseUrl,
 } from "@repo/relay-client";
-import type { StoredDeviceIdentity } from "@repo/relay-client";
 
-import { getOrCreateDeviceIdentity } from "./device";
+import { getOrCreateDevice } from "./device";
 import { issuePairingToken } from "./pairing";
 import { addTrustedNode, getTrustedNodes } from "./trusted-nodes";
 
@@ -55,7 +54,7 @@ export async function ensureNodeTrusted(nodeId: string): Promise<EnsureNodeTrust
   const trusted = await getTrustedNodes();
   if (trusted.some((t) => t.node_id === nodeId)) return { paired: true };
 
-  const device: StoredDeviceIdentity = getOrCreateDeviceIdentity();
+  const { identity: device } = await getOrCreateDevice();
 
   for (const host of autoPairCandidateHosts()) {
     const base = nodusBaseUrl(host);

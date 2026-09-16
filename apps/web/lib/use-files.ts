@@ -2,8 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { decryptName } from "@repo/core";
-import { identityPrivateKey } from "@repo/relay-client";
-import type { StoredDeviceIdentity } from "@repo/relay-client";
+import type { DevicePublicIdentity } from "@repo/sdk";
 
 import { getCachedCatalog, getCachedFolders, type CatalogEntry, type FolderEntry } from "./catalog";
 import { STORE_CATALOG, STORE_FOLDERS, idbDelete } from "./db";
@@ -28,12 +27,12 @@ export type { FileEntryView } from "./file-view";
  * to the device's Relay key envelope. Never throws: a file without a usable key
  * still renders (with a short id) instead of blanking the list.
  */
-async function resolveName(entry: CatalogEntry, device: StoredDeviceIdentity): Promise<string> {
+async function resolveName(entry: CatalogEntry, device: DevicePublicIdentity): Promise<string> {
   if (!entry.encrypted_name) return shortId(entry.file_id);
   let fek = await getFileKey(entry.file_id);
   if (!fek) {
     try {
-      fek = (await fetchAndOpenFileKey(entry.file_id, device.device_id, identityPrivateKey(device))) ?? undefined;
+      fek = (await fetchAndOpenFileKey(entry.file_id, device.device_id)) ?? undefined;
     } catch {
       fek = undefined;
     }
@@ -46,7 +45,7 @@ async function resolveName(entry: CatalogEntry, device: StoredDeviceIdentity): P
   }
 }
 
-async function toView(entry: CatalogEntry, device: StoredDeviceIdentity): Promise<FileEntryView> {
+async function toView(entry: CatalogEntry, device: DevicePublicIdentity): Promise<FileEntryView> {
   return {
     fileId: entry.file_id,
     name: await resolveName(entry, device),
@@ -79,7 +78,7 @@ export interface FolderView {
  * whole tree (not per folder) so a folder created on another device is readable
  * without an N+1 round trip. Falls back to a short id exactly like file names.
  */
-async function toFolderViews(entries: FolderEntry[], device: StoredDeviceIdentity): Promise<FolderView[]> {
+async function toFolderViews(entries: FolderEntry[], device: DevicePublicIdentity): Promise<FolderView[]> {
   let envelopes: RelayFolderEnvelope[];
   try {
     envelopes = await fetchFolderEnvelopes();
@@ -98,12 +97,7 @@ async function toFolderViews(entries: FolderEntry[], device: StoredDeviceIdentit
       if (!fek) {
         try {
           fek =
-            openFolderKeyFromEnvelopes(
-              envelopes,
-              entry.folder_id,
-              device.device_id,
-              identityPrivateKey(device),
-            ) ?? undefined;
+            openFolderKeyFromEnvelopes(envelopes, entry.folder_id, device.device_id) ?? undefined;
         } catch {
           fek = undefined;
         }

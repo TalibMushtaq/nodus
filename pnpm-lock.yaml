@@ -188,6 +188,9 @@ importers:
         specifier: 19.2.8
         version: 19.2.8(react@19.2.8)
     devDependencies:
+      '@noble/curves':
+        specifier: ^1.9.7
+        version: 1.9.7
       '@repo/eslint-config':
         specifier: workspace:*
         version: link:../../packages/eslint-config

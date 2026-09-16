@@ -5,8 +5,17 @@
 //! (web) or hits the Relay directly with a bearer session (native). No token,
 //! JWT, or refresh credential is ever constructed here.
 
-import type { StoredDeviceIdentity } from "@repo/relay-client";
 import type { RelayHttp } from "./adapters.js";
+
+/**
+ * The public half of a device identity — enough to register/authenticate and
+ * to be named in envelopes. The signing secret is a non-extractable handle
+ * (ADR-0008) and is never part of this shape.
+ */
+export interface DevicePublicIdentity {
+  device_id: string;
+  public_key: string;
+}
 
 /** The locked §2 post-auth body. No token travels in the body. */
 export interface SessionInfo {
@@ -28,13 +37,13 @@ export interface AuthClient {
   login(
     email: string,
     password: string,
-    device: StoredDeviceIdentity,
+    device: DevicePublicIdentity,
     encryptionPublicKey?: string,
   ): Promise<AuthResult>;
   register(
     email: string,
     password: string,
-    device: StoredDeviceIdentity,
+    device: DevicePublicIdentity,
     recoveryPublicKey?: string,
     encryptionPublicKey?: string,
   ): Promise<AuthResult>;

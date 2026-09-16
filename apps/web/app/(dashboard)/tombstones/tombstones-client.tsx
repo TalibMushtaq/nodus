@@ -8,8 +8,7 @@ import { Button } from "@repo/ui/primitives/button";
 import { ConfirmDialog } from "@repo/ui/primitives/overlay";
 import { Icon } from "@repo/ui/primitives/icons";
 import { decryptName } from "@repo/core";
-import { identityPrivateKey } from "@repo/relay-client";
-import type { StoredDeviceIdentity } from "@repo/relay-client";
+import type { DevicePublicIdentity } from "@repo/sdk";
 
 import { useTombstones } from "../../../lib/use-tombstones";
 import {
@@ -35,14 +34,14 @@ const TONE_COLOR: Record<"pending" | "synced" | "offline", string> = {
   offline: "var(--status-offline)",
 };
 
-async function resolveName(item: TombstoneItem, device: StoredDeviceIdentity | null): Promise<string> {
+async function resolveName(item: TombstoneItem, device: DevicePublicIdentity | null): Promise<string> {
   // Folder names have no key path on the web client yet, so show a short id.
   if (item.entity_type === "folder") return `Folder · ${shortId(item.entity_id)}`;
   if (!item.encrypted_name) return shortId(item.entity_id);
   let fek = await getFileKey(item.entity_id);
   if (!fek && device) {
     try {
-      fek = (await fetchAndOpenFileKey(item.entity_id, device.device_id, identityPrivateKey(device))) ?? undefined;
+      fek = (await fetchAndOpenFileKey(item.entity_id, device.device_id)) ?? undefined;
     } catch {
       fek = undefined;
     }

@@ -1,3 +1,4 @@
+import "fake-indexeddb/auto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { autoPairCandidateHosts } from "../auto-pair";
@@ -57,10 +58,10 @@ describe("fetchShardViaRelay", () => {
 });
 
 describe("ensureNodeTrusted", () => {
+  // Public-only identity (ADR-0008); signing is a separate handle.
   const device = {
     device_id: "device-1",
     public_key: "ab",
-    private_key: "cd",
   };
 
   it("skips work and reports already-paired when the node is trusted", async () => {
@@ -103,7 +104,9 @@ describe("ensureNodeTrusted", () => {
         .mockResolvedValue({ token: "tok-1", expires_at: "2026-09-11T16:39:24Z" }),
     }));
     vi.doMock("../device", () => ({
-      getOrCreateDeviceIdentity: vi.fn().mockReturnValue(device),
+      getOrCreateDevice: vi
+        .fn()
+        .mockResolvedValue({ identity: device, signer: { sign: vi.fn() } }),
     }));
 
     const discovery = {

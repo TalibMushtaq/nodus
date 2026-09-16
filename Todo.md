@@ -527,8 +527,7 @@ but should be resolved before the phase that depends on them:
       account↔node bootstrap pairing-code flow is canonical (`NODUS-XXXX-XXXX`,
       plan §7b); QR format deferred (non-goal)
 
-- [ ] Replace the device private key stored in `localStorage` with a non-exportable WebCrypto Ed25519 key persisted in IndexedDB, and refactor the identity/signing API to use the key handle instead of exposing `private_key`.
-      **In progress under [ADR-0008](docs/decisions/0008-non-extractable-device-keys.md) (Accepted).** Phases 1, 1b, 2 and 3a are implemented: devices publish a standalone X25519 encryption key that senders seal to, clients open with X25519-then-Ed25519 fallback, a migration action re-seals legacy envelopes, and a tested non-extractable WebCrypto Ed25519 signer exists. **Phase 3b (rewire web onto the signer and delete the `private_key` seed) remains**, and is gated on ensuring no legacy (Ed25519-derived) envelopes remain, since the seed is their only opener.
+- [x] Replace the device private key stored in `localStorage` with a non-exportable WebCrypto Ed25519 key persisted in IndexedDB, and refactor the identity/signing API to use the key handle instead of exposing `private_key` — done as a **development clean-slate cutover** under [ADR-0008](docs/decisions/0008-non-extractable-device-keys.md) (Accepted): web generates a non-extractable Ed25519 `CryptoKey` in the `device_keys` IndexedDB store, the auth provider exposes `signer.sign`, all `identityPrivateKey` call sites are replaced, and the exportable seed/loading code (and legacy-envelope migration) is removed. Envelopes use the separate X25519 encryption identity.
 
 ### Phase 14 follow-ups (tracked so they don't disappear when the Phase 14 boxes are checked)
 

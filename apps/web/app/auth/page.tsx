@@ -5,7 +5,6 @@ import { useRouter } from "next/navigation";
 import { Icon } from "@repo/ui/primitives/icons";
 
 import { useAuth } from "../../providers/auth-provider";
-import { getOrCreateDeviceIdentity } from "../../lib/device";
 import {
   createRecoveryPhrase,
   isValidPhrase,
@@ -255,7 +254,7 @@ function BrandPanel() {
 
 export default function AuthPage() {
   const router = useRouter();
-  const { login, register, refresh, status, serverReachable } = useAuth();
+  const { login, register, refresh, status, serverReachable, device } = useAuth();
 
   const [step, setStep] = useState<AuthStep>("email");
   const [mode, setMode] = useState<AuthMode>("signin");
@@ -310,8 +309,11 @@ export default function AuthPage() {
       }
       setLoading(true);
       try {
-        const dev = getOrCreateDeviceIdentity();
-        const res = await recoverAccount(email, normalized, dev);
+        if (!device) {
+          setError("Device identity is still loading; try again in a moment.");
+          return;
+        }
+        const res = await recoverAccount(email, normalized, device);
         if (!res.ok) {
           setError(res.error ?? "Recovery failed");
           return;

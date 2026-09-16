@@ -1,5 +1,17 @@
 # Changelog
 
+## [2026-09-15] - ADR-0008 phase 3b: web non-extractable signer cutover
+
+**What changed:** Rewired the web client off the exportable Ed25519 seed. `lib/device.ts` now creates a non-extractable WebCrypto Ed25519 `CryptoKey`, persists it in the new `device_keys` IndexedDB store (DB v6), and exposes `{ identity, signer }`; only the public identity is written to localStorage. `AuthProvider` loads it post-SSR and provides `signer`; the transfer provider, uploader manifest signing, LAN auth, shard fetch, pairing, and auto-pair all sign through `signer.sign`. Envelope opening uses the separate X25519 encryption identity only (`fetchAndOpenFileKey`/`openFolderKeyFromEnvelopes` dropped their `edSeed` parameters). SDK/relay-client APIs were narrowed to `DevicePublicIdentity` and a `DeviceMessageSigner`; `NodeClient.authenticate`/`fetchShard` take a signer instead of a private key; `createFolderMutations` takes an injected `resolveFolderKey`. Removed the exportable-seed code and the migration-only `resealKeysForSelf` helper plus its web/mobile actions (development clean-slate: legacy envelopes are disposable). `clearLocalDatabase` keeps `device_keys` (identity, not content).
+
+**Why:** Complete ADR-0008: the device signing key is no longer an extractable seed in JS/localStorage, and the app no longer depends on one.
+
+**Impact:** `packages/sdk` (auth/recovery `DevicePublicIdentity`, folders deps, envelopes helpers, index), `packages/relay-client` (`NodeClient` signer params, `DeviceMessageSigner`, device-identity picks), `apps/web` (device, db, auth/transfer providers, uploader, download, envelopes, conflicts, files/tombstones, folder mutations, recovery-reseal, pairing, auto-pair, auth/pair pages, security page), `apps/mobile` (NodeClient signer wrappers, folder-mutation deps, removal of self-reseal action).
+
+**Verified:** new `apps/web/lib/__tests__/device-signer.test.ts` runs the real path end-to-end in jsdom with WebCrypto Ed25519 + fake-indexeddb: generates the identity, asserts the persisted record has no `private_key`, and verifies `signer.sign` output against the public key. A static grep confirms no web runtime file references `identityPrivateKey`/`signDeviceMessage`/`private_key` (only one comment remains). Suites: SDK 31, relay-client 50, web 191 + lint + typecheck + `next build`, mobile lint/typecheck/3 tests/`expo export`. A live browser session was not available in this environment.
+
+**Follow-ups:** A production deployment would need a migration gate (ADR-0008) before this cutover; mobile still holds its Ed25519 seed in the OS keychain (not the item's target) and keeps the X25519-then-Ed25519 open fallback.
+
 ## [2026-09-15] - ADR-0008 status: phases 1–3a done, 3b gated
 
 **What changed:** Recorded ADR-0008's phase status in the ADR and Todo: phases 1, 1b, 2 and 3a are implemented and tested; phase 3b (rewire the web client onto the non-extractable signer and delete the exportable seed) is explicitly gated on there being no legacy Ed25519-derived envelopes left, because the seed is their only opener — a browser-verifiable precondition.

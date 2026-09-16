@@ -14,8 +14,10 @@ export const WEB_DB_NAME = "nodus-web";
  * v2 adds the catalog, sync-state, path-cache, transfer-queue, and key stores.
  * v4 adds `transfer_log` for the local Activity view.
  * v5 adds `recovery` for the locally-kept account recovery phrase (ADR-0002).
+ * v6 adds `device_keys` for the non-extractable WebCrypto signing key
+ * (ADR-0008 phase 3) — the private key is a CryptoKey handle, never a seed.
  */
-export const WEB_DB_VERSION = 5;
+export const WEB_DB_VERSION = 6;
 
 export const STORE_TRUSTED_NODES = "trusted_nodes";
 export const STORE_CATALOG = "catalog";
@@ -27,6 +29,7 @@ export const STORE_UPLOAD_PROGRESS = "upload_progress";
 export const STORE_KEYS = "keys";
 export const STORE_TRANSFER_LOG = "transfer_log";
 export const STORE_RECOVERY = "recovery";
+export const STORE_DEVICE_KEYS = "device_keys";
 
 export const WEB_STORES = [
   STORE_TRUSTED_NODES,
@@ -39,6 +42,7 @@ export const WEB_STORES = [
   STORE_KEYS,
   STORE_TRANSFER_LOG,
   STORE_RECOVERY,
+  STORE_DEVICE_KEYS,
 ] as const;
 
 export type WebStore = (typeof WEB_STORES)[number];
@@ -55,6 +59,7 @@ const KEY_PATH: Record<WebStore, string> = {
   [STORE_KEYS]: "file_id",
   [STORE_TRANSFER_LOG]: "id",
   [STORE_RECOVERY]: "account_id",
+  [STORE_DEVICE_KEYS]: "id",
 };
 
 /**
@@ -152,10 +157,14 @@ export { requestToPromise };
  * the Security page, or a user who relied on it could lose the only copy if
  * every other device is gone too. It lives under its own store precisely so a
  * reset can keep it.
+ *
+ * `device_keys` is likewise kept: it holds the device's non-extractable signing
+ * key, which is identity, not content. Clearing it while the public identity
+ * remained would leave a device that can no longer authenticate.
  */
 export async function clearLocalDatabase(): Promise<void> {
   for (const store of WEB_STORES) {
-    if (store === STORE_RECOVERY) continue;
+    if (store === STORE_RECOVERY || store === STORE_DEVICE_KEYS) continue;
     await idbClear(store);
   }
 }

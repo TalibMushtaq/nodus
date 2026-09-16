@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createDeviceIdentity, identityPrivateKey, identityPublicKey } from "@repo/relay-client";
+import { createDeviceIdentity, identityPublicKey } from "@repo/relay-client";
 import type { EventPayload } from "@repo/protocol";
 
 import { createFolderMutations } from "../src/folders/folders.js";
@@ -14,10 +14,11 @@ function harness() {
     device: {
       deviceId: device.device_id,
       edPublicKey: identityPublicKey(device),
-      edPrivateSeed: identityPrivateKey(device),
     },
     putFolderKey: async (id, key) => void keys.set(id, key),
     getFolderKey: async (id) => keys.get(id),
+    // No sealed envelope path in this harness.
+    resolveFolderKey: async () => null,
     allocateSequence: async () => (sequence += 1),
     sendEventBatch: async (events) => {
       batches.push(events);
@@ -25,7 +26,6 @@ function harness() {
     },
     // Empty catalogue: only this device is a recipient.
     recipientSources: { listDevices: async () => [], listNodes: async () => [] },
-    listFolderEnvelopes: async () => [],
   });
 
   return { mutations, keys, batches };

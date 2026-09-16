@@ -1,17 +1,23 @@
 import { describe, expect, it, vi } from "vitest";
 import { generateFileEncryptionKey } from "@repo/core";
-import { createDeviceIdentity, identityPrivateKey, identityPublicKey } from "@repo/relay-client";
+import { createDeviceIdentity, identityPublicKey } from "@repo/relay-client";
+import {
+  createEncryptionIdentity,
+  encryptionPrivateKeyBytes,
+  encryptionPublicKeyBytes,
+  sealFekForEncryptionKey,
+} from "@repo/sdk";
 
 import {
   collectRecipients,
   decodeEnvelope,
   envelopeEvent,
   folderEnvelopeEvent,
-  openFekFromEnvelope,
+  openFekFromEnvelopeX25519,
   openFolderKeyFromEnvelopes,
-  sealFekForRecipientIdentity,
   sealFekForRecipients,
 } from "../envelopes";
+import { getOrCreateEncryptionIdentity } from "../device";
 
 // Exercise collectRecipients without hitting the network: the catalogue
 // encoding differs per recipient kind, which is the bug under test.
@@ -22,29 +28,37 @@ vi.mock("../pairing", () => ({
 
 import { listDevices, listNodes } from "../pairing";
 
-describe("FEK envelopes", () => {
-  it("round-trips a FEK sealed to a device's Ed25519 identity", () => {
-    const device = createDeviceIdentity();
+describe("FEK envelopes (ADR-0008)", () => {
+  it("round-trips a FEK sealed to a device's X25519 encryption key", () => {
+    const identity = createEncryptionIdentity();
     const fek = generateFileEncryptionKey();
 
-    const encoded = sealFekForRecipientIdentity(fek, identityPublicKey(device));
+    const encoded = sealFekForEncryptionKey(fek, encryptionPublicKeyBytes(identity));
     // Opaque on the wire: the encoded string must not contain the FEK bytes.
     expect(encoded).not.toContain(Buffer.from(fek).toString("base64"));
 
-    const opened = openFekFromEnvelope(encoded, identityPrivateKey(device));
+    const opened = openFekFromEnvelopeX25519(encoded, encryptionPrivateKeyBytes(identity));
     expect(Array.from(opened)).toEqual(Array.from(fek));
   });
 
-  it("fails to open with the wrong device key", () => {
-    const recipient = createDeviceIdentity();
-    const attacker = createDeviceIdentity();
-    const encoded = sealFekForRecipientIdentity(generateFileEncryptionKey(), identityPublicKey(recipient));
-    expect(() => openFekFromEnvelope(encoded, identityPrivateKey(attacker))).toThrow(/authentication failed/);
+  it("fails to open with the wrong encryption key", () => {
+    const recipient = createEncryptionIdentity();
+    const attacker = createEncryptionIdentity();
+    const encoded = sealFekForEncryptionKey(
+      generateFileEncryptionKey(),
+      encryptionPublicKeyBytes(recipient),
+    );
+    expect(() =>
+      openFekFromEnvelopeX25519(encoded, encryptionPrivateKeyBytes(attacker)),
+    ).toThrow(/authentication failed/);
   });
 
   it("encodes and decodes the envelope fields", () => {
-    const device = createDeviceIdentity();
-    const encoded = sealFekForRecipientIdentity(generateFileEncryptionKey(), identityPublicKey(device));
+    const identity = createEncryptionIdentity();
+    const encoded = sealFekForEncryptionKey(
+      generateFileEncryptionKey(),
+      encryptionPublicKeyBytes(identity),
+    );
     const decoded = decodeEnvelope(encoded);
     expect(decoded.ephemeralPublicKey.length).toBe(32);
     expect(decoded.nonce.length).toBe(12);
@@ -54,13 +68,19 @@ describe("FEK envelopes", () => {
 
   it("seals for multiple recipients and builds envelope events", () => {
     const fek = generateFileEncryptionKey();
-    const a = createDeviceIdentity();
+    const a = createEncryptionIdentity();
     const b = createDeviceIdentity();
     const sealed = sealFekForRecipients(fek, [
-      { recipientId: a.device_id, recipientKind: "device", edPublicKey: identityPublicKey(a) },
-      { recipientId: b.device_id, recipientKind: "node", edPublicKey: identityPublicKey(b) },
+      {
+        recipientId: "dev-a",
+        recipientKind: "device",
+        edPublicKey: new Uint8Array(32),
+        x25519PublicKey: encryptionPublicKeyBytes(a),
+      },
+      // A node has no published X25519 key, so it keeps the Ed25519 derivation.
+      { recipientId: "node-b", recipientKind: "node", edPublicKey: identityPublicKey(b) },
     ]);
-    expect(sealed.map((s) => s.recipient_id)).toEqual([a.device_id, b.device_id]);
+    expect(sealed.map((s) => s.recipient_id)).toEqual(["dev-a", "node-b"]);
 
     const event = envelopeEvent("device-1", 3, "file-1", sealed[0]!);
     expect(event.type).toBe("KEY_ENVELOPE_ADDED");
@@ -68,48 +88,41 @@ describe("FEK envelopes", () => {
     expect(event.payload).toMatchObject({ file_id: "file-1", recipient_kind: "device" });
   });
 
-  it("re-sealing for the same recipient opens with that recipient's key", () => {
+  it("builds folder key envelope events and opens them with this browser's key", () => {
     const fek = generateFileEncryptionKey();
-    const recipient = createDeviceIdentity();
-    const first = sealFekForRecipientIdentity(fek, identityPublicKey(recipient));
-    const second = sealFekForRecipientIdentity(fek, identityPublicKey(recipient));
-    // Each seal uses a fresh ephemeral key, so encodings differ but both open.
-    expect(first).not.toBe(second);
-    expect(Array.from(openFekFromEnvelope(first, identityPrivateKey(recipient)))).toEqual(Array.from(fek));
-    expect(Array.from(openFekFromEnvelope(second, identityPrivateKey(recipient)))).toEqual(Array.from(fek));
-  });
-
-  it("builds folder key envelope events and opens them by folder id", () => {
-    const fek = generateFileEncryptionKey();
-    const recipient = createDeviceIdentity();
+    // The opener uses the browser's persisted encryption identity, so seal to
+    // exactly that public key.
+    const local = getOrCreateEncryptionIdentity();
     const [sealed] = sealFekForRecipients(fek, [
-      { recipientId: recipient.device_id, recipientKind: "device", edPublicKey: identityPublicKey(recipient) },
+      {
+        recipientId: "dev-1",
+        recipientKind: "device",
+        edPublicKey: new Uint8Array(32),
+        x25519PublicKey: encryptionPublicKeyBytes(local),
+      },
     ]);
 
     const event = folderEnvelopeEvent("device-1", 4, "dir-1", sealed!);
     expect(event.type).toBe("FOLDER_KEY_ENVELOPE_ADDED");
     expect(event.payload).toMatchObject({
       folder_id: "dir-1",
-      recipient_id: recipient.device_id,
+      recipient_id: "dev-1",
       recipient_kind: "device",
     });
 
-    const opened = openFolderKeyFromEnvelopes(
-      [{ folder_id: "dir-1", recipient_id: recipient.device_id, recipient_kind: "device", encrypted_key: sealed!.encrypted_key }],
-      "dir-1",
-      recipient.device_id,
-      identityPrivateKey(recipient),
+    const envelopes = [
+      {
+        folder_id: "dir-1",
+        recipient_id: "dev-1",
+        recipient_kind: "device" as const,
+        encrypted_key: sealed!.encrypted_key,
+      },
+    ];
+    expect(Array.from(openFolderKeyFromEnvelopes(envelopes, "dir-1", "dev-1") ?? [])).toEqual(
+      Array.from(fek),
     );
-    expect(Array.from(opened ?? [])).toEqual(Array.from(fek));
     // A different folder id has no matching envelope.
-    expect(
-      openFolderKeyFromEnvelopes(
-        [{ folder_id: "dir-1", recipient_id: recipient.device_id, recipient_kind: "device", encrypted_key: sealed!.encrypted_key }],
-        "dir-2",
-        recipient.device_id,
-        identityPrivateKey(recipient),
-      ),
-    ).toBeNull();
+    expect(openFolderKeyFromEnvelopes(envelopes, "dir-2", "dev-1")).toBeNull();
   });
 });
 
@@ -143,7 +156,10 @@ describe("collectRecipients catalogue decoding", () => {
     ]);
 
     const self = createDeviceIdentity();
-    const recipients = await collectRecipients({ deviceId: self.device_id, edPublicKey: identityPublicKey(self) });
+    const recipients = await collectRecipients({
+      deviceId: self.device_id,
+      edPublicKey: identityPublicKey(self),
+    });
 
     const node = recipients.find((r) => r.recipientKind === "node");
     expect(node?.edPublicKey).toHaveLength(32);

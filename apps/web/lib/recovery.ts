@@ -7,8 +7,7 @@
 // IndexedDB phrase store and HTTP proxies.
 
 import { createRecoveryClient } from "@repo/sdk";
-import type { RecoveryLoginResult } from "@repo/sdk";
-import type { StoredDeviceIdentity } from "@repo/relay-client";
+import type { DevicePublicIdentity, RecoveryLoginResult } from "@repo/sdk";
 
 import { STORE_RECOVERY, idbDelete, idbGet, idbPut } from "./db";
 import { putFileKey } from "./keys";
@@ -63,7 +62,7 @@ export type { RecoveryLoginResult } from "@repo/sdk";
 export function recoverAccount(
   email: string,
   phrase: string,
-  device: StoredDeviceIdentity,
+  device: DevicePublicIdentity,
 ): Promise<RecoveryLoginResult> {
   return client.recover(email, phrase, device, getOrCreateEncryptionIdentity().public_key);
 }
