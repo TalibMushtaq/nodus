@@ -34,6 +34,20 @@ type NodeAuthResultPayload struct {
 	// Machine-readable failure reason: "node_not_found" (no row) or
 	// "node_inactive" (row exists but status != ACTIVE).
 	Reason string `json:"reason,omitempty"`
+	// Nodes lists the account's other ACTIVE storage nodes (id + Ed25519 public
+	// key) so a freshly authenticated node can seed its local `trusted_nodes`
+	// table for peer-to-peer repair (§21a). Omitted on failure and when the
+	// account has no other active node. This is the only production path that
+	// populates trusted_nodes; without it node-to-node shard fetch/repair has no
+	// trust anchor.
+	Nodes []NodePeer `json:"nodes,omitempty"`
+}
+
+// NodePeer is one sibling storage node in the account, as delivered to a node
+// on successful authentication.
+type NodePeer struct {
+	NodeID    string `json:"node_id"`
+	PublicKey string `json:"public_key"` // hex-encoded Ed25519 public key
 }
 
 type SyncCursor struct {
@@ -344,8 +358,37 @@ func HandleNodeAuthResponse(
 
 	_ = sendEnvelope(c, "node_auth_result", NodeAuthResultPayload{
 		Status: "ok",
+		Nodes:  fetchPeerNodes(ctx, pool, accountID, c.NodeID),
 	})
 	log.Printf("[ws] node %s successfully authenticated for account %s", c.NodeID, c.AccountID)
+}
+
+// fetchPeerNodes returns the account's other ACTIVE storage nodes so the
+// authenticating node can trust them for peer-to-peer repair. Best-effort: a
+// query error yields no peers (the node simply repairs over the relay buffer)
+// rather than failing an otherwise successful authentication.
+func fetchPeerNodes(ctx context.Context, pool *db.Pool, accountID, selfNodeID string) []NodePeer {
+	rows, err := pool.Query(ctx, `
+		SELECT node_id, public_key FROM storage_nodes
+		WHERE account_id = $1 AND node_id <> $2 AND status = 'ACTIVE'
+		ORDER BY created_at ASC
+	`, accountID, selfNodeID)
+	if err != nil {
+		log.Printf("[ws] fetching peer nodes for account %s failed: %v", accountID, err)
+		return nil
+	}
+	defer rows.Close()
+
+	peers := make([]NodePeer, 0)
+	for rows.Next() {
+		var peer NodePeer
+		if err := rows.Scan(&peer.NodeID, &peer.PublicKey); err != nil {
+			log.Printf("[ws] scanning peer node failed: %v", err)
+			return peers
+		}
+		peers = append(peers, peer)
+	}
+	return peers
 }
 
 // HandleSyncHello processes SYNC_HELLO from the node and responds with SYNC_STATUS + missing events.

@@ -34,6 +34,14 @@ impl MemoryLocalQueue {
         items.retain(|r| r.transfer_id != transfer_id);
     }
 
+    /// Drop every queued item targeting the same object. Repair retries are
+    /// keyed by object_id, and repeated reconciliation scans while the relay is
+    /// down would otherwise pile up duplicate fetches for one missing object.
+    pub async fn remove_by_object_id(&self, object_id: &str) {
+        let mut items = self.items.lock().await;
+        items.retain(|r| r.object_id != object_id);
+    }
+
     pub async fn len(&self) -> usize {
         self.items.lock().await.len()
     }

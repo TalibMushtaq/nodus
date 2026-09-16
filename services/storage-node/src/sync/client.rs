@@ -1,7 +1,9 @@
 use futures_util::{SinkExt, StreamExt};
 use sqlx::{Acquire, Row, SqlitePool};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::mpsc;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
 use url::Url;
@@ -11,13 +13,23 @@ use super::outbox::{drain_unsynced_events, mark_events_synced, sweep_synced_outb
 use super::snapshot::is_rebuild_required_for;
 use super::types::{
     BatchAckPayload, EventBatchPayload, NodeAuthChallengePayload, NodeAuthResponsePayload,
-    NodeAuthResultPayload, PairingTokenPushPayload, PendingNotifyPayload, ProtocolEnvelope,
-    RegisterPayload, ShardAckPayload, ShardFetchRequestPayload, ShardFetchResultPayload,
-    SnapshotBeginPayload, SnapshotChunkPayload, SnapshotEndPayload, SyncCursor, SyncHelloPayload,
-    SyncStatusPayload,
+    NodeAuthResultPayload, NodePeer, NodeShardFetchPayload, PairingTokenPushPayload,
+    PendingNotifyPayload, ProtocolEnvelope, RegisterPayload, ShardAckPayload,
+    ShardFetchRequestPayload, ShardFetchResultPayload, SnapshotBeginPayload, SnapshotChunkPayload,
+    SnapshotEndPayload, SyncCursor, SyncHelloPayload, SyncStatusPayload,
 };
 use crate::identity::NodeIdentity;
 use crate::store::ObjectStore;
+use crate::webrtc::OutboundSession;
+use crate::webrtc::session::ShardUploadPayload;
+
+/// A signal routed from the sync read loop to an outbound (Path B initiator)
+/// repair task. The task owns the peer connection; the read loop only feeds it
+/// the answer and remote ICE candidates addressed to it.
+enum OutboundSignal {
+    Answer(String),
+    Ice(String),
+}
 
 /// If an event is a tombstone, return `(entity_type, entity_id)` so the client
 /// can ack it to the Relay. `FOLDER_DELETED` carries a `folder_id` instead of
@@ -39,6 +51,150 @@ fn tombstone_entity(ev: &super::types::SyncEvent) -> Option<(String, String)> {
         }
         _ => None,
     }
+}
+
+/// Seed `trusted_nodes` from the relay's auth-success peer list so node-to-node
+/// shard fetch/repair has a trust anchor (§21a). Self is skipped, a malformed
+/// hex/off-length key is ignored rather than aborting the batch, and an
+/// existing row keeps its path-cache columns (`last_successful_path` /
+/// `last_success_at`) — only the published key is refreshed. This is the only
+/// production writer of `trusted_nodes`.
+async fn store_trusted_peers(
+    db: &SqlitePool,
+    self_node_id: &str,
+    peers: &[NodePeer],
+) -> anyhow::Result<()> {
+    for peer in peers {
+        if peer.node_id == self_node_id {
+            continue;
+        }
+        let Ok(key) = hex::decode(&peer.public_key) else {
+            eprintln!(
+                "[sync] ignoring trusted peer {}: public_key is not hex",
+                peer.node_id
+            );
+            continue;
+        };
+        if key.len() != 32 {
+            eprintln!(
+                "[sync] ignoring trusted peer {}: expected a 32-byte Ed25519 key, got {}",
+                peer.node_id,
+                key.len()
+            );
+            continue;
+        }
+        sqlx::query(
+            "INSERT INTO trusted_nodes (node_id, public_key_bytes, created_at)
+             VALUES (?, ?, ?)
+             ON CONFLICT(node_id) DO UPDATE SET public_key_bytes = excluded.public_key_bytes",
+        )
+        .bind(&peer.node_id)
+        .bind(key)
+        .bind(chrono::Utc::now().to_rfc3339())
+        .execute(db)
+        .await?;
+    }
+    Ok(())
+}
+
+/// Path B holder task: originate a WebRTC session to the repairing peer, stream
+/// the requested object, and wait for its ack. Signaling rides `out_tx` (drained
+/// into the session's WS by the read loop) and `signal_rx` (answer/ICE fed back
+/// by the read loop).
+#[allow(clippy::too_many_arguments)]
+async fn outbound_repair_task(
+    identity: Arc<NodeIdentity>,
+    store: Arc<ObjectStore>,
+    to_peer: String,
+    object_id: String,
+    file_id: String,
+    version_number: i64,
+    shard_index: i64,
+    out_tx: mpsc::UnboundedSender<ProtocolEnvelope>,
+    mut signal_rx: mpsc::UnboundedReceiver<OutboundSignal>,
+) -> anyhow::Result<()> {
+    let bytes = store
+        .get(&object_id)
+        .await
+        .map_err(|e| anyhow::anyhow!("reading object {object_id} to serve: {e}"))?;
+
+    let session = OutboundSession::new().await?;
+
+    // Forward our local ICE candidates over the signaling channel.
+    let mut ice_rx = session.subscribe_ice();
+    let out_ice = out_tx.clone();
+    let from = identity.node_id.clone();
+    let to = to_peer.clone();
+    tokio::spawn(async move {
+        while let Ok(candidate) = ice_rx.recv().await {
+            let env = ProtocolEnvelope::new(
+                "webrtc_ice_candidate",
+                serde_json::json!({ "from_peer": from, "to_peer": to, "candidate": candidate }),
+            );
+            if out_ice.send(env).is_err() {
+                break;
+            }
+        }
+    });
+
+    // Sign the offer so the peer can verify us against its trusted_nodes
+    // (same message shape the device Path B uses).
+    let sdp = session.create_offer().await?;
+    let timestamp = chrono::Utc::now().timestamp_millis();
+    let digest = blake3::hash(sdp.as_bytes()).to_hex().to_string();
+    let message = format!(
+        "{}:relay-{}:{timestamp}:{digest}",
+        identity.node_id, identity.node_id
+    );
+    let signature = hex::encode(identity.sign(message.as_bytes()).to_bytes());
+    let offer = ProtocolEnvelope::new(
+        "webrtc_offer",
+        serde_json::json!({
+            "from_peer": identity.node_id,
+            "to_peer": to_peer,
+            "sdp": sdp,
+            "timestamp": timestamp,
+            "signature": signature,
+        }),
+    );
+    out_tx
+        .send(offer)
+        .map_err(|_| anyhow::anyhow!("relay signaling channel closed"))?;
+
+    // Await the answer, buffering any ICE that arrives before it.
+    let mut answer: Option<String> = None;
+    let mut pending_ice: Vec<String> = Vec::new();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    while answer.is_none() {
+        match tokio::time::timeout_at(deadline, signal_rx.recv()).await {
+            Ok(Some(OutboundSignal::Answer(s))) => answer = Some(s),
+            Ok(Some(OutboundSignal::Ice(c))) => pending_ice.push(c),
+            Ok(None) | Err(_) => anyhow::bail!("timed out waiting for the peer's WebRTC answer"),
+        }
+    }
+    session
+        .set_answer(answer.as_deref().unwrap_or_default())
+        .await?;
+    for candidate in pending_ice {
+        let _ = session.add_ice_candidate(&candidate).await;
+    }
+
+    let meta = ShardUploadPayload {
+        file_id,
+        version_number,
+        shard_index,
+        hash: object_id.clone(),
+        size: bytes.len() as i64,
+        transfer_id: uuid::Uuid::new_v4().to_string(),
+        target_node: Some(to_peer),
+        source_device: Some(identity.node_id.clone()),
+    };
+    let ack = session.send_shard(&meta, &bytes).await?;
+    session.close().await;
+    if ack.status != "verified" {
+        anyhow::bail!("peer rejected the shard: {:?}", ack.error_message);
+    }
+    Ok(())
 }
 
 /// Derive the Relay's plain-HTTP base from any configured relay URL. Accepts
@@ -303,7 +459,14 @@ impl SyncClient {
     }
 
     /// Perform a single sync exchange run over WebSocket.
-    pub async fn run_sync_session(&self) -> anyhow::Result<()> {
+    ///
+    /// `repair_rx` carries `node_shard_fetch` requests emitted by the transfer
+    /// manager for Path B node→node repairs; the session drains it into the
+    /// same WS write half used for every other relay envelope.
+    pub async fn run_sync_session(
+        &self,
+        mut repair_rx: Option<mpsc::UnboundedReceiver<ProtocolEnvelope>>,
+    ) -> anyhow::Result<()> {
         // Bound the dial itself (#9): tokio_tungstenite has no connect timeout,
         // and a black-holed relay has no kernel fast-fail, so without this the
         // main loop's reconnect cadence is held hostage by one stuck connect.
@@ -359,6 +522,16 @@ impl SyncClient {
                             anyhow::bail!("relay accepted auth without ever issuing a challenge");
                         }
                         authenticated = true;
+                        // Seed the local trust table with the account's other
+                        // active nodes (relay-delivered on success) so
+                        // peer-to-peer repair has a trust anchor. Best-effort:
+                        // a store failure must not fail authentication.
+                        if let Err(e) =
+                            store_trusted_peers(&self.db, &self.identity.node_id, &result.nodes)
+                                .await
+                        {
+                            eprintln!("[sync] failed to store trusted peer nodes: {e}");
+                        }
                         // Relay accepted us: this session is live, so let the
                         // sync-loop telemetry stop showing "connecting" now.
                         if let Some(on_connected) = &self.on_connected {
@@ -383,6 +556,14 @@ impl SyncClient {
         if !authenticated {
             anyhow::bail!("connection closed before auth completed");
         }
+
+        // Path B (node repair) plumbing: envelopes the outbound repair tasks
+        // want written to the Relay, and the per-peer signal routing table for
+        // their answers/ICE.
+        let (out_tx, mut out_rx) = mpsc::unbounded_channel::<ProtocolEnvelope>();
+        let outbound_sessions: Arc<
+            tokio::sync::Mutex<HashMap<String, mpsc::UnboundedSender<OutboundSignal>>>,
+        > = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
 
         // 2. Send SYNC_HELLO
         self.send_sync_hello(&mut write).await?;
@@ -663,6 +844,23 @@ impl SyncClient {
                             }
                         }
                     }
+                    // Path B (node repair): a peer we trust needs an object we
+                    // hold. Start an outbound WebRTC transfer that offers the
+                    // peer a direct data channel and streams the shard.
+                    "node_shard_fetch" => {
+                        let req: NodeShardFetchPayload = serde_json::from_value(env.payload.clone())?;
+                        if req.to_peer == self.identity.node_id
+                            && self.is_trusted_peer(&req.from_peer).await
+                        {
+                            self.spawn_outbound_repair(
+                                req.from_peer.clone(),
+                                req.object_id.clone(),
+                                out_tx.clone(),
+                                Arc::clone(&outbound_sessions),
+                            )
+                            .await;
+                        }
+                    }
                     // Path B: a device (browser) that cannot reach us on the LAN
                     // is opening a WebRTC data channel over the Relay. Gate on a
                     // paired/ACTIVE device of this account, create or reuse the
@@ -671,11 +869,24 @@ impl SyncClient {
                         self.handle_relay_offer(&mut write, &env, &ice_tx, &ice_forwarders)
                             .await?;
                     }
-                    // Path B trickle: the device's ICE candidates, added to the
-                    // live session. Unknown sessions/candidates are ignored (a
-                    // late candidate after the session was pruned is not fatal).
+                    // Path B (node repair): the peer answered our outbound
+                    // offer; route it to the waiting repair task.
+                    "webrtc_answer" => {
+                        self.route_outbound_signal(&env, &outbound_sessions, true)
+                            .await;
+                    }
+                    // Path B trickle: route to an outbound (initiator) repair
+                    // task if one is waiting on this peer, otherwise treat it as
+                    // an inbound (answerer) candidate. Unknown
+                    // sessions/candidates are ignored (a late candidate after
+                    // the session was pruned is not fatal).
                     "webrtc_ice_candidate" => {
-                        self.handle_relay_ice_candidate(&env).await?;
+                        let routed = self
+                            .route_outbound_signal(&env, &outbound_sessions, false)
+                            .await;
+                        if !routed {
+                            self.handle_relay_ice_candidate(&env).await?;
+                        }
                     }
                     _ => {}
                 }
@@ -689,6 +900,20 @@ impl SyncClient {
                         "candidate": candidate,
                     });
                     Self::send_envelope(&mut write, "webrtc_ice_candidate", &payload).await?;
+                }
+                // Path B: a repair request from the transfer manager, written to
+                // the Relay so the holder node can offer us a direct transfer.
+                Some(env) = async {
+                    match repair_rx.as_mut() {
+                        Some(rx) => rx.recv().await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    Self::send_json(&mut write, &env).await?;
+                }
+                // Path B: an outbound repair task's offer/local-ICE envelope.
+                Some(env) = out_rx.recv() => {
+                    Self::send_json(&mut write, &env).await?;
                 }
                 _ = heartbeat.tick() => {
                     // Liveness ping (§13): the Relay keys the node's
@@ -758,13 +983,24 @@ impl SyncClient {
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("missing signature"))?;
 
-        let public_key: Vec<u8> = sqlx::query_scalar(
+        // The signer may be a paired device (browser/mobile Path B) or a trusted
+        // peer storage node (node↔node repair Path B). Look in both tables.
+        let public_key: Vec<u8> = match sqlx::query_scalar(
             "SELECT public_key_bytes FROM devices WHERE device_id = ? AND status = 'ACTIVE'",
         )
         .bind(from_peer)
         .fetch_optional(&self.db)
         .await?
-        .ok_or_else(|| anyhow::anyhow!("device is not a paired, active device"))?;
+        {
+            Some(key) => key,
+            None => {
+                sqlx::query_scalar("SELECT public_key_bytes FROM trusted_nodes WHERE node_id = ?")
+                    .bind(from_peer)
+                    .fetch_optional(&self.db)
+                    .await?
+                    .ok_or_else(|| anyhow::anyhow!("peer is not a paired device or trusted node"))?
+            }
+        };
 
         let now_ms = chrono::Utc::now().timestamp_millis();
         if (now_ms - timestamp).abs() > RELAY_SIGNAL_FRESHNESS_MS {
@@ -909,6 +1145,108 @@ impl SyncClient {
             }
         }
         Ok(())
+    }
+
+    /// True when `node_id` is a peer storage node this account trusts (seeded
+    /// from the auth handshake). Path B only serves objects to trusted peers.
+    async fn is_trusted_peer(&self, node_id: &str) -> bool {
+        sqlx::query_scalar::<_, String>("SELECT node_id FROM trusted_nodes WHERE node_id = ?")
+            .bind(node_id)
+            .fetch_optional(&self.db)
+            .await
+            .ok()
+            .flatten()
+            .is_some()
+    }
+
+    /// Offload an outbound Path B repair to a task so the read loop keeps
+    /// processing the signaling the task depends on. The peer's answer/ICE are
+    /// routed to the task via the registry channel installed here.
+    async fn spawn_outbound_repair(
+        &self,
+        to_peer: String,
+        object_id: String,
+        out_tx: mpsc::UnboundedSender<ProtocolEnvelope>,
+        registry: Arc<tokio::sync::Mutex<HashMap<String, mpsc::UnboundedSender<OutboundSignal>>>>,
+    ) {
+        // The holder only knows the object hash; map it back to its
+        // (file, version, shard) so the receiver's manifest check passes.
+        let row: Option<(String, i64, i64)> = sqlx::query_as(
+            "SELECT file_id, version_number, shard_index FROM shards WHERE object_id = ? LIMIT 1",
+        )
+        .bind(&object_id)
+        .fetch_optional(&self.db)
+        .await
+        .ok()
+        .flatten();
+        let Some((file_id, version_number, shard_index)) = row else {
+            eprintln!("[sync] peer requested unknown object {object_id}; ignoring");
+            return;
+        };
+
+        let (signal_tx, signal_rx) = mpsc::unbounded_channel::<OutboundSignal>();
+        registry.lock().await.insert(to_peer.clone(), signal_tx);
+
+        let identity = Arc::clone(&self.identity);
+        let store = self.object_store.clone();
+        let registry_for_task = Arc::clone(&registry);
+        let to = to_peer.clone();
+        tokio::spawn(async move {
+            let result = outbound_repair_task(
+                identity,
+                store,
+                to.clone(),
+                object_id,
+                file_id,
+                version_number,
+                shard_index,
+                out_tx,
+                signal_rx,
+            )
+            .await;
+            if let Err(e) = result {
+                eprintln!("[sync] Path B repair to {to} failed: {e:#}");
+            }
+            registry_for_task.lock().await.remove(&to);
+        });
+    }
+
+    /// Route an inbound answer/ICE envelope to the outbound repair task that
+    /// invited `from_peer`. Returns false when no task is waiting (the caller
+    /// then treats the message as an inbound-session candidate).
+    async fn route_outbound_signal(
+        &self,
+        env: &ProtocolEnvelope,
+        registry: &Arc<tokio::sync::Mutex<HashMap<String, mpsc::UnboundedSender<OutboundSignal>>>>,
+        is_answer: bool,
+    ) -> bool {
+        let from = env
+            .payload
+            .get("from_peer")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if from.is_empty() {
+            return false;
+        }
+        let signal = if is_answer {
+            env.payload
+                .get("sdp")
+                .and_then(|v| v.as_str())
+                .map(|s| OutboundSignal::Answer(s.to_string()))
+        } else {
+            env.payload
+                .get("candidate")
+                .and_then(|v| v.as_str())
+                .map(|s| OutboundSignal::Ice(s.to_string()))
+        };
+        let Some(signal) = signal else {
+            return false;
+        };
+        let map = registry.lock().await;
+        match map.get(from) {
+            Some(tx) => tx.send(signal).is_ok(),
+            None => false,
+        }
     }
 
     /// Serialize and send a protocol envelope under a finite deadline (#9).
@@ -1982,5 +2320,69 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("signed manifest"), "unexpected: {err}");
+    }
+
+    #[tokio::test]
+    async fn store_trusted_peers_upserts_skips_self_and_keeps_cache() {
+        let dir = tempdir().unwrap();
+        let pool = db::open(dir.path()).await.unwrap();
+
+        let key = [9u8; 32];
+        let peers = vec![
+            // Self must never be stored as a peer.
+            NodePeer {
+                node_id: "self".to_string(),
+                public_key: hex::encode([1u8; 32]),
+            },
+            NodePeer {
+                node_id: "peer-a".to_string(),
+                public_key: hex::encode(key),
+            },
+            // Malformed hex and wrong-length keys are skipped, not fatal.
+            NodePeer {
+                node_id: "peer-bad-hex".to_string(),
+                public_key: "zz".to_string(),
+            },
+            NodePeer {
+                node_id: "peer-short".to_string(),
+                public_key: hex::encode([2u8; 16]),
+            },
+        ];
+        store_trusted_peers(&pool, "self", &peers).await.unwrap();
+
+        let rows: Vec<(String, Vec<u8>)> =
+            sqlx::query_as("SELECT node_id, public_key_bytes FROM trusted_nodes ORDER BY node_id")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(rows.len(), 1, "only the valid non-self peer is stored");
+        assert_eq!(rows[0].0, "peer-a");
+        assert_eq!(rows[0].1, key.to_vec());
+
+        // A re-auth with a rotated key refreshes the key but preserves the
+        // path-cache columns that guide repair ordering.
+        sqlx::query("UPDATE trusted_nodes SET last_successful_path = 'local_signaling'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let rotated = [5u8; 32];
+        store_trusted_peers(
+            &pool,
+            "self",
+            &[NodePeer {
+                node_id: "peer-a".to_string(),
+                public_key: hex::encode(rotated),
+            }],
+        )
+        .await
+        .unwrap();
+
+        let (bytes, path): (Vec<u8>, Option<String>) =
+            sqlx::query_as("SELECT public_key_bytes, last_successful_path FROM trusted_nodes WHERE node_id = 'peer-a'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(bytes, rotated.to_vec(), "key is refreshed");
+        assert_eq!(path.as_deref(), Some("local_signaling"), "cache preserved");
     }
 }

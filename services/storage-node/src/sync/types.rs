@@ -34,6 +34,23 @@ pub struct NodeAuthResponsePayload {
     pub signature: String,
 }
 
+/// A repairing node asks a peer holder for an object over the Relay (Path B).
+/// The holder replies with a signed `webrtc_offer` and streams the shard.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NodeShardFetchPayload {
+    pub from_peer: String,
+    pub to_peer: String,
+    pub object_id: String,
+}
+
+/// One sibling storage node delivered on successful auth (relay
+/// `node_auth_result.nodes`). `public_key` is the hex-encoded Ed25519 key.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NodePeer {
+    pub node_id: String,
+    pub public_key: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeAuthResultPayload {
     pub status: String, // "ok" | "fail"
@@ -44,6 +61,11 @@ pub struct NodeAuthResultPayload {
     /// "Unpaired-node UX"). Absent on success and on legacy relays.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    /// Other ACTIVE storage nodes in the account, delivered on success so the
+    /// node can seed `trusted_nodes` for peer repair (§21a). Defaults to empty
+    /// against older relays that do not send the field.
+    #[serde(default)]
+    pub nodes: Vec<NodePeer>,
 }
 
 /// Phase 11: Relay → Node delivery of a freshly issued pairing token. The

@@ -23,6 +23,7 @@ function entry(partial: Partial<CatalogEntry> = {}): CatalogEntry {
     version_hash: "vh",
     conflict_status: "none",
     conflicted_versions: [],
+    conflicted_name: null,
     storage_status: "stored",
     locations: [
       { version_number: 1, shard_index: 0, node_id: "n1", status: "NODE_STORED", hash: "h0", size_bytes: 10 },

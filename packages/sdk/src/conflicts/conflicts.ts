@@ -15,6 +15,12 @@ export interface ConflictEntry {
   fileId: string;
   /** Decrypted display name when the FEK is available, else a short id. */
   name: string;
+  /**
+   * ADR-0003 sibling filename the preserved copy was given (e.g.
+   * `report (conflicted copy 3f9a 2026-08-31).txt`), when the Relay knows it.
+   * Null for conflicts projected only from events.
+   */
+  siblingName: string | null;
   versions: number[];
   updatedAt: string;
 }
@@ -44,6 +50,7 @@ export async function listConflicts(deps: ConflictDeps): Promise<ConflictEntry[]
     conflicted.map(async (entry) => ({
       fileId: entry.file_id,
       name: await resolveName(entry, deps),
+      siblingName: entry.conflicted_name ?? null,
       versions: entry.conflicted_versions,
       updatedAt: entry.updated_at,
     })),

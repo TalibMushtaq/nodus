@@ -1,14 +1,13 @@
 /**
  * LAN discovery for mobile.
  *
- * Design decision G called for evaluating native mDNS libraries first.
- * `react-native-zeroconf`/`react-native-dns-sd` are native modules: they need
- * a custom development build and cannot load in Expo Go, and their APIs are
- * largely unmaintained. Until a native build is wired up, discovery is a
- * bounded pure-JS sweep: read this device's IPv4 from expo-network, then probe
- * every /24 neighbour's `/nodus/discovery` (same endpoint mDNS would have
- * advertised). This works on any Expo Go build and is what the manual
- * fallback uses anyway — see CHANGELOG for the native-mDNS follow-up.
+ * `discoverNodes` prefers native mDNS (`react-native-zeroconf`, see `./mdns`)
+ * and falls back to a bounded /24 sweep when mDNS is unavailable, denied, or
+ * finds nothing: read this device's IPv4 from expo-network and probe every
+ * neighbour's `/nodus/discovery` (the same endpoint mDNS advertises). The
+ * native mDNS modules need a custom development build (they cannot load in
+ * Expo Go), so the sweep keeps discovery working on any build and is also the
+ * manual fallback. Per ADR-0004, Path A is attempted foreground-only.
  */
 
 import * as Network from "expo-network";
@@ -69,7 +68,8 @@ export async function scanLan(myIp: string): Promise<LanCandidate[]> {
         const idx = cursor;
         cursor += 1;
         const host = hosts[idx];
-        if (idx === ownLast) continue;
+        // hosts is 1-indexed by last octet, so the self host is idx+1.
+        if (idx + 1 === ownLast) continue;
         try {
           const adv = await fetchAdvertisement(nodusBaseUrl(host), SCAN_TIMEOUT_MS);
           results.push({ host, node_id: adv.node_id, schema_version: adv.schema_version });

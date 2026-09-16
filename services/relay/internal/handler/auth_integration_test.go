@@ -66,6 +66,8 @@ func setupAuthHarness(t *testing.T) *authHarness {
 	mux.HandleFunc("POST /auth/login", Login(pool, store, cfg))
 	mux.HandleFunc("GET /auth/session", Session(pool, store, cfg))
 	mux.HandleFunc("POST /auth/logout", Logout(store, cfg))
+	mux.Handle("POST /auth/password", auth.RequireAuth(store, cfg)(ChangePassword(pool, store, cfg)))
+	mux.Handle("POST /auth/logout-all", auth.RequireAuth(store, cfg)(LogoutAll(pool, store, cfg)))
 	mux.Handle("DELETE /devices/{id}", auth.RequireAuth(store, cfg)(RevokeDevice(pool, store)))
 
 	server := httptest.NewServer(mux)
@@ -367,4 +369,163 @@ func TestAuthSessionCookieSecureFlag(t *testing.T) {
 	require.True(t, sessionCookie.HttpOnly, "cookie must be HttpOnly")
 	require.Equal(t, "/", sessionCookie.Path, "cookie must have Path=/")
 	require.Equal(t, http.SameSiteLaxMode, sessionCookie.SameSite, "cookie must be SameSite=Lax")
+}
+
+// sessionCookieFrom extracts a named cookie value from a response's Set-Cookie
+// headers, failing the test if the cookie was not set.
+func sessionCookieFrom(t *testing.T, resp *http.Response, name string) string {
+	t.Helper()
+	for _, c := range resp.Cookies() {
+		if c.Name == name {
+			return c.Value
+		}
+	}
+	t.Fatalf("response did not set cookie %s", name)
+	return ""
+}
+
+// doBare issues an unauthenticated request with a fresh cookie-less client, so
+// a test can obtain a session without disturbing the harness cookie jar.
+func (h *authHarness) doBare(t *testing.T, method, path, body string) (*http.Response, authResponse) {
+	t.Helper()
+	req, err := http.NewRequest(method, h.server.URL+path, bytes.NewReader([]byte(body)))
+	require.NoError(t, err)
+	if body != "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := (&http.Client{}).Do(req)
+	require.NoError(t, err)
+	var out authResponse
+	_ = json.NewDecoder(resp.Body).Decode(&out)
+	resp.Body.Close()
+	return resp, out
+}
+
+// doWithCookie issues a request with an explicit Cookie header and no jar, so a
+// superseded or foreign raw token can be probed independently of the jar.
+func (h *authHarness) doWithCookie(t *testing.T, method, path, body, cookie string) (*http.Response, authResponse) {
+	t.Helper()
+	req, err := http.NewRequest(method, h.server.URL+path, bytes.NewReader([]byte(body)))
+	require.NoError(t, err)
+	if body != "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	req.Header.Set("Cookie", h.cfg.SessionCookieName+"="+cookie)
+	resp, err := (&http.Client{}).Do(req)
+	require.NoError(t, err)
+	var out authResponse
+	_ = json.NewDecoder(resp.Body).Decode(&out)
+	resp.Body.Close()
+	return resp, out
+}
+
+// TestRawSessionToken covers the cookie/bearer fallback used by rotation.
+func TestRawSessionToken(t *testing.T) {
+	cfg := &config.Config{SessionCookieName: "nodus_session"}
+
+	withCookie := httptest.NewRequest("POST", "/auth/password", nil)
+	withCookie.AddCookie(&http.Cookie{Name: "nodus_session", Value: "cookie-token"})
+	require.Equal(t, "cookie-token", rawSessionToken(withCookie, cfg), "cookie wins when present")
+
+	withBearer := httptest.NewRequest("POST", "/auth/password", nil)
+	withBearer.Header.Set("Authorization", "Bearer bearer-token")
+	require.Equal(t, "bearer-token", rawSessionToken(withBearer, cfg), "bearer is the mobile fallback")
+
+	empty := httptest.NewRequest("POST", "/auth/password", nil)
+	require.Equal(t, "", rawSessionToken(empty, cfg), "no credential yields empty")
+}
+
+// TestChangePasswordRotatesSession asserts the §13 fixation defense: a successful
+// password change reverses the old session id, the old cookie stops working, and
+// only the new password authenticates afterwards.
+func TestChangePasswordRotatesSession(t *testing.T) {
+	h := setupAuthHarness(t)
+	u := fmt.Sprintf("%d", time.Now().UnixNano())
+	email := "chpw-" + u + "@test.local"
+	device := "dev-chpw-" + u
+
+	regResp, _ := h.do(t, "POST", "/auth/register",
+		fmt.Sprintf(`{"email":%q,"password":"password123","device_id":%q,"device_public_key":"pub"}`, email, device))
+	require.Equal(t, http.StatusCreated, regResp.StatusCode)
+	oldCookie := sessionCookieFrom(t, regResp, h.cfg.SessionCookieName)
+
+	resp, out := h.do(t, "POST", "/auth/password",
+		`{"current_password":"password123","new_password":"newpassword456"}`)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.Equal(t, device, out.DeviceID)
+	newCookie := sessionCookieFrom(t, resp, h.cfg.SessionCookieName)
+	require.NotEqual(t, oldCookie, newCookie, "rotation must issue a new session id")
+
+	oldResp, _ := h.doWithCookie(t, "GET", "/auth/session", "", oldCookie)
+	require.Equal(t, http.StatusUnauthorized, oldResp.StatusCode, "pre-change cookie must be invalid")
+
+	newResp, _ := h.doWithCookie(t, "GET", "/auth/session", "", newCookie)
+	require.Equal(t, http.StatusOK, newResp.StatusCode, "rotated cookie must be valid")
+
+	badLogin, _ := h.doBare(t, "POST", "/auth/login",
+		fmt.Sprintf(`{"email":%q,"password":"password123","device_id":%q,"device_public_key":"pub"}`, email, device))
+	require.Equal(t, http.StatusUnauthorized, badLogin.StatusCode, "old password must stop working")
+
+	goodLogin, _ := h.doBare(t, "POST", "/auth/login",
+		fmt.Sprintf(`{"email":%q,"password":"newpassword456","device_id":%q,"device_public_key":"pub"}`, email, device))
+	require.Equal(t, http.StatusOK, goodLogin.StatusCode, "new password must authenticate")
+}
+
+// TestChangePasswordRejectsWrongCurrent ensures a stolen cookie cannot change
+// the password without the current credential, and validation does not mutate.
+func TestChangePasswordRejectsWrongCurrent(t *testing.T) {
+	h := setupAuthHarness(t)
+	u := fmt.Sprintf("%d", time.Now().UnixNano())
+	email := "chpw-bad-" + u + "@test.local"
+	device := "dev-chpw-bad-" + u
+
+	regResp, _ := h.do(t, "POST", "/auth/register",
+		fmt.Sprintf(`{"email":%q,"password":"password123","device_id":%q,"device_public_key":"pub"}`, email, device))
+	require.Equal(t, http.StatusCreated, regResp.StatusCode)
+
+	wrongResp, _ := h.do(t, "POST", "/auth/password",
+		`{"current_password":"not-the-password","new_password":"newpassword456"}`)
+	require.Equal(t, http.StatusUnauthorized, wrongResp.StatusCode)
+
+	shortResp, _ := h.do(t, "POST", "/auth/password",
+		`{"current_password":"password123","new_password":"short"}`)
+	require.Equal(t, http.StatusBadRequest, shortResp.StatusCode)
+
+	sessResp, _ := h.do(t, "GET", "/auth/session", "")
+	require.Equal(t, http.StatusOK, sessResp.StatusCode, "failed change must not end the session")
+}
+
+// TestLogoutAllRevokesOtherSessions asserts "sign out everywhere": a second
+// device's session is invalidated, while the caller is handed a fresh session.
+func TestLogoutAllRevokesOtherSessions(t *testing.T) {
+	h := setupAuthHarness(t)
+	u := fmt.Sprintf("%d", time.Now().UnixNano())
+	email := "logout-all-" + u + "@test.local"
+	deviceA := "dev-la-a-" + u
+	deviceB := "dev-la-b-" + u
+
+	regResp, outA := h.doBare(t, "POST", "/auth/register",
+		fmt.Sprintf(`{"email":%q,"password":"password123","device_id":%q,"device_public_key":"pubA"}`, email, deviceA))
+	require.Equal(t, http.StatusCreated, regResp.StatusCode)
+	aCookie := sessionCookieFrom(t, regResp, h.cfg.SessionCookieName)
+
+	loginResp, outB := h.doBare(t, "POST", "/auth/login",
+		fmt.Sprintf(`{"email":%q,"password":"password123","device_id":%q,"device_public_key":"pubB"}`, email, deviceB))
+	require.Equal(t, http.StatusOK, loginResp.StatusCode)
+	require.Equal(t, outA.AccountID, outB.AccountID, "both devices share the account")
+	bCookie := sessionCookieFrom(t, loginResp, h.cfg.SessionCookieName)
+
+	laResp, laOut := h.doWithCookie(t, "POST", "/auth/logout-all", "", aCookie)
+	require.Equal(t, http.StatusOK, laResp.StatusCode)
+	require.Equal(t, deviceA, laOut.DeviceID)
+	newACookie := sessionCookieFrom(t, laResp, h.cfg.SessionCookieName)
+
+	bResp, _ := h.doWithCookie(t, "GET", "/auth/session", "", bCookie)
+	require.Equal(t, http.StatusUnauthorized, bResp.StatusCode, "other device must be signed out")
+
+	oldResp, _ := h.doWithCookie(t, "GET", "/auth/session", "", aCookie)
+	require.Equal(t, http.StatusUnauthorized, oldResp.StatusCode, "revoke-all invalidates the calling token too")
+
+	newResp, _ := h.doWithCookie(t, "GET", "/auth/session", "", newACookie)
+	require.Equal(t, http.StatusOK, newResp.StatusCode, "caller keeps a fresh session")
 }

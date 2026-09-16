@@ -236,7 +236,7 @@ func handleIncomingEnvelope(
 		// the registry that correlated the request with the node's outbound WS.
 		shards.HandleResult(c, env)
 
-	case "webrtc_offer", "webrtc_answer", "webrtc_ice_candidate":
+	case "webrtc_offer", "webrtc_answer", "webrtc_ice_candidate", "node_shard_fetch":
 		HandleWebRTCSignaling(ctx, c, env, h)
 
 	case "node_auth_response":

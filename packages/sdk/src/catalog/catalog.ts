@@ -14,6 +14,12 @@ export interface RelayFileVersion {
   shard_count: number;
   version_hash: string;
   conflict_status: string;
+  /**
+   * ADR-0003 sibling filename for a preserved conflicted copy, when the Relay
+   * knows it (set by a node's rebuild snapshot; null for versions projected
+   * from events). Kept optional so older Relay responses remain assignable.
+   */
+  conflicted_name?: string | null;
   created_at: string;
 }
 
@@ -45,6 +51,12 @@ export interface CatalogEntry {
    * version, so the inbox needs every flagged version.
    */
   conflicted_versions: number[];
+  /**
+   * ADR-0003 sibling filename assigned to a preserved conflicted copy, taken
+   * from the most recent flagged version that carries one. Null when the Relay
+   * has no recorded name (events don't carry it) or there is no conflict.
+   */
+  conflicted_name: string | null;
   /** Rollup of the latest version's location statuses. */
   storage_status: "stored" | "buffered" | "transferring" | "unknown" | null;
   /** Per-shard locations (all versions) — the download path's manifest. */
@@ -91,6 +103,19 @@ function summarizeStorageStatus(
   return "unknown";
 }
 
+/**
+ * The ADR-0003 sibling filename to show for a conflicted file: the name on the
+ * highest-numbered `flagged` version that has one. Only some versions carry a
+ * name (a node's snapshot sets it; events don't), so we skip nulls rather than
+ * letting an older unnamed version mask a later named one.
+ */
+function latestConflictedName(file: RelayFile): string | null {
+  const named = file.versions
+    .filter((v) => v.conflict_status === "flagged" && v.conflicted_name)
+    .sort((a, b) => b.version_number - a.version_number);
+  return named[0]?.conflicted_name ?? null;
+}
+
 export function toCatalogEntry(file: RelayFile): CatalogEntry {
   const latest = latestVersion(file);
   return {
@@ -107,6 +132,7 @@ export function toCatalogEntry(file: RelayFile): CatalogEntry {
       .filter((v) => v.conflict_status === "flagged")
       .map((v) => v.version_number)
       .sort((a, b) => a - b),
+    conflicted_name: latestConflictedName(file),
     storage_status: summarizeStorageStatus(file, latest),
     locations: file.locations,
     cached_at: new Date().toISOString(),

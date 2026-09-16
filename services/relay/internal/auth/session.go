@@ -51,6 +51,9 @@ type PGSessionStore struct {
 	cfg  *config.Config
 }
 
+// Compile-time proof the session store also satisfies the node-auth lookup.
+var _ NodeStore = (*PGSessionStore)(nil)
+
 // NewPGSessionStore wires a session store to the Relay's connection pool.
 func NewPGSessionStore(pool *db.Pool, cfg *config.Config) *PGSessionStore {
 	return &PGSessionStore{pool: pool, cfg: cfg}
@@ -171,6 +174,24 @@ func (s *PGSessionStore) RevokeAllForDevice(ctx context.Context, deviceID string
 		WHERE device_id = $2 AND revoked_at IS NULL
 	`, time.Now().UTC(), deviceID)
 	return err
+}
+
+// NodeIdentity resolves an ACTIVE storage node's owning account and Ed25519
+// public key for stateless node HTTP auth (RequireNodeAuth). A missing or
+// non-ACTIVE node maps to ErrNodeUnauthorized so callers emit a single 401.
+func (s *PGSessionStore) NodeIdentity(ctx context.Context, nodeID string) (string, string, error) {
+	var accountID, publicKey string
+	err := s.pool.QueryRow(ctx, `
+		SELECT account_id, public_key FROM storage_nodes
+		WHERE node_id = $1 AND status = 'ACTIVE'
+	`, nodeID).Scan(&accountID, &publicKey)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", "", ErrNodeUnauthorized
+	}
+	if err != nil {
+		return "", "", err
+	}
+	return accountID, publicKey, nil
 }
 
 // RotateSession issues a replacement session for the same account/device and

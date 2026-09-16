@@ -78,6 +78,8 @@ export {
   type NodeAuthResponsePayload,
   NodeAuthResultPayloadSchema,
   type NodeAuthResultPayload,
+  NodePeerSchema,
+  type NodePeer,
 } from "./messages/control.js";
 
 // ── WebRTC signaling messages ──────────────────────────────────────
@@ -91,6 +93,8 @@ export {
   type WebRTCAnswerPayload,
   WebRTCIceCandidatePayloadSchema,
   type WebRTCIceCandidatePayload,
+  NodeShardFetchPayloadSchema,
+  type NodeShardFetchPayload,
 } from "./messages/webrtc.js";
 
 // ── Transfer messages ──────────────────────────────────────────────

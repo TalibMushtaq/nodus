@@ -1,5 +1,76 @@
 # Changelog
 
+## [2026-09-16] - Mobile navigator: split the single-screen console into screens
+
+**What changed:** The mobile app now uses `@react-navigation/native` + `native-stack` (with `react-native-screens` and `react-native-safe-area-context`, the Expo SDK 57 bundled versions). The 1,674-line `App.tsx` was split: all state/hooks/effects/callbacks moved verbatim into `apps/mobile/src/runtime/useNodusApp.ts`, exposed through a typed `AppContext` (`src/runtime/context.tsx`, `useApp()`); shared styles/UI moved to `src/runtime/styles.ts`, `src/runtime/ui.tsx`, and `src/runtime/ScreenScroll.tsx`. New screens under `src/screens/`: `AuthScreen` (sign-in + recovery), `HomeScreen` (pairing hub), `FilesScreen` (upload/download/folders), `DevicesScreen` (devices + trusted nodes), `ConflictsScreen`, `SecurityScreen`, `SettingsScreen` (preferences, deleted files, sign-out). `App.tsx` is now the navigation shell: signed-out users get Auth, signed-in users get the feature stack. Added a CNG config plugin (`apps/mobile/plugins/with-rnscreens-fragment-factory.js`) so `expo prebuild` installs react-native-screens' required Android `RNScreensFragmentFactory` reproducibly.
+
+**Why:** WS7's remaining item: the app was a single 1,674-line `App.tsx` ScrollView with numbered sections and no navigation, contrary to the plan's "split into screens" requirement.
+
+**Impact:** `apps/mobile` (`App.tsx`, `src/runtime/*`, `src/screens/*`, `app.json`, `package.json`, new plugin). No networking/SQLite/crypto logic changed — it was moved, not rewritten. Behavior notes: sign-out and the relay-socket indicator moved from the always-visible sign-in section to Settings; account recovery stays on the signed-out Auth screen. Verified: mobile `tsc --noEmit`, `eslint` clean, vitest 8 tests, `expo export --platform android` bundles (1141 modules), `expo prebuild` applies the plugin, and the repo-wide `pnpm test:ts`/`check-types`/`lint` + `go test` + `cargo test`/`clippy`/`fmt` are green.
+
+**Follow-ups:** The screens are still the functional console-style UI (buttons/inputs), not a visual redesign. Navigation is untested by unit tests (no RN renderer in the mobile vitest setup); it is validated by the successful Metro bundle. A native dev-build rebuild is required for the two new native modules.
+
+## [2026-09-16] - Path B/C node-to-node repair: relay-mediated and direct WebRTC
+
+**What changed:**
+- **Path C (relay-mediated):** new stateless node HTTP auth — `auth.NodeRequestMessage`/`VerifyNodeRequest`/`RequireNodeAuth` + `PGSessionStore.NodeIdentity` (`services/relay/internal/auth/node.go`), and a `GET /node/shards/{object_id}` route reusing the existing `FetchShard` proxy. The Rust `NodePathAttempter` now signs and fetches via that endpoint (`TransferPath::BufferRelay`), with `relay_http_base` passed from `main.rs`.
+- **Path B (direct WebRTC):** new `webrtc/outbound.rs` `OutboundSession` — the holder node's WebRTC initiator (create data channel, offer, ICE, stream one shard, await ack) using the receiver's exact framing. Wired into the sync loop: `node_shard_fetch` requests (new protocol message) start an outbound transfer, the reply offer is signed by the node, and `webrtc_answer`/ICE are routed to the outbound task. The repairing side sends the request through a shared channel installed by the sync loop and polls the object store for the pushed shard (`TransferPath::RelaySignaling`). `verify_relay_signaling` now accepts trusted node peers as well as devices. The relay forwards `node_shard_fetch` through the existing `HandleWebRTCSignaling`.
+- Protocol `NodeShardFetchPayloadSchema` + regenerated JSON schemas.
+
+**Why:** Path B and Path C were explicit failure stubs — the only working node-to-node repair path was LAN-only direct fetch (Path A), so an account whose holder node was off-LAN could not repair DEGRADED objects.
+
+**Impact:** `services/relay` (auth/node.go, main.go, ws.go, session.go), `services/storage-node` (webrtc/outbound.rs, sync/client.rs, sync/types.rs, transfer/node_attempter.rs, main.rs, Cargo.toml moves `bytes` to normal deps), `packages/protocol` (webrtc schema + envelope + generated schemas). Verified: `go test ./...` against real Postgres+Redis (all integration tests, incl. new node-auth and session tests), `cargo test` (222+ tests incl. new live outbound WebRTC transfer test and Path C signed-fetch test), `cargo clippy --all-targets -- -D warnings` clean, `pnpm test`/`check-types`/`lint`.
+
+**Follow-ups:** End-to-end node↔node Path B over a live Relay is not covered by an automated test (needs two nodes + relay); the dataplane and both signaling endpoints are unit/integration tested separately. Path B answer/ICE are unsigned (offer is signed); DTLS still secures the media path, but a signed answer/ICE would harden against a malicious Relay and is a candidate follow-up. `TransferConfig` stage timeouts remain unused (hardcoded constants).
+
+## [2026-09-16] - Mobile: wire node/device rename, fix LAN self-skip, add discovery tests
+
+**What changed:** `apps/mobile/App.tsx` now imports and uses the previously-dead `relayRenameNode`/`relayRenameDevice` via an inline rename editor (`beginRename`/`cancelRename`/`submitRename`) on the nodes and devices lists. Fixed an off-by-one in `src/discovery.ts` `scanLan` so the device's own `/24` host is skipped (`idx + 1 === ownLast`; `hosts` is 1-indexed by last octet). Refreshed the stale discovery module comment (mDNS is now the preferred path). Added `src/discovery.test.ts` covering `myLanV4`, self-skip, sweep fallback, mDNS preference, and permission propagation.
+
+**Why:** The rename helpers were defined but never called (no display-name management from mobile); the self-skip compared a 0-based index to a 1-based octet, so the node's own host was probed; the module comment claimed mDNS was not wired when `discoverNodes` already prefers it.
+
+**Impact:** `apps/mobile` (`App.tsx`, `src/discovery.ts`, new test). No new dependencies. Verified: mobile `tsc --noEmit`, mobile lint clean, mobile vitest 8 tests, full `pnpm test` (ts/go/rust) green.
+
+**Follow-ups:** The full screen-navigation refactor from the WS7 plan (react-navigation + splitting `App.tsx`) is not done; the app remains the ADR-0007 single-screen console.
+
+## [2026-09-16] - Path D repair queue drains when the relay reconnects
+
+**What changed:** `TransferManager` gained `fetch_shard_request` (returns the submitted request alongside the receiver), `enqueue_repair` (dedupes by `object_id` via new `MemoryLocalQueue::remove_by_object_id`) and `queued_len`. `submit_repairs` now returns `(request, receiver)` pairs; the reconcile loop enqueues failed repairs with `enqueue_repair` instead of only logging. `spawn_reconcile_task` takes `Option<Arc<TransferManager>>`, and `main.rs` shares the manager with the sync loop, whose `on_connected` hook spawns `drain_queue()` so a live relay connection retries queued repairs. Updated the Path D attempt comment in `node_attempter.rs`.
+
+**Why:** `drain_queue` had no production caller and the module was blanket-`allow(dead_code)`; a repair that failed while the relay was down had no retry path, relying solely on the next 24h scan.
+
+**Impact:** `services/storage-node` (`transfer/manager.rs`, `transfer/queue.rs`, `transfer/node_attempter.rs`, `store/reconcile.rs`, `main.rs`). No wire/protocol change. Verified: `cargo build` + 220 lib tests including the new dedupe test.
+
+**Follow-ups:** The queue is in-memory by design; durability comes from the persisted `DEGRADED` object status, which the next scan reconstructs. Paths B/C still return explicit failure (next workstreams).
+
+## [2026-09-16] - Provision node-to-node trust from the auth handshake
+
+**What changed:** The Relay's `node_auth_result` success payload now carries `nodes` — the account's other `ACTIVE` storage nodes (`NodePeer{node_id, public_key}`, hex key), filled by `fetchPeerNodes` in `services/relay/internal/handler/sync.go`. The Rust node deserializes the optional list (`NodePeer` in `sync/types.rs`) and, on auth success, upserts each into its local `trusted_nodes` table via `store_trusted_peers` (`sync/client.rs`) — skipping self, ignoring malformed keys, and preserving path-cache columns on conflict. Added the optional `nodes` field to the protocol `NodeAuthResultPayloadSchema`, regenerated the JSON schema, and added the DB-gated `TestFetchPeerNodesIntegration`.
+
+**Why:** `trusted_nodes` was only ever written by test code, so node-to-node shard fetch (`/nodus/shard/{object_id}`) and the §21a reconcile repair path had no trust anchor and always failed in production.
+
+**Impact:** `services/relay` (sync.go, new integration test), `services/storage-node` (`sync/types.rs`, `sync/client.rs`), `packages/protocol` (control schema + generated schema). Additive/optional wire field; older relays simply omit it. Verified: `go build`/`vet`/`test`, `cargo check` + new Rust test, protocol 58 tests.
+
+**Follow-ups:** Peer keys are trusted transitively from the Relay's `storage_nodes` row (immutable per `node_id`); a compromised Relay remains a trust assumption until the snapshot/rebuild verification path is exercised for peer discovery.
+
+## [2026-09-16] - Wire session rotation: password change and sign-out-everywhere
+
+**What changed:** Added Relay `POST /auth/password` (`ChangePassword`) and `POST /auth/logout-all` (`LogoutAll`), both `RequireAuth`-gated. `ChangePassword` re-verifies the current password with Argon2id, replaces `accounts.password_hash`, then calls the previously-unused `SessionStore.RotateSession` (new session id, old revoked) and sets a fresh cookie. `LogoutAll` calls the previously-unused `RevokeAllForAccount` then issues a fresh session for the calling device. Extracted `writeSession`/`rawSessionToken`/`lookupRecoveryKey` helpers from `issueSession`. Added SDK `AuthClient.changePassword`/`logoutAll` (`packages/sdk/src/auth.ts`), web BFF routes `app/api/auth/{password,logout-all}/route.ts`, and a Settings "Security" card.
+
+**Why:** `RotateSession` and `RevokeAllForAccount` were implemented and tested but had no production call site, and no credential-change endpoint existed — so the plan §13 session-fixation defense was never actually exercised.
+
+**Impact:** `services/relay` (`internal/handler/auth.go`, `main.go`, `auth_integration_test.go`), `packages/sdk` (`src/auth.ts`, tests), `apps/web` (`lib/auth-client.ts`, two new routes, settings page, route tests). Additive routes only; no schema change. Verified: `go build`/`vet`, `TestRawSessionToken`, SDK 38 tests, web route tests 6, web `tsc --noEmit`.
+
+**Follow-ups:** DB-gated integration tests (`TestChangePasswordRotatesSession`, `TestLogoutAllRevokesOtherSessions`) run only with `TEST_DATABASE_URL`. Mobile has no password-change UI (web-only for now).
+
+## [2026-09-16] - Surface the ADR-0003 conflicted sibling name in clients
+
+**What changed:** `RelayFileVersion` gained an optional `conflicted_name`; `CatalogEntry` gained `conflicted_name: string | null`; `toCatalogEntry` copies it from the highest-numbered `flagged` version that has a name (`latestConflictedName` in `packages/sdk/src/catalog/catalog.ts`). `ConflictEntry` gained `siblingName`, resolved in `listConflicts` (`packages/sdk/src/conflicts/conflicts.ts`). The web conflicts inbox (`apps/web/app/(dashboard)/conflicts/conflicts-client.tsx`) now renders "Preserved as {siblingName}" and the mobile conflicts section (`apps/mobile/App.tsx`) appends it.
+
+**Why:** The Rust node computed the conflicted-copy filename and the Relay stored/returned it, but the client catalog projection dropped it, so users only ever saw a generic "Conflicted copy" label instead of the actual sibling filename."
+
+**Impact:** `packages/sdk` (catalog, conflicts), `apps/web` conflicts view, `apps/mobile` App. Additive/optional fields only — no Relay or protocol change. Verified: SDK 35 tests, web `tsc --noEmit`.
+
 ## [2026-09-16] - Verify-then-consume recovery nonces; rate-limit recovery endpoints
 
 **What changed:** `POST /nodus/recovery` now peeks the single-use nonce, verifies the phrase signature, and only then consumes it (the consume doubles as the concurrent double-spend guard), instead of consuming up front. Added `NonceStore::peek`. Added per-IP limiters for `POST /nodus/recovery` (`RECOVERY_AUTH_RATE_LIMIT = 5/min`) and `GET /nodus/recovery/envelopes` (`RECOVERY_ENVELOPES_RATE_LIMIT = 10/min`) and wired them into `LocalState`. Also fixed `tests/webrtc_transfer_test.rs`, which had not compiled since the recovery state fields landed.

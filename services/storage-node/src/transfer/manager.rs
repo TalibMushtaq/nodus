@@ -31,8 +31,22 @@ impl TransferManager {
         from_node: &str,
         object_id: &str,
     ) -> tokio::sync::oneshot::Receiver<TransferResult> {
+        self.fetch_shard_request(from_node, object_id).1
+    }
+
+    /// Like `fetch_shard` but also returns the submitted request, so a caller
+    /// that needs to re-enqueue a failed repair (Path D) can capture it without
+    /// reconstructing it.
+    pub fn fetch_shard_request(
+        &self,
+        from_node: &str,
+        object_id: &str,
+    ) -> (
+        ShardTransferRequest,
+        tokio::sync::oneshot::Receiver<TransferResult>,
+    ) {
         let file_id = "";
-        self.pool.submit(ShardTransferRequest {
+        let request = ShardTransferRequest {
             transfer_id: uuid::Uuid::new_v4().to_string(),
             file_id: file_id.to_string(),
             version_number: 0,
@@ -46,7 +60,9 @@ impl TransferManager {
             object_id: object_id.to_string(),
             target_node: from_node.to_string(),
             source_device: None,
-        })
+        };
+        let rx = self.pool.submit(request.clone());
+        (request, rx)
     }
 
     /// Submit a shard push to a remote node.
@@ -64,6 +80,19 @@ impl TransferManager {
     /// Enqueue a failed transfer for Path D retry.
     pub async fn enqueue(&self, request: ShardTransferRequest) {
         self.queue.enqueue(request).await;
+    }
+
+    /// Enqueue a failed repair, replacing any prior queued fetch for the same
+    /// object. Deduped by object_id: a reconciliation scan while the relay is
+    /// down must not queue the same missing object repeatedly.
+    pub async fn enqueue_repair(&self, request: ShardTransferRequest) {
+        self.queue.remove_by_object_id(&request.object_id).await;
+        self.queue.enqueue(request).await;
+    }
+
+    /// Number of transfers waiting for a reconnect (diagnostics/tests).
+    pub async fn queued_len(&self) -> usize {
+        self.queue.len().await
     }
 
     /// Process the local queue — called when connectivity is restored.
@@ -162,5 +191,33 @@ mod tests {
             *attempter.seen.lock().unwrap(),
             vec![TransferPath::LocalSignaling]
         );
+    }
+
+    #[tokio::test]
+    async fn enqueue_repair_dedupes_by_object_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = SqlitePathCache::new(crate::db::open(dir.path()).await.unwrap());
+        let attempter = Arc::new(RecordingAttempter {
+            seen: std::sync::Mutex::new(Vec::new()),
+        });
+        let manager = TransferManager::new(fast_config(), cache, attempter);
+
+        let mut first = request(1);
+        first.object_id = "obj-a".into();
+        let mut duplicate = request(2);
+        duplicate.object_id = "obj-a".into();
+        let mut other = request(3);
+        other.object_id = "obj-b".into();
+
+        manager.enqueue_repair(first).await;
+        manager.enqueue_repair(duplicate).await;
+        assert_eq!(
+            manager.queued_len().await,
+            1,
+            "same object replaces, not stacks"
+        );
+
+        manager.enqueue_repair(other).await;
+        assert_eq!(manager.queued_len().await, 2, "distinct objects both queue");
     }
 }

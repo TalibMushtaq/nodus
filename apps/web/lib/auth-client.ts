@@ -17,3 +17,5 @@ export const login = client.login;
 export const register = client.register;
 export const logout = client.logout;
 export const fetchSession = client.fetchSession;
+export const changePassword = client.changePassword;
+export const logoutAll = client.logoutAll;

@@ -169,13 +169,25 @@ func main() {
 	// Auth Endpoints (Phase 7a: opaque server-side sessions — no JWT/refresh;
 	// §2 completes the surface with device auto-registration and session body)
 	var sessionStore auth.SessionStore
+	// nodeStore is the same PostgreSQL-backed store viewed through the
+	// node-auth lookup interface; kept as a separate variable so the session
+	// interface does not have to absorb NodeIdentity.
+	var nodeStore auth.NodeStore
 	if pool != nil {
-		sessionStore = auth.NewPGSessionStore(pool, cfg)
+		pgStore := auth.NewPGSessionStore(pool, cfg)
+		sessionStore = pgStore
+		nodeStore = pgStore
 
 		mux.HandleFunc("POST /auth/register", handler.Register(pool, sessionStore, cfg))
 		mux.HandleFunc("POST /auth/login", handler.Login(pool, sessionStore, cfg))
 		mux.HandleFunc("GET /auth/session", handler.Session(pool, sessionStore, cfg))
 		mux.HandleFunc("POST /auth/logout", handler.Logout(sessionStore, cfg))
+		// Privilege/credential changes are authenticated and rotate or revoke
+		// sessions server-side (plan §13 session-fixation defense): a password
+		// change issues a fresh session id and invalidates the old one, and
+		// "sign out everywhere" revokes all sessions but this device's.
+		mux.Handle("POST /auth/password", auth.RequireAuth(sessionStore, cfg)(handler.ChangePassword(pool, sessionStore, cfg)))
+		mux.Handle("POST /auth/logout-all", auth.RequireAuth(sessionStore, cfg)(handler.LogoutAll(pool, sessionStore, cfg)))
 		// ADR-0002 online recovery: unauthenticated by design — the signed
 		// challenge is the credential, so a lost-password user can still recover.
 		mux.HandleFunc("POST /auth/recovery/challenge", handler.RecoveryChallenge(pool, cfg))
@@ -242,6 +254,12 @@ func main() {
 		// FetchShard resolves the account from the session and only serves shards
 		// whose file belongs to that account.
 		mux.Handle("GET /shards/{object_id}", auth.RequireAuth(sessionStore, cfg)(handler.FetchShard(pool, wsHub, shardRegistry)))
+		// Node→relay shard fetch for peer repair (plan §21a Path C): a storage
+		// node repairs a DEGRADED object by fetching it from another holder
+		// through the Relay, reusing the same fetch proxy as browser downloads
+		// but authenticated by the node's stateless Ed25519 signature instead of
+		// a session. RequireNodeAuth sets the account context FetchShard reads.
+		mux.Handle("GET /node/shards/{object_id}", auth.RequireNodeAuth(nodeStore, 5*time.Minute)(handler.FetchShard(pool, wsHub, shardRegistry)))
 		mux.HandleFunc("GET /buffer/fetch", handler.BufferFetch(pool, redisClient, buf))
 	}
 

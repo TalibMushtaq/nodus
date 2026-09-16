@@ -49,9 +49,10 @@ fs2 = "0.4"
 webrtc = "0.13"
 tokio-stream = { version = "0.1", features = ["sync"] }
 async-trait = "0.1"
+# WebRTC data-channel frames are sent as bytes::Bytes (Path B outbound sender).
+bytes = "1"
 
 [dev-dependencies]
-bytes = "1"
 tempfile = "3"
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"

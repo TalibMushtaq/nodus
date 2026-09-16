@@ -18,6 +18,25 @@
         "node_not_found",
         "node_inactive"
       ]
+    },
+    "nodes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "node_id": {
+            "type": "string"
+          },
+          "public_key": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "node_id",
+          "public_key"
+        ],
+        "additionalProperties": false
+      }
     }
   },
   "required": [

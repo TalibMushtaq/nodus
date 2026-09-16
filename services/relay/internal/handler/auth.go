@@ -34,6 +34,14 @@ type AuthRequest struct {
 	RecoveryPublicKey string `json:"recovery_public_key"`
 }
 
+// ChangePasswordRequest is the authenticated credential-change body. Both
+// fields are required: the current password is re-verified before the hash is
+// replaced so a stolen session cookie alone cannot take over the account.
+type ChangePasswordRequest struct {
+	CurrentPassword string `json:"current_password"`
+	NewPassword     string `json:"new_password"`
+}
+
 // SessionResponse is the locked Phase 7a §2 post-auth body: account/device ids
 // plus the absolute session expiry. No token ever travels in the body — the
 // session lives in the HttpOnly cookie.
@@ -242,7 +250,16 @@ func issueSession(w http.ResponseWriter, r *http.Request, store auth.SessionStor
 		respondError(w, http.StatusInternalServerError, "failed to create session")
 		return
 	}
+	writeSession(w, r, cfg, rawID, accountID, deviceID, recoveryPublicKey, status)
+}
 
+// writeSession sets the session cookie and emits the §2 body for an
+// already-minted raw token. Shared by issueSession, ChangePassword (rotation)
+// and LogoutAll (revoke-all + re-issue) so every path sets the same cookie
+// flags and returns the same shape. The raw token is exposed in the body only
+// for the mobile client (`X-Nodus-Client: mobile`), which holds it in secure
+// storage instead of a cookie.
+func writeSession(w http.ResponseWriter, r *http.Request, cfg *config.Config, rawID, accountID, deviceID string, recoveryPublicKey *string, status int) {
 	expiresAt := time.Now().UTC().Add(cfg.SessionMaxAge)
 	setSessionCookie(w, cfg, rawID, expiresAt)
 
@@ -256,6 +273,131 @@ func issueSession(w http.ResponseWriter, r *http.Request, store auth.SessionStor
 		response.AccessToken = rawID
 	}
 	respondJSON(w, status, response)
+}
+
+// ChangePassword re-verifies the caller's current password, replaces the stored
+// Argon2id hash, and rotates the session (new row, old revoked) in the same
+// request. Rotation is the session-fixation defense from plan §13: a credential
+// change must not leave the pre-change session identifier valid.
+func ChangePassword(pool *db.Pool, store auth.SessionStore, cfg *config.Config) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
+		accountID, ok := auth.GetAccountID(r.Context())
+		if !ok {
+			respondError(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+		deviceID, _ := auth.GetDeviceID(r.Context())
+
+		var req ChangePasswordRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			respondError(w, http.StatusBadRequest, "invalid request body")
+			return
+		}
+		if req.CurrentPassword == "" || req.NewPassword == "" {
+			respondError(w, http.StatusBadRequest, "current_password and new_password are required")
+			return
+		}
+		if len(req.NewPassword) < 8 {
+			respondError(w, http.StatusBadRequest, "new password must be at least 8 characters")
+			return
+		}
+		if req.NewPassword == req.CurrentPassword {
+			respondError(w, http.StatusBadRequest, "new password must differ from the current password")
+			return
+		}
+
+		var passwordHash string
+		if err := pool.QueryRow(r.Context(),
+			"SELECT password_hash FROM accounts WHERE account_id = $1", accountID,
+		).Scan(&passwordHash); err != nil {
+			respondError(w, http.StatusInternalServerError, "database error")
+			return
+		}
+		if ok, err := auth.VerifyPassword(passwordHash, req.CurrentPassword); err != nil || !ok {
+			respondError(w, http.StatusUnauthorized, "current password is incorrect")
+			return
+		}
+
+		newHash, err := auth.HashPassword(req.NewPassword)
+		if err != nil {
+			respondError(w, http.StatusInternalServerError, "failed to hash password")
+			return
+		}
+		if _, err := pool.Exec(r.Context(),
+			"UPDATE accounts SET password_hash = $1 WHERE account_id = $2", newHash, accountID,
+		); err != nil {
+			respondError(w, http.StatusInternalServerError, "failed to update password")
+			return
+		}
+
+		// Rotate last: the old cookie is invalidated and a fresh one issued. If
+		// the caller's session vanished concurrently, the password change still
+		// stands and we force a re-login rather than failing the request.
+		raw := rawSessionToken(r, cfg)
+		newRaw, err := store.RotateSession(r.Context(), raw, accountID, deviceID)
+		if err != nil {
+			clearSessionCookie(w, cfg)
+			respondError(w, http.StatusUnauthorized, "session expired; sign in again")
+			return
+		}
+
+		writeSession(w, r, cfg, newRaw, accountID, deviceID, lookupRecoveryKey(pool, r, accountID), http.StatusOK)
+	}
+}
+
+// LogoutAll revokes every active session for the account (`RevokeAllForAccount`)
+// then mints a fresh session for the calling device, so "sign out everywhere"
+// logs other devices out without kicking the current user out. Device identity is
+// preserved (§8): only sessions are invalidated, never the devices themselves.
+func LogoutAll(pool *db.Pool, store auth.SessionStore, cfg *config.Config) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		accountID, ok := auth.GetAccountID(r.Context())
+		if !ok {
+			respondError(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+		deviceID, _ := auth.GetDeviceID(r.Context())
+
+		if err := store.RevokeAllForAccount(r.Context(), accountID); err != nil {
+			respondError(w, http.StatusInternalServerError, "failed to revoke sessions")
+			return
+		}
+
+		rawID, err := store.CreateSession(r.Context(), accountID, deviceID)
+		if err != nil {
+			// Every session (including this one) is now revoked; a 401 with a
+			// cleared cookie is the correct recovery.
+			clearSessionCookie(w, cfg)
+			respondError(w, http.StatusUnauthorized, "sessions revoked; sign in again")
+			return
+		}
+
+		writeSession(w, r, cfg, rawID, accountID, deviceID, lookupRecoveryKey(pool, r, accountID), http.StatusOK)
+	}
+}
+
+// rawSessionToken extracts the opaque session token from the cookie, falling
+// back to a mobile Bearer header. Used by rotation, which needs the raw value
+// that the request context (account/device ids only) does not carry.
+func rawSessionToken(r *http.Request, cfg *config.Config) string {
+	if cookie, err := r.Cookie(cfg.SessionCookieName); err == nil && cookie.Value != "" {
+		return cookie.Value
+	}
+	if header := r.Header.Get("Authorization"); strings.HasPrefix(header, "Bearer ") {
+		return strings.TrimSpace(strings.TrimPrefix(header, "Bearer "))
+	}
+	return ""
+}
+
+// lookupRecoveryKey reads the account's enrolled recovery public key, returning
+// nil on absence or error so an optional field never fails the response.
+func lookupRecoveryKey(pool *db.Pool, r *http.Request, accountID string) *string {
+	var key *string
+	_ = pool.QueryRow(r.Context(),
+		"SELECT recovery_public_key FROM accounts WHERE account_id = $1", accountID,
+	).Scan(&key)
+	return key
 }
 
 // setSessionCookie writes the session token as an HttpOnly; Secure; SameSite=Lax

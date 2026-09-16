@@ -193,23 +193,32 @@ pub(crate) async fn boot_daemon(cfg: config::Config) -> anyhow::Result<()> {
 
     // Phase 13: Transfer Manager — wires the §21a re-fetch-from-peer repair
     // action through the same fallback/backoff/path-cache machinery as any
-    // other transfer.
-    let transfer_manager = transfer::manager::TransferManager::new(
+    // other transfer. Arc-shared with the sync loop, which drains the Path D
+    // retry queue when the relay connection comes up.
+    //
+    // `relay_signal` is the Path B hand-off: the sync loop installs its live WS
+    // sender here so the transfer manager can emit `node_shard_fetch` requests.
+    let relay_signal: transfer::node_attempter::RelaySignalSender =
+        Arc::new(tokio::sync::Mutex::new(None));
+    let transfer_manager = Arc::new(transfer::manager::TransferManager::new(
         transfer::config::TransferConfig::default(),
         transfer::cache::SqlitePathCache::new(db.clone()),
         Arc::new(transfer::node_attempter::NodePathAttempter::new(
             db.clone(),
             store_arc.clone(),
             Arc::clone(&sync_identity_arc),
+            // Path C signs HTTP requests to the Relay at this base.
+            sync::client::relay_http_base(&relay_url),
+            Arc::clone(&relay_signal),
         )),
-    );
+    ));
 
     // Phase 6: Reconciliation background task (runs at boot then every 24h);
     // repairs DEGRADED objects through the Transfer Manager.
     let _reconcile_handle = store::spawn_reconcile_task(
         store_arc.clone(),
         Duration::from_secs(24 * 3600),
-        Some(transfer_manager),
+        Some(Arc::clone(&transfer_manager)),
     );
 
     // Phase 6: Garbage collection background task (runs every 6h)
@@ -245,6 +254,11 @@ pub(crate) async fn boot_daemon(cfg: config::Config) -> anyhow::Result<()> {
     let sync_identity_for_loop = Arc::clone(&sync_identity_arc);
     let sync_store = store_arc.clone();
     let sync_webrtc = webrtc_manager.clone();
+    // Path D: the sync loop owns a handle to the transfer manager so a live
+    // relay connection drains the repair retry queue.
+    let sync_transfer_manager = Arc::clone(&transfer_manager);
+    // Path B: the loop installs each session's WS sender into this slot.
+    let sync_relay_signal = Arc::clone(&relay_signal);
 
     let sync_telemetry = telemetry.clone();
     let _sync_handle = tokio::spawn(async move {
@@ -258,6 +272,12 @@ pub(crate) async fn boot_daemon(cfg: config::Config) -> anyhow::Result<()> {
             // `status` shows "connected" during the session, not only after it
             // ends. Each successful connection counts as one session.
             let sync_telemetry_for_hook = sync_telemetry.clone();
+            let drain_manager = Arc::clone(&sync_transfer_manager);
+            // Path B channel: the sync loop drains the receiver into the WS,
+            // and the transfer manager emits `node_shard_fetch` through the
+            // sender while this session is live.
+            let (repair_tx, repair_rx) = tokio::sync::mpsc::unbounded_channel();
+            *sync_relay_signal.lock().await = Some(repair_tx);
             let client = sync::client::SyncClient::new(
                 sync_relay_url.clone(),
                 sync_identity_for_loop.clone(),
@@ -265,10 +285,20 @@ pub(crate) async fn boot_daemon(cfg: config::Config) -> anyhow::Result<()> {
                 sync_store.clone(),  // Phase 10: buffer-fetch flow writes shards
                 sync_webrtc.clone(), // Path B: relay-signaled WebRTC sessions
                 500,                 // batch size
-                Some(Arc::new(move || sync_telemetry_for_hook.session_up())),
+                Some(Arc::new(move || {
+                    sync_telemetry_for_hook.session_up();
+                    // Path D: auth success means the relay is reachable again,
+                    // so retry repairs queued while it was down.
+                    let manager = Arc::clone(&drain_manager);
+                    tokio::spawn(async move {
+                        manager.drain_queue().await;
+                    });
+                })),
             );
             sync_telemetry.set_connecting();
-            let outcome = client.run_sync_session().await;
+            let outcome = client.run_sync_session(Some(repair_rx)).await;
+            // The session ended: no live WS to signal over until reconnect.
+            *sync_relay_signal.lock().await = None;
             match outcome {
                 Ok(_) => {
                     // Link stays Up from the connect hook; a graceful end is

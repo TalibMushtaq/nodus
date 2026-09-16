@@ -16,6 +16,7 @@ function entry(overrides: Partial<CatalogEntry>): CatalogEntry {
     version_hash: "h",
     conflict_status: "flagged",
     conflicted_versions: [1],
+    conflicted_name: null,
     storage_status: "stored",
     locations: [],
     cached_at: "x",
@@ -53,5 +54,23 @@ describe("listConflicts", () => {
       resolveFileKey: async () => null,
     });
     expect(rows[0]!.name).toBe("abcdefgh…");
+  });
+
+  it("surfaces the node-computed sibling name for a flagged copy", async () => {
+    const rows = await listConflicts({
+      listCatalog: async () => [
+        entry({ file_id: "a", conflicted_name: "report (conflicted copy 3f9a 2026-08-31).txt" }),
+      ],
+      resolveFileKey: async () => null,
+    });
+    expect(rows[0]!.siblingName).toBe("report (conflicted copy 3f9a 2026-08-31).txt");
+  });
+
+  it("reports a null sibling name when the Relay has none", async () => {
+    const rows = await listConflicts({
+      listCatalog: async () => [entry({ file_id: "a", conflicted_name: null })],
+      resolveFileKey: async () => null,
+    });
+    expect(rows[0]!.siblingName).toBeNull();
   });
 });

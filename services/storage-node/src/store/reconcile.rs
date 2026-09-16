@@ -168,12 +168,13 @@ pub async fn run_reconciliation(store: &ObjectStore) -> anyhow::Result<Reconcile
 pub fn spawn_reconcile_task(
     store: Arc<ObjectStore>,
     interval: Duration,
-    manager: Option<crate::transfer::manager::TransferManager>,
+    manager: Option<Arc<crate::transfer::manager::TransferManager>>,
 ) -> tokio::task::JoinHandle<()> {
     let run_repairs =
-        async |store: &ObjectStore, manager: &Option<crate::transfer::manager::TransferManager>| {
+        async |store: &ObjectStore,
+               manager: &Option<Arc<crate::transfer::manager::TransferManager>>| {
             let manager = match manager {
-                Some(m) => m,
+                Some(m) => m.as_ref(),
                 None => return,
             };
             // Best-effort repair: failures are logged, objects stay DEGRADED,
@@ -205,7 +206,7 @@ pub fn spawn_reconcile_task(
                 shards.len(),
                 peers.len()
             );
-            for rx in submit_repairs(manager, shards, peers) {
+            for (request, rx) in submit_repairs(manager, shards, peers) {
                 match rx.await {
                     Ok(r) if r.success => {
                         // The object_id is the BLAKE3 hash of the shard bytes;
@@ -230,11 +231,18 @@ pub fn spawn_reconcile_task(
                             ),
                         }
                     }
-                    Ok(r) => println!(
-                        "[reconcile] repair failed for transfer {}: {}",
-                        r.transfer_id,
-                        r.error.unwrap_or_else(|| "unknown error".to_string())
-                    ),
+                    Ok(r) => {
+                        println!(
+                            "[reconcile] repair failed for transfer {}: {}",
+                            r.transfer_id,
+                            r.error.unwrap_or_else(|| "unknown error".to_string())
+                        );
+                        // Path D: keep the failed repair for a retry when the
+                        // relay reconnects, deduped by object_id. The next scan
+                        // also re-queries DEGRADED, so the queue is a fast-path,
+                        // not the only retry.
+                        manager.enqueue_repair(request).await;
+                    }
                     Err(_) => {
                         eprintln!("[reconcile] repair task aborted before reporting")
                     }
@@ -358,13 +366,18 @@ pub fn submit_repairs(
     manager: &crate::transfer::manager::TransferManager,
     degraded: Vec<DegradedShard>,
     peers: Vec<(String, Option<String>)>,
-) -> Vec<tokio::sync::oneshot::Receiver<crate::transfer::types::TransferResult>> {
+) -> Vec<(
+    crate::transfer::types::ShardTransferRequest,
+    tokio::sync::oneshot::Receiver<crate::transfer::types::TransferResult>,
+)> {
     let mut receivers = Vec::new();
     let Some((peer, _path)) = peers.first() else {
         return receivers;
     };
     for shard in degraded {
-        receivers.push(manager.fetch_shard(peer, &shard.object_id));
+        // Return the request alongside the receiver so a failed repair can be
+        // queued for Path D retry on the next relay reconnect.
+        receivers.push(manager.fetch_shard_request(peer, &shard.object_id));
     }
     receivers
 }
@@ -636,6 +649,8 @@ mod tests {
                 pool,
                 std::sync::Arc::new(store),
                 identity,
+                "http://relay.test".to_string(),
+                std::sync::Arc::new(tokio::sync::Mutex::new(None)),
             )),
         );
         let receivers = submit_repairs(&manager, degraded, peers);

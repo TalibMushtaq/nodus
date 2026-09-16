@@ -105,14 +105,28 @@ export const NodeAuthResponsePayloadSchema = z.object({
 export type NodeAuthResponsePayload = z.infer<typeof NodeAuthResponsePayloadSchema>;
 
 /**
+ * One sibling storage node delivered on successful auth so a node can seed its
+ * `trusted_nodes` table for peer-to-peer repair. `public_key` is the
+ * hex-encoded Ed25519 public key.
+ */
+export const NodePeerSchema = z.object({
+  node_id: NodeId,
+  public_key: z.string(),
+});
+
+export type NodePeer = z.infer<typeof NodePeerSchema>;
+
+/**
  * Result of the authentication handshake. `message` is a human-readable
  * string; `reason` is a machine-readable code the Storage Node can act on
  * (e.g. surfaces "not paired, run `nodus node pair`" instead of retrying).
+ * `nodes` is the account's other ACTIVE storage nodes, present on success.
  */
 export const NodeAuthResultPayloadSchema = z.object({
   status: z.enum(["ok", "fail"]),
   message: z.string().optional(),
   reason: z.enum(["node_not_found", "node_inactive"]).optional(),
+  nodes: z.array(NodePeerSchema).optional(),
 });
 
 export type NodeAuthResultPayload = z.infer<typeof NodeAuthResultPayloadSchema>;

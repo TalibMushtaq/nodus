@@ -7,10 +7,12 @@ import { Section } from "@repo/ui/primitives/section";
 import { PageHeader } from "@repo/ui/primitives/page-header";
 import { SettingRow } from "@repo/ui/primitives/setting-row";
 import { Button } from "@repo/ui/primitives/button";
+import { Input } from "@repo/ui/primitives/input";
 import { ConfirmDialog } from "@repo/ui/primitives/overlay";
 import { useTheme } from "../../../providers/theme-provider";
 import { usePreferences, clearPreferences } from "../../../lib/preferences";
 import { clearLocalDatabase } from "../../../lib/db";
+import { changePassword, logoutAll } from "../../../lib/auth-client";
 
 // Settings is limited to controls with a real backing behavior: theme (persisted
 // by ThemeProvider), local sync preferences (localStorage), and clearing the
@@ -24,6 +26,58 @@ export default function SettingsPage() {
   const [resetting, setResetting] = useState(false);
   const [resetError, setResetError] = useState<string | null>(null);
   const [resetDone, setResetDone] = useState(false);
+
+  // Credential changes rotate the session server-side; the client just needs
+  // the current credential to authorize and to surface the rotation result.
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [securityBusy, setSecurityBusy] = useState<"password" | "logout-all" | null>(null);
+  const [securityError, setSecurityError] = useState<string | null>(null);
+  const [securityNotice, setSecurityNotice] = useState<string | null>(null);
+
+  const submitPassword = async () => {
+    setSecurityError(null);
+    setSecurityNotice(null);
+    if (newPassword !== confirmPassword) {
+      setSecurityError("New password and confirmation do not match.");
+      return;
+    }
+    if (newPassword.length < 8) {
+      setSecurityError("New password must be at least 8 characters.");
+      return;
+    }
+    setSecurityBusy("password");
+    try {
+      const result = await changePassword(currentPassword, newPassword);
+      if (!result.ok) {
+        setSecurityError(result.error ?? "Could not change password.");
+        return;
+      }
+      setCurrentPassword("");
+      setNewPassword("");
+      setConfirmPassword("");
+      setSecurityNotice("Password changed. This browser now holds a new session.");
+    } finally {
+      setSecurityBusy(null);
+    }
+  };
+
+  const signOutEverywhere = async () => {
+    setSecurityError(null);
+    setSecurityNotice(null);
+    setSecurityBusy("logout-all");
+    try {
+      const result = await logoutAll();
+      if (!result.ok) {
+        setSecurityError(result.error ?? "Could not sign out other devices.");
+        return;
+      }
+      setSecurityNotice("All other devices were signed out.");
+    } finally {
+      setSecurityBusy(null);
+    }
+  };
 
   // Delete the entire local DB (catalog, keys, trusted nodes, queues) plus the
   // preference record. Keeps the session/device identity so the account is not
@@ -102,6 +156,65 @@ export default function SettingsPage() {
               <option value={32 * 1024 * 1024}>32 MB</option>
             </Select>
           </SettingRow>
+        </div>
+      </Section>
+
+      <Section title="Security">
+        <div className="elev-card border border-border rounded-2xl bg-card px-4 py-4 space-y-4">
+          <div className="grid gap-3 sm:grid-cols-3">
+            <Input
+              label="Current password"
+              type="password"
+              autoComplete="current-password"
+              value={currentPassword}
+              onChange={(e) => setCurrentPassword(e.target.value)}
+            />
+            <Input
+              label="New password"
+              type="password"
+              autoComplete="new-password"
+              value={newPassword}
+              onChange={(e) => setNewPassword(e.target.value)}
+            />
+            <Input
+              label="Confirm new password"
+              type="password"
+              autoComplete="new-password"
+              value={confirmPassword}
+              onChange={(e) => setConfirmPassword(e.target.value)}
+            />
+          </div>
+          <div className="flex flex-wrap items-center gap-3">
+            <Button
+              size="sm"
+              onClick={() => void submitPassword()}
+              disabled={securityBusy !== null || !currentPassword || !newPassword}
+            >
+              {securityBusy === "password" ? "Changing…" : "Change password"}
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => void signOutEverywhere()}
+              disabled={securityBusy !== null}
+            >
+              {securityBusy === "logout-all" ? "Signing out…" : "Sign out all other devices"}
+            </Button>
+          </div>
+          <p className="text-[11px] text-muted-foreground">
+            Changing your password issues a new session for this browser and invalidates the old
+            one. Signing out other devices keeps you signed in here.
+          </p>
+          {securityNotice && (
+            <p className="text-xs text-muted-foreground" role="status">
+              {securityNotice}
+            </p>
+          )}
+          {securityError && (
+            <p className="text-xs text-destructive" role="alert">
+              {securityError}
+            </p>
+          )}
         </div>
       </Section>
 

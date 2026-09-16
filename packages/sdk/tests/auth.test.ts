@@ -79,4 +79,59 @@ describe("auth client", () => {
     const session = await client.fetchSession();
     expect(session?.device_id).toBe("dev-1");
   });
+
+  it("posts the credential pair to /auth/password and returns the rotated session", async () => {
+    let seen: { path: string; init?: RelayRequestInit } | null = null;
+    const client = createAuthClient(
+      fakeHttp((path, init) => {
+        seen = { path, init };
+        return {
+          status: 200,
+          ok: true,
+          json: {
+            account_id: "acct-1",
+            device_id: "dev-1",
+            session_expires_at: "2030-01-01T00:00:00Z",
+          },
+        };
+      }),
+    );
+
+    const result = await client.changePassword("old-pass", "new-pass-123");
+
+    expect(result.ok).toBe(true);
+    expect(seen!.path).toBe("/auth/password");
+    expect(seen!.init?.body).toEqual({ current_password: "old-pass", new_password: "new-pass-123" });
+  });
+
+  it("surfaces a rejected password change as an error result", async () => {
+    const client = createAuthClient(
+      fakeHttp(() => ({ status: 401, ok: false, json: { error: "current password is incorrect" } })),
+    );
+    const result = await client.changePassword("wrong", "new-pass-123");
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe("current password is incorrect");
+  });
+
+  it("calls /auth/logout-all and returns the re-issued session", async () => {
+    let seenPath = "";
+    const client = createAuthClient(
+      fakeHttp((path) => {
+        seenPath = path;
+        return {
+          status: 200,
+          ok: true,
+          json: {
+            account_id: "acct-1",
+            device_id: "dev-1",
+            session_expires_at: "2030-01-01T00:00:00Z",
+          },
+        };
+      }),
+    );
+    const result = await client.logoutAll();
+    expect(seenPath).toBe("/auth/logout-all");
+    expect(result.ok).toBe(true);
+    expect(result.session?.device_id).toBe("dev-1");
+  });
 });

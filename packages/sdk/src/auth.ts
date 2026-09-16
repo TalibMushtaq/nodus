@@ -50,6 +50,17 @@ export interface AuthClient {
   logout(): Promise<void>;
   /** Current session, or null when missing/expired/revoked (Relay 401). */
   fetchSession(): Promise<SessionInfo | null>;
+  /**
+   * Change the account password. The Relay re-verifies `currentPassword`,
+   * replaces the hash, and rotates the session (new id, old revoked) — so the
+   * returned session supersedes any previously held cookie/token.
+   */
+  changePassword(currentPassword: string, newPassword: string): Promise<AuthResult>;
+  /**
+   * Sign out every other device: the Relay revokes all sessions for the account
+   * and issues a fresh one for the calling device, returned as `session`.
+   */
+  logoutAll(): Promise<AuthResult>;
 }
 
 /**
@@ -106,6 +117,19 @@ export function createAuthClient(http: RelayHttp): AuthClient {
       }
       if (!res.ok || !res.json) return null;
       return res.json;
+    },
+
+    // Reuse `authenticate` so the BFF/Relay error body surfaces identically to
+    // login/register, and a successful rotation returns the fresh session.
+    changePassword(currentPassword, newPassword) {
+      return authenticate("/auth/password", {
+        current_password: currentPassword,
+        new_password: newPassword,
+      });
+    },
+
+    logoutAll() {
+      return authenticate("/auth/logout-all", {});
     },
   };
 }

@@ -123,10 +123,10 @@ async fn test_live_webrtc_session_transfers_two_shards() {
             if !msg.is_string {
                 return;
             }
-            if let Ok(text) = String::from_utf8(msg.data.to_vec()) {
-                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
-                    let _ = ack_tx.send(json);
-                }
+            if let Ok(text) = String::from_utf8(msg.data.to_vec())
+                && let Ok(json) = serde_json::from_str::<serde_json::Value>(&text)
+            {
+                let _ = ack_tx.send(json);
             }
         })
     }));

@@ -126,6 +126,11 @@ export function ConflictsClient() {
                     {shortId(conflict.fileId)} · version{conflict.versions.length === 1 ? "" : "s"}{" "}
                     {conflict.versions.join(", ")} · updated {formatUpdated(conflict.updatedAt)}
                   </div>
+                  {conflict.siblingName && (
+                    <div className="text-[11px] text-foreground/70 mt-0.5 truncate">
+                      Preserved as <span className="font-medium">{conflict.siblingName}</span>
+                    </div>
+                  )}
                 </div>
                 <Link
                   href="/files"

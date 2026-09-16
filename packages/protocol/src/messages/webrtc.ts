@@ -66,3 +66,21 @@ export const WebRTCIceCandidatePayloadSchema = z.object({
 });
 
 export type WebRTCIceCandidatePayload = z.infer<typeof WebRTCIceCandidatePayloadSchema>;
+
+// ── Node→node repair request ───────────────────────────────────────
+
+/**
+ * A repairing Storage Node asks a peer holder for an object over the Relay
+ * (Path B). The holder replies with a signed `webrtc_offer` and streams the
+ * shard directly over the resulting data channel. Routed by `from_peer`/
+ * `to_peer` exactly like the other signaling messages; the Relay never sees the
+ * shard bytes.
+ */
+export const NodeShardFetchPayloadSchema = z.object({
+  from_peer: PeerIdSchema,
+  to_peer: PeerIdSchema,
+  /** The content-addressed object (BLAKE3 hex) being requested. */
+  object_id: z.string(),
+});
+
+export type NodeShardFetchPayload = z.infer<typeof NodeShardFetchPayloadSchema>;

@@ -15,6 +15,7 @@ import {
   WebRTCOfferPayloadSchema,
   WebRTCAnswerPayloadSchema,
   WebRTCIceCandidatePayloadSchema,
+  NodeShardFetchPayloadSchema,
 } from "./messages/webrtc.js";
 import {
   ShardUploadPayloadSchema,
@@ -66,6 +67,7 @@ export const MessageTypes = {
   WEBRTC_OFFER: "webrtc_offer",
   WEBRTC_ANSWER: "webrtc_answer",
   WEBRTC_ICE_CANDIDATE: "webrtc_ice_candidate",
+  NODE_SHARD_FETCH: "node_shard_fetch",
   SHARD_UPLOAD: "shard_upload",
   SHARD_ACK: "shard_ack",
   PENDING_NOTIFY: "pending_notify",
@@ -134,6 +136,7 @@ export const MessagePayloadSchemas: Record<string, z.ZodType> = {
   [MessageTypes.WEBRTC_OFFER]: WebRTCOfferPayloadSchema,
   [MessageTypes.WEBRTC_ANSWER]: WebRTCAnswerPayloadSchema,
   [MessageTypes.WEBRTC_ICE_CANDIDATE]: WebRTCIceCandidatePayloadSchema,
+  [MessageTypes.NODE_SHARD_FETCH]: NodeShardFetchPayloadSchema,
   [MessageTypes.SHARD_UPLOAD]: ShardUploadPayloadSchema,
   [MessageTypes.SHARD_ACK]: ShardAckPayloadSchema,
   [MessageTypes.PENDING_NOTIFY]: PendingNotifyPayloadSchema,
