@@ -14,6 +14,7 @@ import {
   envelopeEvent,
   folderEnvelopeEvent,
   sealFekForRecipients,
+  type EnvelopeRecipient,
 } from "../envelopes/envelopes.js";
 
 // Envelope batches are chunked so a large account does not exceed the Relay's
@@ -41,16 +42,44 @@ export interface ResealResult {
   skipped: number;
 }
 
+/**
+ * Re-seal every key this device can open to the device itself, using its
+ * published X25519 key (ADR-0008 phase 2). This migrates envelopes that were
+ * sealed to the legacy Ed25519-derived key so the Ed25519 seed is no longer
+ * needed to open them.
+ */
+export function resealKeysForSelf(
+  deps: ResealDeps,
+  self: { deviceId: string; edPublicKey: Uint8Array; x25519PublicKey: Uint8Array },
+): Promise<ResealResult> {
+  return resealKeysToRecipient(deps, {
+    recipientId: self.deviceId,
+    recipientKind: "device",
+    edPublicKey: self.edPublicKey,
+    x25519PublicKey: self.x25519PublicKey,
+  });
+}
+
 export async function resealRecoveryKeys(
   deps: ResealDeps,
   recoveryPublicKey: string,
 ): Promise<ResealResult> {
-  const recipient = {
+  return resealKeysToRecipient(deps, {
     recipientId: recoveryPublicKey,
-    recipientKind: "recovery" as const,
+    recipientKind: "recovery",
     edPublicKey: decodeRecipientPublicKey(recoveryPublicKey, "recovery"),
-  };
+  });
+}
 
+/**
+ * Re-seal every key this device can open to a specific recipient (ADR-0008
+ * phase 2 uses this with the device itself as the recipient, migrating legacy
+ * Ed25519-derived envelopes to its published X25519 key).
+ */
+export async function resealKeysToRecipient(
+  deps: ResealDeps,
+  recipient: EnvelopeRecipient,
+): Promise<ResealResult> {
   const [catalog, folders] = await Promise.all([deps.listCatalog(), deps.listFolders()]);
   const events: EventPayload[] = [];
   let files = 0;

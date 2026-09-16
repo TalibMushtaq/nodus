@@ -18,6 +18,7 @@ import {
 import { envelopeRows, deviceLastActive } from "../../../lib/security";
 import { shortId, timeAgo } from "../../../lib/format";
 import { useAuth } from "../../../providers/auth-provider";
+import { useSelfReseal } from "../../../lib/use-self-reseal";
 import { RecoveryCard } from "./recovery-card";
 
 // Security page: per-recipient key-envelope coverage, an offline ciphertext
@@ -36,6 +37,9 @@ export default function SecurityPage() {
   const [envelopesOpen, setEnvelopesOpen] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
+  // ADR-0008 phase 2 migration of this device's own envelopes.
+  const { migrate, busy: migrating } = useSelfReseal();
+  const [migrateStatus, setMigrateStatus] = useState<string | null>(null);
   // The device awaiting confirmation, plus in-flight state for the dialog.
   const [revokeTarget, setRevokeTarget] = useState<RelayDevice | null>(null);
   const [revoking, setRevoking] = useState(false);
@@ -112,6 +116,18 @@ export default function SecurityPage() {
       setExporting(false);
     }
   }, []);
+
+  const migrateEnvelopes = useCallback(async () => {
+    setMigrateStatus(null);
+    try {
+      const result = await migrate();
+      setMigrateStatus(
+        `Re-sealed ${result.files} file / ${result.folders} folder envelope(s); skipped ${result.skipped}.`,
+      );
+    } catch (err) {
+      setMigrateStatus(err instanceof Error ? err.message : String(err));
+    }
+  }, [migrate]);
 
   return (
     <div className="mx-auto max-w-4xl space-y-8 p-6">
@@ -198,6 +214,15 @@ export default function SecurityPage() {
                 {exporting ? "Preparing backup…" : "Download encrypted backup of key envelopes"}
               </button>
               {exportError && <p className="text-xs text-destructive mt-1">{exportError}</p>}
+              <button
+                type="button"
+                onClick={() => void migrateEnvelopes()}
+                disabled={migrating}
+                className="text-xs text-muted-foreground hover:text-foreground transition-colors mt-1 disabled:opacity-50"
+              >
+                {migrating ? "Migrating…" : "Migrate my key envelopes to this device's encryption key"}
+              </button>
+              {migrateStatus && <p className="text-xs text-muted-foreground mt-1">{migrateStatus}</p>}
             </div>
           </>
         )}

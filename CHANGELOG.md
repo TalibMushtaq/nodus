@@ -1,5 +1,15 @@
 # Changelog
 
+## [2026-09-15] - ADR-0008 phase 2: migrate device envelopes to the X25519 key
+
+**What changed:** Generalized the re-seal helper (`resealKeysToRecipient`) and added `resealKeysForSelf`, which re-seals every key this device can open to its own published X25519 key. Both clients expose a "migrate my key envelopes" action — web's Security page and the mobile Security section — reporting how many file/folder envelopes were re-sealed and how many were skipped. A test locks the emitted envelope to the device's X25519 private key.
+
+**Why:** Envelopes created before phase 1 are sealed to the Ed25519-derived key; migrating them means the Ed25519 seed is no longer needed to open them, which is the prerequisite for phase 3 (dropping the exportable seed).
+
+**Impact:** `packages/sdk` (reseal generalization, index, test), `apps/web` (use-self-reseal, security page), `apps/mobile` (recovery/self-reseal, App). Verified: SDK build/lint/tests (31), web lint/typecheck/tests (194), mobile lint/typecheck/tests/export.
+
+**Follow-ups:** Migration is manual; it can only cover keys the device can already open. Phase 3 (non-extractable WebCrypto signing) follows.
+
 ## [2026-09-15] - ADR-0008 phase 1b: clients publish and use the X25519 key
 
 **What changed:** Both clients generate/persist an X25519 encryption identity and publish its public key at login, registration, recovery and device registration. Web stores it in localStorage (`lib/device.ts`) and passes it through the SDK auth/recovery clients; mobile stores it in the keychain (`src/storage.ts`) and threads it through `relayLogin`/`relayRegisterDevice`/recovery. Opening now uses `openFekWithFallback`/`openFolderKeyWithFallback` (try the published X25519 key, then the legacy Ed25519-derived key) in the web download/conflict/tombstone paths and the mobile file/folder key resolution, so envelopes sealed before the migration still open.
