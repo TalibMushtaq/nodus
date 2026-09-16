@@ -18,6 +18,12 @@ export {
   ENCRYPTION_IDENTITY_KEY,
 } from "./device/encryption.js";
 export type { StoredEncryptionIdentity } from "./device/encryption.js";
+export {
+  supportsWebCryptoEd25519,
+  generateWebCryptoDeviceKeys,
+  createDeviceSigner,
+} from "./device/webcrypto.js";
+export type { DeviceSigner, WebCryptoDeviceKeys } from "./device/webcrypto.js";
 export { createAuthClient } from "./auth.js";
 export type { AuthClient, AuthResult, SessionInfo } from "./auth.js";
 

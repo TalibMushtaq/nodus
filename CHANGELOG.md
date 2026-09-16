@@ -1,5 +1,15 @@
 # Changelog
 
+## [2026-09-15] - ADR-0008 phase 3a: non-extractable WebCrypto signing primitive
+
+**What changed:** Added `packages/sdk/src/device/webcrypto.ts`: `supportsWebCryptoEd25519`, `generateWebCryptoDeviceKeys` (non-extractable Ed25519 `CryptoKey` + exported public key + device id), and `createDeviceSigner` (a `sign(message) => hex` handle). A test generates a key, asserts it is non-extractable, and verifies the signature with `@noble/curves` over the exact message bytes — the contract the Relay and Rust node enforce. `@noble/curves` added to SDK devDependencies for tests.
+
+**Why:** The signature/format contract for a non-extractable signing key must be locked before the web client is rewired onto it (phase 3b).
+
+**Impact:** `packages/sdk` (device/webcrypto.ts, index, test, devDependency). Verified: SDK build/lint/tests (32).
+
+**Follow-ups:** Phase 3b wires the web client onto this signer (persist the `CryptoKey` in IndexedDB, expose `sign` through the auth provider, replace the `private_key` call sites, retire the exportable seed after envelope migration).
+
 ## [2026-09-15] - ADR-0008 phase 2: migrate device envelopes to the X25519 key
 
 **What changed:** Generalized the re-seal helper (`resealKeysToRecipient`) and added `resealKeysForSelf`, which re-seals every key this device can open to its own published X25519 key. Both clients expose a "migrate my key envelopes" action — web's Security page and the mobile Security section — reporting how many file/folder envelopes were re-sealed and how many were skipped. A test locks the emitted envelope to the device's X25519 private key.

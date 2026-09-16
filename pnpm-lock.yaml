@@ -378,6 +378,9 @@ importers:
         specifier: workspace:*
         version: link:../webrtc-transport
     devDependencies:
+      '@noble/curves':
+        specifier: ^1.9.7
+        version: 1.9.7
       '@repo/eslint-config':
         specifier: workspace:*
         version: link:../eslint-config
