@@ -9,6 +9,14 @@
 export type { RelayRequestInit, RelayResponse, RelayHttp, SecureStore, Connectivity } from "./adapters.js";
 
 export { getOrCreateDeviceIdentity, isStoredDeviceIdentity, DEVICE_IDENTITY_KEY } from "./device.js";
+export {
+  createEncryptionIdentity,
+  getOrCreateEncryptionIdentity,
+  encryptionPublicKeyBytes,
+  encryptionPrivateKeyBytes,
+  ENCRYPTION_IDENTITY_KEY,
+} from "./device/encryption.js";
+export type { StoredEncryptionIdentity } from "./device/encryption.js";
 export { createAuthClient } from "./auth.js";
 export type { AuthClient, AuthResult, SessionInfo } from "./auth.js";
 
@@ -41,9 +49,12 @@ export {
   encodeEnvelope,
   sealFekForRecipientIdentity,
   sealFekForRecipients,
+  sealFekForEncryptionKey,
   openFekFromEnvelope,
+  openFekFromEnvelopeX25519,
   openFolderKeyFromEnvelopes,
   collectRecipients,
+  decodeEncryptionPublicKey,
   envelopeEvent,
   folderEnvelopeEvent,
 } from "./envelopes/envelopes.js";

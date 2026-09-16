@@ -187,6 +187,22 @@ export function ed25519PrivateToX25519(edPrivateSeed: Uint8Array): Uint8Array {
 }
 
 /**
+ * Generate a fresh, standalone X25519 encryption keypair (ADR-0008).
+ *
+ * Unlike `deriveEncryptionKeypair`, this is independent of the device's Ed25519
+ * signing identity: the public key is published to the Relay and senders seal
+ * envelopes to it directly, so the signing key can be non-extractable without
+ * also having to yield an X25519 key.
+ */
+export function generateEncryptionKeypair(): {
+  publicKey: Uint8Array;
+  privateKey: Uint8Array;
+} {
+  const pair = x25519.keygen();
+  return { publicKey: pair.publicKey, privateKey: pair.secretKey };
+}
+
+/**
  * Derive the device/node encryption keypair (X25519) from an Ed25519 seed.
  * `publicKey` is what gets published so others can seal a FEK for this device.
  */

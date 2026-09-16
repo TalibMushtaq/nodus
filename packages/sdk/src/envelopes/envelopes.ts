@@ -27,6 +27,11 @@ export interface EnvelopeRecipient {
   recipientKind: RecipientKind;
   /** Recipient Ed25519 public key (device or node identity). */
   edPublicKey: Uint8Array;
+  /**
+   * Recipient X25519 encryption key (ADR-0008), when the device has published
+   * one. Sealing prefers this over deriving X25519 from `edPublicKey`.
+   */
+  x25519PublicKey?: Uint8Array;
 }
 
 export interface RelayEnvelope {
@@ -140,6 +145,11 @@ export function sealFekForRecipientIdentity(fek: Uint8Array, edPublicKey: Uint8A
   return encodeEnvelope(sealFekForRecipient(fek, ed25519PublicToX25519(edPublicKey)));
 }
 
+/** Seal a FEK for a recipient's published X25519 encryption key (ADR-0008). */
+export function sealFekForEncryptionKey(fek: Uint8Array, x25519PublicKey: Uint8Array): string {
+  return encodeEnvelope(sealFekForRecipient(fek, x25519PublicKey));
+}
+
 /** Seal a FEK for many recipients, ready to emit as KEY_ENVELOPE_ADDED events. */
 export function sealFekForRecipients(
   fek: Uint8Array,
@@ -148,13 +158,22 @@ export function sealFekForRecipients(
   return recipients.map((r) => ({
     recipient_id: r.recipientId,
     recipient_kind: r.recipientKind,
-    encrypted_key: sealFekForRecipientIdentity(fek, r.edPublicKey),
+    // Prefer a published X25519 key; fall back to the legacy Ed25519→X25519
+    // derivation for recipients that have not published one (ADR-0008).
+    encrypted_key: r.x25519PublicKey
+      ? sealFekForEncryptionKey(fek, r.x25519PublicKey)
+      : sealFekForRecipientIdentity(fek, r.edPublicKey),
   }));
 }
 
-/** Open this device's envelope with its Ed25519 private seed. */
+/** Open this device's envelope with its Ed25519 private seed (legacy path). */
 export function openFekFromEnvelope(encoded: string, edPrivateSeed: Uint8Array): Uint8Array {
   return openFekEnvelope(decodeEnvelope(encoded), ed25519PrivateToX25519(edPrivateSeed));
+}
+
+/** Open this device's envelope with its standalone X25519 private key (ADR-0008). */
+export function openFekFromEnvelopeX25519(encoded: string, x25519PrivateKey: Uint8Array): Uint8Array {
+  return openFekEnvelope(decodeEnvelope(encoded), x25519PrivateKey);
 }
 
 /**
@@ -173,11 +192,25 @@ export function openFolderKeyFromEnvelopes(
   return openFekFromEnvelope(mine.encrypted_key, edPrivateSeed);
 }
 
+/**
+ * Decode a device's published X25519 encryption key (base64). Length-checked so
+ * a wrong encoding fails with a clear message rather than at seal time.
+ */
+export function decodeEncryptionPublicKey(encoded: string): Uint8Array {
+  const bytes = fromBase64(encoded);
+  if (bytes.length !== 32) {
+    throw new Error(`encryption public key must decode to 32 bytes, got ${bytes.length}`);
+  }
+  return bytes;
+}
+
 /** Minimal catalogue rows the recipient collector needs from the Relay. */
 export interface EnvelopeDeviceInfo {
   device_id: string;
   public_key: string;
   status: string;
+  /** Published X25519 encryption key (base64), when the device has one. */
+  encryption_public_key?: string | null;
 }
 
 export interface EnvelopeNodeInfo {
@@ -224,6 +257,11 @@ export async function collectRecipients(
       recipientId: device.device_id,
       recipientKind: "device",
       edPublicKey: decodeRecipientPublicKey(device.public_key, "device"),
+      // Prefer the device's published X25519 key when it has one (ADR-0008);
+      // devices that predate it keep the Ed25519-derived envelope key.
+      x25519PublicKey: device.encryption_public_key
+        ? decodeEncryptionPublicKey(device.encryption_public_key)
+        : undefined,
     });
   }
   for (const node of nodes) {

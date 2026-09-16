@@ -26,25 +26,31 @@ type dbQuerier interface {
 // WHERE clause pins the upsert to this account's own row, so a foreign
 // collision yields zero returned rows (ErrNoRows) instead of silently
 // overwriting the other account's public_key/status.
-func upsertDeviceForAccount(q dbQuerier, r *http.Request, deviceID, publicKey, accountID string) (*DeviceResponse, error) {
+func upsertDeviceForAccount(q dbQuerier, r *http.Request, deviceID, publicKey, encryptionPublicKey, accountID string) (*DeviceResponse, error) {
 	var dev DeviceResponse
 	// `last_seen_at` is stamped here as well as on the WS heartbeat so a device
 	// that just registered reads as active immediately, without waiting up to a
 	// minute for the presence write to catch up.
+	//
+	// `COALESCE(excluded, devices)` keeps a published X25519 key (ADR-0008) when
+	// a request omits it: an older client that only knows the Ed25519 identity
+	// must not wipe the key its peers seal to.
 	err := q.QueryRow(r.Context(), `
-		INSERT INTO devices (device_id, account_id, public_key, status, last_seen_at)
-		VALUES ($1, $2, $3, 'ACTIVE', NOW())
+		INSERT INTO devices (device_id, account_id, public_key, encryption_public_key, status, last_seen_at)
+		VALUES ($1, $2, $3, nullif($4, ''), 'ACTIVE', NOW())
 		ON CONFLICT (device_id) DO UPDATE SET
 			public_key = excluded.public_key,
+			encryption_public_key = COALESCE(excluded.encryption_public_key, devices.encryption_public_key),
 			status = 'ACTIVE',
 			revoked_at = NULL,
 			last_seen_at = NOW()
 		WHERE devices.account_id = excluded.account_id
-		RETURNING device_id, account_id, public_key, status, created_at, revoked_at, display_name, last_seen_at
-	`, deviceID, accountID, publicKey).Scan(
+		RETURNING device_id, account_id, public_key, encryption_public_key, status, created_at, revoked_at, display_name, last_seen_at
+	`, deviceID, accountID, publicKey, encryptionPublicKey).Scan(
 		&dev.DeviceID,
 		&dev.AccountID,
 		&dev.PublicKey,
+		&dev.EncryptionPublicKey,
 		&dev.Status,
 		&dev.CreatedAt,
 		&dev.RevokedAt,
@@ -73,13 +79,19 @@ func respondDeviceUpsertError(w http.ResponseWriter, err error) {
 type RegisterDeviceRequest struct {
 	DeviceID  string `json:"device_id"`
 	PublicKey string `json:"public_key"`
+	// EncryptionPublicKey is the device's X25519 key (base64, ADR-0008).
+	// Optional: a device without one keeps the Ed25519-derived envelope key.
+	EncryptionPublicKey string `json:"encryption_public_key"`
 }
 
 type DeviceResponse struct {
-	DeviceID    string     `json:"device_id"`
-	AccountID   string     `json:"account_id"`
-	PublicKey   string     `json:"public_key"`
-	Status      string     `json:"status"`
+	DeviceID  string `json:"device_id"`
+	AccountID string `json:"account_id"`
+	PublicKey string `json:"public_key"`
+	// EncryptionPublicKey is the X25519 key senders seal envelopes to, when the
+	// device has published one (ADR-0008).
+	EncryptionPublicKey *string    `json:"encryption_public_key,omitempty"`
+	Status              string     `json:"status"`
 	DisplayName *string    `json:"display_name,omitempty"`
 	CreatedAt   time.Time  `json:"created_at"`
 	RevokedAt   *time.Time `json:"revoked_at,omitempty"`
@@ -110,7 +122,7 @@ func RegisterDevice(pool *db.Pool) http.HandlerFunc {
 			return
 		}
 
-		dev, err := upsertDeviceForAccount(pool, r, req.DeviceID, req.PublicKey, accountID)
+		dev, err := upsertDeviceForAccount(pool, r, req.DeviceID, req.PublicKey, req.EncryptionPublicKey, accountID)
 		if err != nil {
 			respondDeviceUpsertError(w, err)
 			return
@@ -130,7 +142,7 @@ func ListDevices(pool *db.Pool) http.HandlerFunc {
 		}
 
 		query := `
-			SELECT device_id, account_id, public_key, status, created_at, revoked_at, display_name, last_seen_at
+			SELECT device_id, account_id, public_key, encryption_public_key, status, created_at, revoked_at, display_name, last_seen_at
 			FROM devices
 			WHERE account_id = $1
 			ORDER BY created_at ASC
@@ -150,6 +162,7 @@ func ListDevices(pool *db.Pool) http.HandlerFunc {
 				&dev.DeviceID,
 				&dev.AccountID,
 				&dev.PublicKey,
+				&dev.EncryptionPublicKey,
 				&dev.Status,
 				&dev.CreatedAt,
 				&dev.RevokedAt,

@@ -205,6 +205,8 @@ type RecoverRequest struct {
 	Signature       string `json:"signature"`
 	DeviceID        string `json:"device_id"`
 	DevicePublicKey string `json:"device_public_key"`
+	// DeviceEncryptionPublicKey is the recovered device's X25519 key (base64, ADR-0008).
+	DeviceEncryptionPublicKey string `json:"device_encryption_public_key"`
 }
 
 // Recover authenticates a new device with a signature from the account recovery
@@ -299,7 +301,7 @@ func Recover(pool *db.Pool, store auth.SessionStore, cfg *config.Config) http.Ha
 
 		// Device upsert and nonce consumption commit together, so a collision
 		// (device owned by another account) leaves the nonce usable.
-		if _, err := upsertDeviceForAccount(tx, r, req.DeviceID, req.DevicePublicKey, accountID); err != nil {
+		if _, err := upsertDeviceForAccount(tx, r, req.DeviceID, req.DevicePublicKey, req.DeviceEncryptionPublicKey, accountID); err != nil {
 			respondDeviceUpsertError(w, err)
 			return
 		}

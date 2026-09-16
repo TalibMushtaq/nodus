@@ -23,6 +23,9 @@ type AuthRequest struct {
 	Password        string `json:"password"`
 	DeviceID        string `json:"device_id"`
 	DevicePublicKey string `json:"device_public_key"`
+	// DeviceEncryptionPublicKey is the device's X25519 key (base64, ADR-0008).
+	// Optional; when absent the device keeps any previously published key.
+	DeviceEncryptionPublicKey string `json:"device_encryption_public_key"`
 	// RecoveryPublicKey is the Ed25519 key derived from the user's offline
 	// recovery phrase. Sent on register (to enroll recovery); ignored on login,
 	// which must never overwrite an existing recovery key. Optional so older
@@ -103,7 +106,7 @@ func Register(pool *db.Pool, store auth.SessionStore, cfg *config.Config) http.H
 		}
 
 		// The first device auto-registers with the account (§2).
-		if _, err := upsertDeviceForAccount(tx, r, req.DeviceID, req.DevicePublicKey, accountID); err != nil {
+		if _, err := upsertDeviceForAccount(tx, r, req.DeviceID, req.DevicePublicKey, req.DeviceEncryptionPublicKey, accountID); err != nil {
 			respondDeviceUpsertError(w, err)
 			return
 		}
@@ -170,7 +173,7 @@ func Login(pool *db.Pool, store auth.SessionStore, cfg *config.Config) http.Hand
 		// supplied device_id/public_key is upserted for THIS account (ownership
 		// guarded), so first login from a new device needs no separate
 		// /devices/register call.
-		if _, err := upsertDeviceForAccount(pool, r, req.DeviceID, req.DevicePublicKey, accountID); err != nil {
+		if _, err := upsertDeviceForAccount(pool, r, req.DeviceID, req.DevicePublicKey, req.DeviceEncryptionPublicKey, accountID); err != nil {
 			respondDeviceUpsertError(w, err)
 			return
 		}

@@ -1,5 +1,15 @@
 # Changelog
 
+## [2026-09-15] - ADR-0008 phase 1: per-device X25519 encryption keys
+
+**What changed:** Additive plumbing for ADR-0008. Core gains `generateEncryptionKeypair()` (a standalone X25519 keypair). The Relay gains migration 022 (`devices.encryption_public_key`), accepts `device_encryption_public_key` on login/register/recovery and `encryption_public_key` on device registration, preserves an existing key when a request omits it, and returns it from `GET /devices`. The SDK gains a persistent device encryption identity (`device/encryption.ts`, base64 X25519 keypair in the platform secure store), `sealFekForEncryptionKey`/`openFekFromEnvelopeX25519`, `decodeEncryptionPublicKey`, and teaches `collectRecipients`/`sealFekForRecipients` to prefer a recipient's published X25519 key with the Ed25519→X25519 derivation as fallback.
+
+**Why:** This is the prerequisite for a non-extractable signing key: envelopes can be sealed to a device's X25519 key directly instead of one derived from its Ed25519 seed.
+
+**Impact:** `packages/core`, `services/relay` (handler/device.go, handler/auth.go, handler/recovery.go, migration 022), `packages/sdk` (device/encryption.ts, envelopes, index), ADR-0008 status. Verified: core/SDK builds, SDK tests 30 (4 new envelope tests), Go build/vet/test.
+
+**Follow-ups:** Clients must generate/publish the key and open via it with fallback (phase 1b), then re-seal existing envelopes (phase 2) and switch web signing to WebCrypto (phase 3).
+
 ## [2026-09-15] - Tests for the offline recovery node client
 
 **What changed:** Added `packages/relay-client/tests/local-recovery.test.ts` covering the three new `NodeClient` methods: the challenge parses, `recover` posts a signature that verifies against the recovery public key over the nonce, `recoveryEnvelopes` sends a device-signed `"{id}:recovery-envelopes:{ts}"` request, and a non-ok response maps to `NodeClientError`. relay-client tests went from 46 to 50.

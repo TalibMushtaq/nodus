@@ -31,6 +31,7 @@ export {
   ed25519PublicToX25519,
   ed25519PrivateToX25519,
   deriveEncryptionKeypair,
+  generateEncryptionKeypair,
 } from "./crypto.js";
 export { shardMetadataFromEncryptedShard } from "./metadata.js";
 export {

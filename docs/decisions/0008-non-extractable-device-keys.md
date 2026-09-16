@@ -1,8 +1,12 @@
 # ADR-0008: Non-Extractable Device Keys (Proposed)
 
 ## Status
-Proposed — blocked open item from `Todo.md`. Not implemented; this ADR records
-the design needed to unblock it.
+Accepted (2026-09-15) — implemented in phases. Phase 1 (additive) is done:
+devices publish an X25519 encryption key that senders seal to directly, with a
+fallback to the Ed25519→X25519 derivation for devices that have not published
+one. Phase 2 (re-seal each device's existing envelopes to its new key) and
+Phase 3 (switch web signing to a non-extractable WebCrypto Ed25519 key and drop
+the exportable seed) follow.
 
 ## Context
 The web client currently persists the device identity as an exportable Ed25519
