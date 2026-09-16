@@ -25,9 +25,9 @@ export interface BrowserAttemptPathDeps {
   deviceId: string;
   sourceDevice?: string;
   /**
-   * Stateless-signing callback for local WebRTC signaling (`signDeviceMessage`
-   * over the device private key). Without it the node rejects Path A signaling
-   * (401) and the fallback chain advances to relay/buffer paths.
+   * Stateless-signing callback for local WebRTC signaling (the device's
+   * non-extractable signer handle, ADR-0008). Without it the node rejects Path A
+   * signaling (401) and the fallback chain advances to relay/buffer paths.
    */
   signLocal?: (message: string) => string | Promise<string>;
   /**
