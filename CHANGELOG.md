@@ -1,5 +1,127 @@
 # Changelog
 
+## [2026-09-17] - Web browser push, plus push setup docs
+
+**What changed:**
+- Relay: migration `026_web_push_subscriptions`; new `internal/push/webpush.go` (`WebSender` interface + `VapidWebSender` built on `SherClockHolmes/webpush-go`); `Service.NotifyAccount` now fans out to both Expo and Web Push under the same per-category opt-outs; `POST`/`DELETE /devices/web-push` handlers and routes; config `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` / `VAPID_SUBJECT`. The conflict/sync-complete guards now run when either channel is configured.
+- Web: `public/sw.js` (push display + notification-click focus), BFF routes `app/api/push/subscribe` and `app/api/push/unsubscribe` (session-cookie proxies), `components/browser-notifications.tsx`, and a "Notifications" section on the Settings page.
+- Docs/env: new `docs/push-notifications.md`; `deploy/.env.example`, `apps/web/.env.example` and `apps/mobile/.env` document the Expo/VAPID/EAS variables.
+
+**Why:** Finish the last Phase 3 item (web browser push) and document the operator setup required for real delivery.
+
+**Impact:** `services/relay` (new deps `webpush-go`, `golang-jwt/jwt/v5`), `apps/web`, `docs`, env examples. Additive: browser push stays disabled unless both VAPID keys are configured.
+
+**Follow-ups:** Delivery still requires operator credentials (Expo access token, EAS/APNs/FCM, VAPID keys). Web Push needs a secure context — HTTPS in production or `localhost` in dev. Adds `NotifyAccount` tests for the web channel; `VapidWebSender` itself is a thin wrapper over the library and is not unit-tested.
+
+## [2026-09-17] - Mobile Phase 4: activity filters extracted + tested, dark-mode audit, docs
+
+**What changed:**
+- Extracted the Activity filter/presentation logic into `apps/mobile/src/activity/view.ts` (pure; only type-only imports so it is renderer-free) with `activity/__tests__/view.test.ts`; `ActivityScreen` now consumes it instead of defining the logic inline.
+- Dark-mode audit of `apps/mobile/src`: the only hardcoded colors are the modal/sheet scrims and the toggle knob, both intentional; every screen otherwise reads from theme tokens.
+- Docs: added a Mobile section to `docs/design-port-plan.md`; ADR-0003 addendum; updated `docs/mobile-redesign-and-parity-plan.md` with Phase 4 status and per-phase `CHANGELOG.md` entries.
+
+**Why:** Phase 4 of `docs/mobile-redesign-and-parity-plan.md` (polish, tests, docs).
+
+**Impact:** `apps/mobile` (`activity/view.ts`, `screens/ActivityScreen.tsx`, new test), `docs`. No behavior change.
+
+**Follow-ups:** Motion for real events is deferred pending a design pass; an on-device dark-mode visual pass is still worthwhile. Web browser push remains the only unchecked Phase 3 item.
+
+## [2026-09-17] - Push triggers: storage node offline and backup complete
+
+**What changed:**
+- Hub (`services/relay/internal/hub/hub.go`) gained a `SetPeerOfflineHook` callback that fires once a peer's last connection closes (guarded so a reconnect that already replaced the route does not fire). It runs outside the hub lock because the hook touches the database.
+- `main.go` installs the hook and notifies the account (`CategoryDeviceOffline`) only for **storage nodes** — client apps reconnect and background constantly, so alerting on them would be noise.
+- New migration `025_sync_notices` and `Service.AlertSyncComplete`: when a shard ack leaves every shard of a file version `NODE_STORED`, the account is notified once per version (claimed via `INSERT ... ON CONFLICT DO NOTHING`). Wired into `handleShardAckVerified` (`ws.go`).
+
+**Why:** Complete the Phase 3 push triggers listed in `docs/mobile-redesign-and-parity-plan.md`; previously only the conflict trigger was wired.
+
+**Impact:** `services/relay` (`internal/hub`, `internal/push`, `internal/handler/ws.go`, `main.go`, migration 025). Additive; no behavior change when no push tokens are registered.
+
+**Follow-ups:** Web browser push remains optional and unimplemented. Real delivery still needs `EXPO_PUBLIC_EAS_PROJECT_ID`, relay `EXPO_PUSH_ACCESS_TOKEN`, and APNs/FCM credentials.
+
+## [2026-09-17] - Push notifications: relay backend + mobile registration (Phase 3)
+
+**What changed:**
+- New `services/relay/internal/push` package: a `Sender` interface, an `ExpoSender` (batched Expo push API, optional access token), and a `Service` that resolves recipients by per-category opt-out (`NotifyAccount`) and announces conflicts (`AlertConflicts`) using a single `INSERT ... ON CONFLICT DO NOTHING ... RETURNING` claim so concurrent applies cannot double-notify.
+- Migration `024_push_notifications`: `push_tokens` (per-device token, platform, per-category opt-outs) and `conflict_notices` (one alert per account/file).
+- `POST /devices/push-token` and `DELETE /devices/push-token` handlers, scoped to the authenticated device so a device can only register its own token.
+- Trigger: `HandleEventBatch` schedules `AlertConflicts` (deferred, off the request path) after any batch that can flag a conflict; both resolution paths (REST `ResolveConflict` and the `CONFLICT_RESOLVED` event) clear the notice so a later conflict alerts again. Notifications carry generic copy only — file names are encrypted (ADR-0001).
+- Config: `ExpoPushAccessToken` (`EXPO_PUSH_ACCESS_TOKEN`).
+- Mobile: added `expo-notifications` (plugin + `POST_NOTIFICATIONS` permission) and `src/notifications.ts`; `useNodusApp` registers the token on session and on preference change, mirrors the category prefs to the relay, removes the token on sign-out, and opens the Activity tab on tap via a typed `navigationRef`. New `relayRegisterPushToken`/`relayDeletePushToken`.
+
+**Why:** The push half of Phase 3 of `docs/mobile-redesign-and-parity-plan.md`.
+
+**Impact:** `services/relay` (new `internal/push`, handlers, routes, config, migration 024, `sync.go` trigger), `apps/mobile` (`notifications.ts`, `relay.ts`, `useNodusApp.ts`, `App.tsx`, `app.json`). The mobile change needs a fresh CNG dev build.
+
+**Follow-ups:** The device-offline and sync-complete triggers are not wired yet (the notifier and opt-outs already exist for them). Web browser push is optional and not implemented. Real delivery requires external setup: `EXPO_PUBLIC_EAS_PROJECT_ID`, relay `EXPO_PUSH_ACCESS_TOKEN`, and APNs/FCM credentials.
+
+## [2026-09-17] - Conflict resolution: choose which version to keep (Phase 3, conflict choice)
+
+**What changed:**
+- ADR-0003 addendum (`docs/decisions/0003-conflict-resolution-ux.md`): `files.preferred_version` records the version chosen at resolution; clients treat `preferred_version ?? newest` as current; resolution stays an acknowledgement and deletes nothing.
+- `packages/protocol`: `ConflictResolvedPayloadSchema` gains an optional `keep_version` (positive int); JSON schemas regenerated and payload-validation tests added.
+- Relay: new migration `023_file_preferred_version`; `ResolveConflict` accepts an optional body `{ "keep_version": N }`, validates the version belongs to the caller's file, sets `files.preferred_version`, and emits `CONFLICT_RESOLVED` with `keep_version` (both the REST and WebSocket event paths). `GET /files` returns `preferred_version`. Integration tests cover recording the choice and rejecting an unknown version.
+- `packages/sdk`: `RelayFile`/`CatalogEntry` carry `preferred_version`; `toCatalogEntry` treats the preferred version as current (falling back to the newest); `conflictResolvedEvent(..., keepVersion?)`; catalog tests added.
+- Web conflicts inbox and mobile Conflicts screen now offer **Keep vX / Keep vY / Keep both**; mobile download uses the preferred version.
+
+**Why:** Phase 3 of `docs/mobile-redesign-and-parity-plan.md` — the design's conflict choice had no representation; resolving only cleared the flagged status, so the newest version always stayed current and the user's intent was lost.
+
+**Impact:** `packages/protocol`, `packages/sdk`, `services/relay` (handler + migration 023), `apps/web`, `apps/mobile`. Additive and non-destructive: no version rows or shards are removed, so a choice is reversible.
+
+**Follow-ups:** Push notifications, the other half of Phase 3, are not implemented — they need Expo/EAS + APNs/FCM credentials and a trigger hook in the relay's event-apply path. The Rust storage node needs no change for this design; a relay rebuilt purely from node snapshots would not recover `preferred_version` (versions themselves survive), tracked in the ADR.
+
+## [2026-09-17] - Mobile redesign Phase 2: activity log, bulk actions, account security
+
+**What changed:**
+- New SQLite `transfer_log` store (`apps/mobile/src/store/transfer-log.ts`, migration 5 in `store/db.ts`): device-local terminal outcomes, capped at 200 rows. `useNodusApp` gains `activity`, `loadActivity`, `clearActivity`, and a best-effort `logActivity` wired into upload, download, rename, move, single/bulk delete, restore, purge and conflict resolution.
+- The Activity screen is now real: live upload progress (bytes + shards) from a new `uploadProgress` state, a `pendingTransfers` queue-depth counter (polled from the shared `TransferManager`, which exposes no change events), the filter chips (All/Uploads/Downloads/Conflicts/Errors), the sync-history list, pull-to-refresh and a confirmed Clear.
+- New runtime actions: `moveFileToFolder`, bulk `moveFilesTo`, bulk `deleteFiles`, `changePassword`, `logoutAll`, `unpairTrustedNode`, `setNotificationPref`; `store/trusted-nodes.ts` gains `removeTrustedNode`.
+- `relay.ts` gains `relayChangePassword`/`relayLogoutAll`, and `adapters.ts` now captures the rotated session token from `/auth/password` and `/auth/logout-all` (previously only login/register/recovery), so changing a password or signing out other devices no longer signs this device out.
+- `design/primitives.tsx`: `Screen` takes `refreshing`/`onRefresh` (RefreshControl); pull-to-refresh wired on Files, Devices, Activity, Security and Trash.
+- Files screen: multi-select mode with a bulk bar (move/download/delete), a row context menu (open/download/move/rename/select/delete), a folder context menu, a folder **properties** sheet, and a destination-folder picker for moves.
+- File Detail gains Share and Move (folder picker); Security gains a change-password form and "Sign out all other devices"; Settings gains a Notifications section (conflict / device-offline / sync-complete toggles persisted locally); Node Detail gains "Unpair on this device" for locally trusted nodes.
+
+**Why:** Phase 2 of `docs/mobile-redesign-and-parity-plan.md` — close the mobile/web parity gaps that are backable without backend changes.
+
+**Impact:** `apps/mobile` only. No relay schema change; `transfer_log` is a local SQLite migration applied on next launch. Existing actions keep their behavior apart from now recording activity.
+
+**Follow-ups:** Deferred beyond Phase 2 (listed in the plan): per-transfer cancel/retry and a transfer detail screen, folder move/zip, node set-primary and account-wide forget, camera QR scan, envelope table detail, manage-storage/cleanup, and file previews — each blocked on runtime or relay support. The activity filter/render logic is not unit-tested because the store needs SQLite, which is unavailable in the mobile vitest environment.
+
+## [2026-09-17] - Mobile redesign Phase 1: designed screens, signup, and web parity
+
+**What changed:**
+- Rebuilt every mobile screen in the design language on the four-tab IA: **Files** (list with search/sort/status-filter, breadcrumb, FAB action sheet, long-press context menu), **File Detail** (metadata, read-only version history, download/rename/delete), **Conflicts**, **Devices** (storage nodes + client devices), **Pairing** (one-time code, QR of the `nodus://pair` deep link, LAN discovery), **Node Detail** (rename, capacity, fingerprint, ping), **Device Detail** (rename, revoke), **Settings** (account, appearance, storage, security, deleted files, about), **Security** (recovery key card, envelope coverage, revocation list, export backup), **Trash**, and an **Activity** shell (filter chips + empty state).
+- Added mobile signup: `relayRegister` (`src/relay.ts`) and `signUp`/`beginSignUp`/`cancelSignUp`/`signupPhrase` (`src/runtime/useNodusApp.ts`). `AuthScreen` now has sign-in, create-account (24-word recovery-phrase enrollment with a "saved" confirmation), and recover modes, mirroring the web flow (ADR-0002); only the derived public key reaches the Relay.
+- New helpers: `src/files/view.ts` (pure file-row projections), `src/runtime/AppStatusLine.tsx`, and `TextField`/`Chip` design primitives.
+- Navigation: `src/navigation/TabsNavigator.tsx` now nests a stack per tab with detail routes; tab roots draw their own themed header, detail screens use the native header. `src/navigation/types.ts` gained the new routes.
+- Added dependency `react-native-qrcode-svg` (pure JS over the already-present `react-native-svg`).
+- Removed the legacy console UI: `screens/HomeScreen.tsx` (replaced by `PairingScreen`), `runtime/ScreenScroll.tsx`, `runtime/ui.tsx`, `runtime/styles.ts`.
+- Fixed a latent conflict-detection bug carried over from web: `fileStorageState` keyed off a `conflict_status` substring (`"CONFLICT"`) that the Relay never emits; it now uses the flagged `conflicted_versions` list.
+- Added `src/files/__tests__/view.test.ts` (8 cases).
+
+**Why:** Phase 1 of `docs/mobile-redesign-and-parity-plan.md`. The screens were console-style with numbered sections and, apart from the pairing hub, unreachable; account creation existed on web but not on mobile.
+
+**Impact:** `apps/mobile` only (screens, navigation, `files/view.ts`, `runtime/useNodusApp.ts`, `relay.ts`, design primitives, `AppStatusLine`). No networking, SQLite or crypto logic changed — signup reuses the shared SDK `/auth/register` path. The new dependency plus the Phase 0 native modules require a fresh CNG dev build.
+
+**Follow-ups:** Deferred to Phase 2: camera QR scan, node set-primary/forget, file Share/Move, pull-to-refresh, force-sync, bulk actions, and the transfer log/progress that fills the Activity tab. Screen rendering is verified by type-check, lint, unit tests and a Metro bundle only — there is no RN renderer in the mobile vitest setup.
+
+## [2026-09-17] - Mobile redesign Phase 0: design system + four-tab shell
+
+**What changed:**
+- Added mobile dependencies `@react-navigation/bottom-tabs`, `react-native-svg@15.15.4`, `expo-font@~57.0.4`, `@expo-google-fonts/inter` and `@expo-google-fonts/jetbrains-mono` (the `expo-font` config plugin was added to `app.json` by `expo install`). Only the six used font weights are imported (via per-weight subpaths) so the other ~12 files are not bundled.
+- New design system `apps/mobile/src/design/`: `tokens.ts` (light + dark palettes, status palette, spacing/radius/type ported from `nodus-design/src/index.css`), `theme.tsx` (`ThemeProvider` with light/dark/system persisted to the SQLite preferences store under key `theme`, `useTheme`/`useThemeMode`, `useAppFonts`), `icons.tsx` (SVG icon set including the status and transfer-path glyphs), `primitives.tsx` (`ThemedText`, `IconButton`, `Button`, `Card`, `SectionLabel`, `StatusBadge`, `PathIndicator`, `Toggle`, `Progress`, `SettingRow`, `EmptyState`, `ConfirmDialog`, `Sheet`, `Divider`, `Screen`, `ScreenHeader`) and an `index.ts` barrel.
+- New navigation `apps/mobile/src/navigation/`: `types.ts` param lists and `TabsNavigator.tsx` — bottom tabs **Files · Devices · Activity · Settings**, each owning a native stack, with header shortcuts to Conflicts, Pairing and Security.
+- New placeholder `apps/mobile/src/screens/ActivityScreen.tsx` (real log lands in Phase 2).
+- `apps/mobile/App.tsx` rebuilt as the root shell (`SafeAreaProvider` → `ThemeProvider` → `StatusBar` → navigation), bridging the design tokens into the React Navigation theme and holding the first frame until fonts load.
+- `apps/mobile/app.json`: `userInterfaceStyle` `light` → `automatic`.
+- Added `docs/mobile-redesign-and-parity-plan.md` tracking all four phases with completion checkboxes.
+
+**Why:** The signed-in app registered six screens in a stack whose initial route was the pairing hub, and no screen called `navigate`, so everything except pairing was unreachable — matching the "pair/unpair only" report. The design prototype defines the mobile information architecture and visual language; Phase 0 establishes the tokens, primitives and navigation before the screen redesign (Phase 1) and feature-parity work (Phases 2–3).
+
+**Impact:** `apps/mobile` (`App.tsx`, `app.json`, `package.json`, new `src/design/*`, `src/navigation/*`, `src/screens/ActivityScreen.tsx`), `docs/mobile-redesign-and-parity-plan.md`, `pnpm-lock.yaml`. The new native modules (`react-native-svg`, `expo-font`) require a fresh CNG dev-build rebuild. No networking, SQLite or crypto behavior changed.
+
+**Follow-ups:** Tab-root headers intentionally render action buttons only (no title) because the existing screens still draw their own in-scroll titles; Phase 1 replaces those titles with the themed headers and re-skins the screens (they remain the functional console UI for now). Verified: mobile `tsc --noEmit`, `eslint` clean, vitest 8/8, and `expo export --platform android` bundles (fonts confirm only six weights). Navigation itself is not covered by unit tests (no RN renderer in the mobile vitest setup).
+
 ## [2026-09-16] - Mobile navigator: split the single-screen console into screens
 
 **What changed:** The mobile app now uses `@react-navigation/native` + `native-stack` (with `react-native-screens` and `react-native-safe-area-context`, the Expo SDK 57 bundled versions). The 1,674-line `App.tsx` was split: all state/hooks/effects/callbacks moved verbatim into `apps/mobile/src/runtime/useNodusApp.ts`, exposed through a typed `AppContext` (`src/runtime/context.tsx`, `useApp()`); shared styles/UI moved to `src/runtime/styles.ts`, `src/runtime/ui.tsx`, and `src/runtime/ScreenScroll.tsx`. New screens under `src/screens/`: `AuthScreen` (sign-in + recovery), `HomeScreen` (pairing hub), `FilesScreen` (upload/download/folders), `DevicesScreen` (devices + trusted nodes), `ConflictsScreen`, `SecurityScreen`, `SettingsScreen` (preferences, deleted files, sign-out). `App.tsx` is now the navigation shell: signed-out users get Auth, signed-in users get the feature stack. Added a CNG config plugin (`apps/mobile/plugins/with-rnscreens-fragment-factory.js`) so `expo prebuild` installs react-native-screens' required Android `RNScreensFragmentFactory` reproducibly.
