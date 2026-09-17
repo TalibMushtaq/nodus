@@ -1,80 +1,185 @@
+// Settings tab: account, appearance, storage preferences, and links to the
+// Security and Trash screens. Only backed controls are shown — the web app
+// removed its cosmetic toggles and this mirrors that.
+
 import * as React from "react";
-import { Button, Text, View } from "react-native";
+import { View } from "react-native";
+import { useNavigation } from "@react-navigation/native";
+import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 
+import { AppStatusLine } from "../runtime/AppStatusLine";
 import { useApp } from "../runtime/context";
-import { ScreenScroll } from "../runtime/ScreenScroll";
-import { Section } from "../runtime/ui";
-import { styles } from "../runtime/styles";
+import {
+  Card,
+  Chip,
+  Divider,
+  Screen,
+  ScreenHeader,
+  SettingRow,
+  ThemedText,
+  Toggle,
+  useTheme,
+  useThemeMode,
+} from "../design";
+import type { SettingsStackParamList } from "../navigation/types";
 
-/** Device-local preferences, soft-deleted items, and sign-out. */
+type Nav = NativeStackNavigationProp<SettingsStackParamList, "Settings">;
+
+const SHARD_SIZES = [4, 8, 16];
+const THEME_MODES = ["light", "dark", "system"] as const;
+
 export function SettingsScreen() {
-  const {
-    authed,
-    busy,
-    shardSizeBytes,
-    chooseShardSize,
-    loadTombstones,
-    tombstones,
-    tombstoneNames,
-    restoreTombstone,
-    purgeTombstone,
-    signOut,
-    wsState,
-  } = useApp();
+  const app = useApp();
+  const theme = useTheme();
+  const { mode, setMode } = useThemeMode();
+  const navigation = useNavigation<Nav>();
 
   return (
-    <ScreenScroll title="Settings">
-      <Section title="10 · Settings">
-        <Text style={styles.hint}>
-          Shard size: {Math.round(shardSizeBytes / (1024 * 1024))} MB (applies to new uploads)
-        </Text>
-        <View style={styles.buttonRow}>
-          {[4, 8, 16].map((mb) => (
-            <Button
-              key={mb}
-              title={shardSizeBytes === mb * 1024 * 1024 ? `${mb} MB ✓` : `${mb} MB`}
-              onPress={() => chooseShardSize(mb * 1024 * 1024)}
-              disabled={busy !== null}
+    <View style={{ flex: 1 }}>
+      <ScreenHeader title="Settings" />
+      <Screen>
+        <AppStatusLine />
+
+        <Section title="Account">
+          <Card>
+            <SettingRow label="Email" detail={app.email || "not signed in"} />
+            <Divider />
+            <SettingRow
+              label="Sign out"
+              right={<ThemedText variant="caption" tone="muted">›</ThemedText>}
+              onPress={() => void app.signOut()}
             />
-          ))}
-        </View>
-      </Section>
+          </Card>
+        </Section>
 
-      <Section title="9 · Deleted files">
-        <Button
-          title="Load deleted"
-          onPress={() => void loadTombstones()}
-          disabled={!authed || busy !== null}
-        />
-        {tombstones.length === 0 && <Text style={styles.hint}>Nothing soft-deleted.</Text>}
-        {tombstones.map((t) => (
-          <View key={`${t.entity_type}:${t.entity_id}`} style={styles.radioRow}>
-            <Text style={styles.hint}>
-              {tombstoneNames[t.entity_id] ?? `${t.entity_id.slice(0, 12)}…`} · {t.entity_type} ·
-              purge after {t.purge_after.slice(0, 10)}
-              {t.purge_requested_at ? " · purging" : ""}
-            </Text>
-            <View style={styles.buttonRow}>
-              <Button
-                title={busy === `restoring-${t.entity_id}` ? "Restoring…" : "Restore"}
-                onPress={() => void restoreTombstone(t)}
-                disabled={busy !== null}
-              />
-              <Button
-                title={busy === `purging-${t.entity_id}` ? "Deleting…" : "Delete"}
-                onPress={() => purgeTombstone(t)}
-                disabled={busy !== null}
-              />
+        <Section title="Appearance">
+          <Card>
+            <View
+              style={{
+                flexDirection: "row",
+                gap: theme.spacing.sm,
+                padding: theme.spacing.md,
+              }}
+            >
+              {THEME_MODES.map((m) => (
+                <Chip
+                  key={m}
+                  label={m[0].toUpperCase() + m.slice(1)}
+                  active={mode === m}
+                  onPress={() => setMode(m)}
+                />
+              ))}
             </View>
-          </View>
-        ))}
-      </Section>
+          </Card>
+        </Section>
 
-      <Section title="Account">
-        <Text style={styles.hint}>Relay socket: {wsState}</Text>
-        <View style={styles.spacer} />
-        <Button title="Sign out" onPress={() => void signOut()} disabled={busy !== null} />
-      </Section>
-    </ScreenScroll>
+        <Section title="Storage node">
+          <Card>
+            <View style={{ padding: theme.spacing.md, gap: theme.spacing.sm }}>
+              <ThemedText variant="caption" tone="muted">
+                Shard size for new uploads
+              </ThemedText>
+              <View style={{ flexDirection: "row", gap: theme.spacing.sm }}>
+                {SHARD_SIZES.map((mb) => (
+                  <Chip
+                    key={mb}
+                    label={`${mb} MB`}
+                    active={app.shardSizeBytes === mb * 1024 * 1024}
+                    onPress={() => app.chooseShardSize(mb * 1024 * 1024)}
+                  />
+                ))}
+              </View>
+            </View>
+          </Card>
+        </Section>
+
+        <Section title="Security">
+          <Card>
+            <SettingRow
+              label="Recovery key"
+              right={<ThemedText variant="caption" tone="muted">›</ThemedText>}
+              onPress={() => navigation.navigate("Security")}
+            />
+            <Divider />
+            <SettingRow
+              label="Device revocation"
+              detail="Revoke access from the Devices tab"
+            />
+          </Card>
+        </Section>
+
+        <Section title="Storage & cleanup">
+          <Card>
+            <SettingRow
+              label="Deleted files"
+              detail="Restore or permanently delete soft-deleted items"
+              right={<ThemedText variant="caption" tone="muted">›</ThemedText>}
+              onPress={() => navigation.navigate("Trash")}
+            />
+            <Divider />
+            <SettingRow label="Tombstone retention" detail="90 days (policy)" />
+          </Card>
+        </Section>
+
+        <Section title="Notifications">
+          <Card>
+            <SettingRow
+              label="Conflict alerts"
+              right={
+                <Toggle
+                  value={app.notificationPrefs.conflicts}
+                  onChange={(v) => app.setNotificationPref("conflicts", v)}
+                />
+              }
+            />
+            <Divider />
+            <SettingRow
+              label="Device offline alerts"
+              right={
+                <Toggle
+                  value={app.notificationPrefs.deviceOffline}
+                  onChange={(v) => app.setNotificationPref("deviceOffline", v)}
+                />
+              }
+            />
+            <Divider />
+            <SettingRow
+              label="Sync complete alerts"
+              right={
+                <Toggle
+                  value={app.notificationPrefs.syncComplete}
+                  onChange={(v) => app.setNotificationPref("syncComplete", v)}
+                />
+              }
+            />
+          </Card>
+          <ThemedText variant="caption" tone="muted" style={{ marginTop: theme.spacing.sm }}>
+            Saved on this device. Delivery uses the relay push service once it is available.
+          </ThemedText>
+        </Section>
+
+        <Section title="About">
+          <Card>
+            <SettingRow label="App version" detail="1.0.0" />
+            <Divider />
+            <SettingRow label="Protocol version" detail="nodus-proto/3" />
+          </Card>
+        </Section>
+
+        <View style={{ height: theme.spacing.xl }} />
+      </Screen>
+    </View>
+  );
+}
+
+function Section({ title, children }: { title: string; children: React.ReactNode }) {
+  const theme = useTheme();
+  return (
+    <View style={{ marginBottom: theme.spacing.xl }}>
+      <ThemedText variant="sectionLabel" tone="muted" style={{ marginBottom: theme.spacing.sm }}>
+        {title}
+      </ThemedText>
+      {children}
+    </View>
   );
 }

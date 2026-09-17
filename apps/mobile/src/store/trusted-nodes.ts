@@ -37,3 +37,12 @@ export async function addTrustedNode(node: TrustedNode): Promise<void> {
     node.paired_at,
   );
 }
+
+/**
+ * Drop this device's local trust for a node (unpair). This is local-only: it
+ * removes the LAN fast-path entry, not the node from the account.
+ */
+export async function removeTrustedNode(nodeId: string): Promise<void> {
+  const db = await getDb();
+  await db.runAsync("DELETE FROM trusted_nodes WHERE node_id = ?", nodeId);
+}

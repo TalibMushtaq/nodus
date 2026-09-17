@@ -5,7 +5,7 @@
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
-    "userInterfaceStyle": "light",
+    "userInterfaceStyle": "automatic",
     "scheme": "nodus",
     "ios": {
       "supportsTablet": true,
@@ -25,7 +25,8 @@
         "android.permission.ACCESS_NETWORK_STATE",
         "android.permission.ACCESS_WIFI_STATE",
         "android.permission.CHANGE_WIFI_MULTICAST_STATE",
-        "android.permission.NEARBY_WIFI_DEVICES"
+        "android.permission.NEARBY_WIFI_DEVICES",
+        "android.permission.POST_NOTIFICATIONS"
       ],
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
@@ -50,7 +51,9 @@
             "minSdkVersion": 24
           }
         }
-      ]
+      ],
+      "expo-font",
+      "expo-notifications"
     ]
   }
 }

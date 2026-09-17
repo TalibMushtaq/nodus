@@ -96,6 +96,23 @@ const MIGRATIONS: string[] = [
       created_at TEXT NOT NULL
     );
   `,
+
+  // Migration 5: the device-local activity log that backs the Activity tab.
+  // The Relay has no account-wide activity endpoint, so (as on web) this is
+  // per-device history of terminal outcomes.
+  `
+    CREATE TABLE IF NOT EXISTS transfer_log (
+      id         TEXT PRIMARY KEY,
+      kind       TEXT NOT NULL,
+      file_id    TEXT,
+      file_name  TEXT,
+      detail     TEXT,
+      path       TEXT,
+      outcome    TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_transfer_log_created ON transfer_log(created_at);
+  `,
 ];
 
 let dbPromise: Promise<SQLite.SQLiteDatabase> | null = null;

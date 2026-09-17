@@ -50,6 +50,7 @@ import {
 import { discoverNodes, probeHost, type LanCandidate } from "../discovery";
 import {
   getSessionToken,
+  relayChangePassword,
   relayCreatePairingCode,
   relayCreatePairingSession,
   relayDevices,
@@ -59,9 +60,11 @@ import {
   relayFolders,
   relayLogin,
   relayLogout,
+  relayLogoutAll,
   relayNodes,
   relayPingDevice,
   relayPingNode,
+  relayRegister,
   relayRegisterDevice,
   relayPurgeTombstone,
   relayResolveConflict,
@@ -99,8 +102,48 @@ import { sqliteRecoveryStore } from "../recovery/store";
 import { registerBackgroundSync } from "../background/sync";
 import { saveAndShare } from "../download/save";
 import { loadOrCreateDevice, loadOrCreateEncryptionIdentity } from "../storage";
+import {
+  configureNotificationHandler,
+  syncPushRegistration,
+  unregisterPush,
+} from "../notifications";
 import { getPreference, setPreference } from "../store/preferences";
-import { addTrustedNode, getTrustedNodes, type TrustedNode } from "../store/trusted-nodes";
+import {
+  addTrustedNode,
+  getTrustedNodes,
+  removeTrustedNode,
+  type TrustedNode,
+} from "../store/trusted-nodes";
+import {
+  clearTransfers,
+  listTransfers,
+  logTransfer,
+  type TransferLogEntry,
+  type TransferLogKind,
+} from "../store/transfer-log";
+
+/** Local notification toggles; wired to real push in the backend phase. */
+export interface NotificationPrefs {
+  conflicts: boolean;
+  deviceOffline: boolean;
+  syncComplete: boolean;
+}
+
+const NOTIF_PREF_KEYS: Record<keyof NotificationPrefs, string> = {
+  conflicts: "notif.conflicts",
+  deviceOffline: "notif.deviceOffline",
+  syncComplete: "notif.syncComplete",
+};
+
+/** Structured progress for the in-flight upload, so Activity can show bytes. */
+export interface UploadProgress {
+  fileName: string;
+  phase: string;
+  completedBytes: number;
+  totalBytes: number;
+  completedShards: number;
+  totalShards: number;
+}
 
 export function useNodusApp() {
   // ── device identity (created on first launch, key output of this app) ────
@@ -147,6 +190,7 @@ export function useNodusApp() {
 
   // ── Upload ────────────────────────────────────────────────────────────────
   const [uploadStatus, setUploadStatus] = React.useState<string | null>(null);
+  const [uploadProgress, setUploadProgress] = React.useState<UploadProgress | null>(null);
   const [lastPath, setLastPath] = React.useState<TransferPath | null>(null);
   const [transferManager, setTransferManager] = React.useState<MobileTransferManager | null>(null);
 
@@ -171,8 +215,60 @@ export function useNodusApp() {
   // ── Settings ──────────────────────────────────────────────────────────────
   const [shardSizeBytes, setShardSizeBytes] = React.useState<number>(SHARD_SIZE_BYTES);
 
+  // ── Activity log (device-local; the Relay has no account-wide feed) ───────
+  const [activity, setActivity] = React.useState<TransferLogEntry[]>([]);
+
+  // ── Notification preferences (local until the push backend lands) ────────
+  const [notificationPrefs, setNotificationPrefsState] = React.useState<NotificationPrefs>({
+    conflicts: true,
+    deviceOffline: true,
+    syncComplete: true,
+  });
+
+  // ── Live transfer depth (queued + in-flight shards), for the Activity tab ─
+  const [pendingTransfers, setPendingTransfers] = React.useState(0);
+
+  /** Append an action to the device-local log (and the in-memory feed). */
+  const logActivity = React.useCallback(
+    async (entry: {
+      kind: TransferLogKind;
+      fileId?: string | null;
+      fileName?: string | null;
+      detail?: string | null;
+      path?: string | null;
+      outcome: TransferLogEntry["outcome"];
+    }) => {
+      try {
+        const stored = await logTransfer({
+          kind: entry.kind,
+          fileId: entry.fileId ?? null,
+          fileName: entry.fileName ?? null,
+          detail: entry.detail ?? null,
+          path: entry.path ?? null,
+          outcome: entry.outcome,
+        });
+        setActivity((prev) => [stored, ...prev].slice(0, 200));
+      } catch {
+        // Best-effort: a failed log write must never fail the action itself.
+      }
+    },
+    [],
+  );
+
+  const loadActivity = React.useCallback(async () => {
+    setActivity(await listTransfers());
+  }, []);
+
+  const clearActivity = React.useCallback(async () => {
+    await clearTransfers();
+    setActivity([]);
+  }, []);
+
   // ── Recovery (ADR-0002) ───────────────────────────────────────────────────
   const [recoveryPhraseInput, setRecoveryPhraseInput] = React.useState("");
+  // Registration (Phase 1 parity): the phrase is generated locally, shown once
+  // for the user to save, and only its derived public key is sent to the Relay.
+  const [signupPhrase, setSignupPhrase] = React.useState<string | null>(null);
 
   // ── Security: key-envelope coverage ───────────────────────────────────────
   const [envelopeSummary, setEnvelopeSummary] = React.useState<EnvelopeSummary[]>([]);
@@ -189,12 +285,25 @@ export function useNodusApp() {
 
   React.useEffect(() => {
     void (async () => {
+      // Foreground notification presentation must be configured before any
+      // notification can arrive, so set it as early as possible.
+      configureNotificationHandler();
       setDevice(await loadOrCreateDevice());
       setEncryption(await loadOrCreateEncryptionIdentity());
       setTrusted(await getTrustedNodes());
       // Restore the shard-size preference (falls back to the 8 MiB default).
       const storedShardSize = await getPreference("shardSizeBytes");
       if (storedShardSize) setShardSizeBytes(Number(storedShardSize) || SHARD_SIZE_BYTES);
+      // Notification toggles default on; only a stored "false" disables one.
+      const notifEntries = await Promise.all(
+        (Object.keys(NOTIF_PREF_KEYS) as (keyof NotificationPrefs)[]).map(
+          async (key) =>
+            [key, (await getPreference(NOTIF_PREF_KEYS[key])) !== "false"] as const,
+        ),
+      );
+      setNotificationPrefsState(Object.fromEntries(notifEntries) as unknown as NotificationPrefs);
+      // Restore the device-local activity feed.
+      setActivity(await listTransfers());
       // A stored session token restores the signed-in state across launches.
       if (await getSessionToken()) {
         setSession(await relaySession());
@@ -278,6 +387,41 @@ export function useNodusApp() {
     }
   }, [wsState, transferManager]);
 
+  // Surface transfer depth for the Activity tab. The shared manager exposes no
+  // change events, so poll cheaply and only re-render when the count changes.
+  React.useEffect(() => {
+    const read = () =>
+      transferManager === null
+        ? 0
+        : transferManager.manager.activeCount +
+          transferManager.manager.queuedCount +
+          transferManager.localQueue.size;
+    const tick = () =>
+      setPendingTransfers((prev) => {
+        const next = read();
+        return next === prev ? prev : next;
+      });
+    // Defer the first read out of the effect body so it is not a synchronous
+    // setState (which the lint rules correctly flag as a cascading render).
+    const initial = setTimeout(tick, 0);
+    const timer = transferManager ? setInterval(tick, 3000) : undefined;
+    return () => {
+      clearTimeout(initial);
+      if (timer) clearInterval(timer);
+    };
+  }, [transferManager]);
+
+  // Register/refresh push delivery whenever the session or the category
+  // preferences change. Best-effort (see notifications.ts).
+  React.useEffect(() => {
+    if (!session) return;
+    void syncPushRegistration({
+      conflicts: notificationPrefs.conflicts,
+      deviceOffline: notificationPrefs.deviceOffline,
+      syncComplete: notificationPrefs.syncComplete,
+    });
+  }, [session, notificationPrefs]);
+
   const signIn = React.useCallback(async () => {
     setBusy("signing-in");
     setError(null);
@@ -296,6 +440,9 @@ export function useNodusApp() {
     setBusy("signing-out");
     setError(null);
     try {
+      // Remove the push token first: it needs the still-valid session, and a
+      // signed-out device must stop receiving account notifications.
+      await unregisterPush();
       // Revokes the server session and clears the keychain token via the SDK
       // adapter; the WS effect then tears the socket down.
       await relayLogout();
@@ -311,6 +458,69 @@ export function useNodusApp() {
     setShardSizeBytes(bytes);
     // Persist so the choice survives a restart; the uploader reads it per upload.
     void setPreference("shardSizeBytes", String(bytes));
+  }, []);
+
+  const setNotificationPref = React.useCallback(
+    (key: keyof NotificationPrefs, value: boolean) => {
+      setNotificationPrefsState((prev) => ({ ...prev, [key]: value }));
+      // Persisted as "true"/"false"; the mount effect reads them back.
+      void setPreference(NOTIF_PREF_KEYS[key], value ? "true" : "false");
+    },
+    [],
+  );
+
+  // Rotate the password. The Relay rotates the session and the adapter stores
+  // the fresh token, so this device stays signed in; other sessions are left
+  // alone (use logoutAll for that). Returns success so the form can reset.
+  const changePassword = React.useCallback(
+    async (currentPassword: string, newPassword: string): Promise<boolean> => {
+      setBusy("changing-password");
+      setError(null);
+      setNotice(null);
+      try {
+        setSession(await relayChangePassword(currentPassword, newPassword));
+        setNotice("Password changed.");
+        return true;
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+        return false;
+      } finally {
+        setBusy(null);
+      }
+    },
+    [],
+  );
+
+  // Revoke every other session; this device's session is rotated and kept.
+  const logoutAll = React.useCallback(async () => {
+    setBusy("signing-out-others");
+    setError(null);
+    setNotice(null);
+    try {
+      setSession(await relayLogoutAll());
+      setNotice("Signed out all other devices.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(null);
+    }
+  }, []);
+
+  // Drop local LAN trust for a node (unpair). Local-only: the account still
+  // knows the node, so it can be re-paired without a new bootstrap code.
+  const unpairTrustedNode = React.useCallback(async (nodeId: string) => {
+    setBusy(`unpairing-${nodeId}`);
+    setError(null);
+    setNotice(null);
+    try {
+      await removeTrustedNode(nodeId);
+      setTrusted(await getTrustedNodes());
+      setNotice("Node unpaired on this device.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(null);
+    }
   }, []);
 
   // Recover a lost device from the phrase: prove it to the Relay, register this
@@ -360,6 +570,56 @@ export function useNodusApp() {
       setBusy(null);
     }
   }, [device, email, recoveryPhraseInput, encryption]);
+
+  // Registration (Phase 1 parity with web). The phrase is generated locally so
+  // the UI can show all 24 words before the account exists; only its derived
+  // Ed25519 public key is sent to the Relay.
+  const beginSignUp = React.useCallback(() => {
+    setError(null);
+    setNotice(null);
+    setSignupPhrase(mobileRecoveryClient().createPhrase());
+  }, []);
+
+  const cancelSignUp = React.useCallback(() => setSignupPhrase(null), []);
+
+  const signUp = React.useCallback(async () => {
+    if (!device) {
+      setError("device identity is not ready");
+      return;
+    }
+    if (!email.trim() || !password) {
+      setError("Enter an email and password to create an account.");
+      return;
+    }
+    if (!signupPhrase) {
+      setError("Generate your recovery phrase first.");
+      return;
+    }
+    setBusy("creating-account");
+    setError(null);
+    setNotice(null);
+    try {
+      const client = mobileRecoveryClient();
+      const recoveryPublicKey = client.publicKey(signupPhrase);
+      const created = await relayRegister(
+        email,
+        password,
+        device,
+        recoveryPublicKey,
+        encryption?.public_key,
+      );
+      // Persist the phrase before leaving the enrollment step so it stays
+      // revealable on Security, matching the web registration flow.
+      await client.save(created.account_id, signupPhrase);
+      setSession(created);
+      setSignupPhrase(null);
+      setNotice("Account created. Keep your recovery phrase somewhere safe.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(null);
+    }
+  }, [device, email, password, signupPhrase, encryption]);
 
   const loadNodes = React.useCallback(async () => {
     if (!authed) return;
@@ -561,22 +821,39 @@ export function useNodusApp() {
   }, [authed, device]);
 
   const resolveConflict = React.useCallback(
-    async (fileId: string) => {
+    async (fileId: string, keepVersion?: number) => {
       if (!authed) return;
       setBusy(`resolving-${fileId}`);
       setError(null);
       setNotice(null);
       try {
-        await relayResolveConflict(fileId);
+        // `keepVersion` records the chosen side (ADR-0003 addendum); omitting
+        // it keeps the previous "acknowledge, newest stays current" behavior.
+        await relayResolveConflict(fileId, keepVersion);
         setNotice("Conflict resolved across your devices and nodes.");
+        await logActivity({
+          kind: "conflict",
+          fileId,
+          fileName: conflicts.find((c) => c.fileId === fileId)?.name ?? null,
+          detail: keepVersion !== undefined ? `kept v${keepVersion}` : null,
+          outcome: "complete",
+        });
         await loadConflicts();
       } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
+        const message = err instanceof Error ? err.message : String(err);
+        setError(message);
+        await logActivity({
+          kind: "conflict",
+          fileId,
+          fileName: conflicts.find((c) => c.fileId === fileId)?.name ?? null,
+          detail: message,
+          outcome: "failed",
+        });
       } finally {
         setBusy(null);
       }
     },
-    [authed, loadConflicts],
+    [authed, loadConflicts, conflicts, logActivity],
   );
 
   const issueToken = React.useCallback(async () => {
@@ -615,9 +892,13 @@ export function useNodusApp() {
     setError(null);
     setNotice(null);
     setUploadStatus("measuring…");
+    setUploadProgress(null);
+    const fileName = asset.name ?? "upload.bin";
+    // Capture the path the last shard took so the activity row can show it.
+    let usedPath: TransferPath | null = null;
     try {
       const result = await uploadFile({
-        source: fileUriSource(asset.uri, asset.name ?? "upload.bin", asset.size ?? 0),
+        source: fileUriSource(asset.uri, fileName, asset.size ?? 0),
         originId: device.device_id,
         targetNode: target,
         sourceDevice: device.device_id,
@@ -627,23 +908,52 @@ export function useNodusApp() {
           wsRef.current!,
           device,
           transferManager,
-          setLastPath,
+          (path) => {
+            usedPath = path;
+            setLastPath(path);
+          },
           // Seal the upload to the account recovery key so the phrase can still
           // unlock it after every device is lost.
           session?.recovery_public_key,
         ),
-        onProgress: (event) =>
-          setUploadStatus(`${event.phase} · shard ${event.completedShards}/${event.totalShards}`),
+        onProgress: (event) => {
+          setUploadStatus(`${event.phase} · shard ${event.completedShards}/${event.totalShards}`);
+          setUploadProgress({
+            fileName: event.fileName,
+            phase: event.phase,
+            completedBytes: event.completedBytes,
+            totalBytes: event.totalBytes,
+            completedShards: event.completedShards,
+            totalShards: event.totalShards,
+          });
+        },
       });
       setUploadStatus(`done · ${result.shardCount} shard(s) · ${result.versionHash.slice(0, 12)}…`);
       setNotice("Upload complete.");
+      await logActivity({
+        kind: "upload",
+        fileId: result.fileId,
+        fileName,
+        detail: `${result.shardCount} shard(s)`,
+        path: usedPath,
+        outcome: "complete",
+      });
     } catch (err) {
       setUploadStatus(null);
-      setError(err instanceof Error ? err.message : String(err));
+      const message = err instanceof Error ? err.message : String(err);
+      setError(message);
+      await logActivity({
+        kind: "upload",
+        fileName,
+        detail: message,
+        path: usedPath,
+        outcome: "failed",
+      });
     } finally {
+      setUploadProgress(null);
       setBusy(null);
     }
-  }, [device, session, selectedNode, nodes, transferManager, shardSizeBytes, currentFolderId]);
+  }, [device, session, selectedNode, nodes, transferManager, shardSizeBytes, currentFolderId, logActivity]);
 
   const loadFiles = React.useCallback(async () => {
     if (!authed) return;
@@ -766,7 +1076,12 @@ export function useNodusApp() {
   const downloadOne = React.useCallback(
     async (file: RelayFile) => {
       if (!device) return;
-      const latest = [...file.versions].sort((a, b) => b.version_number - a.version_number)[0];
+      // Download the version the user chose to keep when resolving a conflict,
+      // if one was recorded; otherwise the newest (ADR-0003 addendum).
+      const preferredVersion = toCatalogEntry(file).latest_version_number;
+      const latest =
+        file.versions.find((v) => v.version_number === preferredVersion) ??
+        [...file.versions].sort((a, b) => b.version_number - a.version_number)[0];
       if (!latest) {
         setError("file has no versions");
         return;
@@ -789,14 +1104,29 @@ export function useNodusApp() {
         await saveAndShare(result.data, name);
         setDownloadStatus(`downloaded ${name} (${result.data.length} bytes)`);
         setNotice("Download complete.");
+        await logActivity({
+          kind: "download",
+          fileId: file.file_id,
+          fileName: name,
+          detail: `${result.data.length} bytes`,
+          outcome: "complete",
+        });
       } catch (err) {
         setDownloadStatus(null);
-        setError(err instanceof Error ? err.message : String(err));
+        const message = err instanceof Error ? err.message : String(err);
+        setError(message);
+        await logActivity({
+          kind: "download",
+          fileId: file.file_id,
+          fileName: fileNames[file.file_id] ?? null,
+          detail: message,
+          outcome: "failed",
+        });
       } finally {
         setBusy(null);
       }
     },
-    [device],
+    [device, fileNames, logActivity],
   );
 
   const renameFile = React.useCallback(
@@ -811,33 +1141,68 @@ export function useNodusApp() {
         setFileNameInput("");
         await loadFiles();
         setNotice("File renamed.");
+        await logActivity({
+          kind: "rename",
+          fileId: file.file_id,
+          fileName: name,
+          detail: `renamed from ${fileNames[file.file_id] ?? "unknown"}`,
+          outcome: "complete",
+        });
       } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
+        const message = err instanceof Error ? err.message : String(err);
+        setError(message);
+        await logActivity({
+          kind: "rename",
+          fileId: file.file_id,
+          fileName: name,
+          detail: message,
+          outcome: "failed",
+        });
       } finally {
         setBusy(null);
       }
     },
-    [device, fileNameInput, loadFiles],
+    [device, fileNameInput, loadFiles, fileNames, logActivity],
   );
 
-  const moveFile = React.useCallback(
-    async (file: RelayFile) => {
+  const moveFileTo = React.useCallback(
+    async (file: RelayFile, folderId: string | null) => {
       if (!device) return;
       setBusy(`moving-file-${file.file_id}`);
       setError(null);
       setNotice(null);
       try {
-        // Move into the folder currently open in the browser.
-        await mobileFileMutations(wsRef.current!, device).move(file, currentFolderId);
+        await mobileFileMutations(wsRef.current!, device).move(file, folderId);
         await loadFiles();
         setNotice("File moved.");
+        await logActivity({
+          kind: "move",
+          fileId: file.file_id,
+          fileName: fileNames[file.file_id] ?? null,
+          detail: folderId ? `moved to ${folderNames[folderId] ?? "folder"}` : "moved to Root",
+          outcome: "complete",
+        });
       } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
+        const message = err instanceof Error ? err.message : String(err);
+        setError(message);
+        await logActivity({
+          kind: "move",
+          fileId: file.file_id,
+          fileName: fileNames[file.file_id] ?? null,
+          detail: message,
+          outcome: "failed",
+        });
       } finally {
         setBusy(null);
       }
     },
-    [device, currentFolderId, loadFiles],
+    [device, loadFiles, fileNames, folderNames, logActivity],
+  );
+
+  // Move into the folder currently open in the browser (list context menu).
+  const moveFile = React.useCallback(
+    (file: RelayFile) => moveFileTo(file, currentFolderId),
+    [moveFileTo, currentFolderId],
   );
 
   const deleteFile = React.useCallback(
@@ -857,8 +1222,22 @@ export function useNodusApp() {
                 await mobileFileMutations(wsRef.current!, device).remove(file.file_id);
                 await loadFiles();
                 setNotice("File deleted.");
+                await logActivity({
+                  kind: "delete",
+                  fileId: file.file_id,
+                  fileName: fileNames[file.file_id] ?? null,
+                  outcome: "complete",
+                });
               } catch (err) {
-                setError(err instanceof Error ? err.message : String(err));
+                const message = err instanceof Error ? err.message : String(err);
+                setError(message);
+                await logActivity({
+                  kind: "delete",
+                  fileId: file.file_id,
+                  fileName: fileNames[file.file_id] ?? null,
+                  detail: message,
+                  outcome: "failed",
+                });
               } finally {
                 setBusy(null);
               }
@@ -867,7 +1246,65 @@ export function useNodusApp() {
         },
       ]);
     },
-    [device, loadFiles],
+    [device, loadFiles, fileNames, logActivity],
+  );
+
+  /** Bulk soft-delete; the UI confirms once, so no per-file Alert here. */
+  const deleteFiles = React.useCallback(
+    async (targets: RelayFile[]) => {
+      if (!device || targets.length === 0) return;
+      setBusy("deleting-files");
+      setError(null);
+      setNotice(null);
+      try {
+        const mutations = mobileFileMutations(wsRef.current!, device);
+        for (const target of targets) await mutations.remove(target.file_id);
+        await loadFiles();
+        setNotice(`Deleted ${targets.length} file(s).`);
+        await logActivity({
+          kind: "delete",
+          detail: `${targets.length} selected file(s)`,
+          outcome: "complete",
+        });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        setError(message);
+        await logActivity({ kind: "delete", detail: message, outcome: "failed" });
+      } finally {
+        setBusy(null);
+      }
+    },
+    [device, loadFiles, logActivity],
+  );
+
+  /** Bulk move to one folder (null = root). */
+  const moveFilesTo = React.useCallback(
+    async (targets: RelayFile[], folderId: string | null) => {
+      if (!device || targets.length === 0) return;
+      setBusy("moving-files");
+      setError(null);
+      setNotice(null);
+      try {
+        const mutations = mobileFileMutations(wsRef.current!, device);
+        for (const target of targets) await mutations.move(target, folderId);
+        await loadFiles();
+        setNotice(`Moved ${targets.length} file(s).`);
+        await logActivity({
+          kind: "move",
+          detail: folderId
+            ? `moved ${targets.length} to ${folderNames[folderId] ?? "folder"}`
+            : `moved ${targets.length} to Root`,
+          outcome: "complete",
+        });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        setError(message);
+        await logActivity({ kind: "move", detail: message, outcome: "failed" });
+      } finally {
+        setBusy(null);
+      }
+    },
+    [device, loadFiles, folderNames, logActivity],
   );
 
   const loadTombstones = React.useCallback(async () => {
@@ -893,14 +1330,29 @@ export function useNodusApp() {
       try {
         await relayRestoreTombstone(item.entity_type, item.entity_id);
         setNotice("Restored across your nodes.");
+        await logActivity({
+          kind: "restore",
+          fileId: item.entity_id,
+          fileName: tombstoneNames[item.entity_id] ?? null,
+          detail: item.entity_type,
+          outcome: "complete",
+        });
         await loadTombstones();
       } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
+        const message = err instanceof Error ? err.message : String(err);
+        setError(message);
+        await logActivity({
+          kind: "restore",
+          fileId: item.entity_id,
+          fileName: tombstoneNames[item.entity_id] ?? null,
+          detail: message,
+          outcome: "failed",
+        });
       } finally {
         setBusy(null);
       }
     },
-    [loadTombstones],
+    [loadTombstones, tombstoneNames, logActivity],
   );
 
   const purgeTombstone = React.useCallback(
@@ -921,9 +1373,24 @@ export function useNodusApp() {
                 try {
                   await relayPurgeTombstone(item.entity_type, item.entity_id);
                   setNotice("Permanent delete requested.");
+                  await logActivity({
+                    kind: "purge",
+                    fileId: item.entity_id,
+                    fileName: tombstoneNames[item.entity_id] ?? null,
+                    detail: item.entity_type,
+                    outcome: "complete",
+                  });
                   await loadTombstones();
                 } catch (err) {
-                  setError(err instanceof Error ? err.message : String(err));
+                  const message = err instanceof Error ? err.message : String(err);
+                  setError(message);
+                  await logActivity({
+                    kind: "purge",
+                    fileId: item.entity_id,
+                    fileName: tombstoneNames[item.entity_id] ?? null,
+                    detail: message,
+                    outcome: "failed",
+                  });
                 } finally {
                   setBusy(null);
                 }
@@ -933,7 +1400,7 @@ export function useNodusApp() {
         ],
       );
     },
-    [loadTombstones],
+    [loadTombstones, tombstoneNames, logActivity],
   );
 
   const loadEnvelopes = React.useCallback(async () => {
@@ -1162,6 +1629,12 @@ export function useNodusApp() {
     recoverAccount,
     recoveryPhraseInput,
     setRecoveryPhraseInput,
+    signupPhrase,
+    beginSignUp,
+    cancelSignUp,
+    signUp,
+    changePassword,
+    logoutAll,
     // nodes + pairing
     nodes,
     selectedNode,
@@ -1191,9 +1664,11 @@ export function useNodusApp() {
     pairOnDevice,
     authenticateOnDevice,
     trusted,
+    unpairTrustedNode,
     // upload + download
     uploadPicked,
     uploadStatus,
+    uploadProgress,
     lastPath,
     loadFiles,
     files,
@@ -1202,7 +1677,10 @@ export function useNodusApp() {
     downloadOne,
     renameFile,
     moveFile,
+    moveFileToFolder: moveFileTo,
+    moveFilesTo,
     deleteFile,
+    deleteFiles,
     fileNameInput,
     setFileNameInput,
     downloadStatus,
@@ -1235,6 +1713,11 @@ export function useNodusApp() {
     conflicts,
     loadConflicts,
     resolveConflict,
+    // activity log (device-local)
+    activity,
+    loadActivity,
+    clearActivity,
+    pendingTransfers,
     // security
     envelopeSummary,
     loadEnvelopes,
@@ -1248,6 +1731,8 @@ export function useNodusApp() {
     // settings
     shardSizeBytes,
     chooseShardSize,
+    notificationPrefs,
+    setNotificationPref,
     // transient status
     error,
     notice,

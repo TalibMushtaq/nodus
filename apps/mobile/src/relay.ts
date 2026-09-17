@@ -73,6 +73,8 @@ export interface RelayFile {
   encrypted_name: string | null;
   created_at: string;
   updated_at: string;
+  /** ADR-0003 addendum: version chosen at conflict resolution, if any. */
+  preferred_version?: number | null;
   versions: RelayFileVersion[];
   locations: RelayFileLocation[];
 }
@@ -137,8 +139,80 @@ export async function relaySession(): Promise<SessionInfo | null> {
   return auth.fetchSession();
 }
 
+/**
+ * Create an account and return the freshly minted session. The native adapter
+ * captures the bearer token from `/auth/register`, exactly as it does for
+ * login, so the caller only needs the returned session. `recoveryPublicKey`
+ * enrolls the ADR-0002 recovery identity at account-creation time.
+ */
+export async function relayRegister(
+  email: string,
+  password: string,
+  device: StoredDeviceIdentity,
+  recoveryPublicKey?: string,
+  encryptionPublicKey?: string,
+): Promise<SessionInfo> {
+  const result = await auth.register(email, password, device, recoveryPublicKey, encryptionPublicKey);
+  if (!result.ok || !result.session) {
+    throw new Error(result.error ?? "account creation failed");
+  }
+  return result.session;
+}
+
+/**
+ * Change the account password. The Relay re-verifies the current password,
+ * replaces the hash and rotates the session; the native adapter captures the
+ * fresh token, so the returned session supersedes the previous one.
+ */
+export async function relayChangePassword(
+  currentPassword: string,
+  newPassword: string,
+): Promise<SessionInfo> {
+  const result = await auth.changePassword(currentPassword, newPassword);
+  if (!result.ok || !result.session) throw new Error(result.error ?? "password change failed");
+  return result.session;
+}
+
+/**
+ * Revoke every other session for the account, keeping (and rotating) this
+ * device's own session so the caller stays signed in.
+ */
+export async function relayLogoutAll(): Promise<SessionInfo> {
+  const result = await auth.logoutAll();
+  if (!result.ok || !result.session) throw new Error(result.error ?? "sign out all failed");
+  return result.session;
+}
+
 export async function relayLogout(): Promise<void> {
   await auth.logout();
+}
+
+/** Register (or refresh) this device's Expo push token and category prefs. */
+export async function relayRegisterPushToken(
+  token: string,
+  platform: string,
+  prefs: { conflicts: boolean; deviceOffline: boolean; syncComplete: boolean },
+): Promise<void> {
+  const res = await http.request("/devices/push-token", {
+    method: "POST",
+    body: {
+      token,
+      platform,
+      // The relay mirrors these so it can honour opt-outs at fan-out time.
+      prefs: {
+        conflicts: prefs.conflicts,
+        device_offline: prefs.deviceOffline,
+        sync_complete: prefs.syncComplete,
+      },
+    },
+  });
+  if (!res.ok) throw new Error(res.error ?? `push token registration failed: HTTP ${res.status}`);
+}
+
+/** Remove this device's push token (called on sign-out). */
+export async function relayDeletePushToken(): Promise<void> {
+  const res = await http.request("/devices/push-token", { method: "DELETE" });
+  if (!res.ok) throw new Error(res.error ?? `push token removal failed: HTTP ${res.status}`);
 }
 
 export async function relayNodes(): Promise<RelayNode[]> {
@@ -230,9 +304,18 @@ export async function relayFiles(): Promise<RelayFile[]> {
  * Resolve a file's conflicted copy over HTTP. Mobile has no browser session
  * cookie for the WebSocket event path, so the Relay exposes this REST endpoint;
  * it marks the file's flagged versions resolved and notifies connected nodes.
+ *
+ * `keepVersion` (ADR-0003 addendum) records which side to keep as the file's
+ * current version; omitting it keeps the pre-existing "newest wins" behavior.
  */
-export async function relayResolveConflict(fileId: string): Promise<{ status: string; resolved: number }> {
-  return post(`/files/${encodeURIComponent(fileId)}/conflicts/resolve`);
+export async function relayResolveConflict(
+  fileId: string,
+  keepVersion?: number,
+): Promise<{ status: string; resolved: number; preferred_version?: number }> {
+  return post(
+    `/files/${encodeURIComponent(fileId)}/conflicts/resolve`,
+    keepVersion === undefined ? undefined : { keep_version: keepVersion },
+  );
 }
 
 /** Per-node soft-delete/purge progress for one tombstone. */
