@@ -133,6 +133,18 @@ describe("validateEventPayload", () => {
   it("rejects a CONFLICT_RESOLVED payload missing file_id", () => {
     expect(validateEventPayload("CONFLICT_RESOLVED", {}).ok).toBe(false);
   });
+
+  it("accepts an optional keep_version on CONFLICT_RESOLVED", () => {
+    expect(validateEventPayload("CONFLICT_RESOLVED", { file_id: "f1", keep_version: 3 })).toEqual({
+      ok: true,
+    });
+  });
+
+  it("rejects a non-positive keep_version", () => {
+    expect(validateEventPayload("CONFLICT_RESOLVED", { file_id: "f1", keep_version: 0 }).ok).toBe(
+      false,
+    );
+  });
 });
 
 describe("toProtocolFileId mapping helper", () => {

@@ -177,6 +177,13 @@ export const FileShardManifestPayloadSchema = z.object({
  */
 export const ConflictResolvedPayloadSchema = z.object({
   file_id: z.string(),
+  /**
+   * ADR-0003 addendum: the version the user chose to keep. Optional and
+   * additive — an absent value means "no explicit choice", leaving the
+   * newest version as the file's current one. Recording the choice never
+   * removes version rows or shards.
+   */
+  keep_version: z.number().int().positive().optional(),
 });
 
 // ── Event payload union ────────────────────────────────────────────
