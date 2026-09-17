@@ -36,14 +36,14 @@ export function ConflictsClient() {
   const [actionError, setActionError] = useState<string | null>(null);
 
   const resolve = useCallback(
-    async (conflict: ConflictEntry) => {
+    async (conflict: ConflictEntry, keepVersion?: number) => {
       if (!device) return;
       setBusy(conflict.fileId);
       setActionError(null);
       try {
         const sequence = await nextOriginSequence(device.device_id);
         const ack = await sendEventBatch([
-          conflictResolvedEvent(device.device_id, sequence, conflict.fileId),
+          conflictResolvedEvent(device.device_id, sequence, conflict.fileId, keepVersion),
         ]);
         if (ack && ack.ok === false) {
           throw new Error(ack.reason ?? "unknown");
@@ -138,14 +138,45 @@ export function ConflictsClient() {
                 >
                   Open in Files
                 </Link>
-                <button
-                  type="button"
-                  onClick={() => void resolve(conflict)}
-                  disabled={busy === conflict.fileId}
-                  className="px-3 py-1.5 text-xs border border-border text-foreground hover:border-accent hover:text-accent transition-colors shrink-0 disabled:opacity-40"
-                >
-                  {busy === conflict.fileId ? "Resolving…" : "Resolve"}
-                </button>
+                {conflict.versions.length >= 2 ? (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => void resolve(conflict, conflict.versions[0])}
+                      disabled={busy === conflict.fileId}
+                      className="px-3 py-1.5 text-xs border border-border text-foreground hover:border-accent hover:text-accent transition-colors shrink-0 disabled:opacity-40"
+                    >
+                      Keep v{conflict.versions[0]}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        void resolve(conflict, conflict.versions[conflict.versions.length - 1])
+                      }
+                      disabled={busy === conflict.fileId}
+                      className="px-3 py-1.5 text-xs border border-border text-foreground hover:border-accent hover:text-accent transition-colors shrink-0 disabled:opacity-40"
+                    >
+                      Keep v{conflict.versions[conflict.versions.length - 1]}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void resolve(conflict)}
+                      disabled={busy === conflict.fileId}
+                      className="px-3 py-1.5 text-xs border border-border text-foreground hover:border-accent hover:text-accent transition-colors shrink-0 disabled:opacity-40"
+                    >
+                      {busy === conflict.fileId ? "Resolving…" : "Keep both"}
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => void resolve(conflict)}
+                    disabled={busy === conflict.fileId}
+                    className="px-3 py-1.5 text-xs border border-border text-foreground hover:border-accent hover:text-accent transition-colors shrink-0 disabled:opacity-40"
+                  >
+                    {busy === conflict.fileId ? "Resolving…" : "Resolve"}
+                  </button>
+                )}
               </div>
             ))}
           </div>

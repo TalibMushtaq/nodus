@@ -18,6 +18,7 @@ function entry(partial: Partial<CatalogEntry> = {}): CatalogEntry {
     encrypted_name: "enc",
     created_at: "2026-09-12T00:00:00Z",
     updated_at: "2026-09-12T00:00:00Z",
+    preferred_version: null,
     latest_version_number: 1,
     shard_count: 2,
     version_hash: "vh",
