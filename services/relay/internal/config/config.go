@@ -42,6 +42,15 @@ type Config struct {
 	// derived from it (with framing headroom), so raising this one value lets
 	// clients use larger shards. Default 8 MiB; env MAX_SHARD_BYTES_MB.
 	MaxShardBytes int64
+
+	// Push notifications (Phase 3). Optional Expo access token; when empty the
+	// sender still posts to Expo, which permits low-volume unauthenticated use.
+	ExpoPushAccessToken string
+
+	// Web Push (VAPID). Browser push is disabled unless both keys are set.
+	VAPIDPublicKey  string
+	VAPIDPrivateKey string
+	VAPIDSubject    string
 }
 
 // Load populates Config from environment variables with sensible defaults.
@@ -90,6 +99,11 @@ func Load() (*Config, error) {
 		trustProxy = true
 	}
 
+	expoPushAccessToken := getEnv("EXPO_PUSH_ACCESS_TOKEN", "")
+	vapidPublicKey := getEnv("VAPID_PUBLIC_KEY", "")
+	vapidPrivateKey := getEnv("VAPID_PRIVATE_KEY", "")
+	vapidSubject := getEnv("VAPID_SUBJECT", "mailto:admin@example.com")
+
 	cfg := &Config{
 		ListenAddr:           listenAddr,
 		DatabaseURL:          dbURL,
@@ -103,6 +117,10 @@ func Load() (*Config, error) {
 		BufferDir:            bufferDir,
 		BufferTTL:            time.Duration(bufferTTLHours) * time.Hour,
 		MaxShardBytes:        maxShardBytes,
+		ExpoPushAccessToken:  expoPushAccessToken,
+		VAPIDPublicKey:       vapidPublicKey,
+		VAPIDPrivateKey:      vapidPrivateKey,
+		VAPIDSubject:         vapidSubject,
 	}
 
 	return cfg, nil

@@ -13,6 +13,7 @@ import (
 	"github.com/TalibMushtaq/nodus/services/relay/internal/config"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/db"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/hub"
+	"github.com/TalibMushtaq/nodus/services/relay/internal/push"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/rdb"
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
@@ -494,6 +495,12 @@ func handleShardAckVerified(
 		}
 		log.Printf("[relay-buffer] shard verified and buffer released: %s (file: %s v%d shard: %d)",
 			*bufferID, ack.FileID, ack.VersionNumber, ack.ShardIndex)
+	}
+
+	// If that was the last missing shard, the version is now fully backed up.
+	// The check is idempotent (sync_notices), so it runs on every ack.
+	if svc := push.Default(); svc != nil {
+		svc.AlertSyncComplete(ctx, c.AccountID, ack.FileID, ack.VersionNumber)
 	}
 }
 

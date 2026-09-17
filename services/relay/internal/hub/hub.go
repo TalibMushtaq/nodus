@@ -69,6 +69,15 @@ type Hub struct {
 	// maxMessageSize caps an inbound WS frame; set from the Relay's configured
 	// shard size so larger shards can relay through.
 	maxMessageSize int64
+	// onPeerOffline, when set, fires once a node/device has no remaining
+	// connection. Called outside the hub lock because it may touch the database.
+	onPeerOffline func(accountID, peerID, kind string)
+}
+
+// SetPeerOfflineHook installs a callback invoked when a peer's last connection
+// closes. `kind` is "node" or "device". Must be called before traffic flows.
+func (h *Hub) SetPeerOfflineHook(fn func(accountID, peerID, kind string)) {
+	h.onPeerOffline = fn
 }
 
 // HubOption customizes a Hub at construction.
@@ -150,6 +159,8 @@ func (h *Hub) Run(ctx context.Context) {
 				client.ConnID, client.AccountID, client.NodeID, client.DeviceID)
 
 		case client := <-h.unregister:
+			nodeOffline := false
+			deviceOffline := false
 			h.mu.Lock()
 			if _, ok := h.clients[client.ConnID]; ok {
 				delete(h.clients, client.ConnID)
@@ -174,6 +185,7 @@ func (h *Hub) Run(ctx context.Context) {
 					if h.rdb != nil && h.byNode[client.NodeID] == nil {
 						_ = h.rdb.ClearPresence(ctx, client.NodeID)
 					}
+					nodeOffline = h.byNode[client.NodeID] == nil
 				}
 
 				if client.DeviceID != "" {
@@ -183,9 +195,20 @@ func (h *Hub) Run(ctx context.Context) {
 					if h.rdb != nil && h.byDevice[client.DeviceID] == nil {
 						_ = h.rdb.ClearPresence(ctx, client.DeviceID)
 					}
+					deviceOffline = h.byDevice[client.DeviceID] == nil
 				}
 			}
 			h.mu.Unlock()
+
+			// Fire outside the lock: the hook may query the database.
+			if h.onPeerOffline != nil {
+				if nodeOffline && client.NodeID != "" && client.AccountID != "" {
+					h.onPeerOffline(client.AccountID, client.NodeID, "node")
+				}
+				if deviceOffline && client.DeviceID != "" && client.AccountID != "" {
+					h.onPeerOffline(client.AccountID, client.DeviceID, "device")
+				}
+			}
 
 			log.Printf("[hub] client unregistered: conn=%s account=%s node=%s device=%s",
 				client.ConnID, client.AccountID, client.NodeID, client.DeviceID)

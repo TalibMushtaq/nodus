@@ -14,6 +14,7 @@ import (
 
 	"github.com/TalibMushtaq/nodus/services/relay/internal/db"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/hub"
+	"github.com/TalibMushtaq/nodus/services/relay/internal/push"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/rdb"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -517,6 +518,18 @@ func sendMissingEventsToNode(
 	}
 }
 
+// batchTouchesConflicts reports whether any event in the batch can create or
+// modify a file version, and therefore possibly flag a conflict.
+func batchTouchesConflicts(events []SyncEventItem) bool {
+	for _, item := range events {
+		switch item.Type {
+		case "FILE_VERSION_ADDED", "FILE_MODIFIED":
+			return true
+		}
+	}
+	return false
+}
+
 // HandleEventBatch applies an incoming batch of events idempotently with conflict detection.
 func HandleEventBatch(
 	ctx context.Context,
@@ -532,6 +545,17 @@ func HandleEventBatch(
 	if err := json.Unmarshal(env.Payload, &batch); err != nil {
 		log.Printf("[sync] invalid event_batch payload: %v", err)
 		return
+	}
+
+	// A batch that could have flagged a conflict schedules an account alert
+	// after the apply commits. It runs off the request path so a slow push
+	// service never blocks sync, and `AlertConflicts` dedupes per file.
+	if batchTouchesConflicts(batch.Events) {
+		defer func() {
+			if svc := push.Default(); svc != nil {
+				go svc.AlertConflicts(context.Background(), c.AccountID)
+			}
+		}()
 	}
 
 	// Phase 14 (Path C): a device-originated batch takes the locked,
@@ -1034,9 +1058,26 @@ func applySingleEventTx(
 		// Mark every flagged version of that file resolved so it leaves the
 		// inbox on all clients; the version rows (and shards) are retained.
 		var cData struct {
-			FileID string `json:"file_id"`
+			FileID      string `json:"file_id"`
+			KeepVersion *int   `json:"keep_version"`
 		}
 		if err := json.Unmarshal(item.Payload, &cData); err == nil && cData.FileID != "" {
+			// ADR-0003 addendum: record the chosen version, but only when it is
+			// actually a version of this account's file. The EXISTS clause keeps
+			// a device from pointing another account's file at a version it does
+			// not own.
+			if cData.KeepVersion != nil {
+				if _, err := tx.Exec(ctx, `
+					UPDATE files SET preferred_version = $1, updated_at = NOW()
+					WHERE file_id = $2 AND account_id = $3
+					  AND EXISTS (
+						SELECT 1 FROM file_versions fv
+						WHERE fv.file_id = files.file_id AND fv.version_number = $1
+					  )
+				`, *cData.KeepVersion, cData.FileID, accountID); err != nil {
+					return false
+				}
+			}
 			// Live `file_versions` is keyed by (file_id, version_number) and
 			// scoped through `files.account_id`; scope the update so a device
 			// cannot resolve another account's file.
@@ -1048,6 +1089,13 @@ func applySingleEventTx(
 					WHERE f.file_id = file_versions.file_id AND f.account_id = $2
 				  )
 			`, cData.FileID, accountID); err != nil {
+				return false
+			}
+			// Clearing the notice lets a later conflict on the same file alert
+			// again instead of being suppressed as already-seen.
+			if _, err := tx.Exec(ctx,
+				`DELETE FROM conflict_notices WHERE account_id = $1 AND file_id = $2`,
+				accountID, cData.FileID); err != nil {
 				return false
 			}
 		}

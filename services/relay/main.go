@@ -20,6 +20,7 @@ import (
 	"github.com/TalibMushtaq/nodus/services/relay/internal/db"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/handler"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/hub"
+	"github.com/TalibMushtaq/nodus/services/relay/internal/push"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/rdb"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/tombstone"
 )
@@ -178,6 +179,34 @@ func main() {
 		sessionStore = pgStore
 		nodeStore = pgStore
 
+		// Push notifications (Phase 3): recipient resolution lives here in the
+		// relay, delivery is Expo (mobile) and VAPID Web Push (web). The
+		// event-apply path reaches the service through the package default.
+		var webSender push.WebSender
+		if cfg.VAPIDPublicKey != "" && cfg.VAPIDPrivateKey != "" {
+			webSender = push.NewVapidWebSender(cfg.VAPIDPublicKey, cfg.VAPIDPrivateKey, cfg.VAPIDSubject)
+		}
+		push.SetDefault(push.NewService(pool, push.NewExpoSender(cfg.ExpoPushAccessToken), webSender))
+
+		// A storage node losing its last connection is the meaningful
+		// "device offline" signal; client apps reconnect constantly (and
+		// background), so only nodes alert.
+		wsHub.SetPeerOfflineHook(func(accountID, _ string, kind string) {
+			if kind != "node" {
+				return
+			}
+			if svc := push.Default(); svc != nil {
+				go svc.NotifyAccount(
+					context.Background(),
+					accountID,
+					push.CategoryDeviceOffline,
+					"Storage node offline",
+					"A storage node went offline.",
+					map[string]string{"type": string(push.CategoryDeviceOffline)},
+				)
+			}
+		})
+
 		mux.HandleFunc("POST /auth/register", handler.Register(pool, sessionStore, cfg))
 		mux.HandleFunc("POST /auth/login", handler.Login(pool, sessionStore, cfg))
 		mux.HandleFunc("GET /auth/session", handler.Session(pool, sessionStore, cfg))
@@ -198,6 +227,13 @@ func main() {
 		mux.Handle("GET /devices", auth.RequireAuth(sessionStore, cfg)(handler.ListDevices(pool)))
 		mux.Handle("DELETE /devices/{id}", auth.RequireAuth(sessionStore, cfg)(handler.RevokeDevice(pool, sessionStore)))
 		mux.Handle("PATCH /devices/{id}", auth.RequireAuth(sessionStore, cfg)(handler.RenameDevice(pool)))
+		// Push token registration (Phase 3): device-scoped, so a device can
+		// only ever register/unregister its own token.
+		mux.Handle("POST /devices/push-token", auth.RequireAuth(sessionStore, cfg)(handler.RegisterPushToken(pool)))
+		mux.Handle("DELETE /devices/push-token", auth.RequireAuth(sessionStore, cfg)(handler.DeletePushToken(pool)))
+		// Browser push subscriptions (web), keyed by endpoint.
+		mux.Handle("POST /devices/web-push", auth.RequireAuth(sessionStore, cfg)(handler.RegisterWebPush(pool)))
+		mux.Handle("DELETE /devices/web-push", auth.RequireAuth(sessionStore, cfg)(handler.DeleteWebPush(pool)))
 
 		// Account recovery identity (ADR-0002): a trusted device enrolls or
 		// rotates the public key derived from the user's offline phrase.

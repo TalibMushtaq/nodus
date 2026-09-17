@@ -36,13 +36,16 @@ type FileLocationResponse struct {
 // is the read path that populates the web client's cached catalog (Phase 14);
 // without it the browser could create files but never list them.
 type FileResponse struct {
-	FileID         string                 `json:"file_id"`
-	ParentFolderID *string                `json:"parent_folder_id"`
-	EncryptedName  *string                `json:"encrypted_name"`
-	CreatedAt      time.Time              `json:"created_at"`
-	UpdatedAt      time.Time              `json:"updated_at"`
-	Versions       []FileVersionResponse  `json:"versions"`
-	Locations      []FileLocationResponse `json:"locations"`
+	FileID         string    `json:"file_id"`
+	ParentFolderID *string   `json:"parent_folder_id"`
+	EncryptedName  *string   `json:"encrypted_name"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
+	// ADR-0003 addendum: the version the user chose to keep while resolving a
+	// conflict, or null when no choice was made (clients then use the newest).
+	PreferredVersion *int                   `json:"preferred_version"`
+	Versions         []FileVersionResponse  `json:"versions"`
+	Locations        []FileLocationResponse `json:"locations"`
 }
 
 // ListFiles returns every file owned by the account, with versions and shard
@@ -61,7 +64,7 @@ func ListFiles(pool *db.Pool) http.HandlerFunc {
 		byID := make(map[string]*FileResponse)
 
 		fileRows, err := pool.Query(r.Context(), `
-			SELECT file_id, parent_folder_id, encrypted_name, created_at, updated_at
+			SELECT file_id, parent_folder_id, encrypted_name, created_at, updated_at, preferred_version
 			FROM files
 			WHERE account_id = $1
 			  AND NOT EXISTS (
@@ -78,7 +81,7 @@ func ListFiles(pool *db.Pool) http.HandlerFunc {
 		}
 		for fileRows.Next() {
 			var file FileResponse
-			if err := fileRows.Scan(&file.FileID, &file.ParentFolderID, &file.EncryptedName, &file.CreatedAt, &file.UpdatedAt); err != nil {
+			if err := fileRows.Scan(&file.FileID, &file.ParentFolderID, &file.EncryptedName, &file.CreatedAt, &file.UpdatedAt, &file.PreferredVersion); err != nil {
 				fileRows.Close()
 				respondError(w, http.StatusInternalServerError, "failed to scan file")
 				return
