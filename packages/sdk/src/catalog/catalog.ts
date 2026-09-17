@@ -30,6 +30,12 @@ export interface RelayFile {
   encrypted_name: string | null;
   created_at: string;
   updated_at: string;
+  /**
+   * ADR-0003 addendum: the version chosen while resolving a conflict, when one
+   * was recorded. Optional so older Relay responses stay assignable; null or
+   * absent means "use the newest version".
+   */
+  preferred_version?: number | null;
   versions: RelayFileVersion[];
   locations: RelayFileLocation[];
 }
@@ -41,6 +47,8 @@ export interface CatalogEntry {
   encrypted_name: string | null;
   created_at: string;
   updated_at: string;
+  /** The version the user chose to keep, or null (fall back to newest). */
+  preferred_version: number | null;
   latest_version_number: number | null;
   shard_count: number | null;
   version_hash: string | null;
@@ -78,9 +86,17 @@ export interface FolderEntry extends RelayFolder {
   cached_at: string;
 }
 
-/** Latest version wins; ties (shouldn't happen) resolve to the highest number. */
+/**
+ * The current version: the version the user chose to keep when resolving a
+ * conflict, otherwise the newest. Ties (shouldn't happen) resolve to the
+ * highest number.
+ */
 function latestVersion(file: RelayFile): RelayFileVersion | null {
   if (file.versions.length === 0) return null;
+  if (file.preferred_version != null) {
+    const preferred = file.versions.find((v) => v.version_number === file.preferred_version);
+    if (preferred) return preferred;
+  }
   return file.versions.reduce((a, b) => (b.version_number > a.version_number ? b : a));
 }
 
@@ -124,6 +140,7 @@ export function toCatalogEntry(file: RelayFile): CatalogEntry {
     encrypted_name: file.encrypted_name,
     created_at: file.created_at,
     updated_at: file.updated_at,
+    preferred_version: file.preferred_version ?? null,
     latest_version_number: latest?.version_number ?? null,
     shard_count: latest?.shard_count ?? null,
     version_hash: latest?.version_hash ?? null,

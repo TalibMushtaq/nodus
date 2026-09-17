@@ -69,4 +69,39 @@ describe("toCatalogEntry", () => {
     expect(entry.storage_status).toBeNull();
     expect(entry.conflicted_versions).toEqual([]);
   });
+
+  it("treats the preferred version as current when one was recorded", () => {
+    const entry = toCatalogEntry(
+      file({
+        preferred_version: 1,
+        versions: [
+          { version_number: 1, shard_count: 1, version_hash: "v1", conflict_status: "resolved", created_at: "x" },
+          { version_number: 2, shard_count: 2, version_hash: "v2", conflict_status: "resolved", created_at: "x" },
+        ],
+        locations: [
+          { version_number: 1, shard_index: 0, node_id: "n1", status: "NODE_STORED", hash: null, size_bytes: 10 },
+          { version_number: 2, shard_index: 0, node_id: "n1", status: "NODE_STORED", hash: null, size_bytes: 20 },
+          { version_number: 2, shard_index: 1, node_id: "n1", status: "NODE_STORED", hash: null, size_bytes: 20 },
+        ],
+      }),
+    );
+
+    expect(entry.preferred_version).toBe(1);
+    expect(entry.latest_version_number).toBe(1);
+    expect(entry.shard_count).toBe(1);
+    expect(entry.version_hash).toBe("v1");
+  });
+
+  it("falls back to the newest version when preferred_version is unknown", () => {
+    const entry = toCatalogEntry(
+      file({
+        preferred_version: 99,
+        versions: [
+          { version_number: 1, shard_count: 1, version_hash: "v1", conflict_status: "none", created_at: "x" },
+          { version_number: 2, shard_count: 1, version_hash: "v2", conflict_status: "none", created_at: "x" },
+        ],
+      }),
+    );
+    expect(entry.latest_version_number).toBe(2);
+  });
 });

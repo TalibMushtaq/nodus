@@ -54,13 +54,18 @@ export function fileDeletedEvent(originId: string, sequence: number, fileId: str
 /**
  * Resolve a file's conflicted copy (ADR-0003). Both the Relay and every Storage
  * Node mark the file's flagged versions `resolved`; the version data is kept.
+ *
+ * `keepVersion` (ADR-0003 addendum) records which side the user chose to keep;
+ * it never deletes the other branch, so the choice stays reversible.
  */
 export function conflictResolvedEvent(
   originId: string,
   sequence: number,
   fileId: string,
+  keepVersion?: number,
 ): EventPayload {
   return baseEvent(originId, sequence, EventTypes.CONFLICT_RESOLVED, {
     file_id: fileId,
+    ...(keepVersion !== undefined ? { keep_version: keepVersion } : {}),
   });
 }
