@@ -74,3 +74,11 @@ holds anything bound to Next.js or page routing.** Sidebar/topbar live in
   surface gradients have explicit dark twins (`surface-warm`, `topbar-warm`).
 - Auth UI stays a mock until Phase 7a lands opaque server-side sessions —
   never fake a real session in the mock.
+
+## Mobile
+
+The React Native client now carries the same design language (tokens ported in
+`apps/mobile/src/design/`) and the same client logic through `@repo/sdk`. Its
+information architecture, phased rollout, and the backend extensions the design
+required (conflict choice, push notifications) are tracked separately in
+`docs/mobile-redesign-and-parity-plan.md`.
