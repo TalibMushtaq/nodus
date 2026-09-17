@@ -9,15 +9,16 @@ import { SettingRow } from "@repo/ui/primitives/setting-row";
 import { Button } from "@repo/ui/primitives/button";
 import { Input } from "@repo/ui/primitives/input";
 import { ConfirmDialog } from "@repo/ui/primitives/overlay";
+import { BrowserNotifications } from "../../../components/browser-notifications";
 import { useTheme } from "../../../providers/theme-provider";
 import { usePreferences, clearPreferences } from "../../../lib/preferences";
 import { clearLocalDatabase } from "../../../lib/db";
 import { changePassword, logoutAll } from "../../../lib/auth-client";
 
-// Settings is limited to controls with a real backing behavior: theme (persisted
-// by ThemeProvider), local sync preferences (localStorage), and clearing the
-// device's local data. The former mock account/GC/notification sections were
-// removed rather than left as dead controls.
+// Settings holds only controls with a real backing behavior: theme (persisted
+// by ThemeProvider), local sync preferences (localStorage), credential changes,
+// the browser push opt-in (Web Push), and clearing the device's local data. The
+// former mock account/GC sections were removed rather than left as dead controls.
 
 export default function SettingsPage() {
   const { theme, setTheme } = useTheme();
@@ -118,6 +119,12 @@ export default function SettingsPage() {
               <option value="system">System</option>
             </Select>
           </SettingRow>
+        </div>
+      </Section>
+
+      <Section title="Notifications">
+        <div className="elev-card border border-border rounded-2xl bg-card px-4 py-3">
+          <BrowserNotifications />
         </div>
       </Section>
 
