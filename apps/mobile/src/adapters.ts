@@ -108,10 +108,18 @@ export function createNativeRelayHttp(): RelayHttp {
         }
       }
 
-      // Capture the session ID on the auth responses that return it (login,
-      // register, and recovery all mint a session), and drop it on logout, so
-      // no SDK service or screen ever handles the raw token.
-      if (res.ok && (path === "/auth/login" || path === "/auth/register" || path === "/auth/recovery")) {
+      // Capture the session ID on the auth responses that return it. Login,
+      // register and recovery mint a session; password change and logout-all
+      // rotate the caller's session too (the old id is revoked), so the fresh
+      // token must replace the stored one. Logout is the only path that clears.
+      const tokenPaths = [
+        "/auth/login",
+        "/auth/register",
+        "/auth/recovery",
+        "/auth/password",
+        "/auth/logout-all",
+      ];
+      if (res.ok && tokenPaths.includes(path)) {
         const accessToken = (json as AuthTokenBody | undefined)?.access_token;
         if (accessToken) await setSessionToken(accessToken);
       } else if (path === "/auth/logout") {
