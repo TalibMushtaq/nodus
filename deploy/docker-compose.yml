@@ -62,6 +62,9 @@ services:
       TRUST_PROXY: "true"
       BUFFER_DIR: /var/lib/nodus/buffer
       BUFFER_TTL_HOURS: ${BUFFER_TTL_HOURS:-72}
+      # Match the client's largest selectable shard size (32 MB); a smaller cap
+      # rejects Path C uploads, which then queue on-device instead of buffering.
+      MAX_SHARD_BYTES_MB: ${MAX_SHARD_BYTES_MB:-32}
       # Push notifications (optional): an Expo access token for mobile delivery
       # and VAPID keys for browser push. An empty value disables that channel.
       EXPO_PUSH_ACCESS_TOKEN: ${EXPO_PUSH_ACCESS_TOKEN:-}

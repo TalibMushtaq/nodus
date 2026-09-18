@@ -1,8 +1,11 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"errors"
+	"flag"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -22,6 +25,7 @@ import (
 	"github.com/TalibMushtaq/nodus/services/relay/internal/hub"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/push"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/rdb"
+	"github.com/TalibMushtaq/nodus/services/relay/internal/reset"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/tombstone"
 )
 
@@ -87,7 +91,31 @@ func openDatabaseWithRetry(ctx context.Context, cfg *config.Config) *db.Pool {
 	return nil
 }
 
+// confirmFactoryReset prints what the reset destroys and requires the operator
+// to type the exact phrase on stdin. Non-interactive callers can still confirm
+// by piping the phrase, which keeps the reset scriptable without letting an
+// empty or accidental stdin authorize it.
+func confirmFactoryReset() bool {
+	log.Println("[relay] FACTORY RESET will permanently delete:")
+	log.Println("[relay]   - every account, device, and storage node")
+	log.Println("[relay]   - the file catalog, versions, locations, and key envelopes")
+	log.Println("[relay]   - sessions, tombstones, Redis state, and the shard buffer")
+	log.Println("[relay] Every client and node must be re-registered and re-paired.")
+	fmt.Printf("[relay] Type %q to confirm: ", reset.ConfirmPhrase)
+	scanner := bufio.NewScanner(os.Stdin)
+	if !scanner.Scan() {
+		return false
+	}
+	return strings.TrimSpace(scanner.Text()) == reset.ConfirmPhrase
+}
+
 func main() {
+	// A destructive, offline operation: parse it before anything else so it can
+	// run with the server stopped, then exit without registering routes.
+	factoryReset := flag.Bool("factory-reset", false,
+		"erase ALL Relay state (accounts, devices, nodes, files, Redis, buffer) and exit")
+	flag.Parse()
+
 	log.Println("[relay] starting Nodus Relay control-plane server...")
 
 	// 1. Load configuration
@@ -98,6 +126,19 @@ func main() {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	if *factoryReset {
+		if !confirmFactoryReset() {
+			log.Println("[relay] factory reset aborted — nothing was deleted")
+			return
+		}
+		if err := reset.Run(ctx, cfg); err != nil {
+			log.Fatalf("[relay] factory reset failed: %v", err)
+		}
+		log.Println("[relay] factory reset complete — the schema will be rebuilt on next start")
+		log.Println("[relay] every client and storage node must register and pair again")
+		return
+	}
 
 	// 2. PostgreSQL initialization & migrations. A fresh deploy can race
 	// PostgreSQL's entrypoint: during initdb it briefly serves a temporary,
@@ -289,13 +330,13 @@ func main() {
 		// Design A: relay-mediated shard download fallback. Session-authenticated;
 		// FetchShard resolves the account from the session and only serves shards
 		// whose file belongs to that account.
-		mux.Handle("GET /shards/{object_id}", auth.RequireAuth(sessionStore, cfg)(handler.FetchShard(pool, wsHub, shardRegistry)))
+		mux.Handle("GET /shards/{object_id}", auth.RequireAuth(sessionStore, cfg)(handler.FetchShard(pool, wsHub, shardRegistry, buf)))
 		// Node→relay shard fetch for peer repair (plan §21a Path C): a storage
 		// node repairs a DEGRADED object by fetching it from another holder
 		// through the Relay, reusing the same fetch proxy as browser downloads
 		// but authenticated by the node's stateless Ed25519 signature instead of
 		// a session. RequireNodeAuth sets the account context FetchShard reads.
-		mux.Handle("GET /node/shards/{object_id}", auth.RequireNodeAuth(nodeStore, 5*time.Minute)(handler.FetchShard(pool, wsHub, shardRegistry)))
+		mux.Handle("GET /node/shards/{object_id}", auth.RequireNodeAuth(nodeStore, 5*time.Minute)(handler.FetchShard(pool, wsHub, shardRegistry, buf)))
 		mux.HandleFunc("GET /buffer/fetch", handler.BufferFetch(pool, redisClient, buf))
 	}
 

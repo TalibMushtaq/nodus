@@ -3,6 +3,7 @@ package handler
 import (
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"strconv"
@@ -10,7 +11,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/TalibMushtaq/nodus/services/relay/internal/auth"
+	"github.com/TalibMushtaq/nodus/services/relay/internal/buffer"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/db"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/hub"
 	"github.com/google/uuid"
@@ -154,16 +158,17 @@ func validShardObjectID(id string) bool {
 	return err == nil
 }
 
-// FetchShard serves GET /shards/{object_id} — a session-authenticated, relay-
-// mediated download of a NODE_STORED shard (design A fallback for browser
-// downloads when the browser has no trusted LAN host, or the direct fetch
-// fails). The Relay asks every node that holds the object, one at a time, over
-// their live WS connection, and streams back the first byte payload it gets.
+// FetchShard serves GET /shards/{object_id} — a session-authenticated download
+// of a shard. It first tries the durable copy: every node that holds the object
+// is asked, one at a time, over its live WS connection, and the first byte
+// payload wins (design A fallback for browser downloads). When no node has it
+// yet, the Relay serves the shard straight from its own buffer, so a file that
+// reached the Relay but has not been picked up by a node is still downloadable.
 //
 // Ownership is enforced on the relay side: only file_locations rows whose file
 // belongs to the requesting account are considered, so a client can never use
 // this endpoint to pull another tenant's shard bytes.
-func FetchShard(pool *db.Pool, h *hub.Hub, shards *ShardFetchRegistry) http.HandlerFunc {
+func FetchShard(pool *db.Pool, h *hub.Hub, shards *ShardFetchRegistry, buf *buffer.Buffer) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		accountID, ok := auth.GetAccountID(r.Context())
 		if !ok {
@@ -202,9 +207,15 @@ func FetchShard(pool *db.Pool, h *hub.Hub, shards *ShardFetchRegistry) http.Hand
 			}
 		}
 		if len(nodeIDs) == 0 {
+			// No node copy yet: serve the Relay's buffered ciphertext so an
+			// upload that is only RELAY_BUFFERED is still downloadable. Scoped
+			// to the account the same way as the node lookup above.
+			if serveBufferedShard(w, r, pool, buf, accountID, objectID) {
+				return
+			}
 			respondJSON(w, http.StatusNotFound, map[string]any{
 				"error":   "shard_unavailable",
-				"message": "this shard is not stored on any node of this account",
+				"message": "this shard is not stored on any node or in the Relay buffer",
 			})
 			return
 		}
@@ -263,4 +274,61 @@ func FetchShard(pool *db.Pool, h *hub.Hub, shards *ShardFetchRegistry) http.Hand
 			"message": "no online node served this shard",
 		})
 	}
+}
+
+// serveBufferedShard writes an account-owned shard from the Relay's own buffer,
+// if one exists for this object. Returns true when it wrote a response (served
+// bytes or a definite failure), false when there is no buffered copy so the
+// caller can continue.
+//
+// `buffer_id` is set for RELAY_BUFFERED and in-flight (NODE_RECEIVING /
+// NODE_VERIFIED) rows and cleared on NODE_STORED, so any non-null buffer_id is
+// ciphertext the Relay still holds. Reading it does not change the row's state:
+// the buffered copy now serves downloads *and* the node's later pickup.
+func serveBufferedShard(
+	w http.ResponseWriter,
+	r *http.Request,
+	pool *db.Pool,
+	buf *buffer.Buffer,
+	accountID, objectID string,
+) bool {
+	if buf == nil {
+		return false
+	}
+	var bufferID *string
+	err := pool.QueryRow(r.Context(), `
+		SELECT fl.buffer_id
+		FROM file_locations fl
+		JOIN file_versions fv ON fv.file_id = fl.file_id AND fv.version_number = fl.version_number
+		JOIN files f ON f.file_id = fv.file_id
+		WHERE fl.hash = $1 AND fl.buffer_id IS NOT NULL AND f.account_id = $2
+		ORDER BY fl.updated_at DESC
+		LIMIT 1
+	`, objectID, accountID).Scan(&bufferID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false
+	}
+	if err != nil {
+		log.Printf("[shard-fetch] buffer lookup failed for %s: %v", objectID, err)
+		return false
+	}
+	if bufferID == nil || *bufferID == "" {
+		return false
+	}
+
+	data, ferr := buf.Fetch(*bufferID)
+	if ferr != nil {
+		// The row outlived its buffer file (TTL sweep); report unavailable
+		// rather than a 500.
+		log.Printf("[shard-fetch] buffered shard %s missing (buffer=%s): %v", objectID, *bufferID, ferr)
+		return false
+	}
+
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+	w.WriteHeader(http.StatusOK)
+	if _, werr := w.Write(data); werr != nil {
+		log.Printf("[shard-fetch] write error for buffered %s: %v", objectID, werr)
+	}
+	return true
 }

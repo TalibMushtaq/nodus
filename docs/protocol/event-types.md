@@ -74,6 +74,21 @@ A new immutable version was added to an existing file.
 A file's content changed. Same payload shape as `FILE_VERSION_ADDED` (immutable
 versions model an edit as a new version).
 
+### `FILE_SHARD_STORED`
+
+A Storage Node committed an encrypted shard to its object store after receiving
+it directly over Path A/B WebRTC (not via the Relay buffer). The Relay projects
+this into `file_locations` as `NODE_STORED` so the catalog knows the shard is
+durably stored and downloads can resolve it; `origin_id` is the storing node.
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `file_id` | string | yes | Logical file identifier |
+| `version_number` | integer ≥ 1 | yes | Version the shard belongs to |
+| `shard_index` | integer ≥ 0 | yes | 0-based shard position |
+| `hash` | string | yes | BLAKE3 of the stored ciphertext |
+| `size_bytes` | integer | no | Stored ciphertext length |
+
 ### `DEVICE_REVOKED`
 
 A device lost access (revocation removes only its key envelope, per

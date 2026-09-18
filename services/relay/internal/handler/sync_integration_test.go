@@ -77,3 +77,61 @@ func TestApplySingleEventConflictResolved(t *testing.T) {
 		`SELECT conflict_status FROM file_versions WHERE file_id = $1 AND version_number = 1`, file).Scan(&status))
 	require.Equal(t, "resolved", status)
 }
+
+// A node reporting a directly-received shard must materialize a NODE_STORED
+// location, otherwise the shard exists on disk but the catalog (and therefore
+// every download) cannot see it.
+func TestApplySingleEventFileShardStoredProjectsLocation(t *testing.T) {
+	url := os.Getenv("TEST_DATABASE_URL")
+	if url == "" {
+		t.Skip("TEST_DATABASE_URL not set; skipping integration test")
+	}
+	ctx := context.Background()
+	require.NoError(t, db.RunMigrations(url))
+	pool, err := db.Open(ctx, &config.Config{DatabaseURL: url})
+	require.NoError(t, err)
+	t.Cleanup(pool.Close)
+
+	suffix := fmt.Sprint(time.Now().UnixNano())
+	account := "acct-ss-" + suffix
+	node := "node-ss-" + suffix
+	file := "file-ss-" + suffix
+	eventID := "event-ss-" + suffix
+	_, err = pool.Exec(ctx, `INSERT INTO accounts (account_id, email, password_hash) VALUES ($1, $2, 'hash')`,
+		account, account+"@test.local")
+	require.NoError(t, err)
+	_, err = pool.Exec(ctx,
+		`INSERT INTO storage_nodes (node_id, account_id, public_key) VALUES ($1, $2, 'pk')`,
+		node, account)
+	require.NoError(t, err)
+	_, err = pool.Exec(ctx, `INSERT INTO files (file_id, account_id) VALUES ($1, $2)`, file, account)
+	require.NoError(t, err)
+	_, err = pool.Exec(ctx, `
+		INSERT INTO file_versions (file_id, version_number, version_hash, shard_count)
+		VALUES ($1, 1, 'vh', 1)
+	`, file)
+	require.NoError(t, err)
+
+	payload := []byte(fmt.Sprintf(
+		`{"file_id":%q,"version_number":1,"shard_index":0,"hash":"h","size_bytes":1234}`, file))
+	applied := applySingleEvent(ctx, pool, account, SyncEventItem{
+		EventID: eventID, OriginID: node, OriginSequence: 1,
+		Type: "FILE_SHARD_STORED", Payload: payload, Timestamp: time.Now().UTC().Format(time.RFC3339),
+	})
+	require.True(t, applied)
+
+	var (
+		status string
+		hash   string
+		size   int64
+		nodeID string
+	)
+	require.NoError(t, pool.QueryRow(ctx, `
+		SELECT status, hash, size_bytes, node_id FROM file_locations
+		WHERE file_id = $1 AND version_number = 1 AND shard_index = 0
+	`, file).Scan(&status, &hash, &size, &nodeID))
+	require.Equal(t, "NODE_STORED", status)
+	require.Equal(t, "h", hash)
+	require.Equal(t, int64(1234), size)
+	require.Equal(t, node, nodeID)
+}

@@ -40,7 +40,10 @@ type Config struct {
 	// MaxShardBytes is the largest *plaintext* shard the Relay will accept and
 	// relay onward. The buffer upload cap and the WebSocket read limit are
 	// derived from it (with framing headroom), so raising this one value lets
-	// clients use larger shards. Default 8 MiB; env MAX_SHARD_BYTES_MB.
+	// clients use larger shards. Default 32 MiB, matching @repo/core's
+	// MAX_SHARD_SIZE_BYTES: a smaller default silently rejected every shard from
+	// clients configured with the 16/32 MiB Settings options, and the rejected
+	// uploads fell through to the device-local queue. Env MAX_SHARD_BYTES_MB.
 	MaxShardBytes int64
 
 	// Push notifications (Phase 3). Optional Expo access token; when empty the
@@ -87,10 +90,12 @@ func Load() (*Config, error) {
 	bufferTTLHours, _ := strconv.Atoi(getEnv("BUFFER_TTL_HOURS", "72"))
 
 	// Shard size is a client choice; the Relay must be configured to accept it.
-	// A value below 1 is treated as unset and falls back to the 8 MiB default.
-	maxShardMB, _ := strconv.Atoi(getEnv("MAX_SHARD_BYTES_MB", "8"))
+	// The default is the clients' maximum (32 MiB) so the Settings shard-size
+	// options never silently exceed the buffer cap; a value below 1 is treated
+	// as unset and falls back to that same default.
+	maxShardMB, _ := strconv.Atoi(getEnv("MAX_SHARD_BYTES_MB", "32"))
 	if maxShardMB < 1 {
-		maxShardMB = 8
+		maxShardMB = 32
 	}
 	maxShardBytes := int64(maxShardMB) * 1024 * 1024
 

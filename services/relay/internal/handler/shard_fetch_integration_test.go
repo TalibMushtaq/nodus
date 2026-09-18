@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/TalibMushtaq/nodus/services/relay/internal/auth"
+	"github.com/TalibMushtaq/nodus/services/relay/internal/buffer"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/config"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/db"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/hub"
@@ -79,7 +80,7 @@ func TestFetchShardScopesToAccountsNodeStoredShards(t *testing.T) {
 		req.SetPathValue("object_id", hash)
 		req = req.WithContext(context.WithValue(req.Context(), auth.AccountIDKey, accountID))
 		rr := httptest.NewRecorder()
-		FetchShard(pool, h, NewShardFetchRegistry())(rr, req)
+		FetchShard(pool, h, NewShardFetchRegistry(), nil)(rr, req)
 		return rr
 	}
 
@@ -119,7 +120,7 @@ func TestFetchShardRejectsUnknownAndMalformed(t *testing.T) {
 	req.SetPathValue("object_id", unknown)
 	req = req.WithContext(context.WithValue(req.Context(), auth.AccountIDKey, acct))
 	rr := httptest.NewRecorder()
-	FetchShard(pool, h, NewShardFetchRegistry())(rr, req)
+	FetchShard(pool, h, NewShardFetchRegistry(), nil)(rr, req)
 	require.Equal(t, http.StatusNotFound, rr.Code)
 
 	// Malformed object id: 400 before any query runs.
@@ -127,14 +128,14 @@ func TestFetchShardRejectsUnknownAndMalformed(t *testing.T) {
 	req.SetPathValue("object_id", "not-a-hash")
 	req = req.WithContext(context.WithValue(req.Context(), auth.AccountIDKey, acct))
 	rr = httptest.NewRecorder()
-	FetchShard(pool, h, NewShardFetchRegistry())(rr, req)
+	FetchShard(pool, h, NewShardFetchRegistry(), nil)(rr, req)
 	require.Equal(t, http.StatusBadRequest, rr.Code)
 
 	// Unauthenticated: 401.
 	req = httptest.NewRequest(http.MethodGet, "/shards/"+unknown, nil)
 	req.SetPathValue("object_id", unknown)
 	rr = httptest.NewRecorder()
-	FetchShard(pool, h, NewShardFetchRegistry())(rr, req)
+	FetchShard(pool, h, NewShardFetchRegistry(), nil)(rr, req)
 	require.Equal(t, http.StatusUnauthorized, rr.Code)
 }
 
@@ -213,9 +214,67 @@ func TestFetchShardEndToEndViaVirtualNode(t *testing.T) {
 	req.SetPathValue("object_id", hash)
 	req = req.WithContext(context.WithValue(req.Context(), auth.AccountIDKey, acct))
 	rr := httptest.NewRecorder()
-	FetchShard(pool, h, reg)(rr, req)
+	FetchShard(pool, h, reg, nil)(rr, req)
 
 	require.Equal(t, http.StatusOK, rr.Code)
 	require.Equal(t, "application/octet-stream", rr.Header().Get("Content-Type"))
 	require.Equal(t, "virtual-shard-bytes", rr.Body.String())
+}
+
+// A shard the Relay is still holding (no node pickup yet) must be downloadable
+// from the buffer, and reading it must not disturb its delivery state.
+func TestFetchShardServesRelayBufferedShard(t *testing.T) {
+	url := os.Getenv("TEST_DATABASE_URL")
+	if url == "" {
+		t.Skip("TEST_DATABASE_URL not set; skipping integration test")
+	}
+	ctx := context.Background()
+	require.NoError(t, db.RunMigrations(url))
+	pool, err := db.Open(ctx, &config.Config{DatabaseURL: url})
+	require.NoError(t, err)
+	t.Cleanup(pool.Close)
+
+	buf, err := buffer.New(t.TempDir())
+	require.NoError(t, err)
+
+	suffix := fmt.Sprint(time.Now().UnixNano())
+	acct, node := "acct-buf-"+suffix, "node-buf-"+suffix
+	file := "file-buf-" + suffix
+	hash := fmt.Sprintf("%064x", suffix)
+	bufferID := "buffer-" + suffix
+	shardBytes := []byte("buffered-ciphertext")
+
+	_, err = pool.Exec(ctx, `INSERT INTO accounts (account_id, email, password_hash) VALUES ($1, $2, 'hash')`, acct, acct+"@test.local")
+	require.NoError(t, err)
+	_, err = pool.Exec(ctx, `INSERT INTO storage_nodes (node_id, account_id, public_key) VALUES ($1, $2, 'ab')`, node, acct)
+	require.NoError(t, err)
+	_, err = pool.Exec(ctx, `INSERT INTO files (file_id, account_id, encrypted_name) VALUES ($1, $2, 'v1.aa')`, file, acct)
+	require.NoError(t, err)
+	_, err = pool.Exec(ctx, `INSERT INTO file_versions (file_id, version_number, version_hash, shard_count) VALUES ($1, 1, 'vh', 1)`, file)
+	require.NoError(t, err)
+	_, err = pool.Exec(ctx,
+		`INSERT INTO file_locations (file_id, version_number, shard_index, node_id, hash, status, buffer_id) VALUES ($1, 1, 0, $2, $3, 'RELAY_BUFFERED', $4)`,
+		file, node, hash, bufferID)
+	require.NoError(t, err)
+	require.NoError(t, buf.Store(bufferID, shardBytes))
+
+	runCtx, stop := context.WithCancel(ctx)
+	h := hub.New(nil)
+	go h.Run(runCtx)
+	t.Cleanup(stop)
+
+	req := httptest.NewRequest(http.MethodGet, "/shards/"+hash, nil)
+	req.SetPathValue("object_id", hash)
+	req = req.WithContext(context.WithValue(req.Context(), auth.AccountIDKey, acct))
+	rr := httptest.NewRecorder()
+	FetchShard(pool, h, NewShardFetchRegistry(), buf)(rr, req)
+
+	require.Equal(t, http.StatusOK, rr.Code)
+	require.Equal(t, shardBytes, rr.Body.Bytes())
+
+	// Serving a download must not steal the shard from the node's pickup queue.
+	var status string
+	require.NoError(t, pool.QueryRow(ctx,
+		`SELECT status FROM file_locations WHERE file_id = $1 AND shard_index = 0`, file).Scan(&status))
+	require.Equal(t, "RELAY_BUFFERED", status)
 }

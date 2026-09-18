@@ -32,8 +32,8 @@ func TestConfigDefaults(t *testing.T) {
 	if cfg.BufferTTL != 72*time.Hour {
 		t.Fatalf("expected default BufferTTL 72h, got %v", cfg.BufferTTL)
 	}
-	if cfg.MaxShardBytes != 8*1024*1024 {
-		t.Fatalf("expected default MaxShardBytes 8MiB, got %d", cfg.MaxShardBytes)
+	if cfg.MaxShardBytes != 32*1024*1024 {
+		t.Fatalf("expected default MaxShardBytes 32MiB, got %d", cfg.MaxShardBytes)
 	}
 }
 

@@ -1099,6 +1099,59 @@ func applySingleEventTx(
 				return false
 			}
 		}
+
+	case "FILE_SHARD_STORED":
+		// A Storage Node committed a shard it received directly (Path A LAN
+		// WebRTC or Path B relay-signaled WebRTC) to its object store. Record the
+		// location so the catalog knows the shard is durably stored and clients
+		// can resolve it for download. Without this projection the node's
+		// FILE_SHARD_STORED events were acknowledged but never materialized,
+		// leaving files "local only" with no downloadable locations.
+		var sData struct {
+			FileID        string `json:"file_id"`
+			VersionNumber int    `json:"version_number"`
+			ShardIndex    int    `json:"shard_index"`
+			Hash          string `json:"hash"`
+			SizeBytes     *int64 `json:"size_bytes"`
+		}
+		if err := json.Unmarshal(item.Payload, &sData); err == nil &&
+			sData.FileID != "" && sData.VersionNumber > 0 && sData.ShardIndex >= 0 && sData.Hash != "" {
+			// file_locations FK's to file_versions and must not cross accounts.
+			// The node emits this only after a version it synced, so the version
+			// is normally present; if not, acknowledge without projecting rather
+			// than rejecting the batch on an FK violation.
+			var ownsVersion bool
+			if err := tx.QueryRow(ctx, `
+				SELECT EXISTS(
+					SELECT 1 FROM file_versions fv
+					JOIN files f ON f.file_id = fv.file_id
+					WHERE fv.file_id = $1 AND fv.version_number = $2 AND f.account_id = $3
+				)
+			`, sData.FileID, sData.VersionNumber, accountID).Scan(&ownsVersion); err != nil {
+				return false
+			}
+			if !ownsVersion {
+				log.Printf("[sync] FILE_SHARD_STORED for %s v%d shard %d before its version; skipping projection",
+					sData.FileID, sData.VersionNumber, sData.ShardIndex)
+				break
+			}
+			// Upsert (not insert): a shard can be re-received after a repair or
+			// re-upload, and the row must reflect the latest stored object.
+			if _, err := tx.Exec(ctx, `
+				INSERT INTO file_locations
+					(file_id, version_number, shard_index, node_id, status, buffer_id, hash, size_bytes, updated_at)
+				VALUES ($1, $2, $3, $4, 'NODE_STORED', NULL, $5, $6, NOW())
+				ON CONFLICT (file_id, version_number, shard_index, node_id) DO UPDATE SET
+					status = 'NODE_STORED',
+					buffer_id = NULL,
+					hash = EXCLUDED.hash,
+					size_bytes = EXCLUDED.size_bytes,
+					updated_at = NOW()
+			`, sData.FileID, sData.VersionNumber, sData.ShardIndex, item.OriginID,
+				sData.Hash, sData.SizeBytes); err != nil {
+				return false
+			}
+		}
 	}
 
 	// 5. Update cursor
@@ -1164,6 +1217,14 @@ func eventReferencesForeignFile(ctx context.Context, tx pgx.Tx, accountID string
 		fileID = data.FileID
 	case "KEY_ENVELOPE_ADDED":
 		var data KeyEnvelopeEventData
+		if err := json.Unmarshal(item.Payload, &data); err != nil || data.FileID == "" {
+			return false, nil
+		}
+		fileID = data.FileID
+	case "FILE_SHARD_STORED":
+		var data struct {
+			FileID string `json:"file_id"`
+		}
 		if err := json.Unmarshal(item.Payload, &data); err != nil || data.FileID == "" {
 			return false, nil
 		}
