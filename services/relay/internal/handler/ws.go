@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/TalibMushtaq/nodus/services/relay/internal/auth"
@@ -371,13 +372,22 @@ func originAllowed(r *http.Request, cfg *config.Config) bool {
 	} // native nodes do not send browser Origin
 	u, err := url.Parse(origin)
 	if err != nil || u.Scheme == "" || u.Host == "" {
+		log.Printf("[ws] rejected malformed Origin %q", origin)
 		return false
+	}
+	// Same-origin is always allowed. React Native's WebSocket (OkHttp) sends an
+	// Origin equal to the Relay it dials, and the single-origin web deploy does
+	// the same; neither is a cross-site WebSocket-hijacking vector. Cross-origin
+	// browsers must still appear in ALLOWED_ORIGINS.
+	if strings.EqualFold(u.Host, r.Host) {
+		return true
 	}
 	for _, allowed := range cfg.AllowedOrigins {
 		if origin == allowed {
 			return true
 		}
 	}
+	log.Printf("[ws] rejected cross-origin %q (host %q, allowed %v)", origin, r.Host, cfg.AllowedOrigins)
 	return false
 }
 
