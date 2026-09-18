@@ -7,3 +7,5 @@ allowBuilds:
   esbuild: true
   # Native resolver pulled in by eslint-config-expo; its postinstall is safe.
   unrs-resolver: true
+minimumReleaseAgeExclude:
+  - expo-constants@57.0.19

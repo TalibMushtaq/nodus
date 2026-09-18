@@ -9,6 +9,7 @@
     "scheme": "nodus",
     "ios": {
       "supportsTablet": true,
+      "bundleIdentifier": "com.talibmushtaq.nodus",
       "infoPlist": {
         "NSLocalNetworkUsageDescription": "Nodus discovers and pairs with storage nodes on your local network.",
         "NSBonjourServices": [
@@ -35,7 +36,7 @@
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
       "predictiveBackGestureEnabled": false,
-      "package": "com.anonymous.nodus"
+      "package": "com.talibmushtaq.nodus"
     },
     "web": {
       "favicon": "./assets/favicon.png"
@@ -54,6 +55,12 @@
       ],
       "expo-font",
       "expo-notifications"
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "e2e3757d-4efd-4ee0-94c4-ebf0d62bfb53"
+      }
+    },
+    "owner": "talibmushtaq"
   }
 }

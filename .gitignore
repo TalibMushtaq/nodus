@@ -60,3 +60,8 @@ target/
 *.mobileprovision
 *.orig.*
 .metro-health-check*
+
+# Push/FCM credentials and EAS local state — never commit these.
+google-services.json
+GoogleService-Info.plist
+credentials.json

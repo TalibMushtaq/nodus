@@ -5,10 +5,12 @@
 // and surfaces notification taps. Everything is best-effort: push must never
 // block sign-in or an action.
 //
-// An Expo push token requires the EAS project id, supplied through
-// EXPO_PUBLIC_EAS_PROJECT_ID. Without it registration is skipped.
+// An Expo push token requires the EAS project id, which `eas init` writes into
+// the app config; `EXPO_PUBLIC_EAS_PROJECT_ID` remains a fallback. Without one,
+// registration is skipped and the app works normally.
 
 import * as Notifications from "expo-notifications";
+import Constants from "expo-constants";
 import { Platform } from "react-native";
 
 import { relayDeletePushToken, relayRegisterPushToken } from "./relay";
@@ -33,8 +35,17 @@ export function configureNotificationHandler(): void {
   });
 }
 
+/**
+ * Resolve the EAS project id used to mint an Expo push token. `eas init` writes
+ * it into the app config, so a linked project is enough; `Constants.easConfig`
+ * covers build-time manifests and the env var stays as a fallback.
+ */
 function easProjectId(): string | undefined {
-  return process.env.EXPO_PUBLIC_EAS_PROJECT_ID || undefined;
+  const fromAppConfig = Constants.expoConfig?.extra?.eas?.projectId;
+  if (typeof fromAppConfig === "string" && fromAppConfig) {
+    return fromAppConfig;
+  }
+  return Constants.easConfig?.projectId ?? process.env.EXPO_PUBLIC_EAS_PROJECT_ID ?? undefined;
 }
 
 /**
