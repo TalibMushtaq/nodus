@@ -18,6 +18,7 @@ import {
   type TextStyle,
   type ViewStyle,
 } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import type { TransferPath } from "@repo/transfer-manager";
 
@@ -270,6 +271,9 @@ export function ScreenHeader({
   right?: React.ReactNode;
 }) {
   const theme = useTheme();
+  // Tab roots render their own header (the stack header is hidden), so they must
+  // inset for the status bar themselves or the title slides under it.
+  const insets = useSafeAreaInsets();
   return (
     <View
       style={{
@@ -277,7 +281,7 @@ export function ScreenHeader({
         alignItems: "flex-start",
         justifyContent: "space-between",
         paddingHorizontal: theme.spacing.lg,
-        paddingTop: theme.spacing.md,
+        paddingTop: insets.top + theme.spacing.md,
         paddingBottom: theme.spacing.sm,
         backgroundColor: theme.colors.background,
       }}
