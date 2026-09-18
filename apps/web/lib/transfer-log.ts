@@ -18,7 +18,7 @@ export type TransferOutcome = "in-progress" | "complete" | "failed";
  * buffer looks identical to one that went local P2P once it is NODE_STORED.
  * Maps from the transfer-manager's `TransferPath` at write time.
  */
-export type ActivityPath = "local" | "relay" | "buffered" | "offline";
+export type ActivityPath = "local" | "relay" | "buffered" | "queued" | "offline";
 
 export interface TransferLogEntry {
   /** uuid — the store's primary key. */

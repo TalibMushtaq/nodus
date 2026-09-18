@@ -4,7 +4,7 @@
 // way: "Synced" alone hid whether bytes were durably on a node or merely in the
 // Relay buffer. Kept React-free so it can be unit-tested.
 
-import { shortId, toCatalogEntry, type CatalogEntry } from "@repo/sdk";
+import { isFetchableLocation, shortId, toCatalogEntry, type CatalogEntry } from "@repo/sdk";
 
 import type { RelayFile } from "../relay";
 import type { SyncStatus } from "../design";
@@ -28,7 +28,7 @@ export interface FileRow {
   encryptedName: string | null;
   conflictedVersions: number[];
   conflictedName: string | null;
-  /** True when every latest-version shard is committed on a node. */
+  /** True when every latest-version shard is fetchable (node or Relay buffer). */
   downloadable: boolean;
   /** The original relay file, needed by download/rename/move/delete actions. */
   file: RelayFile;
@@ -83,12 +83,13 @@ export function latestSize(entry: CatalogEntry): number | null {
 
 export function isDownloadable(entry: CatalogEntry): boolean {
   if (entry.latest_version_number == null || entry.shard_count == null) return false;
+  // Fetchable = on a node OR still buffered at the Relay (which serves it
+  // directly), so a file that only reached the Relay is downloadable too.
   const stored = new Set(
     entry.locations
       .filter(
         (location) =>
-          location.version_number === entry.latest_version_number &&
-          location.status === "NODE_STORED",
+          location.version_number === entry.latest_version_number && isFetchableLocation(location),
       )
       .map((location) => location.shard_index),
   );

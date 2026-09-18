@@ -29,6 +29,12 @@ interface TransferContextValue {
   retryPending: () => void;
   /** Null until capabilities resolve after mount (SSR-safe). */
   capabilities: WebRtcCapabilities | null;
+  /**
+   * Report a node's Relay-derived online state so the transfer manager can skip
+   * direct WebRTC paths for an offline node. Callers (the Files page) update it
+   * from `listNodes()`; unknown nodes default to online.
+   */
+  setNodeOnline: (nodeId: string, online: boolean) => void;
 }
 
 const TransferContext = createContext<TransferContextValue | null>(null);
@@ -60,6 +66,13 @@ export function TransferProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     wsStatusRef.current = wsStatus;
   }, [wsStatus]);
+
+  // Node online/offline as last reported by the Relay catalog. The attempt path
+  // reads this to skip direct WebRTC for an offline node; unknown = online.
+  const nodeOnlineRef = useRef<Map<string, boolean>>(new Map());
+  const setNodeOnline = useCallback((nodeId: string, online: boolean) => {
+    nodeOnlineRef.current.set(nodeId, online);
+  }, []);
 
   useEffect(() => {
     if (!device || !signer) return;
@@ -98,6 +111,9 @@ export function TransferProvider({ children }: { children: ReactNode }) {
         // and otherwise every shard would burn a negotiation timeout before
         // falling back to the buffer.
         isRelayAvailable: () => wsStatusRef.current === "connected",
+        // Skip direct WebRTC entirely when the Relay catalog says the node is
+        // offline: negotiating then only delays the relay-buffer fallback.
+        isNodeOnline: (targetNode) => nodeOnlineRef.current.get(targetNode) ?? true,
       });
       queueRef.current = queue;
       setManager(new TransferManager(attemptPath, undefined, cache, queue));
@@ -137,8 +153,9 @@ export function TransferProvider({ children }: { children: ReactNode }) {
         syncQueued();
       },
       capabilities,
+      setNodeOnline,
     }),
-    [manager, queuedCount, syncQueued, capabilities],
+    [manager, queuedCount, syncQueued, capabilities, setNodeOnline],
   );
 
   return <TransferContext.Provider value={value}>{children}</TransferContext.Provider>;

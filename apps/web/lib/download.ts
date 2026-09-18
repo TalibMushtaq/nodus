@@ -49,14 +49,15 @@ export function browserDownloadDeps(
       return entry?.locations ?? [];
     },
     async fetchShard(_fileId, location) {
-      // Preferred path: a trusted LAN host for the storing node. If the LAN
-      // fetch fails for ANY reason (no longer paired, node unreachable, auth
-      // reject, timeout) we fall through to the Relay-mediated path instead of
-      // failing the download — the Relay pulls the shard from the node over
-      // its authenticated WS connection (design A).
+      // Preferred path: a trusted LAN host for the storing node. A buffered
+      // shard is not on the node yet, so skip the LAN attempt and go straight
+      // to the Relay (which serves its buffer). If a LAN fetch fails for ANY
+      // reason we fall through to the Relay-mediated path instead of failing —
+      // the Relay pulls the shard from the node over its authenticated WS
+      // connection, or serves it from its own buffer (design A).
       if (location.hash) {
         const nodes = await getTrustedNodes();
-        const host = nodes.find((n) => n.node_id === location.node_id)?.host;
+        const host = location.status === "NODE_STORED" ? nodes.find((n) => n.node_id === location.node_id)?.host : undefined;
         if (host) {
           try {
             const client = new NodeClient(nodusBaseUrl(host));

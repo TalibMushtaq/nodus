@@ -57,6 +57,39 @@ describe("downloadFile", () => {
     expect(result.name).toBe("notes.txt");
   });
 
+  it("reports unlocking, fetching, verifying, decrypting and done in order", async () => {
+    const fek = generateFileEncryptionKey();
+    const original = new Uint8Array([1, 2, 3, 4, 5, 6]);
+    const { packed, locations } = setup([original.slice(0, 3), original.slice(3)], fek);
+    const phases: string[] = [];
+    let last: { completedShards: number; totalShards: number; completedBytes: number; totalBytes: number } | null =
+      null;
+
+    await downloadFile({
+      fileId,
+      versionNumber: 1,
+      shardCount: 2,
+      deps: depsFor(fek, packed, locations),
+      onProgress: (event) => {
+        phases.push(event.phase);
+        last = event;
+      },
+    });
+
+    expect(phases[0]).toBe("unlocking");
+    expect(phases).toContain("fetching");
+    expect(phases).toContain("verifying");
+    expect(phases).toContain("decrypting");
+    expect(phases[phases.length - 1]).toBe("done");
+    // The final event accounts for every shard and the declared ciphertext size.
+    expect(last).toMatchObject({
+      completedShards: 2,
+      totalShards: 2,
+      completedBytes: packed.reduce((sum, bytes) => sum + bytes.length, 0),
+      totalBytes: packed.reduce((sum, bytes) => sum + bytes.length, 0),
+    });
+  });
+
   it("throws MissingEnvelopeError when this device has no FEK", async () => {
     const fek = generateFileEncryptionKey();
     const { packed, locations } = setup([new Uint8Array([1])], fek);
@@ -74,10 +107,26 @@ describe("downloadFile", () => {
     ).rejects.toBeInstanceOf(ShardIntegrityError);
   });
 
-  it("throws ShardUnavailableError for a still-buffered shard", async () => {
+  it("downloads a relay-buffered shard before a node has picked it up", async () => {
+    const fek = generateFileEncryptionKey();
+    const { packed, locations } = setup([new Uint8Array([9, 8, 7])], fek);
+    locations[0]!.status = "RELAY_BUFFERED";
+
+    const result = await downloadFile({
+      fileId,
+      versionNumber: 1,
+      shardCount: 1,
+      deps: depsFor(fek, packed, locations),
+    });
+
+    expect(Array.from(result.data)).toEqual([9, 8, 7]);
+  });
+
+  it("throws ShardUnavailableError when a shard has no fetchable copy yet", async () => {
     const fek = generateFileEncryptionKey();
     const { packed, locations } = setup([new Uint8Array([1])], fek);
-    locations[0]!.status = "RELAY_BUFFERED";
+    // Mid-upload: the buffer row exists but is not yet committed to the buffer.
+    locations[0]!.status = "UPLOADING";
     await expect(
       downloadFile({ fileId, versionNumber: 1, shardCount: 1, deps: depsFor(fek, packed, locations) }),
     ).rejects.toBeInstanceOf(ShardUnavailableError);

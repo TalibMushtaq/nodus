@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { AppShell } from "../../components/app-shell";
 import { TransferProvider } from "../../providers/transfer-provider";
 import { UploadProvider } from "../../providers/upload-provider";
+import { DownloadProvider } from "../../providers/download-provider";
 import { requireAuth } from "../../lib/session";
 
 // Dashboard layout wraps every page under the (dashboard) group in AppShell.
@@ -15,7 +16,11 @@ export default async function DashboardLayout({ children }: { children: ReactNod
       {/* UploadProvider owns the queue + floating widget, so an upload started
           on Files keeps showing progress after navigating to another page. */}
       <UploadProvider>
-        <AppShell>{children}</AppShell>
+        {/* DownloadProvider owns the download widget so a download started on
+            Files keeps showing stage progress after navigating away. */}
+        <DownloadProvider>
+          <AppShell>{children}</AppShell>
+        </DownloadProvider>
       </UploadProvider>
     </TransferProvider>
   );

@@ -1,3 +1,4 @@
+import { isFetchableLocation } from "@repo/sdk";
 import type { SyncStatus } from "@repo/ui/primitives/badge";
 
 import type { CatalogEntry, RelayFileLocation } from "./catalog";
@@ -27,7 +28,7 @@ export interface FileEntryView {
   encryptedName: string | null;
   /** All shard locations (all versions) — the download manifest. */
   locations: RelayFileLocation[];
-  /** True when every latest-version shard is committed on a node. */
+  /** True when every latest-version shard is fetchable (node or Relay buffer). */
   downloadable: boolean;
 }
 
@@ -84,11 +85,14 @@ export function latestSize(entry: CatalogEntry): number | null {
 
 export function isDownloadable(entry: CatalogEntry): boolean {
   if (entry.latest_version_number == null || entry.shard_count == null) return false;
+  // A shard counts as present when it is on a node OR still in the Relay buffer
+  // (which the download path fetches directly), so a file that only reached the
+  // Relay is downloadable before the node picks it up.
   const stored = new Set(
     entry.locations
       .filter(
         (location) =>
-          location.version_number === entry.latest_version_number && location.status === "NODE_STORED",
+          location.version_number === entry.latest_version_number && isFetchableLocation(location),
       )
       .map((location) => location.shard_index),
   );

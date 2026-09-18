@@ -1,9 +1,9 @@
 import type { ReactNode } from "react";
 
-// Path indicator: how data is moving (local P2P, relay, buffered, offline).
-// Mono face + color + glyph distinguishes it from the status wordmark.
+// Path indicator: how data is moving (local P2P, relay, buffered, queued,
+// offline). Mono face + color + glyph distinguishes it from the status wordmark.
 
-export type TransferPath = "local" | "relay" | "buffered" | "offline";
+export type TransferPath = "local" | "relay" | "buffered" | "queued" | "offline";
 
 function LocalIcon() {
   return (
@@ -30,6 +30,18 @@ function BufferedIcon() {
   );
 }
 
+// Path D: bytes are parked on this device's persistent queue, waiting for a
+// path to open. A filled square reads as "held here", distinct from the buffer's
+// stacked-lines glyph.
+function QueuedIcon() {
+  return (
+    <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+      <rect x="2" y="2" width="6" height="6" rx="1" stroke="currentColor" strokeWidth="1.3" />
+      <path d="M3.5 5H6.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 function OfflineIcon() {
   return (
     <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
@@ -42,6 +54,7 @@ const configs: Record<TransferPath, { label: string; color: string; icon: ReactN
   local: { label: "Local P2P", color: "var(--status-synced)", icon: <LocalIcon /> },
   relay: { label: "Relay", color: "var(--status-pending)", icon: <RelayIcon /> },
   buffered: { label: "Relay buffer", color: "var(--status-pending)", icon: <BufferedIcon /> },
+  queued: { label: "Queued on device", color: "var(--status-pending)", icon: <QueuedIcon /> },
   offline: { label: "Offline", color: "var(--status-offline)", icon: <OfflineIcon /> },
 };
 

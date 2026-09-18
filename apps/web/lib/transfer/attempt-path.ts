@@ -42,6 +42,12 @@ export interface BrowserAttemptPathDeps {
    */
   isRelayAvailable?: () => boolean;
   /**
+   * Whether the target node is currently online (from the Relay catalog). When
+   * false, Paths A/B are skipped so an offline node falls straight to the Relay
+   * buffer instead of paying a WebRTC negotiation timeout first.
+   */
+  isNodeOnline?: (targetNode: string) => boolean;
+  /**
    * Persistent WebRTC sessions shared across shards. Optional; when omitted an
    * internal cache is used. The provider owns one and closes it on unmount so
    * peer connections and signaling sockets do not outlive the app session.

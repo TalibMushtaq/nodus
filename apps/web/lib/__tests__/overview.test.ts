@@ -197,7 +197,8 @@ describe("activityPathFromTransfer", () => {
     expect(activityPathFromTransfer("local_signaling")).toBe("local");
     expect(activityPathFromTransfer("relay_signaling")).toBe("relay");
     expect(activityPathFromTransfer("buffer_relay")).toBe("buffered");
-    expect(activityPathFromTransfer("local_queue")).toBe("buffered");
+    // Path D is on-device queueing, not the Relay buffer.
+    expect(activityPathFromTransfer("local_queue")).toBe("queued");
     expect(activityPathFromTransfer(undefined)).toBeUndefined();
   });
 });

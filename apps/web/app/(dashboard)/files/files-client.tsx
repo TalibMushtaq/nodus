@@ -23,7 +23,7 @@ import { useMounted } from "../../../lib/use-mounted";
 import { usePreferences } from "../../../lib/preferences";
 import type { ShardUpload, ShardUploadResult } from "../../../lib/buffer";
 import type { ShardTransferRequest } from "@repo/transfer-manager";
-import { listNodes, type RelayNode } from "../../../lib/pairing";
+import { isNodeOnline, listNodes, type RelayNode } from "../../../lib/pairing";
 import {
   downloadFile,
   browserDownloadDeps,
@@ -43,6 +43,7 @@ import {
   type UploadProgressEvent,
 } from "../../../lib/uploader";
 import { useUpload, type UploadTask } from "../../../providers/upload-provider";
+import { useDownload } from "../../../providers/download-provider";
 import { findIncompleteByHash, findStoredDuplicate, type FileStorageState } from "../../../lib/file-view";
 
 // Files view: catalog/upload/download plus a folder tree. Folders are metadata
@@ -59,6 +60,21 @@ const STATUS_FILTERS: { value: SyncStatus | "all"; label: string }[] = [
   { value: "conflict", label: "Conflicts" },
   { value: "local-only", label: "Local only" },
 ];
+
+/**
+ * Upload auto-retry budget. A transient transport failure (node crash, Relay
+ * blip) aborts the current attempt; the client resumes from persisted per-shard
+ * progress with exponential backoff instead of making the user re-select the
+ * file. The File handle only lives for this page session, so this covers
+ * in-session failures; after a reload the Relay buffer / Path D queue cover the
+ * shards that already left the browser.
+ */
+const UPLOAD_RETRY_ATTEMPTS = 5;
+const UPLOAD_RETRY_BASE_MS = 2_000;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 /** Distinguish the download failure modes the user can actually act on. */
 function describeDownloadError(err: unknown): string {
@@ -396,6 +412,9 @@ export function FilesClient() {
   // Upload queue state lives in the global provider so its widget survives
   // navigating away from Files mid-upload (the upload loop keeps running).
   const { tasks: uploads, setTasks: setUploads, setActiveId, reportProgress, reportPath } = useUpload();
+  // Download widget sink: a downloaded file reports unlocking → downloading →
+  // verifying → decrypting → assembling so the AEAD pass is visible, not a hang.
+  const { startDownload, reportProgress: reportDownloadProgress, finishDownload } = useDownload();
   const [actionError, setActionError] = useState<string | null>(null);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
   // Set when a download failed because no trusted node host was known, or when
@@ -441,21 +460,32 @@ export function FilesClient() {
   const [mutationError, setMutationError] = useState<string | null>(null);
   const [resyncHint, setResyncHint] = useState<string | null>(null);
 
-  // Load the node catalog once to resolve an upload target (primary preferred).
+  // Load the node catalog to resolve an upload target (primary preferred), then
+  // re-poll so a node that goes offline while this page is open is reflected in
+  // the transfer manager's reachability view without a reload.
   useEffect(() => {
     let cancelled = false;
-    listNodes()
-      .then((loaded) => {
-        if (cancelled) return;
-        setNodes(loaded);
-        const primary = loaded.find((node) => node.is_primary) ?? loaded[0];
-        setTargetNode(primary?.node_id ?? null);
-      })
-      .catch(() => {
-        // Upload is disabled without a target; the empty/error state explains it.
-      });
+    const load = () => {
+      listNodes()
+        .then((loaded) => {
+          if (cancelled) return;
+          setNodes(loaded);
+          // Keep a still-valid selection; otherwise fall back to the primary.
+          setTargetNode((current) => {
+            if (current && loaded.some((node) => node.node_id === current)) return current;
+            const primary = loaded.find((node) => node.is_primary) ?? loaded[0];
+            return primary?.node_id ?? null;
+          });
+        })
+        .catch(() => {
+          // Upload is disabled without a target; the empty/error state explains it.
+        });
+    };
+    load();
+    const timer = setInterval(load, 30_000);
     return () => {
       cancelled = true;
+      clearInterval(timer);
     };
   }, []);
 
@@ -476,7 +506,20 @@ export function FilesClient() {
     progressHandlerRef.current?.(event);
   }, []);
 
-  const { uploadShard, ready: transferReady, queuedCount, hasPending, retryPending } = useTransfer();
+  const {
+    uploadShard,
+    ready: transferReady,
+    queuedCount,
+    hasPending,
+    retryPending,
+    setNodeOnline,
+  } = useTransfer();
+
+  // Mirror the catalog's online state so the Transfer Manager skips direct
+  // WebRTC for an offline node and falls straight to the Relay buffer.
+  useEffect(() => {
+    for (const node of nodes) setNodeOnline(node.node_id, isNodeOnline(node));
+  }, [nodes, setNodeOnline]);
 
   // Route each shard through the Transfer Manager's fallback chain so a node on
   // the same LAN receives it directly (Path A) instead of always buffering via
@@ -496,6 +539,9 @@ export function FilesClient() {
         sourceDevice: dto.sourceDevice,
         // Byte-level progress for whichever path runs (WebRTC or Relay XHR).
         onProgress: dto.onProgress,
+        // Show the path being tried, so the widget reads "via Relay buffer"
+        // during the fallback instead of "choosing path…" until a path wins.
+        onPath: (path) => pathHandlerRef.current?.(path),
       });
       // Record the successful path even if a later shard fails, so the activity
       // entry (and the upload widget) reflects how the bytes actually travelled.
@@ -558,7 +604,14 @@ export function FilesClient() {
         const updateTask = (patch: Partial<UploadTask>) => {
           setUploads((previous) => previous.map((t) => (t.id === task.id ? { ...t, ...patch } : t)));
         };
-        progressHandlerRef.current = (event) => reportProgress(task.id, event);
+        // Capture the file id the uploader allocates (from the first progress
+        // event) so a retry resumes the same file/version, skipping shards that
+        // already reached the Relay/node, instead of starting a duplicate.
+        let uploadFileId: string | undefined;
+        progressHandlerRef.current = (event) => {
+          if (event.fileId) uploadFileId = event.fileId;
+          reportProgress(task.id, event);
+        };
         pathHandlerRef.current = (path) => reportPath(task.id, path);
 
         try {
@@ -578,22 +631,49 @@ export function FilesClient() {
           // re-selecting a failed upload completes the original entry.
           const incomplete = findIncompleteByHash(files, measured.versionHash);
           sessionHashes.current.add(measured.versionHash);
+          uploadFileId = incomplete?.fileId;
+          const versionNumber = incomplete?.latestVersionNumber ?? 1;
 
           const log = await startTransfer({
             kind: "upload",
             fileId: incomplete?.fileId ?? "",
             fileName: file.name,
           });
-          try {
-            const target = incomplete
-              ? { fileId: incomplete.fileId, versionNumber: incomplete.latestVersionNumber ?? 1 }
-              : undefined;
-            const result = await upload(file, targetNode, measured, target, currentFolderId, shardSizeBytes);
-            await finishTransfer(log.id, "complete", `${result.shardCount} shards`, activePathRef.current);
-            updateTask({ status: "done", completedBytes: file.size, completedShards: result.shardCount, totalShards: result.shardCount });
-            refresh();
-          } catch (err) {
-            const message = err instanceof Error ? err.message : String(err);
+
+          // Retry the whole file with backoff on a transport failure: the
+          // uploader resumes from persisted progress, so only the missing
+          // shards move. A crashed node mid-direct-transfer therefore completes
+          // itself (via the Relay buffer) without user action.
+          let uploadError: unknown = null;
+          for (let attempt = 1; attempt <= UPLOAD_RETRY_ATTEMPTS; attempt += 1) {
+            try {
+              const target = uploadFileId ? { fileId: uploadFileId, versionNumber } : undefined;
+              const result = await upload(file, targetNode, measured, target, currentFolderId, shardSizeBytes);
+              await finishTransfer(log.id, "complete", `${result.shardCount} shards`, activePathRef.current);
+              updateTask({
+                status: "done",
+                completedBytes: file.size,
+                completedShards: result.shardCount,
+                totalShards: result.shardCount,
+                error: undefined,
+              });
+              refresh();
+              uploadError = null;
+              break;
+            } catch (err) {
+              uploadError = err;
+              if (attempt >= UPLOAD_RETRY_ATTEMPTS) break;
+              const waitMs = UPLOAD_RETRY_BASE_MS * 2 ** (attempt - 1);
+              updateTask({
+                status: "active",
+                phase: "uploading",
+                error: `retrying in ${Math.max(1, Math.round(waitMs / 1000))}s…`,
+              });
+              await sleep(waitMs);
+            }
+          }
+          if (uploadError !== null) {
+            const message = uploadError instanceof Error ? uploadError.message : String(uploadError);
             await finishTransfer(log.id, "failed", message, activePathRef.current);
             updateTask({ status: "error", error: message });
             setActionError(message);
@@ -634,6 +714,9 @@ export function FilesClient() {
         fileName: file.name,
         path: "local",
       });
+      // The widget survives navigation, so the stage progress keeps rendering
+      // even if the user leaves Files mid-download.
+      const taskId = startDownload({ name: file.name });
       try {
         const result = await downloadFile({
           fileId: file.fileId,
@@ -642,6 +725,7 @@ export function FilesClient() {
           encryptedName: file.encryptedName,
           expectedVersionHash: file.versionHash,
           deps: browserDownloadDeps(device, signer),
+          onProgress: (event) => reportDownloadProgress(taskId, event),
         });
         // Save without an intermediate URL leak: revoke once the click is queued.
         const blob = new Blob([result.data as unknown as BlobPart]);
@@ -651,16 +735,18 @@ export function FilesClient() {
         anchor.download = result.name ?? file.name;
         anchor.click();
         URL.revokeObjectURL(url);
+        finishDownload(taskId, "done");
         await finishTransfer(log.id, "complete", formatBytes(result.data.length));
       } catch (err) {
         const message = describeDownloadError(err);
+        finishDownload(taskId, "error", message);
         await finishTransfer(log.id, "failed", message);
         setActionError(message);
       } finally {
         setDownloadingId(null);
       }
     },
-    [device, signer],
+    [device, signer, startDownload, reportDownloadProgress, finishDownload],
   );
 
   const openRename = useCallback((file: FileEntryView) => {

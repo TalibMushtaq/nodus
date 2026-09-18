@@ -29,7 +29,12 @@ export function mobileDownloadDeps(device: StoredDeviceIdentity): DownloadDeps {
     async fetchShard(_fileId, location) {
       if (!location.hash) throw new Error("shard location has no hash");
       // Direct LAN fetch first (device-authenticated), then the Relay fallback.
-      const host = (await getTrustedNodes()).find((n) => n.node_id === location.node_id)?.host;
+      // A buffered shard is not on the node yet, so skip straight to the Relay,
+      // which serves its buffer.
+      const host =
+        location.status === "NODE_STORED"
+          ? (await getTrustedNodes()).find((n) => n.node_id === location.node_id)?.host
+          : undefined;
       if (host) {
         try {
           const client = new NodeClient(nodusBaseUrl(host));

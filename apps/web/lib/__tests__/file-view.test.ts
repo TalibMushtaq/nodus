@@ -81,14 +81,26 @@ describe("latestSize", () => {
 });
 
 describe("isDownloadable", () => {
-  it("is true only when every latest-version shard is NODE_STORED", () => {
+  it("is true when every latest-version shard is fetchable (node or relay-buffered)", () => {
     expect(isDownloadable(entry())).toBe(true);
+    // A buffered shard is served by the Relay, so it does not block download.
     expect(
       isDownloadable(
         entry({
           locations: [
             { version_number: 1, shard_index: 0, node_id: "n1", status: "NODE_STORED", hash: "h0", size_bytes: 10 },
             { version_number: 1, shard_index: 1, node_id: "n1", status: "RELAY_BUFFERED", hash: "h1", size_bytes: 20 },
+          ],
+        }),
+      ),
+    ).toBe(true);
+    // A shard still being uploaded to the Relay has no fetchable copy yet.
+    expect(
+      isDownloadable(
+        entry({
+          locations: [
+            { version_number: 1, shard_index: 0, node_id: "n1", status: "NODE_STORED", hash: "h0", size_bytes: 10 },
+            { version_number: 1, shard_index: 1, node_id: "n1", status: "UPLOADING", hash: null, size_bytes: null },
           ],
         }),
       ),

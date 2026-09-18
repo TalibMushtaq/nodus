@@ -148,8 +148,10 @@ export function activityLabel(entry: TransferLogEntry): string {
 
 /**
  * Translate the transfer-manager's internal path to the UI's PathIndicator
- * vocabulary. `local_queue` (Path D, waiting for connectivity) is shown as
- * "buffered" because the bytes are held locally rather than durably on a node.
+ * vocabulary. `local_queue` (Path D) is "queued", not "buffered": the bytes sit
+ * in this device's persistent queue and have not reached the Relay buffer at
+ * all. Collapsing the two made Activity claim a file was Relay-buffered while
+ * the Files table (correctly) showed it as local-only.
  */
 export function activityPathFromTransfer(path: TransferPath | undefined): ActivityPath | undefined {
   switch (path) {
@@ -158,8 +160,9 @@ export function activityPathFromTransfer(path: TransferPath | undefined): Activi
     case "relay_signaling":
       return "relay";
     case "buffer_relay":
-    case "local_queue":
       return "buffered";
+    case "local_queue":
+      return "queued";
     default:
       return undefined;
   }
