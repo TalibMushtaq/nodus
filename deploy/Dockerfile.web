@@ -11,6 +11,10 @@ ENV PNPM_HOME=/pnpm \
     TURBO_TELEMETRY_DISABLED=1
 RUN corepack enable && corepack prepare pnpm@11.23.0 --activate
 WORKDIR /repo
+# Browser push needs the public VAPID key at build time: Next inlines
+# NEXT_PUBLIC_* into the client bundle. Empty leaves browser push disabled.
+ARG NEXT_PUBLIC_VAPID_PUBLIC_KEY
+ENV NEXT_PUBLIC_VAPID_PUBLIC_KEY=$NEXT_PUBLIC_VAPID_PUBLIC_KEY
 # `.dockerignore` keeps node_modules/.next/target out, so this copies the whole
 # workspace (all manifests are needed for a frozen-lockfile install).
 COPY . .

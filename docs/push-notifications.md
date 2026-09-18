@@ -71,6 +71,19 @@ Activity tab.
 - **Backup complete** — fired once when every shard of a file version reaches
   `NODE_STORED` (`sync_notices`).
 
+## CI
+
+The `e2e` workflow injects push credentials from repository secrets into
+`deploy/.env` before starting the stack, so no credential is ever committed:
+
+```sh
+gh secret set EXPO_PUSH_ACCESS_TOKEN --repo <owner>/<repo>
+gh secret set VAPID_PUBLIC_KEY      --repo <owner>/<repo>   # optional
+gh secret set VAPID_PRIVATE_KEY     --repo <owner>/<repo>   # optional
+```
+
+Unset secrets stay empty and simply disable that channel.
+
 ## Verifying
 
 - Relay: `go test ./internal/push/ ./internal/hub/` and the integration tests in

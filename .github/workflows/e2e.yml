@@ -61,6 +61,22 @@ jobs:
       # already what deploy/.env.example sets.
       - run: cp deploy/.env.example deploy/.env
 
+      # Inject optional push credentials from repository secrets. Nothing here
+      # is committed: when a secret is unset the value stays empty and that
+      # push channel is simply disabled.
+      - name: Configure push credentials
+        env:
+          EXPO_PUSH_ACCESS_TOKEN: ${{ secrets.EXPO_PUSH_ACCESS_TOKEN }}
+          VAPID_PUBLIC_KEY: ${{ secrets.VAPID_PUBLIC_KEY }}
+          VAPID_PRIVATE_KEY: ${{ secrets.VAPID_PRIVATE_KEY }}
+        run: |
+          {
+            echo "EXPO_PUSH_ACCESS_TOKEN=${EXPO_PUSH_ACCESS_TOKEN}"
+            echo "VAPID_PUBLIC_KEY=${VAPID_PUBLIC_KEY}"
+            echo "VAPID_PRIVATE_KEY=${VAPID_PRIVATE_KEY}"
+            echo "NEXT_PUBLIC_VAPID_PUBLIC_KEY=${VAPID_PUBLIC_KEY}"
+          } >> deploy/.env
+
       - name: Start the deploy unit
         run: docker compose -f deploy/docker-compose.yml --env-file deploy/.env up -d --build
 

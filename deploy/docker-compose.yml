@@ -62,6 +62,12 @@ services:
       TRUST_PROXY: "true"
       BUFFER_DIR: /var/lib/nodus/buffer
       BUFFER_TTL_HOURS: ${BUFFER_TTL_HOURS:-72}
+      # Push notifications (optional): an Expo access token for mobile delivery
+      # and VAPID keys for browser push. An empty value disables that channel.
+      EXPO_PUSH_ACCESS_TOKEN: ${EXPO_PUSH_ACCESS_TOKEN:-}
+      VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
+      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
+      VAPID_SUBJECT: ${VAPID_SUBJECT:-mailto:admin@example.com}
     volumes:
       - buffer_data:/var/lib/nodus/buffer
     healthcheck:
@@ -81,6 +87,9 @@ services:
     build:
       context: ..
       dockerfile: deploy/Dockerfile.web
+      # Inlined into the client bundle at build time (browser push opt-in).
+      args:
+        NEXT_PUBLIC_VAPID_PUBLIC_KEY: ${NEXT_PUBLIC_VAPID_PUBLIC_KEY:-}
     restart: unless-stopped
     depends_on:
       relay:
