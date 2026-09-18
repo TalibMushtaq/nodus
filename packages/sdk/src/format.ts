@@ -1,6 +1,34 @@
 // Small platform-neutral formatters for real (non-mock) entity ids and
 // timestamps. Shared by web and native so both clients render identically.
 
+import type { DeviceInfo } from "./auth.js";
+
+/** Friendly names for the coarse platform tokens `detectDeviceInfo` emits. */
+const PLATFORM_LABELS: Record<string, string> = {
+  web: "Web",
+  ios: "iOS",
+  android: "Android",
+  linux: "Linux",
+  macos: "macOS",
+  windows: "Windows",
+  chromeos: "ChromeOS",
+};
+
+/**
+ * One-line device descriptor for the Devices list, e.g. "Linux · Chrome 126",
+ * "iOS 17.5 · Nodus 1.4", or null when nothing was ever reported (older
+ * clients). Display-only; unknown platforms fall back to their raw token.
+ */
+export function describeDeviceInfo(info: DeviceInfo | null | undefined): string | null {
+  if (!info) return null;
+  const platform = info.platform?.trim().toLowerCase() ?? "";
+  const os = info.os_version?.trim() ?? "";
+  const platformPart = platform ? `${PLATFORM_LABELS[platform] ?? info.platform?.trim()}${os ? ` ${os}` : ""}` : os;
+  const clientPart = info.browser?.trim() || (info.app_version?.trim() ? `Nodus ${info.app_version.trim()}` : "");
+  const parts = [platformPart, clientPart].filter((part) => part.length > 0);
+  return parts.length > 0 ? parts.join(" · ") : null;
+}
+
 /** First `length` chars of a hex device/node id for compact display. */
 export function shortId(id: string, length = 8): string {
   return id.length <= length ? id : `${id.slice(0, length)}…`;

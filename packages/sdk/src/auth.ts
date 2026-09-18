@@ -8,6 +8,22 @@
 import type { RelayHttp } from "./adapters.js";
 
 /**
+ * Display-only platform metadata reported at login/register so the Devices list
+ * can name the client ("iPhone · iOS 17", "Linux · Chrome 126", "Nodus 1.4
+ * desktop"). Never used for authentication; each platform fills what it knows.
+ */
+export interface DeviceInfo {
+  /** Coarse platform: "web", "ios", "android", "linux", "macos", "windows". */
+  platform?: string;
+  os_version?: string;
+  /** Browser name/version for web clients. */
+  browser?: string;
+  /** Native app version, when not a browser. */
+  app_version?: string;
+  user_agent?: string;
+}
+
+/**
  * The public half of a device identity — enough to register/authenticate and
  * to be named in envelopes. The signing secret is a non-extractable handle
  * (ADR-0008) and is never part of this shape.
@@ -15,6 +31,8 @@ import type { RelayHttp } from "./adapters.js";
 export interface DevicePublicIdentity {
   device_id: string;
   public_key: string;
+  /** Optional display metadata captured automatically at auth time. */
+  info?: DeviceInfo;
 }
 
 /** The locked §2 post-auth body. No token travels in the body. */
@@ -87,6 +105,8 @@ export function createAuthClient(http: RelayHttp): AuthClient {
         device_id: device.device_id,
         device_public_key: device.public_key,
         device_encryption_public_key: encryptionPublicKey,
+        // Auto-captured by the platform; the Relay stores it for the Devices list.
+        device_info: device.info,
       });
     },
 
@@ -98,6 +118,7 @@ export function createAuthClient(http: RelayHttp): AuthClient {
         device_public_key: device.public_key,
         device_encryption_public_key: encryptionPublicKey,
         recovery_public_key: recoveryPublicKey,
+        device_info: device.info,
       });
     },
 

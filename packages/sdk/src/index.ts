@@ -25,9 +25,9 @@ export {
 } from "./device/webcrypto.js";
 export type { DeviceSigner, WebCryptoDeviceKeys } from "./device/webcrypto.js";
 export { createAuthClient } from "./auth.js";
-export type { AuthClient, AuthResult, SessionInfo, DevicePublicIdentity } from "./auth.js";
+export type { AuthClient, AuthResult, SessionInfo, DevicePublicIdentity, DeviceInfo } from "./auth.js";
 
-export { shortId, formatCountdown, formatBytes, timeAgo } from "./format.js";
+export { shortId, formatCountdown, formatBytes, timeAgo, describeDeviceInfo } from "./format.js";
 export { isRelayOnline, relayStatusLabel } from "./connectivity.js";
 export { createZip } from "./zip.js";
 export type { ZipEntry } from "./zip.js";
@@ -107,6 +107,7 @@ export type { FolderMutationDeps, FolderMutations } from "./folders/folders.js";
 
 export {
   downloadFile,
+  isFetchableLocation,
   MissingEnvelopeError,
   ShardUnavailableError,
   ShardIntegrityError,
@@ -114,6 +115,8 @@ export {
 export type {
   DownloadDeps,
   DownloadFileOptions,
+  DownloadPhase,
+  DownloadProgressEvent,
   DownloadResult,
   RelayFileLocation,
 } from "./download/download.js";
