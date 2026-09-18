@@ -7,6 +7,7 @@ pub mod pair;
 // `report::disk_usage` feeds the heartbeat's storage figures; report.rs also
 // backs the interactive CLI shell in the binary crate.
 pub mod report;
+pub mod reset;
 pub mod store;
 pub mod sync;
 pub mod telemetry;

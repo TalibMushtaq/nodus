@@ -9,11 +9,14 @@
 use std::time::Duration;
 
 use anyhow::Context;
+use dialoguer::Input;
 use dialoguer::Select;
 use dialoguer::theme::ColorfulTheme;
+use sqlx::SqlitePool;
 
 use crate::config::Config;
 use crate::pair;
+use crate::reset;
 use crate::{Cli, boot_daemon, db, report, resolve_config};
 
 const MENU_ITEMS: &[&str] = &[
@@ -24,6 +27,7 @@ const MENU_ITEMS: &[&str] = &[
     "Show status",
     "Change data location",
     "Pair / re-pair this node",
+    "Factory reset (delete everything)",
     "Quit",
 ];
 
@@ -110,12 +114,62 @@ pub async fn run_interactive(cli: &Cli) -> anyhow::Result<()> {
             6 => {
                 pair_wizard(&mut cfg, cli).await?;
             }
+            7 => {
+                // Destructive and irreversible: requires the operator to type
+                // the exact confirmation phrase, and closes the pool before the
+                // DB files are unlinked. On success the menu exits so the next
+                // `nodus` run starts from the first-run pairing wizard.
+                if factory_reset(&cfg, &mut pool).await? {
+                    return Ok(());
+                }
+            }
             _ => {
                 println!();
                 return Ok(());
             }
         }
     }
+}
+
+/// Wipe this node after an explicit `purge everything` confirmation. Returns
+/// true when the reset ran (the caller should exit), false when cancelled so
+/// the menu continues. The pool is closed before the DB files are unlinked —
+/// SQLite would otherwise keep writing to the removed inode.
+async fn factory_reset(cfg: &Config, pool: &mut SqlitePool) -> anyhow::Result<bool> {
+    println!();
+    println!("Factory reset — this permanently deletes:");
+    for path in reset::purgable_paths(&cfg.data_dir, &cfg.nodus_dir) {
+        if path.exists() {
+            println!("  {}", path.display());
+        }
+    }
+    println!("  → the node identity, catalogue, and every stored shard.");
+    println!("  → this node must be paired again after the reset.");
+    println!();
+    let typed: String = Input::with_theme(&ColorfulTheme::default())
+        .with_prompt(format!("Type \"{}\" to confirm", reset::CONFIRM_PHRASE))
+        .allow_empty(true)
+        .interact_text()
+        .unwrap_or_default();
+    if typed.trim() != reset::CONFIRM_PHRASE {
+        println!();
+        println!("Factory reset cancelled — nothing was deleted.");
+        return Ok(false);
+    }
+
+    pool.close().await;
+    match reset::purge_node(&cfg.data_dir, &cfg.nodus_dir) {
+        Ok(removed) => {
+            println!();
+            println!("Factory reset complete: removed {} item(s).", removed.len());
+            println!("Run `nodus` again to pair this node with your Relay.");
+        }
+        Err(err) => {
+            println!();
+            println!("Factory reset failed: {err}");
+        }
+    }
+    Ok(true)
 }
 
 /// Pair (or re-pair) through the shared `pair::run` flow. Interactive, so the

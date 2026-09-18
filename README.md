@@ -247,6 +247,34 @@ Set `SITE_ADDRESS`/`PUBLIC_RELAY_URL`/`ALLOWED_ORIGINS` to the real origin for
 production. See [`deploy/README.md`](./deploy/README.md) for routing, TLS, and
 operations details.
 
+### Factory reset
+
+Both resets are destructive and require typing the exact phrase
+`purge everything`, then force everything to be paired again.
+
+**Storage Node** — in the interactive CLI choose *Factory reset (delete
+everything)*, or from the running shell:
+
+```text
+nodus> factory-reset
+```
+
+This deletes the node's catalogue, objects, identity, and config. The node gets
+a new `node_id`, so it must be paired with the Relay again.
+
+**Relay** — stop the running Relay first, then:
+
+```bash
+cd services/relay
+go run . --factory-reset            # prompts: type "purge everything"
+# or non-interactively:
+echo 'purge everything' | go run . --factory-reset
+```
+
+This drops and recreates the database schema (rebuilt from migrations on the
+next start), flushes the Relay's Redis database, and clears the shard buffer.
+Every account, device, and Storage Node must register and pair again.
+
 ### Tests
 
 ```bash

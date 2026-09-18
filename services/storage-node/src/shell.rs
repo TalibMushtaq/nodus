@@ -14,6 +14,7 @@
 //!   conflicts   list preserved conflicted copies (ADR-0003)
 //!   devices     paired clients + last authentication
 //!   test        live connectivity checks (relay HTTP + WS, local HTTP, storage)
+//!   factory-reset  wipe all local state and identity (asks to type "purge everything")
 //!   quit        stop the node  (Ctrl+C or EOF also work)
 //!
 //! Piped/systemd runs never reach this shell; `boot_daemon` only enters it when
@@ -42,7 +43,7 @@ pub struct Shell {
     pub relay_ws_url: String,
 }
 
-pub async fn run(shell: Shell) -> anyhow::Result<()> {
+pub async fn run(mut shell: Shell) -> anyhow::Result<()> {
     println!("Storage node shell — type `help` for commands, `quit` or Ctrl+C to stop.");
 
     let mut reader = BufReader::new(tokio::io::stdin());
@@ -69,6 +70,14 @@ pub async fn run(shell: Shell) -> anyhow::Result<()> {
             "conflicts" => report::print_conflicts(&shell.db).await?,
             "devices" => devices(&shell).await?,
             "test" | "diag" => test(&shell).await?,
+            "factory-reset" | "purge" => {
+                // Wipes identity + catalogue + objects; the confirmation is read
+                // from the same stdin. On success the shell stops so the operator
+                // restarts into the pairing wizard.
+                if factory_reset(&mut shell, &mut reader).await? {
+                    return Ok(());
+                }
+            }
             "quit" | "stop" | "exit" => {
                 println!("stopping node…");
                 return Ok(());
@@ -90,7 +99,56 @@ fn print_help() {
     println!("  conflicts   list preserved conflicted copies awaiting resolution");
     println!("  devices     paired clients and last authentication");
     println!("  test        live connectivity checks (relay HTTP + WS, local HTTP, storage)");
+    println!("  factory-reset  wipe all local state, identity, and config (requires typing");
+    println!(
+        "                 \"{}\") — the node must be paired again",
+        crate::reset::CONFIRM_PHRASE
+    );
     println!("  quit        stop the node (Ctrl+C or EOF also work)");
+}
+
+/// Wipe this node from the running shell after an explicit confirmation. Returns
+/// true when the reset ran (caller stops the node), false when cancelled. The
+/// SQLite pool is closed first so the DB file is not unlinked underneath a live
+/// writer.
+async fn factory_reset(
+    shell: &mut Shell,
+    reader: &mut BufReader<tokio::io::Stdin>,
+) -> anyhow::Result<bool> {
+    println!();
+    println!("Factory reset — this permanently deletes:");
+    for path in crate::reset::purgable_paths(&shell.cfg.data_dir, &shell.cfg.nodus_dir) {
+        if path.exists() {
+            println!("  {}", path.display());
+        }
+    }
+    println!("  → the node identity, catalogue, and every stored shard.");
+    println!("  → this node must be paired again after the reset.");
+    println!();
+    print!("Type \"{}\" to confirm: ", crate::reset::CONFIRM_PHRASE);
+    std::io::stdout().flush().ok();
+
+    let mut confirm = String::new();
+    let read = reader.read_line(&mut confirm).await?;
+    if read == 0 || confirm.trim() != crate::reset::CONFIRM_PHRASE {
+        println!();
+        println!("Factory reset cancelled — nothing was deleted.");
+        return Ok(false);
+    }
+
+    shell.db.close().await;
+    match crate::reset::purge_node(&shell.cfg.data_dir, &shell.cfg.nodus_dir) {
+        Ok(removed) => {
+            println!();
+            println!("Factory reset complete: removed {} item(s).", removed.len());
+            println!("Stopping the node — restart it to pair again.");
+        }
+        Err(err) => {
+            println!();
+            println!("Factory reset failed: {err}");
+        }
+    }
+    Ok(true)
 }
 
 async fn status(shell: &Shell) -> anyhow::Result<()> {

@@ -6,6 +6,7 @@ mod local;
 mod menu;
 mod pair;
 mod report;
+mod reset;
 mod shell;
 mod store;
 pub mod sync;
