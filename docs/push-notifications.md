@@ -36,14 +36,28 @@ npx web-push generate-vapid-keys
 
 ## Mobile (Expo)
 
-1. Set `EXPO_PUBLIC_EAS_PROJECT_ID` in `apps/mobile/.env` to the EAS project id
-   (expo.dev → Project → Project ID). Without it the client skips registration
-   and the app otherwise works normally.
-2. Configure APNs/FCM credentials on the Expo project (EAS handles this via
-   `eas credentials` for development and production builds).
-3. Rebuild the native app (`pnpm --filter mobile android` / `ios`): the
-   `expo-notifications` module and the `POST_NOTIFICATIONS` permission are
-   native.
+The EAS project is linked (`extra.eas.projectId` in `apps/mobile/app.json`), so
+`getExpoPushTokenAsync` resolves the project id from the app config. No env var
+is required; `EXPO_PUBLIC_EAS_PROJECT_ID` remains an optional override.
+
+**Android**
+- The FCM V1 service-account key is uploaded to the EAS project (the *sending*
+  credential, per Expo's FCM V1 docs). It lives in the credentials service, not
+  the repo.
+- `google-services.json` registers the app with FCM but is **not committed** —
+  GitHub secret scanning flags its Firebase API key. It is gitignored and kept
+  locally for `expo run:android`; EAS builds receive it through a project file
+  environment variable named `GOOGLE_SERVICES_JSON_FILE` (created with
+  `eas env:set … --type file`). `app.config.js` maps it onto
+  `android.googleServicesFile`, falling back to the local file.
+
+**iOS**
+- APNs is not configured yet; it needs an Apple Developer account
+  (`eas credentials` → iOS → log in to Apple, then generate/upload a push key).
+
+Then rebuild the native app (`pnpm --filter mobile android`, or
+`eas build --profile development`): `expo-notifications` and
+`POST_NOTIFICATIONS` are native.
 
 The client requests permission on first sign-in, registers the Expo token with
 `POST /devices/push-token` (mirroring the notification prefs), refreshes it when

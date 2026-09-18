@@ -1,5 +1,15 @@
 # Changelog
 
+## [2026-09-18] - Mobile: Android FCM client config (uncommitted, EAS-injected)
+
+**What changed:** Registered `com.talibmushtaq.nodus` as an Android app in the Firebase project `nodus-270d9` and generated `apps/mobile/google-services.json`. Because GitHub secret scanning flags the file's Firebase API key, it is **not committed**: it is gitignored and kept locally for `expo run:android`, and EAS builds receive it via a project file environment variable `GOOGLE_SERVICES_JSON_FILE` (`eas env:set … --type file`). Added `apps/mobile/app.config.js`, which maps that variable onto `android.googleServicesFile` with a local fallback. An earlier commit (`46c75f5`) that accidentally included the file was rewritten before this change.
+
+**Why:** Expo needs the client `google-services.json` for the app to register with FCM, but the Firebase/Google API key must not live in git.
+
+**Impact:** `apps/mobile` (`app.config.js`, `app.json`), `.gitignore`, `docs/push-notifications.md`. The file stays on disk but untracked.
+
+**Follow-ups:** iOS APNs is not configured (needs an Apple Developer account). A native rebuild is required for `expo-notifications`/FCM to take effect.
+
 ## [2026-09-18] - Mobile: link the EAS project and resolve its ID from app config
 
 **What changed:** `eas init` linked the app to the Expo project `@talibmushtaq/nodus` and wrote `extra.eas.projectId` (`e2e3757d-4efd-4ee0-94c4-ebf0d62bfb53`) plus `owner` into `apps/mobile/app.json`. Set `ios.bundleIdentifier` and `android.package` to `com.talibmushtaq.nodus` (replacing `com.anonymous.nodus`). `apps/mobile/src/notifications.ts` now resolves the push project id from `Constants.expoConfig.extra.eas.projectId` first, then `Constants.easConfig.projectId`, then `EXPO_PUBLIC_EAS_PROJECT_ID`, and `expo-constants` is a direct dependency. `.gitignore` now excludes `google-services.json`, `GoogleService-Info.plist` and `credentials.json`.

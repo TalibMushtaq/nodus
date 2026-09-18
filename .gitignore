@@ -61,7 +61,9 @@ target/
 *.orig.*
 .metro-health-check*
 
-# Push/FCM credentials and EAS local state — never commit these.
+# Push/FCM credentials and EAS local state. google-services.json is kept out of
+# git (GitHub secret scanning flags its API key); it is supplied to EAS via a
+# file environment variable and kept locally for `expo run:android`.
 google-services.json
 GoogleService-Info.plist
 credentials.json
