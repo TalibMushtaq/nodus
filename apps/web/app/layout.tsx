@@ -30,6 +30,15 @@ const spaceGrotesk = Space_Grotesk({
 export const metadata: Metadata = {
   title: "Nodus",
   description: "Offline-first P2P storage. Your files, your hardware.",
+  // The brand mark (node topology) doubles as the favicon; `app/favicon.ico`
+  // is generated from the same artwork for legacy tabs.
+  icons: {
+    icon: [
+      { url: "/favicon.webp", type: "image/webp" },
+      { url: "/favicon.png", type: "image/png", sizes: "512x512" },
+    ],
+    apple: "/apple-touch-icon.png",
+  },
 };
 
 export default function RootLayout({
