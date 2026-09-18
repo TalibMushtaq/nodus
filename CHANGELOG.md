@@ -1,5 +1,15 @@
 # Changelog
 
+## [2026-09-18] - Mobile: link the EAS project and resolve its ID from app config
+
+**What changed:** `eas init` linked the app to the Expo project `@talibmushtaq/nodus` and wrote `extra.eas.projectId` (`e2e3757d-4efd-4ee0-94c4-ebf0d62bfb53`) plus `owner` into `apps/mobile/app.json`. Set `ios.bundleIdentifier` and `android.package` to `com.talibmushtaq.nodus` (replacing `com.anonymous.nodus`). `apps/mobile/src/notifications.ts` now resolves the push project id from `Constants.expoConfig.extra.eas.projectId` first, then `Constants.easConfig.projectId`, then `EXPO_PUBLIC_EAS_PROJECT_ID`, and `expo-constants` is a direct dependency. `.gitignore` now excludes `google-services.json`, `GoogleService-Info.plist` and `credentials.json`.
+
+**Why:** The client could not mint an Expo push token without a project id, and EAS builds require unique app identifiers.
+
+**Impact:** `apps/mobile` (`app.json`, `package.json`, `src/notifications.ts`), `.gitignore`, `pnpm-lock.yaml`, `pnpm-workspace.yaml`. Changing the Android package makes any previously installed build a separate app, so a fresh dev build/reinstall is needed.
+
+**Follow-ups:** APNs/FCM credentials (`eas credentials`), the Android `google-services.json` + `android.googleServicesFile`, and a native rebuild are still required for real delivery.
+
 ## [2026-09-17] - Web browser push, plus push setup docs
 
 **What changed:**
