@@ -23,6 +23,15 @@ export interface RelayNode {
 
 /** Mirrors the Relay's DeviceResponse (GET /devices). The Relay stores no
  * model/OS metadata; `display_name` is the account's own label for the device. */
+/** Platform metadata a client reports at login/register (display-only). */
+export interface RelayDeviceInfo {
+  platform?: string;
+  os_version?: string;
+  browser?: string;
+  app_version?: string;
+  user_agent?: string;
+}
+
 export interface RelayDevice {
   device_id: string;
   account_id: string;
@@ -34,6 +43,8 @@ export interface RelayDevice {
   revoked_at?: string | null;
   /** Last WS heartbeat/registration; absent for devices seen pre-presence. */
   last_seen_at?: string | null;
+  /** Auto-captured platform/browser metadata; absent for older clients. */
+  device_info?: RelayDeviceInfo | null;
 }
 
 /** Mirrors the Relay's pairing-code creation response (POST /pairing/codes). */

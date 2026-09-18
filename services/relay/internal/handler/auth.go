@@ -32,6 +32,10 @@ type AuthRequest struct {
 	// clients and tests keep working — an account without one cannot be
 	// recovered until a trusted device enrolls it.
 	RecoveryPublicKey string `json:"recovery_public_key"`
+	// DeviceInfo is the optional platform/browser metadata reported by the
+	// client on login/register, stored for display in the Devices list. Older
+	// clients omit it; the upsert then preserves whatever was already stored.
+	DeviceInfo *DeviceInfo `json:"device_info"`
 }
 
 // ChangePasswordRequest is the authenticated credential-change body. Both
@@ -120,7 +124,7 @@ func Register(pool *db.Pool, store auth.SessionStore, cfg *config.Config) http.H
 		}
 
 		// The first device auto-registers with the account (§2).
-		if _, err := upsertDeviceForAccount(tx, r, req.DeviceID, req.DevicePublicKey, encryptionKey, accountID); err != nil {
+		if _, err := upsertDeviceForAccount(tx, r, req.DeviceID, req.DevicePublicKey, encryptionKey, accountID, req.DeviceInfo); err != nil {
 			respondDeviceUpsertError(w, err)
 			return
 		}
@@ -193,7 +197,7 @@ func Login(pool *db.Pool, store auth.SessionStore, cfg *config.Config) http.Hand
 		// supplied device_id/public_key is upserted for THIS account (ownership
 		// guarded), so first login from a new device needs no separate
 		// /devices/register call.
-		if _, err := upsertDeviceForAccount(pool, r, req.DeviceID, req.DevicePublicKey, encryptionKey, accountID); err != nil {
+		if _, err := upsertDeviceForAccount(pool, r, req.DeviceID, req.DevicePublicKey, encryptionKey, accountID, req.DeviceInfo); err != nil {
 			respondDeviceUpsertError(w, err)
 			return
 		}

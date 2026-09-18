@@ -11,6 +11,7 @@ import { createAuthClient, type RecipientKind, type SessionInfo } from "@repo/sd
 import type { StoredDeviceIdentity } from "@repo/relay-client";
 
 import { RELAY_BASE, createNativeRelayHttp, getSessionToken } from "./adapters";
+import { detectDeviceInfo } from "./device-info";
 
 export { RELAY_BASE, getSessionToken } from "./adapters";
 
@@ -128,7 +129,8 @@ export async function relayLogin(
   /** Published X25519 encryption key (ADR-0008); optional. */
   encryptionPublicKey?: string,
 ): Promise<string> {
-  const result = await auth.login(email, password, device, encryptionPublicKey);
+  // Attach the native platform fingerprint so the Relay can label this device.
+  const result = await auth.login(email, password, { ...device, info: detectDeviceInfo() }, encryptionPublicKey);
   if (!result.ok) throw new Error(result.error ?? "sign-in failed");
   const token = await getSessionToken();
   if (!token) throw new Error("sign-in succeeded but the Relay issued no session");
@@ -152,7 +154,13 @@ export async function relayRegister(
   recoveryPublicKey?: string,
   encryptionPublicKey?: string,
 ): Promise<SessionInfo> {
-  const result = await auth.register(email, password, device, recoveryPublicKey, encryptionPublicKey);
+  const result = await auth.register(
+    email,
+    password,
+    { ...device, info: detectDeviceInfo() },
+    recoveryPublicKey,
+    encryptionPublicKey,
+  );
   if (!result.ok || !result.session) {
     throw new Error(result.error ?? "account creation failed");
   }
@@ -245,6 +253,14 @@ export interface RelayDevice {
   created_at: string;
   revoked_at?: string | null;
   last_seen_at?: string | null;
+  /** Auto-captured platform/browser metadata; absent for older clients. */
+  device_info?: {
+    platform?: string;
+    os_version?: string;
+    browser?: string;
+    app_version?: string;
+    user_agent?: string;
+  } | null;
 }
 
 export async function relayDevices(): Promise<RelayDevice[]> {
@@ -283,6 +299,7 @@ export async function relayRegisterDevice(
     device_id: device.device_id,
     public_key: device.public_key,
     encryption_public_key: encryptionPublicKey,
+    device_info: detectDeviceInfo(),
   });
 }
 

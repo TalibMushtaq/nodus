@@ -21,7 +21,9 @@ import {
   type RelayDevice,
 } from "../../../lib/pairing";
 import { pingNode, pingDevice, type PingResult } from "../../../lib/ping";
-import { shortId, timeAgo } from "../../../lib/format";
+import { describeDeviceInfo, shortId, timeAgo } from "../../../lib/format";
+import { ensureNodeTrusted } from "../../../lib/auto-pair";
+import { getTrustedNodes } from "../../../lib/trusted-nodes";
 import { AddStorageNodeDialog } from "../../../components/add-storage-node-dialog";
 import { useAuth } from "../../../providers/auth-provider";
 
@@ -63,18 +65,52 @@ function PingResultText({ state }: { state?: PingState }) {
   );
 }
 
+// Manual pairing of *this browser device* with a node. Distinct from the Relay
+// presence ping: direct WebRTC (Path A/B) needs the node's `devices` table to
+// hold this device's key, which only a successful pair records.
+type PairState =
+  | { status: "pending" }
+  | { status: "done"; paired: boolean; host?: string }
+  | { status: "error"; message: string };
+
+function PairResultText({ state }: { state?: PairState }) {
+  if (!state) return null;
+  if (state.status === "pending") {
+    return <span className="text-[10px] text-muted-foreground shrink-0">Pairing…</span>;
+  }
+  if (state.status === "error") {
+    return <span className="text-[10px] text-destructive shrink-0 max-w-40 truncate">{state.message}</span>;
+  }
+  return state.paired ? (
+    <span className="text-[10px] shrink-0" style={{ color: "var(--status-synced)" }}>
+      Paired{state.host ? ` · ${state.host}` : ""}
+    </span>
+  ) : (
+    <span className="text-[10px] text-muted-foreground shrink-0 max-w-44 text-right">
+      Unreachable — use /pair for another host
+    </span>
+  );
+}
+
 function NodeRowView({
   node,
   onManage,
   onPing,
   onRename,
+  onPair,
   pingState,
+  pairState,
+  trustedHost,
 }: {
   node: RelayNode;
   onManage: () => void;
   onPing: () => void;
   onRename: () => void;
+  onPair: () => void;
   pingState?: PingState;
+  pairState?: PairState;
+  /** Host this browser trusts the node on, when already paired. */
+  trustedHost?: string;
 }) {
   // Staleness-derived, not "has ever been seen" (see isNodeOnline).
   const online = isNodeOnline(node);
@@ -105,6 +141,20 @@ function NodeRowView({
         {node.last_seen_at ? `Last seen ${timeAgo(node.last_seen_at)}` : "Never seen"}
       </div>
       <PingResultText state={pingState} />
+      <PairResultText state={pairState} />
+      <button
+        type="button"
+        onClick={onPair}
+        disabled={pairState?.status === "pending"}
+        title={
+          trustedHost
+            ? `Re-verify and re-pair this browser with the node (currently trusted at ${trustedHost})`
+            : "Pair this browser with the node so direct WebRTC transfers work"
+        }
+        className="px-3 py-1.5 text-xs border border-border hover:border-accent hover:text-accent transition-colors text-foreground shrink-0 disabled:opacity-40"
+      >
+        {pairState?.status === "pending" ? "Pairing…" : trustedHost ? "Re-pair" : "Pair"}
+      </button>
       <button
         type="button"
         onClick={onPing}
@@ -145,6 +195,8 @@ function DeviceRowView({
   pingState?: PingState;
 }) {
   const revoked = device.status === "REVOKED";
+  // Auto-captured at login (platform · browser/app); null for older clients.
+  const infoLabel = describeDeviceInfo(device.device_info);
   return (
     <div className="flex items-center gap-4 px-5 py-3.5 border-b border-border last:border-0 hover:bg-secondary/40 transition-colors">
       <div className="w-9 h-9 rounded-xl border border-border flex items-center justify-center shrink-0 bg-secondary">
@@ -161,6 +213,11 @@ function DeviceRowView({
           <DeviceStateBadge revoked={revoked} />
         </div>
         <div className="text-[10px] font-mono text-muted-foreground mt-0.5 truncate">{device.device_id}</div>
+        {infoLabel && (
+          <div className="text-[10px] text-muted-foreground mt-0.5 truncate" title={device.device_info?.user_agent ?? undefined}>
+            {infoLabel}
+          </div>
+        )}
       </div>
       <div className="text-[10px] text-muted-foreground hidden sm:block">
         {revoked ? `Revoked ${timeAgo(device.revoked_at)}` : `Registered ${timeAgo(device.created_at)}`}
@@ -213,6 +270,11 @@ export function DevicesClient({ publicRelayUrl }: DevicesClientProps) {
   // Manual ping results keyed by peer id. A poll re-render must not clear them,
   // so they live here rather than in the row components.
   const [pings, setPings] = useState<Record<string, PingState>>({});
+  // Per-node manual pairing outcome, and which nodes this browser already trusts
+  // (node_id → discovered host). Kept in the parent so the 30s catalog poll does
+  // not wipe a just-completed pair's feedback.
+  const [pairStates, setPairStates] = useState<Record<string, PairState>>({});
+  const [trustedHosts, setTrustedHosts] = useState<Record<string, string>>({});
   // In-flight rename dialog target. `current` lets us treat a no-op as cancel.
   const [renamePeer, setRenamePeer] = useState<{ kind: "node" | "device"; id: string; current: string } | null>(null);
   const [renameValue, setRenameValue] = useState("");
@@ -258,6 +320,40 @@ export function DevicesClient({ publicRelayUrl }: DevicesClientProps) {
     }
   }, [renamePeer, renameValue]);
 
+  // Reload the browser's trusted-node cache so a completed pair flips the row
+  // to "Re-pair" without a reload.
+  const refreshTrusted = useCallback(async () => {
+    try {
+      const rows = await getTrustedNodes();
+      setTrustedHosts(Object.fromEntries(rows.map((r) => [r.node_id, r.host])));
+    } catch {
+      // IndexedDB unavailable (private mode); the Pair button still works.
+    }
+  }, []);
+
+  // Pair *this browser* with a node: verify the cached trust (re-pairing when
+  // the node has forgotten this device), then surface the outcome. Distinct
+  // from "Add Storage Node", which registers a brand-new node with the Relay.
+  const pairBrowser = useCallback(
+    async (nodeId: string) => {
+      setPairStates((previous) => ({ ...previous, [nodeId]: { status: "pending" } }));
+      try {
+        const result = await ensureNodeTrusted(nodeId);
+        await refreshTrusted();
+        setPairStates((previous) => ({
+          ...previous,
+          [nodeId]: { status: "done", paired: result.paired, host: result.host },
+        }));
+      } catch (err) {
+        setPairStates((previous) => ({
+          ...previous,
+          [nodeId]: { status: "error", message: err instanceof Error ? err.message : String(err) },
+        }));
+      }
+    },
+    [refreshTrusted],
+  );
+
   // Send a manual probe and record the outcome. The Relay performs the round
   // trip; this only reflects its verdict.
   const runPing = useCallback(async (peerId: string, kind: "node" | "device") => {
@@ -294,6 +390,12 @@ export function DevicesClient({ publicRelayUrl }: DevicesClientProps) {
       cancelled = true;
     };
   }, []);
+
+  // Hydrate which nodes this browser trusts on mount; the refresh helper above
+  // re-reads it after a manual pair.
+  useEffect(() => {
+    void refreshTrusted();
+  }, [refreshTrusted]);
 
   // The catalog is fetched once on mount, but a node that stops heartbeating
   // should flip to offline on its own. Re-poll on the sidebar's cadence so the
@@ -421,9 +523,12 @@ export function DevicesClient({ publicRelayUrl }: DevicesClientProps) {
                 key={n.node_id}
                 node={n}
                 onManage={() => router.push("/pair")}
+                onPair={() => void pairBrowser(n.node_id)}
                 onPing={() => void runPing(n.node_id, "node")}
                 onRename={() => openRename("node", n.node_id, n.display_name ?? "")}
                 pingState={pings[n.node_id]}
+                pairState={pairStates[n.node_id]}
+                trustedHost={trustedHosts[n.node_id]}
               />
             ))}
           </div>

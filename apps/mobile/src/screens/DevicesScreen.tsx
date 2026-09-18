@@ -8,7 +8,7 @@ import * as React from "react";
 import { Pressable, View } from "react-native";
 import { useNavigation } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
-import { formatBytes, timeAgo } from "@repo/sdk";
+import { describeDeviceInfo, formatBytes, timeAgo } from "@repo/sdk";
 
 import { AppStatusLine } from "../runtime/AppStatusLine";
 import { useApp } from "../runtime/context";
@@ -203,6 +203,7 @@ export function DevicesScreen() {
                         </View>
                         <ThemedText variant="monoSmall" tone="muted">
                           {d.last_seen_at ? `Active ${timeAgo(d.last_seen_at)}` : "Not seen yet"}
+                          {describeDeviceInfo(d.device_info) ? ` · ${describeDeviceInfo(d.device_info)}` : ""}
                         </ThemedText>
                       </View>
                       <Icon name="chevronRight" size={16} color={theme.colors.mutedForeground} />

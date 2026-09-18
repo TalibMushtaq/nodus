@@ -6,6 +6,7 @@ import type { DevicePublicIdentity, DeviceSigner } from "@repo/sdk";
 
 import { fetchSession, login, register, logout } from "../lib/auth-client";
 import { getOrCreateDevice, getOrCreateEncryptionIdentity } from "../lib/device";
+import { detectDeviceInfo } from "../lib/device-info";
 import type { SessionInfo } from "../lib/session";
 
 // AuthProvider (re)auths against the Relay-backed session cookie on the
@@ -88,9 +89,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const handleLogin = useCallback(async (email: string, password: string) => {
     const { identity } = await getOrCreateDevice();
+    // Attach the browser/OS fingerprint so the Relay can label this device in
+    // the Devices list; it rides the existing device identity (display-only).
+    const withInfo = { ...identity, info: detectDeviceInfo() };
     // Publish the X25519 encryption key alongside the Ed25519 identity so other
     // devices seal envelopes to it directly (ADR-0008).
-    const res = await login(email, password, identity, getOrCreateEncryptionIdentity().public_key);
+    const res = await login(email, password, withInfo, getOrCreateEncryptionIdentity().public_key);
     if (!res.ok) {
       return { ok: false, error: res.error };
     }
@@ -103,11 +107,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     async (email: string, password: string, recoveryPublicKey?: string) => {
       const { identity } = await getOrCreateDevice();
       const encryptionKey = getOrCreateEncryptionIdentity().public_key;
+      const withInfo = { ...identity, info: detectDeviceInfo() };
       // Only pass the recovery key when enrolling, so a plain registration keeps
       // its original call shape.
       const res = recoveryPublicKey
-        ? await register(email, password, identity, recoveryPublicKey, encryptionKey)
-        : await register(email, password, identity, undefined, encryptionKey);
+        ? await register(email, password, withInfo, recoveryPublicKey, encryptionKey)
+        : await register(email, password, withInfo, undefined, encryptionKey);
       if (!res.ok) {
         return { ok: false, error: res.error };
       }

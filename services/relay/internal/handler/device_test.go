@@ -39,3 +39,37 @@ func TestNormalizeEncryptionPublicKey(t *testing.T) {
 		})
 	}
 }
+
+// The device-info fields are request-controlled text echoed back to every
+// client, so they must be trimmed, dropped when empty, and length-capped.
+func TestDeviceInfoSanitization(t *testing.T) {
+	platform, osVersion, browser, appVersion, userAgent := deviceInfoColumns(&DeviceInfo{
+		Platform:   "  web  ",
+		OSVersion:  "Linux",
+		Browser:    "Chrome 126",
+		AppVersion: "",
+		UserAgent:  string(make([]rune, 300)), // 300 NUL runes → capped at 256
+	})
+	if platform == nil || *platform != "web" {
+		t.Fatalf("platform = %v, want web", platform)
+	}
+	if appVersion != nil {
+		t.Fatalf("empty app_version should be absent, got %v", *appVersion)
+	}
+	if userAgent == nil || len([]rune(*userAgent)) != 256 {
+		t.Fatalf("user_agent should be capped at 256 runes, got %v", userAgent)
+	}
+
+	// An omitted block stores nothing...
+	if p, o, b, a, u := deviceInfoColumns(nil); p != nil || o != nil || b != nil || a != nil || u != nil {
+		t.Fatal("nil DeviceInfo should produce no columns")
+	}
+	// ...and rebuilding from all-nil columns yields no response object.
+	if info := deviceInfoFromColumns(nil, nil, nil, nil, nil); info != nil {
+		t.Fatalf("expected nil DeviceInfo, got %+v", info)
+	}
+	// Round-trip: a populated set rebuilds.
+	if info := deviceInfoFromColumns(platform, osVersion, browser, nil, userAgent); info == nil || info.Browser != "Chrome 126" {
+		t.Fatalf("expected rebuilt DeviceInfo, got %+v", info)
+	}
+}

@@ -25,6 +25,14 @@ vi.mock("../../../../lib/ping", async (importOriginal) => {
   return { ...actual, pingNode: vi.fn(), pingDevice: vi.fn() };
 });
 
+// Manual pairing probes the node over LAN and reads the browser's IndexedDB
+// trust cache; both are mocked so the button test stays offline and inert.
+vi.mock("../../../../lib/auto-pair", () => ({ ensureNodeTrusted: vi.fn() }));
+vi.mock("../../../../lib/trusted-nodes", () => ({
+  getTrustedNodes: vi.fn().mockResolvedValue([]),
+  addTrustedNode: vi.fn(),
+}));
+
 // DevicesClient now reads the signed-in device (to warn before self-revocation),
 // so provide a stable auth context instead of pulling in the real provider's
 // network bootstrapping.
@@ -43,6 +51,8 @@ vi.mock("../../../../providers/auth-provider", () => ({
 
 import { listNodes, listDevices, revokeDevice, createPairingCode, renameNode, type RelayNode } from "../../../../lib/pairing";
 import { pingNode, pingDevice } from "../../../../lib/ping";
+import { ensureNodeTrusted } from "../../../../lib/auto-pair";
+import { getTrustedNodes } from "../../../../lib/trusted-nodes";
 import { DevicesClient } from "../devices-client";
 
 const mockListNodes = vi.mocked(listNodes);
@@ -52,6 +62,8 @@ const mockCreatePairingCode = vi.mocked(createPairingCode);
 const mockPingNode = vi.mocked(pingNode);
 const mockPingDevice = vi.mocked(pingDevice);
 const mockRenameNode = vi.mocked(renameNode);
+const mockEnsureNodeTrusted = vi.mocked(ensureNodeTrusted);
+const mockGetTrustedNodes = vi.mocked(getTrustedNodes);
 
 function node(partial: Partial<RelayNode> = {}): RelayNode {
   return {
@@ -71,6 +83,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockListNodes.mockResolvedValue([]);
   mockListDevices.mockResolvedValue([]);
+  mockGetTrustedNodes.mockResolvedValue([]);
   mockCreatePairingCode.mockResolvedValue({
     code: "NODUS-ABCD-2345",
     expires_at: new Date(Date.now() + 10 * 60_000).toISOString(),
@@ -148,6 +161,39 @@ describe("DevicesClient", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Revoke device" }));
     await waitFor(() => expect(mockRevokeDevice).toHaveBeenCalledWith("other-device-1234"));
+  });
+
+  it("manually pairs this browser with a node and reports success", async () => {
+    mockListNodes.mockResolvedValue([node()]);
+    mockEnsureNodeTrusted.mockResolvedValue({ paired: true, host: "127.0.0.1" });
+
+    render(<DevicesClient publicRelayUrl="https://nodus.example.com" />);
+    await screen.findByText("node-123…");
+
+    fireEvent.click(screen.getByRole("button", { name: "Pair" }));
+
+    expect(await screen.findByText("Paired · 127.0.0.1")).toBeInTheDocument();
+    expect(mockEnsureNodeTrusted).toHaveBeenCalledWith("node-1234567890abcdef");
+  });
+
+  it("offers a re-pair for a node this browser already trusts", async () => {
+    mockListNodes.mockResolvedValue([node()]);
+    mockGetTrustedNodes.mockResolvedValue([
+      {
+        node_id: "node-1234567890abcdef",
+        host: "127.0.0.1",
+        account_id: "acct-1",
+        device_id: "test-device",
+        paired_at: "2026-09-11T00:00:00.000Z",
+      },
+    ]);
+    mockEnsureNodeTrusted.mockResolvedValue({ paired: true, host: "127.0.0.1" });
+
+    render(<DevicesClient publicRelayUrl="https://nodus.example.com" />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Re-pair" }));
+
+    expect(await screen.findByText("Paired · 127.0.0.1")).toBeInTheDocument();
   });
 
   it("pings a node and shows the round-trip time", async () => {

@@ -23,6 +23,11 @@ vi.mock("../../lib/device", () => ({
   }),
 }));
 
+// Pin the auto-detected fingerprint so the auth call assertion is stable.
+vi.mock("../../lib/device-info", () => ({
+  detectDeviceInfo: () => ({ platform: "linux", browser: "Chrome 126" }),
+}));
+
 import { login, register, logout, fetchSession } from "../../lib/auth-client";
 
 const mockLogin = vi.mocked(login);
@@ -106,7 +111,11 @@ describe("AuthProvider", () => {
     expect(mockLogin).toHaveBeenCalledWith(
       "test@example.com",
       "password123",
-      { device_id: "test-device-id", public_key: "test-public-key" },
+      {
+        device_id: "test-device-id",
+        public_key: "test-public-key",
+        info: { platform: "linux", browser: "Chrome 126" },
+      },
       "test-encryption-public-key",
     );
     expect(screen.getByTestId("status")).toHaveTextContent("authenticated");
@@ -127,7 +136,11 @@ describe("AuthProvider", () => {
     expect(mockRegister).toHaveBeenCalledWith(
       "test@example.com",
       "password123",
-      { device_id: "test-device-id", public_key: "test-public-key" },
+      {
+        device_id: "test-device-id",
+        public_key: "test-public-key",
+        info: { platform: "linux", browser: "Chrome 126" },
+      },
       undefined,
       "test-encryption-public-key",
     );
