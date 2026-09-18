@@ -91,6 +91,27 @@ describe("executeTransfer", () => {
     expect(cache.entries.has("node-1")).toBe(false);
   });
 
+  it("reports each path attempt through onPath before it runs", async () => {
+    const reported: TransferPath[] = [];
+    const attemptPath = async (_req: ShardTransferRequest, path: TransferPath) => {
+      // onPath must have fired for this path before attemptPath is invoked.
+      expect(reported[reported.length - 1]).toBe(path);
+      const ok = path === "buffer_relay";
+      return { success: ok, path, transferId: "t1", durationMs: 1, bytesTransferred: ok ? 3 : 0 };
+    };
+
+    const result = await executeTransfer(
+      makeRequest({ onPath: (path) => reported.push(path) }),
+      FAST_CONFIG,
+      new FakeCache(),
+      attemptPath,
+    );
+
+    expect(result.success).toBe(true);
+    // One announcement per path (not per retry), in fallback order.
+    expect(reported).toEqual(["local_signaling", "relay_signaling", "buffer_relay"]);
+  });
+
   it("falls through the chain in order until a path succeeds", async () => {
     const cache = new FakeCache();
     const seen: TransferPath[] = [];

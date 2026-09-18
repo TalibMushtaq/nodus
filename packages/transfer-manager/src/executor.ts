@@ -48,6 +48,9 @@ export async function executeTransfer(
   let lastResult: TransferResult | undefined;
 
   for (const path of chain) {
+    // Announce the path before attempting it so the UI can show the fallback
+    // being tried (e.g. "via Relay buffer" while the direct paths time out).
+    request.onPath?.(path);
     for (let attempt = 0; attempt <= config.maxRetriesPerStage; attempt++) {
       if (attempt > 0) {
         await sleepBackoff(attempt - 1, config.backoffBaseMs, config.backoffJitterMs);

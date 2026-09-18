@@ -90,4 +90,19 @@ describe("shared attempt path", () => {
     const attempt = createAttemptPath(deps({ canAttemptLocalPath: () => true }));
     await expect(attempt(request(), "local_signaling")).rejects.toThrow(/no trusted local host/);
   });
+
+  it("skips direct paths for an offline node before any negotiation", async () => {
+    // Even with capabilities and a trusted host, an offline node must fail fast
+    // so the chain reaches the Relay buffer without a WebRTC timeout.
+    const attempt = createAttemptPath(
+      deps({
+        canAttemptLocalPath: () => true,
+        canAttemptRelaySignaling: () => true,
+        isNodeOnline: () => false,
+        resolveLocalHost: vi.fn(async () => "192.168.1.10"),
+      }),
+    );
+    await expect(attempt(request(), "local_signaling")).rejects.toThrow(/offline/);
+    await expect(attempt(request(), "relay_signaling")).rejects.toThrow(/offline/);
+  });
 });

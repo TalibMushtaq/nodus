@@ -29,6 +29,12 @@ export interface ShardTransferRequest {
    * the local queue (Path D) cannot resume mid-shard, so it omits this.
    */
   onProgress?: (sentBytes: number, totalBytes: number) => void;
+  /**
+   * Fires when the executor starts trying a path, before it resolves. Lets the
+   * UI show the fallback in progress ("via Relay buffer") instead of leaving a
+   * "choosing path…" placeholder until a path finally succeeds.
+   */
+  onPath?: (path: TransferPath) => void;
 }
 
 /** Outcome of a shard transfer. */

@@ -75,6 +75,13 @@ export interface AttemptPathDeps {
   /** Platform capability predicate for Path B (needs a peer connection). */
   canAttemptRelaySignaling: () => boolean;
   /**
+   * Whether the target node is currently online. When it reports false, the
+   * direct paths (A/B) are skipped immediately: negotiating with an offline node
+   * only burns the WebRTC timeout before Path C runs, which made relay fallback
+   * feel slow. Unknown nodes are treated as online (the predicate is optional).
+   */
+  isNodeOnline?: (targetNode: string) => boolean;
+  /**
    * Peer-connection constructor for direct paths. Browsers omit it (the global
    * `RTCPeerConnection` is used); native injects react-native-webrtc.
    */
@@ -154,6 +161,11 @@ export function createAttemptPath(deps: AttemptPathDeps): AttemptPathFn {
     }
 
     // Path A/B: WebRTC. Capability or host failures throw to advance the chain.
+    // An offline node is skipped before any negotiation so the relay buffer
+    // (Path C) is reached at once instead of after a WebRTC timeout.
+    if (deps.isNodeOnline && !deps.isNodeOnline(String(request.targetNode))) {
+      throw new Error("target node is offline; using the relay buffer");
+    }
     const isLocal = path === "local_signaling";
     if (isLocal) {
       if (!deps.canAttemptLocalPath()) {

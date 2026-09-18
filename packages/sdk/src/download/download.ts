@@ -26,6 +26,23 @@ export interface RelayFileLocation {
   size_bytes: number | null;
 }
 
+/**
+ * Whether a location's bytes can be fetched by a client.
+ *
+ * `NODE_STORED` is a durable copy the Relay pulls from a node. The buffer
+ * statuses mean the Relay still holds the ciphertext (`buffer_id` set) and
+ * serves it directly over `GET /shards/{hash}`, so a file that reached the
+ * Relay but has not been picked up by a node is still downloadable.
+ */
+export function isFetchableLocation(location: RelayFileLocation): boolean {
+  return (
+    location.status === "NODE_STORED" ||
+    location.status === "RELAY_BUFFERED" ||
+    location.status === "NODE_RECEIVING" ||
+    location.status === "NODE_VERIFIED"
+  );
+}
+
 /** This device has no FEK envelope for the file (shared before it was added). */
 export class MissingEnvelopeError extends Error {
   constructor(fileId: string) {
@@ -57,6 +74,30 @@ export interface DownloadDeps {
   fetchShard(fileId: string, location: RelayFileLocation): Promise<Uint8Array>;
 }
 
+/**
+ * What the download loop is doing right now. Fetched shards are handled
+ * serially (fetch → verify → decrypt), so a UI can label the current stage
+ * instead of showing an opaque bar.
+ */
+export type DownloadPhase =
+  | "unlocking"
+  | "fetching"
+  | "verifying"
+  | "decrypting"
+  | "assembling"
+  | "done";
+
+export interface DownloadProgressEvent {
+  phase: DownloadPhase;
+  /** Shards fully fetched + verified + decrypted. */
+  completedShards: number;
+  totalShards: number;
+  /** Ciphertext bytes fetched so far (network progress). */
+  completedBytes: number;
+  /** Sum of the version's declared ciphertext sizes, or 0 when unknown. */
+  totalBytes: number;
+}
+
 export interface DownloadFileOptions {
   fileId: string;
   versionNumber: number;
@@ -65,6 +106,11 @@ export interface DownloadFileOptions {
   /** Optional plaintext BLAKE3 from the catalog, verified after reassembly. */
   expectedVersionHash?: string | null;
   deps: DownloadDeps;
+  /**
+   * Stage/byte progress. Optional and best-effort: the download never awaits
+   * it, so a slow or throwing callback cannot stall or fail the transfer.
+   */
+  onProgress?: (event: DownloadProgressEvent) => void;
 }
 
 export interface DownloadResult {
@@ -78,7 +124,19 @@ export interface DownloadResult {
  * modes a caller should surface differently.
  */
 export async function downloadFile(options: DownloadFileOptions): Promise<DownloadResult> {
-  const { fileId, versionNumber, shardCount, encryptedName, expectedVersionHash, deps } = options;
+  const { fileId, versionNumber, shardCount, encryptedName, expectedVersionHash, deps, onProgress } =
+    options;
+
+  // Progress is advisory: a throwing subscriber must not abort a download.
+  const emit = (phase: DownloadPhase, completedShards: number, completedBytes: number, totalBytes: number) => {
+    try {
+      onProgress?.({ phase, completedShards, totalShards: shardCount, completedBytes, totalBytes });
+    } catch {
+      // Ignore callback errors.
+    }
+  };
+
+  emit("unlocking", 0, 0, 0);
 
   const fek = await deps.fetchFileKey(fileId);
   if (!fek) {
@@ -89,29 +147,41 @@ export async function downloadFile(options: DownloadFileOptions): Promise<Downlo
     (l) => l.version_number === versionNumber,
   );
   const byIndex = new Map<number, RelayFileLocation>();
+  let totalBytes = 0;
   for (const location of locations) {
-    // Only a shard committed on a node is retrievable; buffered/in-transit
-    // shards have no client-facing fetch path.
-    if (location.status === "NODE_STORED") {
+    if (location.size_bytes != null) totalBytes += location.size_bytes;
+    // A shard is retrievable when it is on a node OR still in the Relay buffer;
+    // the fetch layer falls back to the Relay for the buffered case.
+    if (isFetchableLocation(location)) {
       byIndex.set(location.shard_index, location);
     }
   }
 
   const shards: Shard[] = [];
+  let fetchedBytes = 0;
   for (let index = 0; index < shardCount; index += 1) {
     const location = byIndex.get(index);
     if (!location) {
       const anyStatus = locations.find((l) => l.shard_index === index)?.status ?? "missing";
       throw new ShardUnavailableError(index, anyStatus);
     }
+    // Network stage: bytes cross the wire here (LAN node, then Relay fallback).
+    emit("fetching", index, fetchedBytes, totalBytes);
     const packed = await deps.fetchShard(fileId, location);
+    fetchedBytes += packed.length;
+    // Integrity stage: BLAKE3 compare before the AEAD open.
+    emit("verifying", index, fetchedBytes, totalBytes);
     if (location.hash && hashShard(packed) !== location.hash) {
       throw new ShardIntegrityError(index);
     }
+    // Decryption stage: AEAD open of this shard under the file key.
+    emit("decrypting", index, fetchedBytes, totalBytes);
     const encrypted = unpackEncryptedShard(fileId as FileId, index as ShardIndex, packed);
     shards.push(decryptShard(encrypted, fek));
+    emit("fetching", index + 1, fetchedBytes, totalBytes);
   }
 
+  emit("assembling", shardCount, fetchedBytes, totalBytes);
   shards.sort((a, b) => a.index - b.index);
   const data = reconstructFromShards(shards);
 
@@ -123,8 +193,8 @@ export async function downloadFile(options: DownloadFileOptions): Promise<Downlo
     }
   }
 
-  return {
-    data,
-    name: encryptedName ? decryptName(encryptedName, fek) : null,
-  };
+  const name = encryptedName ? decryptName(encryptedName, fek) : null;
+  emit("done", shardCount, fetchedBytes, totalBytes);
+
+  return { data, name };
 }
