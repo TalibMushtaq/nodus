@@ -403,22 +403,12 @@ func (c *Client) WritePump() {
 				return
 			}
 
-			w, err := c.Conn.NextWriter(websocket.TextMessage)
-			if err != nil {
-				return
-			}
-			if _, err := w.Write(message); err != nil {
-				return
-			}
-
-			// Add queued chat messages to the current websocket frame
-			n := len(c.Send)
-			for i := 0; i < n; i++ {
-				_, _ = w.Write([]byte{'\n'})
-				_, _ = w.Write(<-c.Send)
-			}
-
-			if err := w.Close(); err != nil {
+			// One protocol envelope per WebSocket text frame. Do NOT coalesce
+			// queued messages into a single frame (the Gorilla example's
+			// newline-joined optimization): every client parses the frame as
+			// exactly one JSON envelope, so a joined frame reads as "trailing
+			// characters" and is dropped, silently losing events.
+			if err := c.Conn.WriteMessage(websocket.TextMessage, message); err != nil {
 				return
 			}
 
