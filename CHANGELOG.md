@@ -1,5 +1,38 @@
 # Changelog
 
+## [2026-09-19] - Use the Nodus mark as the web favicon and native app icon
+
+**What changed:** Generated `apps/web/app/favicon.ico`, `apps/web/public/favicon.png` and `apps/web/public/apple-touch-icon.png` from `apps/web/public/favicon.webp`, and added an `icons` block to the metadata in `apps/web/app/layout.tsx`. Regenerated the mobile assets (`assets/icon.png`, `android-icon-foreground.png`, `android-icon-monochrome.png`, `favicon.png`) from the same artwork and set the Android adaptive-icon background to the panel colour (`#140D09`), removing the now-unused `backgroundImage`.
+
+**Why:** Apply the user-provided brand mark as the web favicon and the native app icon.
+
+**Impact:** `apps/web` (`app/layout.tsx`, `app/favicon.ico`, `public/`), `apps/mobile/assets/*`, `apps/mobile/app.json`. The web favicon appears on the next page load; the native icon requires a prebuild + rebuild to be picked up.
+
+**Follow-ups:** None.
+
+## [2026-09-19] - Fix relay WebSocket frames and Android origin rejection
+
+**What changed:**
+- Relay `WritePump` (`internal/hub/hub.go`) now writes **one protocol envelope per WebSocket text frame**. It previously coalesced queued messages into a single newline-joined frame (the Gorilla chat example's optimization), which every client parses as one JSON value and rejects with "trailing characters at line 2 column 1" — silently dropping envelopes, including `batch_ack`. Added `writepump_test.go` as a regression test.
+- Relay `originAllowed` (`internal/handler/ws.go`) now permits same-origin upgrades (Origin host == request Host) in addition to `ALLOWED_ORIGINS`, and logs rejections. React Native's Android WebSocket (OkHttp) sends an `Origin` equal to the Relay it dials; the previous check rejected it with `403`, so the native client's socket never connected. Added `ws_origin_test.go`.
+- Mobile `ScreenHeader` now insets for the status bar (`useSafeAreaInsets()`), so the headerless tab roots (Files/Devices/Activity/Settings) no longer render under the status bar.
+
+**Why:** All three surfaced from a local Android dev build: the tab header overlapped the status bar, and file uploads failed with "timed out waiting for batch_ack" because the socket was refused (`403`) and relay frames could be dropped as malformed.
+
+**Impact:** `services/relay` (`internal/hub/hub.go`, `internal/handler/ws.go`, new tests), `apps/mobile` (`src/design/primitives.tsx`). The relay changes take effect on restart; cross-origin browsers remain restricted to `ALLOWED_ORIGINS`.
+
+**Follow-ups:** None.
+
+## [2026-09-18] - Mobile: enable Android system theming with expo-system-ui
+
+**What changed:** Added `expo-system-ui` (`~57.0.4`) so `userInterfaceStyle: "automatic"` is honoured on Android and the app follows the system light/dark setting. The native project was regenerated with `expo prebuild -p android --clean` (gitignored) for a local dev build.
+
+**Why:** Prebuild warned that `userInterfaceStyle` is a no-op on Android without `expo-system-ui`, and dark mode is part of the design.
+
+**Impact:** `apps/mobile/package.json`, `pnpm-lock.yaml`.
+
+**Follow-ups:** None.
+
 ## [2026-09-18] - Mobile: Android FCM client config (uncommitted, EAS-injected)
 
 **What changed:** Registered `com.talibmushtaq.nodus` as an Android app in the Firebase project `nodus-270d9` and generated `apps/mobile/google-services.json`. Because GitHub secret scanning flags the file's Firebase API key, it is **not committed**: it is gitignored and kept locally for `expo run:android`, and EAS builds receive it via a project file environment variable `GOOGLE_SERVICES_JSON_FILE` (`eas env:set … --type file`). Added `apps/mobile/app.config.js`, which maps that variable onto `android.googleServicesFile` with a local fallback. An earlier commit (`46c75f5`) that accidentally included the file was rewritten before this change.
