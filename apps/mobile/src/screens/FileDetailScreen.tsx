@@ -3,7 +3,7 @@
 // storage-node protocol work tracked for a later phase.
 
 import * as React from "react";
-import { View } from "react-native";
+import { Image, View } from "react-native";
 import { useNavigation, useRoute, type RouteProp } from "@react-navigation/native";
 import { formatBytes, timeAgo } from "@repo/sdk";
 
@@ -35,6 +35,21 @@ export function FileDetailScreen() {
 
   const file = app.files.find((f) => f.file_id === route.params.fileId);
   const row = file ? toFileRow(file, app.fileNames[file.file_id] ?? null) : null;
+  // Decrypted preview for images. Shares the Files list/grid cache, so opening
+  // details from a view that already loaded a thumbnail does not re-download.
+  const [preview, setPreview] = React.useState<string | null>(null);
+  const previewImage = app.previewImage;
+  const fileName = file ? app.fileNames[file.file_id] ?? "" : "";
+  React.useEffect(() => {
+    if (!file) return;
+    let cancelled = false;
+    void previewImage(file, fileName).then((next) => {
+      if (!cancelled) setPreview(next);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [previewImage, file, fileName]);
 
   // Destination options for Move: Root plus every folder, labelled by path.
   const folderOptions = React.useMemo(() => {
@@ -73,8 +88,8 @@ export function FileDetailScreen() {
     <Screen>
       <AppStatusLine />
 
-      {/* Preview placeholder — content is encrypted, so there is nothing to
-          render without downloading and decrypting. */}
+      {/* Image preview when the file decrypts to an image; otherwise an
+          extension placeholder (content is encrypted until downloaded). */}
       <View
         style={{
           height: 140,
@@ -85,11 +100,16 @@ export function FileDetailScreen() {
           justifyContent: "center",
           borderRadius: theme.radius.md,
           marginBottom: theme.spacing.lg,
+          overflow: "hidden",
         }}
       >
-        <ThemedText variant="mono" tone="muted">
-          {ext ?? "FILE"}
-        </ThemedText>
+        {preview ? (
+          <Image source={{ uri: preview }} style={{ width: "100%", height: "100%" }} resizeMode="contain" />
+        ) : (
+          <ThemedText variant="mono" tone="muted">
+            {ext ?? "FILE"}
+          </ThemedText>
+        )}
       </View>
 
       <Card style={{ paddingHorizontal: theme.spacing.md }}>

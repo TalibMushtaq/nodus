@@ -5,7 +5,7 @@
 // Relay has no server-side query for either, so this is presentation only.
 
 import * as React from "react";
-import { Pressable, View } from "react-native";
+import { Image, Pressable, View, type DimensionValue } from "react-native";
 import { useNavigation } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import { formatBytes, timeAgo } from "@repo/sdk";
@@ -14,6 +14,8 @@ import { AppStatusLine } from "../runtime/AppStatusLine";
 import { useApp } from "../runtime/context";
 import type { RelayFolder } from "../relay";
 import { toFileRow, type FileRow } from "../files/view";
+import { getCachedPreview, isImageName } from "../files/preview";
+import { getPreference, setPreference } from "../store/preferences";
 import {
   Button,
   Card,
@@ -38,6 +40,8 @@ type Nav = NativeStackNavigationProp<FilesStackParamList, "Files">;
 
 type SortKey = "modified" | "name" | "size";
 type FilterKey = "all" | "synced" | "pending" | "conflicts" | "local-only";
+type ViewMode = "list" | "grid";
+type IconSize = "sm" | "md" | "lg";
 type Context =
   | { kind: "file"; row: FileRow }
   | { kind: "folder"; id: string }
@@ -50,6 +54,21 @@ const FILTER_LABEL: Record<FilterKey, string> = {
   pending: "Pending",
   conflicts: "Conflicts",
   "local-only": "Local only",
+};
+
+// Persisted view preferences (SQLite key/value, same store as shard size). The
+// layout should survive a restart so the user does not re-pick it every visit.
+const VIEW_PREF_KEY = "filesView";
+const ICON_SIZE_PREF_KEY = "filesIconSize";
+const ICON_SIZE_LABEL: Record<IconSize, string> = { sm: "S", md: "M", lg: "L" };
+
+// Tile width per icon scale. Percentages (with a wrap gap) give a responsive
+// column count without measuring the viewport. Every file tile now carries a
+// preview image, so widths are larger: 31% ≈ 3 up, 48% ≈ 2 up, 100% = 1 up.
+const TILE_BASIS: Record<IconSize, DimensionValue> = {
+  sm: "31%",
+  md: "48%",
+  lg: "100%",
 };
 
 export function FilesScreen() {
@@ -75,6 +94,8 @@ export function FilesScreen() {
   // Files awaiting a destination folder (single or bulk move).
   const [moveTargets, setMoveTargets] = React.useState<FileRow[] | null>(null);
   const [confirmBulkDelete, setConfirmBulkDelete] = React.useState(false);
+  const [view, setView] = React.useState<ViewMode>("list");
+  const [iconSize, setIconSize] = React.useState<IconSize>("md");
 
   React.useEffect(() => {
     if (app.authed) {
@@ -83,6 +104,32 @@ export function FilesScreen() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [app.authed]);
+
+  // Restore the persisted layout/icon scale once on mount. A bad or missing
+  // stored value is ignored so the defaults stay valid.
+  React.useEffect(() => {
+    void (async () => {
+      const [storedView, storedSize] = await Promise.all([
+        getPreference(VIEW_PREF_KEY),
+        getPreference(ICON_SIZE_PREF_KEY),
+      ]);
+      if (storedView === "list" || storedView === "grid") setView(storedView);
+      if (storedSize === "sm" || storedSize === "md" || storedSize === "lg") {
+        setIconSize(storedSize);
+      }
+    })();
+  }, []);
+
+  // Persist on change; fire-and-forget (a failed write only costs the next
+  // session its remembered layout, it never blocks the UI).
+  const changeView = (next: ViewMode) => {
+    setView(next);
+    void setPreference(VIEW_PREF_KEY, next);
+  };
+  const changeIconSize = (next: IconSize) => {
+    setIconSize(next);
+    void setPreference(ICON_SIZE_PREF_KEY, next);
+  };
 
   const rows = React.useMemo(
     () => app.visibleFiles.map((f) => toFileRow(f, app.fileNames[f.file_id] ?? null)),
@@ -202,6 +249,11 @@ export function FilesScreen() {
           right={
             <>
               <IconButton
+                name={view === "list" ? "gridView" : "listView"}
+                accessibilityLabel={view === "list" ? "Switch to grid view" : "Switch to list view"}
+                onPress={() => changeView(view === "list" ? "grid" : "list")}
+              />
+              <IconButton
                 name={searching ? "close" : "search"}
                 accessibilityLabel="Search files"
                 onPress={() => {
@@ -235,7 +287,9 @@ export function FilesScreen() {
         </View>
       ) : null}
 
-      {/* Breadcrumb */}
+      {/* Breadcrumb. The root is a distinct chip that stays tappable from any
+          depth, and each ancestor is a target, so the tree is fully navigable
+          back to the top from any folder. */}
       <View
         style={{
           flexDirection: "row",
@@ -246,30 +300,63 @@ export function FilesScreen() {
           flexWrap: "wrap",
         }}
       >
-        <Pressable onPress={() => app.setCurrentFolderId(null)}>
-          <ThemedText variant="caption" tone={app.currentFolderId === null ? "default" : "accent"}>
-            Root
+        <Pressable
+          onPress={() => app.setCurrentFolderId(null)}
+          hitSlop={6}
+          style={({ pressed }) => [
+            {
+              flexDirection: "row",
+              alignItems: "center",
+              gap: theme.spacing.xs,
+              paddingHorizontal: theme.spacing.sm,
+              paddingVertical: theme.spacing.xs,
+              borderRadius: theme.radius.sm,
+              backgroundColor:
+                app.currentFolderId === null ? theme.colors.secondary : "transparent",
+              opacity: pressed ? 0.6 : 1,
+            },
+          ]}
+        >
+          <Icon
+            name="folder"
+            size={15}
+            color={app.currentFolderId === null ? theme.colors.foreground : theme.colors.accent}
+          />
+          <ThemedText variant="body" tone={app.currentFolderId === null ? "default" : "accent"}>
+            Backups
           </ThemedText>
         </Pressable>
-        {app.folderTrail.map((f, i) => (
-          <React.Fragment key={f.folder_id}>
-            <ThemedText variant="caption" tone="muted">
-              /
-            </ThemedText>
-            <Pressable
-              onPress={() =>
-                i === app.folderTrail.length - 1 ? undefined : app.setCurrentFolderId(f.folder_id)
-              }
-            >
-              <ThemedText
-                variant="caption"
-                tone={i === app.folderTrail.length - 1 ? "default" : "accent"}
-              >
-                {app.folderLabel(f)}
+        {app.folderTrail.map((f, i) => {
+          const isCurrent = i === app.folderTrail.length - 1;
+          return (
+            <React.Fragment key={f.folder_id}>
+              <ThemedText variant="caption" tone="muted">
+                /
               </ThemedText>
-            </Pressable>
-          </React.Fragment>
-        ))}
+              <Pressable
+                onPress={() => (isCurrent ? undefined : app.setCurrentFolderId(f.folder_id))}
+                hitSlop={6}
+                style={({ pressed }) => [
+                  {
+                    paddingHorizontal: theme.spacing.xs,
+                    paddingVertical: theme.spacing.xs,
+                    borderRadius: theme.radius.sm,
+                    backgroundColor: isCurrent ? theme.colors.secondary : "transparent",
+                    opacity: pressed ? 0.6 : 1,
+                  },
+                ]}
+              >
+                <ThemedText
+                  variant="body"
+                  tone={isCurrent ? "default" : "accent"}
+                  numberOfLines={1}
+                >
+                  {app.folderLabel(f)}
+                </ThemedText>
+              </Pressable>
+            </React.Fragment>
+          );
+        })}
       </View>
 
       <Screen refreshing={false} onRefresh={() => void Promise.all([app.loadFiles(), app.loadFolders()])}>
@@ -291,6 +378,37 @@ export function FilesScreen() {
             title="Nothing here yet"
             description="Upload a file or create a folder to get started."
           />
+        ) : view === "grid" ? (
+          // One wrapping grid for folders and files so the cards flow together
+          // and rows line up; separate grids put folders on their own row.
+          <View style={{ flexDirection: "row", flexWrap: "wrap", gap: theme.spacing.sm }}>
+            {folders.map((f) => (
+              <FolderTile
+                key={f.folder_id}
+                label={app.folderLabel(f)}
+                width={TILE_BASIS[iconSize]}
+                onOpen={() =>
+                  selectionMode ? undefined : app.setCurrentFolderId(f.folder_id)
+                }
+                onMore={() => openContext({ kind: "folder", id: f.folder_id })}
+              />
+            ))}
+            {filtered.map((row) => (
+              <FileTile
+                key={row.fileId}
+                row={row}
+                width={TILE_BASIS[iconSize]}
+                selected={selected.has(row.fileId)}
+                selectionMode={selectionMode}
+                onOpen={() =>
+                  selectionMode
+                    ? toggleSelection(row.fileId)
+                    : navigation.navigate("FileDetail", { fileId: row.fileId })
+                }
+                onMore={() => openContext({ kind: "file", row })}
+              />
+            ))}
+          </View>
         ) : (
           <Card>
             {folders.map((f, index) => (
@@ -334,6 +452,12 @@ export function FilesScreen() {
                     </ThemedText>
                   </View>
                   <StatusBadge status="synced" variant="dot" />
+                  <IconButton
+                    name="more"
+                    color={theme.colors.mutedForeground}
+                    accessibilityLabel={`Actions for ${app.folderLabel(f)}`}
+                    onPress={() => openContext({ kind: "folder", id: f.folder_id })}
+                  />
                 </Pressable>
               </React.Fragment>
             ))}
@@ -350,6 +474,7 @@ export function FilesScreen() {
                       : navigation.navigate("FileDetail", { fileId: row.fileId })
                   }
                   onLongPress={() => openContext({ kind: "file", row })}
+                  onMore={() => openContext({ kind: "file", row })}
                 />
               </React.Fragment>
             ))}
@@ -401,6 +526,31 @@ export function FilesScreen() {
 
       <Sheet visible={sortOpen} title="Sort & filter" onClose={() => setSortOpen(false)}>
         <ThemedText variant="label" tone="muted">
+          View
+        </ThemedText>
+        <View style={{ flexDirection: "row", gap: theme.spacing.sm, flexWrap: "wrap" }}>
+          <Chip label="List" icon="listView" active={view === "list"} onPress={() => changeView("list")} />
+          <Chip label="Grid" icon="gridView" active={view === "grid"} onPress={() => changeView("grid")} />
+        </View>
+        {/* Icon scale only affects tiles, so hide it in list view. */}
+        {view === "grid" ? (
+          <>
+            <ThemedText variant="label" tone="muted" style={{ marginTop: theme.spacing.sm }}>
+              Icon size
+            </ThemedText>
+            <View style={{ flexDirection: "row", gap: theme.spacing.sm, flexWrap: "wrap" }}>
+              {(Object.keys(ICON_SIZE_LABEL) as IconSize[]).map((k) => (
+                <Chip
+                  key={k}
+                  label={ICON_SIZE_LABEL[k]}
+                  active={iconSize === k}
+                  onPress={() => changeIconSize(k)}
+                />
+              ))}
+            </View>
+          </>
+        ) : null}
+        <ThemedText variant="label" tone="muted" style={{ marginTop: theme.spacing.sm }}>
           Sort by
         </ThemedText>
         <View style={{ flexDirection: "row", gap: theme.spacing.sm, flexWrap: "wrap" }}>
@@ -609,6 +759,31 @@ export function FilesScreen() {
   );
 }
 
+/**
+ * Best-effort thumbnail for an image row/tile. Starts from the session cache so
+ * a remount is instant, then asks the runtime to download+decrypt once. Returns
+ * null for non-images or until a preview is ready (caller shows the ext badge).
+ */
+function usePreview(row: FileRow): string | null {
+  const app = useApp();
+  const image = isImageName(row.name);
+  const [uri, setUri] = React.useState<string | null>(() =>
+    image ? getCachedPreview(row.fileId, row.latestVersionNumber) : null,
+  );
+  const previewImage = app.previewImage;
+  React.useEffect(() => {
+    if (!image) return;
+    let cancelled = false;
+    void previewImage(row.file, row.name).then((next) => {
+      if (!cancelled) setUri(next);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [previewImage, image, row.file, row.name, row.fileId, row.latestVersionNumber]);
+  return uri;
+}
+
 function PropRow({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {
   const theme = useTheme();
   return (
@@ -623,31 +798,36 @@ function PropRow({ label, value, mono = false }: { label: string; value: string;
   );
 }
 
+/** Status stripe colour shared by the list row and the grid tile. */
+function statusColor(row: FileRow, theme: ReturnType<typeof useTheme>): string {
+  if (row.status === "synced") return theme.status.synced;
+  if (row.status === "pending") return theme.status.pending;
+  if (row.status === "conflict") return theme.status.conflict;
+  if (row.status === "offline") return theme.status.offline;
+  return theme.status.local;
+}
+
 function FileRowView({
   row,
   selectionMode,
   selected,
   onOpen,
   onLongPress,
+  onMore,
 }: {
   row: FileRow;
   selectionMode: boolean;
   selected: boolean;
   onOpen: () => void;
   onLongPress: () => void;
+  onMore: () => void;
 }) {
   const theme = useTheme();
   const ext = row.name.includes(".") ? row.name.split(".").pop()?.toUpperCase() : undefined;
-  const barColor =
-    row.status === "synced"
-      ? theme.status.synced
-      : row.status === "pending"
-        ? theme.status.pending
-        : row.status === "conflict"
-          ? theme.status.conflict
-          : row.status === "offline"
-            ? theme.status.offline
-            : theme.status.local;
+  const barColor = statusColor(row, theme);
+  // Encrypted image bytes must be downloaded+decrypted; falls back to the ext
+  // badge until the preview resolves (or if it is not an eligible image).
+  const preview = usePreview(row);
   return (
     <Pressable
       onPress={onOpen}
@@ -691,11 +871,16 @@ function FileRowView({
           backgroundColor: theme.colors.secondary,
           alignItems: "center",
           justifyContent: "center",
+          overflow: "hidden",
         }}
       >
-        <ThemedText variant="monoSmall" tone="muted">
-          {ext && ext.length <= 4 ? ext : "FILE"}
-        </ThemedText>
+        {preview ? (
+          <Image source={{ uri: preview }} style={{ width: "100%", height: "100%" }} resizeMode="cover" />
+        ) : (
+          <ThemedText variant="monoSmall" tone="muted">
+            {ext && ext.length <= 4 ? ext : "FILE"}
+          </ThemedText>
+        )}
       </View>
       <View style={{ flex: 1, minWidth: 0 }}>
         <ThemedText variant="body" numberOfLines={1}>
@@ -706,6 +891,212 @@ function FileRowView({
         </ThemedText>
       </View>
       <StatusBadge status={row.status} variant="dot" />
+      {/* Visible 3-dot trigger so actions are discoverable without a long-press;
+          the press target inside the row may not bubble to the row's onPress. */}
+      <IconButton
+        name="more"
+        size={22}
+        color={theme.colors.mutedForeground}
+        accessibilityLabel={`Actions for ${row.name}`}
+        onPress={onMore}
+      />
+    </Pressable>
+  );
+}
+
+/**
+ * Grid-view folder card. Opens on tap and exposes the same context actions as
+ * the list row (long-press or the 3-dot button). `width` comes from the shared
+ * icon-scale basis so it lines up with the file tiles.
+ */
+// Grid-view folder card. Deliberately the same header + media + footer shape as
+// `FileTile` so folders and files share one grid and rows line up (the earlier
+// centered-glyph tile rendered at a different height and left a gap).
+function FolderTile({
+  label,
+  width,
+  onOpen,
+  onMore,
+}: {
+  label: string;
+  width: DimensionValue;
+  onOpen: () => void;
+  onMore: () => void;
+}) {
+  const theme = useTheme();
+  return (
+    <Pressable
+      onPress={onOpen}
+      onLongPress={onMore}
+      style={({ pressed }) => [
+        {
+          width,
+          padding: theme.spacing.sm,
+          gap: theme.spacing.sm,
+          borderRadius: theme.radius.md,
+          borderWidth: 1,
+          borderColor: theme.colors.border,
+          backgroundColor: theme.colors.card,
+          opacity: pressed ? 0.7 : 1,
+        },
+      ]}
+    >
+      <View style={{ flexDirection: "row", alignItems: "center", gap: theme.spacing.sm, minWidth: 0 }}>
+        <View
+          style={{
+            width: 28,
+            height: 28,
+            borderRadius: theme.radius.sm,
+            alignItems: "center",
+            justifyContent: "center",
+            backgroundColor: theme.colors.accent,
+          }}
+        >
+          <Icon name="folder" size={15} color={theme.colors.accentForeground} />
+        </View>
+        <ThemedText variant="caption" numberOfLines={1} style={{ flex: 1, minWidth: 0 }}>
+          {label}
+        </ThemedText>
+        <IconButton
+          name="more"
+          size={22}
+          color={theme.colors.mutedForeground}
+          accessibilityLabel={`Actions for ${label}`}
+          onPress={onMore}
+        />
+      </View>
+      <View
+        style={{
+          width: "100%",
+          aspectRatio: 4 / 3,
+          borderRadius: theme.radius.sm,
+          borderWidth: 1,
+          borderColor: theme.colors.border,
+          backgroundColor: theme.colors.secondary,
+          alignItems: "center",
+          justifyContent: "center",
+        }}
+      >
+        <Icon name="folder" size={36} color={theme.colors.accent} />
+      </View>
+      <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
+        <ThemedText variant="monoSmall" tone="muted">
+          Folder
+        </ThemedText>
+      </View>
+    </Pressable>
+  );
+}
+
+/** Grid-view file card; parallel to `FolderTile`, opens details or selection. */
+function FileTile({
+  row,
+  width,
+  selected,
+  selectionMode,
+  onOpen,
+  onMore,
+}: {
+  row: FileRow;
+  width: DimensionValue;
+  selected: boolean;
+  selectionMode: boolean;
+  onOpen: () => void;
+  onMore: () => void;
+}) {
+  const theme = useTheme();
+  const isImage = isImageName(row.name);
+  const ext = row.name.includes(".") ? row.name.split(".").pop()?.toUpperCase() : undefined;
+  const preview = usePreview(row);
+  return (
+    <Pressable
+      onPress={onOpen}
+      onLongPress={onMore}
+      style={({ pressed }) => [
+        {
+          width,
+          padding: theme.spacing.sm,
+          gap: theme.spacing.sm,
+          borderRadius: theme.radius.md,
+          borderWidth: 1,
+          borderColor: selected ? theme.colors.accent : theme.colors.border,
+          backgroundColor: selected ? `${theme.colors.accent}10` : theme.colors.card,
+          opacity: pressed ? 0.7 : 1,
+        },
+      ]}
+    >
+      {/* Header: type glyph, name, and a larger 3-dot target (the card's main
+          action surface). Tap opens; long-press also opens the menu. */}
+      <View
+        style={{
+          flexDirection: "row",
+          alignItems: "center",
+          gap: theme.spacing.sm,
+          minWidth: 0,
+        }}
+      >
+        <View
+          style={{
+            width: 28,
+            height: 28,
+            borderRadius: theme.radius.sm,
+            alignItems: "center",
+            justifyContent: "center",
+            backgroundColor: isImage ? theme.colors.accent : theme.colors.secondary,
+          }}
+        >
+          <Icon
+            name={isImage ? "image" : "file"}
+            size={15}
+            color={isImage ? theme.colors.accentForeground : theme.colors.mutedForeground}
+          />
+        </View>
+        <ThemedText variant="caption" numberOfLines={1} style={{ flex: 1, minWidth: 0 }}>
+          {row.name}
+        </ThemedText>
+        <IconButton
+          name="more"
+          size={22}
+          color={theme.colors.mutedForeground}
+          accessibilityLabel={`Actions for ${row.name}`}
+          onPress={onMore}
+        />
+      </View>
+      {/* Media: decrypted image preview, or the extension placeholder. */}
+      <View
+        style={{
+          width: "100%",
+          aspectRatio: 4 / 3,
+          borderRadius: theme.radius.sm,
+          borderWidth: 1,
+          borderColor: theme.colors.border,
+          backgroundColor: theme.colors.secondary,
+          alignItems: "center",
+          justifyContent: "center",
+          overflow: "hidden",
+        }}
+      >
+        {preview ? (
+          <Image source={{ uri: preview }} style={{ width: "100%", height: "100%" }} resizeMode="cover" />
+        ) : (
+          <ThemedText variant="mono" tone="muted">
+            {ext && ext.length <= 4 ? ext : "FILE"}
+          </ThemedText>
+        )}
+      </View>
+      <View
+        style={{
+          flexDirection: "row",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: theme.spacing.sm,
+        }}
+      >
+        <ThemedText variant="monoSmall" tone="muted" numberOfLines={1} style={{ flexShrink: 1 }}>
+          {row.sizeBytes != null ? formatBytes(row.sizeBytes) : "—"}
+        </ThemedText>
+        <StatusBadge status={row.status} variant="dot" />
+      </View>
     </Pressable>
   );
 }

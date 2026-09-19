@@ -19,6 +19,8 @@ export type IconName =
   // Header / actions
   | "search"
   | "filter"
+  | "listView"
+  | "gridView"
   | "plus"
   | "chevronLeft"
   | "chevronRight"
@@ -32,6 +34,7 @@ export type IconName =
   | "trash"
   | "folder"
   | "file"
+  | "image"
   | "server"
   | "phone"
   | "lock"
@@ -132,6 +135,17 @@ function glyph(name: IconName, color: string, sw: number): React.ReactNode {
       );
     case "filter":
       return <Path d="M4 6h16M7 12h10M10 18h4" {...stroke} />;
+    case "listView":
+      return <Path d="M4 6h16M4 12h16M4 18h16" {...stroke} />;
+    case "gridView":
+      return (
+        <>
+          <Rect x="4" y="4" width="7" height="7" rx="1" {...stroke} />
+          <Rect x="13" y="4" width="7" height="7" rx="1" {...stroke} />
+          <Rect x="4" y="13" width="7" height="7" rx="1" {...stroke} />
+          <Rect x="13" y="13" width="7" height="7" rx="1" {...stroke} />
+        </>
+      );
     case "plus":
       return <Path d="M12 5v14M5 12h14" {...stroke} />;
     case "chevronLeft":
@@ -181,6 +195,14 @@ function glyph(name: IconName, color: string, sw: number): React.ReactNode {
         <>
           <Path d="M6 3h8l4 4v14H6z" {...stroke} />
           <Path d="M14 3v4h4" {...stroke} />
+        </>
+      );
+    case "image":
+      return (
+        <>
+          <Rect x="3" y="4.5" width="18" height="15" rx="2" {...stroke} />
+          <Circle cx="8.5" cy="9.5" r="1.5" fill={color} />
+          <Path d="M4.5 17.5l4.5-4 3.5 3 3-2.5 4 3.5" {...stroke} />
         </>
       );
     case "server":

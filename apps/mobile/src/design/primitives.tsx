@@ -170,16 +170,23 @@ export function Chip({
   label,
   active = false,
   onPress,
+  icon,
 }: {
   label: string;
   active?: boolean;
   onPress?: () => void;
+  /** Optional leading glyph, e.g. list/grid view choices. */
+  icon?: IconName;
 }) {
   const theme = useTheme();
+  const color = active ? theme.colors.accent : theme.colors.mutedForeground;
   return (
     <Pressable
       onPress={onPress}
       style={{
+        flexDirection: "row",
+        alignItems: "center",
+        gap: theme.spacing.xs,
         paddingHorizontal: 10,
         paddingVertical: 4,
         borderRadius: theme.radius.sm,
@@ -188,9 +195,10 @@ export function Chip({
         backgroundColor: active ? `${theme.colors.accent}18` : "transparent",
       }}
     >
+      {icon ? <Icon name={icon} size={13} color={color} /> : null}
       <ThemedText
         variant="caption"
-        style={{ color: active ? theme.colors.accent : theme.colors.mutedForeground, fontFamily: theme.fonts.medium }}
+        style={{ color, fontFamily: theme.fonts.medium }}
       >
         {label}
       </ThemedText>

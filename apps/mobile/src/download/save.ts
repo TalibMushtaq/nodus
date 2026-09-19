@@ -18,12 +18,18 @@ function bytesToBase64(bytes: Uint8Array): string {
   return btoa(bin);
 }
 
-/** Write `data` to the cache dir as `name` and open the share sheet. */
-export async function saveAndShare(data: Uint8Array, name: string): Promise<string> {
+/** Write `data` to the cache dir as `name`; returns the `file://` URI. */
+export async function writeToCache(data: Uint8Array, name: string): Promise<string> {
   const dir = FileSystem.cacheDirectory ?? FileSystem.documentDirectory;
   if (!dir) throw new Error("no writable directory available");
   const uri = `${dir}${name.replace(/[/\\]/g, "_")}`;
   await FileSystem.writeAsStringAsync(uri, bytesToBase64(data), { encoding: "base64" });
+  return uri;
+}
+
+/** Write `data` to the cache dir as `name` and open the share sheet. */
+export async function saveAndShare(data: Uint8Array, name: string): Promise<string> {
+  const uri = await writeToCache(data, name);
   if (await Sharing.isAvailableAsync()) {
     await Sharing.shareAsync(uri);
   }
