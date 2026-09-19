@@ -20,7 +20,11 @@ import { uploadFile } from "../../apps/web/lib/uploader";
 import type { UploadDeps } from "../../apps/web/lib/uploader";
 import type { ShardUpload } from "../../apps/web/lib/buffer";
 import type { UploadProgress } from "../../apps/web/lib/upload-progress";
-import { envelopeEvent, sealFekForRecipientIdentity } from "../../apps/web/lib/envelopes";
+import {
+  decodeRecipientPublicKey,
+  envelopeEvent,
+  sealFekForRecipientIdentity,
+} from "../../apps/web/lib/envelopes";
 import { identityFromSeed } from "./identity";
 
 interface Args {
@@ -188,7 +192,13 @@ async function makeDeps(args: Args, state: PersistedState): Promise<UploadDeps> 
     ];
     const events: EventPayload[] = [];
     for (const recipient of recipients) {
-      const encrypted_key = sealFekForRecipientIdentity(fek, new Uint8Array(Buffer.from(recipient.publicKey, "base64")));
+      // Devices publish their key as base64, Storage Nodes as hex; the SDK
+      // helper decodes per kind (a hex node key read as base64 is 48 bytes and
+      // makes the Ed25519→X25519 conversion throw).
+      const encrypted_key = sealFekForRecipientIdentity(
+        fek,
+        decodeRecipientPublicKey(recipient.publicKey, recipient.recipient_kind),
+      );
       const sequence = (state.sequences[identity.deviceId] ?? 0) + 1;
       state.sequences[identity.deviceId] = sequence;
       persist();
