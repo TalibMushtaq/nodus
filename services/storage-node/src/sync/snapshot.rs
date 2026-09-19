@@ -436,7 +436,9 @@ pub async fn emit_chunks(
                     file_id: str_field("file_id").map(str::to_string),
                     path: str_field("path").map(str::to_string),
                     detail: str_field("detail").map(str::to_string),
-                    created_at: str_field("created_at").unwrap_or(&row_timestamp).to_string(),
+                    created_at: str_field("created_at")
+                        .unwrap_or(&row_timestamp)
+                        .to_string(),
                 }),
             )
             .await?;
