@@ -31,11 +31,14 @@ import {
   toCatalogEntry,
   uploadFile,
   type ConflictEntry,
+  type DownloadPhase,
   type SessionInfo,
   type StoredEncryptionIdentity,
+  type UploadProgressEvent,
 } from "@repo/sdk";
 import type { TransferPath } from "@repo/transfer-manager";
 import {
+  fetchAdvertisement,
   NodeClient,
   NodeClientError,
   nodusBaseUrl,
@@ -50,6 +53,7 @@ import {
 import { discoverNodes, probeHost, type LanCandidate } from "../discovery";
 import {
   getSessionToken,
+  relayActivities,
   relayChangePassword,
   relayCreatePairingCode,
   relayCreatePairingSession,
@@ -101,6 +105,9 @@ import { rotateRecoveryKey } from "../recovery/rotate";
 import { sqliteRecoveryStore } from "../recovery/store";
 import { registerBackgroundSync } from "../background/sync";
 import { saveAndShare } from "../download/save";
+import { loadImagePreview } from "../files/preview";
+import { activityLoggedEvent } from "../activity/events";
+import { loadNodeActivities } from "../activity/remote";
 import { loadOrCreateDevice, loadOrCreateEncryptionIdentity } from "../storage";
 import {
   configureNotificationHandler,
@@ -116,11 +123,16 @@ import {
 } from "../store/trusted-nodes";
 import {
   clearTransfers,
+  importRemoteActivities,
   listTransfers,
+  listUnsyncedTransfers,
   logTransfer,
+  markTransfersSynced,
   type TransferLogEntry,
   type TransferLogKind,
 } from "../store/transfer-log";
+import type { ActivityRecord } from "@repo/protocol";
+import { nextOriginSequence } from "../store/sync-state";
 
 /** Local notification toggles; wired to real push in the backend phase. */
 export interface NotificationPrefs {
@@ -135,10 +147,39 @@ const NOTIF_PREF_KEYS: Record<keyof NotificationPrefs, string> = {
   syncComplete: "notif.syncComplete",
 };
 
+/**
+ * Upload auto-retry budget, mirroring the web client. A transient transport
+ * failure aborts the current attempt; re-calling `uploadFile` with the same
+ * fileId/version resumes from the persisted per-shard progress, so only the
+ * shards that did not land move. Web keeps the File handle in memory; the
+ * native source is the on-disk DocumentPicker copy, which is also re-readable,
+ * so the retry works the same way here.
+ */
+const UPLOAD_RETRY_ATTEMPTS = 5;
+const UPLOAD_RETRY_BASE_MS = 2_000;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /** Structured progress for the in-flight upload, so Activity can show bytes. */
 export interface UploadProgress {
   fileName: string;
   phase: string;
+  completedBytes: number;
+  totalBytes: number;
+  completedShards: number;
+  totalShards: number;
+}
+
+/**
+ * Structured progress for the in-flight download: the SDK's fetch/verify/
+ * decrypt/assemble stages plus byte/shard counts. Mirrors the web download
+ * widget so a slow decrypt no longer looks like a hang.
+ */
+export interface DownloadProgress {
+  fileName: string;
+  phase: DownloadPhase;
   completedBytes: number;
   totalBytes: number;
   completedShards: number;
@@ -198,6 +239,7 @@ export function useNodusApp() {
   const [files, setFiles] = React.useState<RelayFile[]>([]);
   const [fileNames, setFileNames] = React.useState<Record<string, string | null>>({});
   const [downloadStatus, setDownloadStatus] = React.useState<string | null>(null);
+  const [downloadProgress, setDownloadProgress] = React.useState<DownloadProgress | null>(null);
   /** New name for the Rename action on a file row. */
   const [fileNameInput, setFileNameInput] = React.useState("");
 
@@ -255,9 +297,25 @@ export function useNodusApp() {
     [],
   );
 
+  // Pull the account-wide feed: the Relay when online, else a trusted node over
+  // the LAN. Either failure keeps the locally-cached feed. Remote rows are
+  // merged into the local store and deduped by activity id.
   const loadActivity = React.useCallback(async () => {
+    if (device) {
+      let remote: ActivityRecord[] | null = null;
+      try {
+        remote = await relayActivities();
+      } catch {
+        try {
+          remote = await loadNodeActivities(device);
+        } catch {
+          remote = null;
+        }
+      }
+      if (remote) await importRemoteActivities(remote);
+    }
     setActivity(await listTransfers());
-  }, []);
+  }, [device]);
 
   const clearActivity = React.useCallback(async () => {
     await clearTransfers();
@@ -278,6 +336,11 @@ export function useNodusApp() {
 
   // ── Foreground gate (ADR-0004: Path A is foreground-only) ─────────────────
   const appActiveRef = React.useRef(true);
+
+  // Node reachability for the transfer chain. Mirrors the Relay catalog into a
+  // ref so the manager's long-lived predicate reads fresh state; unknown nodes
+  // report online so a not-yet-loaded catalog does not disable direct paths.
+  const nodeOnlineRef = React.useRef<Map<string, boolean>>(new Map());
 
   const [error, setError] = React.useState<string | null>(null);
   const [notice, setNotice] = React.useState<string | null>(null);
@@ -326,6 +389,11 @@ export function useNodusApp() {
     return () => sub.remove();
   }, []);
 
+  // Keep the transfer chain's offline fast-path in sync with the node catalog.
+  React.useEffect(() => {
+    for (const node of nodes) nodeOnlineRef.current.set(node.node_id, node.status === "ACTIVE");
+  }, [nodes]);
+
   // Bring the Relay socket up once we have both a session and the device id
   // (the latter is the presence/heartbeat identity). A 4001 close means the
   // session is dead, so drop local auth rather than reconnect-looping.
@@ -356,6 +424,8 @@ export function useNodusApp() {
         try {
           const tm = await createMobileTransferManager(device, wsRef.current!, {
             canAttemptLocal: () => appActiveRef.current,
+            // Unknown nodes default to online (see nodeOnlineRef comment).
+            isNodeOnline: (nodeId) => nodeOnlineRef.current.get(nodeId) ?? true,
           });
           if (cancelled) {
             tm.close();
@@ -386,6 +456,42 @@ export function useNodusApp() {
       transferManager.localQueue.notifyConnectivityRestored();
     }
   }, [wsState, transferManager]);
+
+  // Upload locally-recorded activity to the account-wide feed as
+  // ACTIVITY_LOGGED events. Runs in the background so an action logged while
+  // Activity is closed still reaches the Relay/Node; entries logged offline are
+  // retried on reconnect (the effect re-runs when `wsState` flips to connected).
+  React.useEffect(() => {
+    if (!device || !session || wsState !== "connected") return;
+    let cancelled = false;
+    let flushing = false;
+    const flush = async () => {
+      if (flushing || cancelled) return;
+      flushing = true;
+      try {
+        const pending = await listUnsyncedTransfers();
+        if (pending.length > 0) {
+          const events = [];
+          for (const entry of pending) {
+            const sequence = await nextOriginSequence(device.device_id);
+            events.push(activityLoggedEvent(device.device_id, sequence, entry));
+          }
+          await wsRef.current!.sendEventBatch(events);
+          await markTransfersSynced(pending.map((entry) => entry.id));
+        }
+      } catch {
+        // Best-effort: leave them unsynced and retry on the next tick.
+      } finally {
+        flushing = false;
+      }
+    };
+    void flush();
+    const timer = setInterval(() => void flush(), 20_000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [device, session, wsState]);
 
   // Surface transfer depth for the Activity tab. The shared manager exposes no
   // change events, so poll cheaply and only re-render when the count changes.
@@ -896,48 +1002,77 @@ export function useNodusApp() {
     const fileName = asset.name ?? "upload.bin";
     // Capture the path the last shard took so the activity row can show it.
     let usedPath: TransferPath | null = null;
+    // The uploader allocates the fileId; capturing it from the first progress
+    // event lets a retry re-enter the same file/version and resume instead of
+    // announcing a duplicate.
+    let uploadFileId: string | undefined;
+    const source = fileUriSource(asset.uri, fileName, asset.size ?? 0);
+    const deps = createMobileUploadDeps(
+      wsRef.current!,
+      device,
+      transferManager,
+      (path) => {
+        usedPath = path;
+        setLastPath(path);
+      },
+      // Seal the upload to the account recovery key so the phrase can still
+      // unlock it after every device is lost.
+      session?.recovery_public_key,
+    );
+    const onProgress = (event: UploadProgressEvent) => {
+      if (event.fileId) uploadFileId = event.fileId;
+      setUploadStatus(`${event.phase} · shard ${event.completedShards}/${event.totalShards}`);
+      setUploadProgress({
+        fileName: event.fileName,
+        phase: event.phase,
+        completedBytes: event.completedBytes,
+        totalBytes: event.totalBytes,
+        completedShards: event.completedShards,
+        totalShards: event.totalShards,
+      });
+    };
+
+    let uploadError: unknown = null;
     try {
-      const result = await uploadFile({
-        source: fileUriSource(asset.uri, fileName, asset.size ?? 0),
-        originId: device.device_id,
-        targetNode: target,
-        sourceDevice: device.device_id,
-        parentFolderId: currentFolderId,
-        shardSizeBytes,
-        deps: createMobileUploadDeps(
-          wsRef.current!,
-          device,
-          transferManager,
-          (path) => {
-            usedPath = path;
-            setLastPath(path);
-          },
-          // Seal the upload to the account recovery key so the phrase can still
-          // unlock it after every device is lost.
-          session?.recovery_public_key,
-        ),
-        onProgress: (event) => {
-          setUploadStatus(`${event.phase} · shard ${event.completedShards}/${event.totalShards}`);
-          setUploadProgress({
-            fileName: event.fileName,
-            phase: event.phase,
-            completedBytes: event.completedBytes,
-            totalBytes: event.totalBytes,
-            completedShards: event.completedShards,
-            totalShards: event.totalShards,
+      for (let attempt = 1; attempt <= UPLOAD_RETRY_ATTEMPTS; attempt += 1) {
+        try {
+          const result = await uploadFile({
+            source,
+            originId: device.device_id,
+            targetNode: target,
+            sourceDevice: device.device_id,
+            parentFolderId: currentFolderId,
+            shardSizeBytes,
+            deps,
+            // Resume the same file on a retry; a fresh upload lets the SDK
+            // allocate the id.
+            fileId: uploadFileId,
+            versionNumber: uploadFileId ? 1 : undefined,
+            onProgress,
           });
-        },
-      });
-      setUploadStatus(`done · ${result.shardCount} shard(s) · ${result.versionHash.slice(0, 12)}…`);
-      setNotice("Upload complete.");
-      await logActivity({
-        kind: "upload",
-        fileId: result.fileId,
-        fileName,
-        detail: `${result.shardCount} shard(s)`,
-        path: usedPath,
-        outcome: "complete",
-      });
+          setUploadStatus(`done · ${result.shardCount} shard(s) · ${result.versionHash.slice(0, 12)}…`);
+          setNotice("Upload complete.");
+          await logActivity({
+            kind: "upload",
+            fileId: result.fileId,
+            fileName,
+            detail: `${result.shardCount} shard(s)`,
+            path: usedPath,
+            outcome: "complete",
+          });
+          uploadError = null;
+          break;
+        } catch (err) {
+          uploadError = err;
+          if (attempt >= UPLOAD_RETRY_ATTEMPTS) break;
+          const waitMs = UPLOAD_RETRY_BASE_MS * 2 ** (attempt - 1);
+          setUploadStatus(`retrying in ${Math.max(1, Math.round(waitMs / 1000))}s…`);
+          await sleep(waitMs);
+        }
+      }
+      if (uploadError !== null) {
+        throw uploadError;
+      }
     } catch (err) {
       setUploadStatus(null);
       const message = err instanceof Error ? err.message : String(err);
@@ -1090,6 +1225,9 @@ export function useNodusApp() {
       setError(null);
       setNotice(null);
       setDownloadStatus("decrypting…");
+      setDownloadProgress(null);
+      // Best-effort display name; the decrypted name replaces it once fetched.
+      const displayName = fileNames[file.file_id] ?? "file";
       try {
         const result = await downloadFile({
           fileId: file.file_id,
@@ -1098,6 +1236,9 @@ export function useNodusApp() {
           encryptedName: file.encrypted_name,
           expectedVersionHash: latest.version_hash,
           deps: mobileDownloadDeps(device),
+          // Surface fetch/verify/decrypt stages so Activity can render progress.
+          onProgress: (event) =>
+            setDownloadProgress({ fileName: displayName, ...event }),
         });
         const name = result.name ?? `${file.file_id}.bin`;
         setDownloadStatus(`saving ${name}…`);
@@ -1123,10 +1264,22 @@ export function useNodusApp() {
           outcome: "failed",
         });
       } finally {
+        setDownloadProgress(null);
         setBusy(null);
       }
     },
     [device, fileNames, logActivity],
+  );
+
+  // Best-effort image preview (list/grid thumbnails). Deliberately silent:
+  // unlike downloadOne it never sets busy/error or logs activity, because a
+  // failed thumbnail is cosmetic and may simply be too large or unreachable.
+  const previewImage = React.useCallback(
+    async (file: RelayFile, name: string) => {
+      if (!device) return null;
+      return loadImagePreview(device, file, name);
+    },
+    [device],
   );
 
   const renameFile = React.useCallback(
@@ -1588,6 +1741,57 @@ export function useNodusApp() {
     }
   }, [device, probe]);
 
+  // Re-establish this device's local trust with a storage node. Mirrors the web
+  // `ensureNodeTrusted` flow: probe the host we previously paired with, confirm
+  // the node advertises the expected id, mint a Relay pairing token, redeem it
+  // locally, and refresh the trusted cache. Used after a node data-dir reset,
+  // where the node forgot this device but the local trusted-node entry survived
+  // and direct WebRTC would otherwise be rejected forever.
+  const pairNode = React.useCallback(
+    async (nodeId: string) => {
+      if (!device || !authed) return;
+      setBusy(`pairing-node-${nodeId}`);
+      setError(null);
+      setNotice(null);
+      try {
+        await relayRegisterDevice(device, encryption?.public_key);
+        const known = (await getTrustedNodes()).find((t) => t.node_id === nodeId);
+        if (!known) {
+          setError("No saved host for this node — use Pair a device to scan for it.");
+          return;
+        }
+        const base = nodusBaseUrl(known.host);
+        const adv = await fetchAdvertisement(base, 2_000);
+        if (adv.node_id !== nodeId) {
+          setError("That host now advertises a different node; scan to pair the new one.");
+          return;
+        }
+        const session = await relayCreatePairingSession(nodeId, device.device_id);
+        const confirm = (await new NodeClient(base).pair(
+          session.token,
+          nodeId,
+          device.device_id,
+          identityPublicKey(device),
+          5_000,
+        )) as { node_id?: string; account_id?: string };
+        await addTrustedNode({
+          node_id: confirm.node_id ?? nodeId,
+          host: known.host,
+          account_id: confirm.account_id ?? "re-pair",
+          device_id: device.device_id,
+          paired_at: new Date().toISOString(),
+        });
+        setTrusted(await getTrustedNodes());
+        setNotice("Re-paired — this device is now trusted by the node.");
+      } catch (err) {
+        setError(err instanceof NodeClientError ? `pair failed: ${err.message}` : String(err));
+      } finally {
+        setBusy(null);
+      }
+    },
+    [device, authed, encryption],
+  );
+
   const pairingUrl =
     pending && device
       ? `nodus://pair?node_id=${encodeURIComponent(pending.node_id ?? selectedNode ?? "")}&pubkey=${encodeURIComponent(device.public_key)}&token=${encodeURIComponent(pending.token)}`
@@ -1663,6 +1867,7 @@ export function useNodusApp() {
     selectCandidate,
     pairOnDevice,
     authenticateOnDevice,
+    pairNode,
     trusted,
     unpairTrustedNode,
     // upload + download
@@ -1675,6 +1880,7 @@ export function useNodusApp() {
     fileNames,
     visibleFiles,
     downloadOne,
+    previewImage,
     renameFile,
     moveFile,
     moveFileToFolder: moveFileTo,
@@ -1684,6 +1890,7 @@ export function useNodusApp() {
     fileNameInput,
     setFileNameInput,
     downloadStatus,
+    downloadProgress,
     // folders
     loadFolders,
     folders,

@@ -7,16 +7,35 @@
 import * as React from "react";
 import { ActivityIndicator, View } from "react-native";
 
-import { ThemedText, useTheme } from "../design";
+import { Progress, ThemedText, useTheme } from "../design";
 import { useApp } from "./context";
 
 export function AppStatusLine() {
-  const { busy, error, notice } = useApp();
+  const { busy, error, notice, downloadProgress } = useApp();
   const theme = useTheme();
-  if (!busy && !error && !notice) return null;
+  if (!busy && !error && !notice && !downloadProgress) return null;
   return (
     <View style={{ gap: theme.spacing.xs, marginBottom: theme.spacing.sm }}>
-      {busy ? (
+      {downloadProgress ? (
+        // Fetch/verify/decrypt stages with a shard progress bar, so the CPU-bound
+        // AEAD pass reads as progress rather than a stall (parity with web).
+        <View style={{ gap: theme.spacing.xs }}>
+          <ThemedText variant="caption" tone="muted" numberOfLines={1}>
+            {downloadProgress.fileName} · {downloadProgress.phase} · shard{" "}
+            {downloadProgress.completedShards}/{downloadProgress.totalShards}
+          </ThemedText>
+          <Progress
+            value={
+              downloadProgress.totalShards === 0
+                ? 0
+                : downloadProgress.completedShards / downloadProgress.totalShards
+            }
+          />
+        </View>
+      ) : null}
+      {/* The download row already names the operation, so skip the generic
+          "Working…" line while a download is active. */}
+      {busy && !downloadProgress ? (
         <View style={{ flexDirection: "row", alignItems: "center", gap: theme.spacing.sm }}>
           <ActivityIndicator size="small" color={theme.colors.mutedForeground} />
           <ThemedText variant="caption" tone="muted">

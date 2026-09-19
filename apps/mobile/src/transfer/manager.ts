@@ -29,6 +29,12 @@ export interface MobileTransferManagerOptions {
    * predicate; when it is false the chain skips straight to Path B/C/D.
    */
   canAttemptLocal?: () => boolean;
+  /**
+   * Node reachability from the Relay catalog; lets the chain skip WebRTC to a
+   * node known offline and reach the Relay buffer immediately. Unknown nodes
+   * should report online so a stale catalog does not disable direct transfers.
+   */
+  isNodeOnline?: (targetNode: string) => boolean;
 }
 
 /**
@@ -57,6 +63,7 @@ export async function createMobileTransferManager(
     },
     sessionCache,
     canAttemptLocal: options.canAttemptLocal,
+    isNodeOnline: options.isNodeOnline,
   });
 
   const manager = new TransferManager(attemptPath, undefined, pathCache, localQueue);

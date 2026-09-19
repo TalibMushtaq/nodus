@@ -120,13 +120,24 @@ export function NodeDetailScreen() {
           disabled={app.busy !== null || !online}
         />
         {isTrusted ? (
-          <Button
-            title="Unpair on this device"
-            variant="destructive"
-            icon="link"
-            onPress={() => setConfirmUnpair(true)}
-            disabled={app.busy !== null}
-          />
+          <>
+            {/* Explicit re-pair for the node-reset case: the node lost its
+                devices table but this phone still has the trusted entry. */}
+            <Button
+              title={app.busy === `pairing-node-${node.node_id}` ? "Re-pairing…" : "Re-pair this node"}
+              variant="secondary"
+              icon="link"
+              onPress={() => void app.pairNode(node.node_id)}
+              disabled={app.busy !== null}
+            />
+            <Button
+              title="Unpair on this device"
+              variant="destructive"
+              icon="link"
+              onPress={() => setConfirmUnpair(true)}
+              disabled={app.busy !== null}
+            />
+          </>
         ) : null}
         <ThemedText variant="caption" tone="muted">
           Setting a primary node and forgetting a node account-wide are not available yet.

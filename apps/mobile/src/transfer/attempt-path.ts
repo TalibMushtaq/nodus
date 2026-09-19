@@ -40,6 +40,12 @@ export interface MobileAttemptPathDeps {
    * (ADR-0004).
    */
   canAttemptLocal?: () => boolean;
+  /**
+   * Whether the target node is currently online (from the Relay catalog). When
+   * false, Paths A/B are skipped so an offline node falls straight to the Relay
+   * buffer instead of paying a WebRTC negotiation timeout first.
+   */
+  isNodeOnline?: (targetNode: string) => boolean;
 }
 
 export function createMobileAttemptPath(deps: MobileAttemptPathDeps): AttemptPathFn {
@@ -70,6 +76,7 @@ export function createMobileAttemptPath(deps: MobileAttemptPathDeps): AttemptPat
     // Path A is gated on the app being foregrounded (ADR-0004).
     canAttemptLocalPath: () => deps.canAttemptLocal?.() ?? true,
     canAttemptRelaySignaling: () => true,
+    isNodeOnline: deps.isNodeOnline,
     peerConnectionFactory: createNativePeerConnectionFactory(),
   });
 }
