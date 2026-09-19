@@ -13,6 +13,9 @@ import {
   folderEnvelopeEvent,
   encryptionPrivateKeyBytes,
   encryptionPublicKeyBytes,
+  // Legacy Ed25519-seed opener: the e2e harness identity is Ed25519-only and
+  // opens the envelopes its uploader sealed with sealFekForRecipientIdentity.
+  openFekFromEnvelope,
   openFekFromEnvelopeX25519,
   openFolderKeyFromEnvelopes as sdkOpenFolderKeyFromEnvelopes,
   sealFekForRecipientIdentity,
@@ -36,6 +39,7 @@ export {
   envelopeEvent,
   folderEnvelopeEvent,
   encryptionPublicKeyBytes,
+  openFekFromEnvelope,
   openFekFromEnvelopeX25519,
   sealFekForRecipientIdentity,
   sealFekForRecipients,

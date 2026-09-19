@@ -154,17 +154,30 @@ async function makeDeps(args: Args, state: PersistedState): Promise<UploadDeps> 
   };
 
   let posted = 0;
+  let stopping = false;
+  // The SDK uploader runs a concurrent shard pool (up to 4). The harness's
+  // `--stop-after` kill only stays deterministic if shards post one at a time,
+  // so serialize the transport here; the measurement/announce/progress logic
+  // under test is unaffected. Once the target shard lands, further posts are
+  // refused until the process exits.
+  let postChain: Promise<unknown> = Promise.resolve();
   const postShard = async (dto: ShardUpload) => {
-    const result = await postShardImpl(dto);
-    posted += 1;
-    if (args.stopAfter > 0 && posted >= args.stopAfter) {
-      // Schedule the exit on a macrotask so the uploader's `await
-      // markShardComplete` microtask (a synchronous file write) runs first.
-      // That is what makes the kill leave durable, resumable progress.
-      console.log(`[uploader] stop-after=${args.stopAfter} reached; exiting`);
-      setTimeout(() => process.exit(0), 0);
-    }
-    return result;
+    const run = postChain.then(async () => {
+      if (stopping) throw new Error("uploader stopping after target shard");
+      const result = await postShardImpl(dto);
+      posted += 1;
+      if (args.stopAfter > 0 && posted >= args.stopAfter) {
+        stopping = true;
+        // Schedule the exit on a macrotask so the uploader's `await
+        // markShardComplete` microtask (a synchronous file write) runs first.
+        // That is what makes the kill leave durable, resumable progress.
+        console.log(`[uploader] stop-after=${args.stopAfter} reached; exiting`);
+        setTimeout(() => process.exit(0), 0);
+      }
+      return result;
+    });
+    postChain = run.catch(() => undefined);
+    return run;
   };
 
   // F2b: seal the FEK for device A, every other active device, and the nodes,
