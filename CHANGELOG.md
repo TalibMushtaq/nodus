@@ -1,5 +1,140 @@
 # Changelog
 
+## [2026-09-19] - Activities survive a Relay rebuild (snapshot/rebuild path)
+
+**What changed:** The activity feed is now a first-class Relay table projected live and restored from a Node snapshot, so a full Relay rebuild keeps it.
+
+- Protocol: added `activity` to `SnapshotRecordTypeSchema` and a new `ActivitySnapshotRecordSchema` in the chunk union (`packages/protocol/src/messages/snapshot.ts`); `snapshot_chunk.schema.json` regenerated.
+- Storage Node: `ActivitySnapshotRecord` + `SnapshotRecord::Activity` (`sync/types.rs`); `emit_chunks` (`sync/snapshot.rs`) streams `ACTIVITY_LOGGED` rows as an `activity` chunk (device from the row origin; malformed payloads skipped). Added `test_build_snapshot_includes_activities`.
+- Relay: migration `030_activities` creates the `activities` and `rebuild_activities` tables and drops the now-unused `029` journal index. `applySingleEventTx` (`sync.go`) projects each `ACTIVITY_LOGGED` event into `activities` instead of leaving it journal-only; `ListActivities` (`activities.go`) reads `activities`; `stageRebuildChunk` (`snapshot.go`) stages an `activity` chunk; `promoteRebuild` (`promote.go`) replaces the account's feed from staging and cleans it up. Added `TestActivityLoggedProjectsAndLists` / `TestListActivitiesRejectsUnauthenticated`.
+
+**Why:** The previous entry flagged that a Relay rebuilt from a Node snapshot would lose the feed, because snapshots carry domain projections and never replay the event journal. Activities now have a projection table the snapshot can restore.
+
+**Impact:** `packages/protocol`, `services/storage-node/src/sync/{types.rs,snapshot.rs}`, `services/relay/internal/handler/{activities.go,sync.go,snapshot.go,promote.go,activities_integration_test.go}`, `services/relay/internal/db/migrations/030_activities.*`. Migration `029_activity_index` is superseded (its index is dropped by 030); `030` is append-only, so an already-migrated database picks up the table on restart. Verified: relay `go test ./...` against a Docker Postgres+Redis (migrations 029+030 applied, full suite green), `cargo test --lib` (213), protocol tests (60).
+
+**Follow-ups:** Promotion treats the snapshot as authoritative for activities (live rows are replaced), so a Relay rebuild drops feed entries created after the snapshot was taken until the next event sync; acceptable because the Node remains the source of truth and re-delivers via the journal.
+
+## [2026-09-19] - Account-wide activity feed on the Relay and Storage Nodes, with device attribution
+
+**What changed:** Activity is no longer device-local. Clients emit terminal actions as `ACTIVITY_LOGGED` sync events; the Relay journals them in `sync_events` and serves `GET /activities`; Storage Nodes store them and serve `GET /nodus/activities` over the LAN, so the feed is the same online or offline. The Activity UI now attributes each entry to the device that performed it.
+
+- Protocol: `ACTIVITY_LOGGED` event type + `ActivityLoggedPayloadSchema` (`packages/protocol/src/events/event-types.ts`); shared `ActivityRecord`/`ActivityList` schemas in new `packages/protocol/src/messages/activity.ts` (exported, schema-gen entries added, JSON schemas regenerated); documented in `docs/protocol/event-types.md`. The payload deliberately carries **no file name** — only `file_id` — so the Relay/Node never see E2E names; `detail` is limited to non-sensitive text.
+- Relay: `deviceAllowedEventType` accepts `ACTIVITY_LOGGED`; `eventReferencesForeignFile` checks a supplied `file_id` for cross-account references; the apply switch treats it as journal-only (read straight from `sync_events`, no projection). New `handler/activities.go` (`ListActivities`) + `GET /activities` route, and migration `029_activity_index` for the `(account_id, event_type, timestamp DESC)` read path.
+- Node: the existing `_ => {}` apply arm already stores the event in `sync_events`; new authenticated `GET /nodus/activities` (`local/server.rs`) returns the account's activities, and `NodeClient.listActivities` (`packages/relay-client/src/local-discovery.ts`) is the signed-request client for it.
+- Web: new `lib/activities.ts` (Relay feed via the `/api/activities` BFF proxy, LAN fallback, and `deviceLabel`); `lib/transfer-log.ts` gains `synced`/`deviceId`, `listUnsyncedTransfers`, `markTransfersSynced`, `importRemoteActivities`, and a Clear cutoff; new `providers/activity-provider.tsx` uploads unsynced entries in the background (mounted in the dashboard layout); the Activity page merges the remote feed, resolves E2E names from the catalog, and shows the device name/platform per row.
+- Mobile: DB migration 6 adds `synced`/`device_id` to `transfer_log`; `store/transfer-log.ts` gains the same reconcile helpers; `activity/events.ts` + `activity/remote.ts`; `useNodusApp` flushes unsynced entries on connect/interval and `loadActivity` merges Relay-or-Node; `relayActivities()` added to `relay.ts`; the Activity screen resolves names and renders the device label.
+
+**Why:** Activities lived only in IndexedDB/SQLite, so they were lost when app data was cleared and never visible from another device; the changelog previously admitted "Account-wide history is not synced by the Relay yet." The user asked for storage on both the Relay and Node so the feed behaves the same online and offline, and for each entry to show which device did it (name when set, else the already-captured platform/browser like "Linux · Chrome 126").
+
+**Impact:** `packages/protocol` (event + activity schemas + generated JSON), `packages/relay-client` (listActivities), `services/relay` (sync.go, `activities.go`, `main.go`, migration 029), `services/storage-node/src/local/server.rs` (+ test), and both clients. Devices are attributed by resolving `device_id` against `GET /devices` locally — no device metadata is added to the event, so privacy is unchanged. Backlogged local entries older than this change are uploaded once on first run. Verified: protocol (60) + relay-client (50) tests, web (211) + typecheck + lint, mobile (19) + typecheck + lint, `go build`/`go vet`, `cargo test` for the new node endpoint.
+
+**Follow-ups:** A Relay rebuild from a Node snapshot does not yet carry `sync_events` (snapshots emit domain projections only), so activities would not survive a rebuild; the Node keeps them, so offline reads still work. `GET /nodus/activities` has no dedicated rate limiter (device auth is required). The web `useEventBatch` is per-hook, so concurrent activity/mutation/upload batches can still race for the generic `batch_ack` (pre-existing).
+
+## [2026-09-19] - Backups toolbar controls enlarged and breadcrumb made navigable
+
+**What changed:** The Files ("Backups") toolbar controls are larger, and the folder path is now a prominent, fully navigable breadcrumb.
+
+- `packages/ui/src/primitives/select.tsx`: `Select` gained a `size` variant (`sm` default, plus `md`/`lg`) that scales text and padding together. The native `size` HTML attribute is omitted from the props so the name can be reused.
+- `packages/ui/src/primitives/button.tsx`: the `lg` size now also raises text to `text-sm` (previously `lg` only changed padding), for toolbar prominence.
+- `apps/web/app/(dashboard)/files/files-client.tsx`: the Sort/Filter/Icon-size selects use `size="md"`, the view-toggle buttons use larger 18px icons with more padding, and Refresh/New folder/Upload use `size="lg"`. The breadcrumb is `text-sm` with pill targets: "Backups" is a distinct home chip with a folder glyph that resets to root from any depth, and each ancestor folder is clickable (the current folder is highlighted).
+- `apps/mobile/src/screens/FilesScreen.tsx`: the breadcrumb upsized from `caption` to `body`, the root relabelled "Backups" with a folder glyph and pill background, and every ancestor is a padded pressable target.
+
+**Why:** The controls and the folder path were the smallest text on the page, making navigation and the toolbar hard to use. The breadcrumb in particular needed an obvious way back to the root from a nested folder.
+
+**Impact:** `packages/ui/src/primitives/{select.tsx,button.tsx}`, `apps/web/app/(dashboard)/files/files-client.tsx`, `apps/mobile/src/screens/FilesScreen.tsx`. `Select`'s new prop is optional and defaults to the previous `sm`, and Button default/`sm` are unchanged, so other callers are unaffected. Verified: web typecheck + lint + tests (211), mobile typecheck + lint + tests (19).
+
+**Follow-ups:** Mobile keeps its separate "Up one level" button below the list; the breadcrumb now covers the same need but the button was left in place.
+
+## [2026-09-19] - Web Backups: drag-and-drop is a full-section hover overlay
+
+**What changed:** The always-visible dashed `DropZone` box was removed. `apps/web/app/(dashboard)/files/files-client.tsx` now tracks a file drag at the window level (`dragenter`/`dragover`/`dragleave`/`drop`, with a depth counter so nested elements do not flicker it) and, while dragging, renders a translucent `pointer-events-none` overlay across the entire Backups section — dashed accent border, blurred `bg-background/70`, an upload glyph and "Drop files to upload". Dropping anywhere on the section feeds the existing `handleFilesPicked`; a drop elsewhere is `preventDefault`-ed so the browser never navigates to the file. The overlay subtext reflects state: "Upload in progress…" while uploading, or the pairing/identity hint when a node is not ready.
+
+**Why:** The static box occupied permanent vertical space and only accepted drops on itself. A GDrive-style hover layer guides the user to the drop target only when they are actually dragging and accepts the drop over the whole section.
+
+**Impact:** `apps/web/app/(dashboard)/files/files-client.tsx` only. Web-only (no OS drag-and-drop on native). Verified: web typecheck + lint + tests (211).
+
+**Follow-ups:** Dropped directories are still treated as files (no `webkitGetAsEntry` traversal). The overlay covers the page content column, not the sidebar, which is where the section ends.
+
+## [2026-09-19] - Backups grid: folders share the files' grid and card size
+
+**What changed:** Grid view now renders folders and files in a single grid so they flow together instead of folders occupying their own row with an empty cell. Folder cards were rebuilt to the same header + media + footer shape as file cards.
+
+- Web `apps/web/app/(dashboard)/files/files-client.tsx`: `FolderTile` adopts the `FileTile` layout (glyph chip + truncated name + 22px 3-dot header, a `mediaHeight`-sized media box with the folder glyph, and a "Folder" footer), so both cards share the same height and align on one `GRID_COLS` row.
+- Mobile `apps/mobile/src/screens/FilesScreen.tsx`: `FolderTile` adopts the `FileTile` card layout (28px accent glyph chip, name, 22px 3-dot, `aspectRatio: 4/3` media, "Folder" footer); the two separate wrapping `View`s in grid mode were merged into one so folders and files interleave at `TILE_BASIS` widths.
+
+**Why:** Folders used a centered-glyph tile with a different intrinsic height and were rendered in a second grid, so they appeared as a short separate row with a gap while files filled the row below. Sharing one grid and one card shape removes the gap and makes the grid read as a single file-manager listing.
+
+**Impact:** `apps/web/app/(dashboard)/files/files-client.tsx`, `apps/mobile/src/screens/FilesScreen.tsx`. Presentation-only; folder actions, previews and menu behaviour are unchanged. Verified: web typecheck + lint + tests (211), mobile typecheck + lint + tests (19).
+
+**Follow-ups:** Folder cards show a static "Folder" footer rather than a storage badge (folders are metadata, not stored shards), so the footer is intentionally sparser than a file card's.
+
+## [2026-09-19] - Web Backups: drag-and-drop upload zone
+
+**What changed:** `apps/web/app/(dashboard)/files/files-client.tsx` gains a `DropZone` component rendered below the file list/grid: a tall dashed rounded box labelled "Drag & Drop to upload" that highlights on drag-over and drops files into the current folder. It reuses the existing `handleFilesPicked` handler, so size measurement, duplicate/incomplete detection, upload auto-retry, node targeting (`currentFolderId`), and the global upload widget all apply unchanged. The zone is disabled (with an explanatory subtext) until a device identity and storage node are ready, and says "Upload in progress…" during an active upload.
+
+**Why:** Uploading required the toolbar button; a drop target matches the file-manager affordance in the design and makes bulk drag-in faster. The screenshot's placement (under the grid) keeps it reachable in both list and grid views and inside subfolders.
+
+**Impact:** `apps/web/app/(dashboard)/files/files-client.tsx` only. Web-only: native has no OS-level drag-and-drop, so there is no mobile counterpart (the native Files FAB remains the upload entry point). Verified: web typecheck + lint + tests (211).
+
+**Follow-ups:** Folder drag-and-drop (`DataTransferItem.webkitGetAsEntry` recursion) is not handled — only files drop. A page-level `dragover` guard is not added, so dropping outside the zone still lets the browser open the file.
+
+## [2026-09-19] - Native parity: offline fast-path, upload retry, download progress, manual re-pair
+
+**What changed:** Ported the remaining web-only changes from the 00:49–02:48 batch to the mobile app.
+
+- **Offline fast-path** — `apps/mobile/src/transfer/{attempt-path.ts,manager.ts}` gain an optional `isNodeOnline` predicate passed to the shared SDK attempt path; `apps/mobile/src/runtime/useNodusApp.ts` mirrors the Relay node catalog into `nodeOnlineRef` (unknown nodes default online) and supplies `isNodeOnline` when building the manager. An offline node now skips Paths A/B instead of paying the WebRTC timeout before the Relay buffer.
+- **Upload auto-retry** — `useNodusApp.ts` `uploadPicked` now wraps `uploadFile` in the same bounded exponential-backoff loop as web (`UPLOAD_RETRY_ATTEMPTS = 5`, `UPLOAD_RETRY_BASE_MS = 2000`). The `fileId` is captured from the first progress event and passed back with `versionNumber: 1`, so a retry resumes from persisted per-shard progress (`getProgress`) rather than creating a duplicate; transient failures stay "retrying in Ns…" instead of erroring.
+- **Download stage progress** — `downloadOne` passes `downloadFile`'s `onProgress` into a new structured `DownloadProgress` state (exported); `apps/mobile/src/runtime/AppStatusLine.tsx` renders the file name, fetch/verify/decrypt phase and a shard progress bar app-wide, suppressing the generic "Working…" line while active. Mirrors the web download widget.
+- **Manual re-pair** — `useNodusApp.ts` gains `pairNode(nodeId)`: it probes the cached host via `fetchAdvertisement`, confirms the advertised node id, mints a Relay pairing token, redeems it with `NodeClient.pair`, and refreshes the trusted cache. `apps/mobile/src/screens/NodeDetailScreen.tsx` shows a "Re-pair this node" button for trusted nodes, alongside "Unpair on this device".
+
+**Why:** The audit of the 2026-09-19 changelog entries found four web-only behaviours. Mobile still negotiated WebRTC with offline nodes, surfaced a transient upload failure as a hard error, showed only a one-line download status (so the CPU-bound decrypt looked like a hang), and had no way to re-establish LAN trust after a node data-dir reset short of the full pairing wizard.
+
+**Impact:** `apps/mobile/src/transfer/{attempt-path.ts,manager.ts}`, `apps/mobile/src/runtime/{useNodusApp.ts,AppStatusLine.tsx}`, `apps/mobile/src/screens/NodeDetailScreen.tsx`. No API/protocol changes; the SDK `isNodeOnline` and `onProgress` hooks already existed. Re-pair requires a surviving trusted-node entry (it has the host), matching the node-reset scenario; a node never paired from this device still needs the Pairing flow. Verified: mobile lint + typecheck + tests (19).
+
+**Follow-ups:** The download widget renders through `AppStatusLine`, so it is per-screen rather than a floating overlay; a true global overlay would need mounting outside the navigation. `pairNode` only tries the single cached host (no loopback/page-host fallback like web), which is correct for a phone.
+
+## [2026-09-19] - Backups grid cards show a preview hero and a larger 3-dot menu
+
+**What changed:** Grid-view file cards were restyled from a centered icon tile into a preview card: a header row (type glyph, truncated name, 3-dot menu) above a large media area (decrypted image preview, or the extension placeholder), with a size/status footer.
+
+- New `image` glyph in `packages/ui/src/primitives/icons.tsx` and `apps/mobile/src/design/icons.tsx`.
+- Web `apps/web/app/(dashboard)/files/files-client.tsx`: `MenuButton` gained a `size` prop (default raised 16 → 20, card headers pass 22) and a roomier target; `FileTile` is rebuilt as the header + `4:3`-style media card, `TILE_SIZES` was replaced by `FOLDER_GLYPH_SIZE` (only folders still use a glyph), and `GRID_COLS` was lowered so preview cards are wide enough (e.g. sm 2–5 up, md 1–4, lg 1–3).
+- Mobile `apps/mobile/src/screens/FilesScreen.tsx`: `FileTile` rebuilt to the same card layout (`aspectRatio: 4/3` media, accent `image` glyph for images, larger 22px 3-dot), `TILE_BASIS` widened (sm 31%, md 48%, lg 100%), and the list-row/folder-tile 3-dot triggers bumped to 22/20px.
+
+**Why:** The previous grid tile was an icon-sized badge with the preview constrained to that small box, which did not read as a gallery and made the 3-dot hard to hit. The card layout gives the decrypted image most of the surface and makes the only action trigger obvious.
+
+**Impact:** `packages/ui/src/primitives/icons.tsx`, `apps/web/app/(dashboard)/files/files-client.tsx`, `apps/mobile/src/design/icons.tsx`, `apps/mobile/src/screens/FilesScreen.tsx`. Presentation-only; preview loading/caching is unchanged. Verified: web lint + typecheck, mobile lint + typecheck.
+
+**Follow-ups:** Folder tiles keep the older centered-glyph layout, so folders and files in the same grid are visually distinct; unifying them is a possible follow-up.
+
+## [2026-09-19] - Image previews in the Backups list and grid
+
+**What changed:** Image files now render a real thumbnail in the Files ("Backups") section instead of only an extension badge.
+
+- Web `apps/web/lib/preview.ts` (new): `isImageFileName` (extension test), a session object-URL cache, in-flight de-duplication, a 2-way concurrency limiter, and a 25 MB size cap; `loadImagePreview` downloads+decrypts via the existing `downloadFile`/`browserDownloadDeps` path and `useImagePreview` loads lazily. `apps/web/app/(dashboard)/files/files-client.tsx`: `FileTile` swaps the badge box for an `<img>` when a preview resolves, and list rows render a 36px thumbnail box for image files only (so non-image rows keep their compact layout and do not reflow).
+- Mobile `apps/mobile/src/files/preview.ts` (new): same cache/dedupe/concurrency model keyed by `fileId:version`, writing decrypted bytes to the cache dir via the now-exported `writeToCache` (`apps/mobile/src/download/save.ts`) and returning a `file://` URI; 12 MB cap because the cache write materializes the file in memory. `apps/mobile/src/runtime/useNodusApp.ts`: new `previewImage(file, name)` action (silent — never sets busy/error or logs activity). `apps/mobile/src/screens/FilesScreen.tsx`: `usePreview` hook plus `Image` rendering in `FileRowView`/`FileTile`; `FileDetailScreen.tsx` shows the preview in its media box, sharing the same cache.
+
+**Why:** Because content is end-to-end encrypted there is no server-side thumbnail, so the placeholder badge was the only thing a photo could show. Decrypting on demand (bounded by size, concurrency and a session cache) makes grid view usable as a gallery without hammering the transport or re-fetching on every render.
+
+**Impact:** `apps/web/lib/preview.ts(new)`, `apps/web/app/(dashboard)/files/files-client.tsx`, `apps/mobile/src/files/preview.ts(new)`, `apps/mobile/src/download/save.ts`, `apps/mobile/src/runtime/useNodusApp.ts`, `apps/mobile/src/screens/{FilesScreen.tsx,FileDetailScreen.tsx}`. No API/protocol changes; previews are best-effort and fall back to the ext badge on failure, non-image files, or oversized files. Verified: web tests (211) + lint + typecheck, mobile tests (19) + lint + typecheck.
+
+**Follow-ups:** Previews download the full decrypted image (there is no server-side thumbnail generation), so a large photo library still spends real bandwidth; a future node-side encrypted thumbnail would remove that cost. Web list rows reserve the thumbnail box only for image files, a deliberate minor inconsistency.
+
+## [2026-09-19] - Backups: list/grid views, icon-size control, and a 3-dot action menu
+
+**What changed:** The Files ("Backups") section on web and mobile gained a persisted **list/grid** toggle plus a grid **icon-size** control (S/M/L), and every file/folder now exposes one **3-dot menu** with Download, Rename, Move and Delete (folders: Rename, Download .zip, Properties, Delete).
+
+- Web `apps/web/lib/preferences.ts`: `SyncPreferences` gains `filesView` ("list" | "grid") and `filesIconSize` ("sm" | "md" | "lg"); `normalizePreferences` is exported and now fills/validates these fields so records written before they existed upgrade instead of resetting.
+- Web `apps/web/app/(dashboard)/files/files-client.tsx`: `MenuButton` gained an `inline` variant and disabled menu items; the per-row Download/Resync/Rename/Move/Delete buttons were replaced by a single 3-dot menu shared with a new `FileTile` (grid) and the existing `FolderTile`; new `FolderRowView` renders folders as rows in list view; a toolbar view toggle and an icon-size `Select` (grid only) write through `usePreferences`. `fileActions` is the one source of the row/tile menu so the two views cannot drift.
+- Mobile `apps/mobile/src/design/icons.tsx`: added `listView`/`gridView` glyphs. `apps/mobile/src/design/primitives.tsx`: `Chip` accepts an optional leading `icon`. `apps/mobile/src/screens/FilesScreen.tsx`: added `view`/`iconSize` state hydrated from and persisted to the `preferences` SQLite store (`filesView`, `filesIconSize`), a header list/grid toggle, a View section in the "Sort & filter" sheet, visible `more` buttons on list rows and folders, and new `FolderTile`/`FileTile` grid cards.
+- New `apps/web/lib/__tests__/preferences.test.ts` covers default/round-trip/legacy-normalization paths.
+
+**Why:** The Backups section only offered a fixed row layout with inline buttons on web and long-press-only actions on mobile, so users could not change density, see a grid, or discover actions. Matching the design sketch (3-dot menu) and adding list/grid + icon size makes the section behave like a file manager, and persisting the choice avoids re-picking it every visit.
+
+**Impact:** `apps/web/lib/{preferences.ts,__tests__/preferences.test.ts(new)}`, `apps/web/app/(dashboard)/files/files-client.tsx`, `apps/mobile/src/screens/FilesScreen.tsx`, `apps/mobile/src/design/{icons.tsx,primitives.tsx}`. Presentation-only (no API, protocol or storage-schema changes); web row actions moved into a menu and mobile now also shows a 3-dot affordance while keeping long-press. Verified: web tests (211) + lint + typecheck, mobile tests (19) + lint + typecheck.
+
+**Follow-ups:** Web grid tiles are informational (web has no file detail route) so the 3-dot menu is the only action surface there. The icon-size control intentionally only appears in grid view. `nodus-design/`'s static prototype was left untouched.
+
 ## [2026-09-19] - Auto-retry an interrupted upload from persisted progress
 
 **What changed:** `apps/web/app/(dashboard)/files/files-client.tsx` now wraps each file's upload in a bounded retry loop (`UPLOAD_RETRY_ATTEMPTS = 5`, `UPLOAD_RETRY_BASE_MS = 2000`, exponential backoff). The task stays active ("retrying in Ns…") instead of failing, and the file id the uploader allocates is captured from the first progress event so a retry calls `uploadFile` with the same `fileId`/`versionNumber` and resumes from the persisted per-shard progress — re-sending only the shards that did not reach the Relay/node.
