@@ -9,11 +9,20 @@ import { DEFAULT_SHARD_SIZE_BYTES, resolveShardSize } from "@repo/core";
 // that reset on every navigation) makes the controls honest about surviving a
 // reload.
 
+/** Layout of the Files ("Backups") section. */
+export type FilesView = "list" | "grid";
+/** Grid tile icon scale — small/medium/large. */
+export type FilesIconSize = "sm" | "md" | "lg";
+
 export interface SyncPreferences {
   autoSync: boolean;
   maxNodes: number;
   /** Plaintext bytes per shard; see @repo/core `resolveShardSize`. */
   shardSizeBytes: number;
+  /** Files section layout, persisted so it survives a reload. */
+  filesView: FilesView;
+  /** Grid tile icon scale, persisted alongside `filesView`. */
+  filesIconSize: FilesIconSize;
 }
 
 /**
@@ -33,22 +42,42 @@ export const DEFAULT_PREFERENCES: SyncPreferences = {
   autoSync: true,
   maxNodes: 5,
   shardSizeBytes: configuredShardSize(),
+  filesView: "list",
+  filesIconSize: "md",
 };
 
 const STORAGE_KEY = "nodus.preferences";
 
-function isSyncPreferences(value: unknown): value is SyncPreferences {
+function isSyncPreferences(value: unknown): boolean {
   if (typeof value !== "object" || value === null) return false;
   const prefs = value as Record<string, unknown>;
   return typeof prefs.autoSync === "boolean" && typeof prefs.maxNodes === "number";
 }
 
-/** Fill in fields missing from an older stored record (e.g. shardSizeBytes). */
-function normalizePreferences(prefs: SyncPreferences): SyncPreferences {
+function isFilesView(value: unknown): value is FilesView {
+  return value === "list" || value === "grid";
+}
+
+function isFilesIconSize(value: unknown): value is FilesIconSize {
+  return value === "sm" || value === "md" || value === "lg";
+}
+
+/**
+ * Fill in fields missing from an older stored record (e.g. shardSizeBytes, or
+ * the newer view prefs). Exported for tests: a stored record written before a
+ * field existed must upgrade rather than reset to defaults.
+ */
+export function normalizePreferences(prefs: Partial<SyncPreferences>): SyncPreferences {
   return {
-    autoSync: prefs.autoSync,
-    maxNodes: prefs.maxNodes,
+    autoSync: prefs.autoSync ?? DEFAULT_PREFERENCES.autoSync,
+    maxNodes: prefs.maxNodes ?? DEFAULT_PREFERENCES.maxNodes,
     shardSizeBytes: resolveShardSize(prefs.shardSizeBytes),
+    // Unknown/omitted view fields fall back rather than leaking a bad value
+    // into the render, which would leave neither list nor grid active.
+    filesView: isFilesView(prefs.filesView) ? prefs.filesView : DEFAULT_PREFERENCES.filesView,
+    filesIconSize: isFilesIconSize(prefs.filesIconSize)
+      ? prefs.filesIconSize
+      : DEFAULT_PREFERENCES.filesIconSize,
   };
 }
 
@@ -59,7 +88,7 @@ export function loadPreferences(): SyncPreferences {
   try {
     const parsed = JSON.parse(raw) as unknown;
     return isSyncPreferences(parsed)
-      ? normalizePreferences(parsed as SyncPreferences)
+      ? normalizePreferences(parsed as Partial<SyncPreferences>)
       : DEFAULT_PREFERENCES;
   } catch {
     // Corrupt entry — fall back rather than crashing Settings.

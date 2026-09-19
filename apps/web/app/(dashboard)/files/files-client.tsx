@@ -20,7 +20,7 @@ import { useUploader } from "../../../lib/use-uploader";
 import { useFileMutations } from "../../../lib/use-file-mutations";
 import { useFolderMutations } from "../../../lib/folder-mutations";
 import { useMounted } from "../../../lib/use-mounted";
-import { usePreferences } from "../../../lib/preferences";
+import { usePreferences, type FilesIconSize } from "../../../lib/preferences";
 import type { ShardUpload, ShardUploadResult } from "../../../lib/buffer";
 import type { ShardTransferRequest } from "@repo/transfer-manager";
 import { isNodeOnline, listNodes, type RelayNode } from "../../../lib/pairing";
@@ -45,6 +45,7 @@ import {
 import { useUpload, type UploadTask } from "../../../providers/upload-provider";
 import { useDownload } from "../../../providers/download-provider";
 import { findIncompleteByHash, findStoredDuplicate, type FileStorageState } from "../../../lib/file-view";
+import { isImageFileName, useImagePreview } from "../../../lib/preview";
 
 // Files view: catalog/upload/download plus a folder tree. Folders are metadata
 // sync events (FOLDER_CREATED / FOLDER_DELETED); the current folder is the
@@ -117,15 +118,24 @@ function FileStorageBadge({ state }: { state: FileStorageState }) {
 
 /**
  * Small accessible popover menu anchored to a trigger. Closes on outside click
- * and Escape. Client-only; used by the folder tiles (rename / download /
- * properties / delete) so the tile itself stays a single tap target.
+ * and Escape. Client-only; used by folder/file tiles so the tile itself stays a
+ * single tap target.
+ *
+ * `overlay` anchors to the corner of a card tile (folder/file grid). `inline`
+ * sits in normal flow at the end of a list row — the 3-dot menu replaces the
+ * row of per-action buttons so every item exposes the same actions.
  */
 function MenuButton({
   label,
   items,
+  variant = "overlay",
+  size = 20,
 }: {
   label: string;
-  items: { label: string; onSelect: () => void; destructive?: boolean }[];
+  items: MenuItem[];
+  variant?: "overlay" | "inline";
+  /** Trigger glyph size in px; grid cards ask for a larger, easier target. */
+  size?: number;
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement | null>(null);
@@ -147,7 +157,10 @@ function MenuButton({
   }, [open]);
 
   return (
-    <div ref={ref} className="absolute top-1.5 right-1.5 z-10">
+    <div
+      ref={ref}
+      className={variant === "overlay" ? "absolute top-1.5 right-1.5 z-10" : "relative shrink-0"}
+    >
       <button
         type="button"
         aria-label={label}
@@ -157,26 +170,27 @@ function MenuButton({
           event.stopPropagation();
           setOpen((previous) => !previous);
         }}
-        className="p-1 rounded-sm text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors"
+        className="p-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors"
       >
-        <Icon name="more" size={16} />
+        <Icon name="more" size={size} />
       </button>
       {open && (
         <div
           role="menu"
-          className="absolute right-0 mt-1 w-36 py-1 rounded-lg border border-border bg-card shadow-lg"
+          className="absolute right-0 mt-1 w-36 py-1 rounded-lg border border-border bg-card shadow-lg z-20"
         >
           {items.map((item) => (
             <button
               key={item.label}
               type="button"
               role="menuitem"
+              disabled={item.disabled}
               onClick={(event) => {
                 event.stopPropagation();
                 setOpen(false);
                 item.onSelect();
               }}
-              className={`w-full text-left px-3 py-1.5 text-xs transition-colors hover:bg-secondary ${
+              className={`w-full text-left px-3 py-1.5 text-xs transition-colors hover:bg-secondary disabled:opacity-40 disabled:hover:bg-transparent ${
                 item.destructive ? "text-destructive" : "text-foreground"
               }`}
             >
@@ -189,9 +203,230 @@ function MenuButton({
   );
 }
 
-// File-manager style folder tile: a large folder glyph with the name beneath it
-// and a three-dots menu (rename / download as zip / properties / delete).
+type MenuItem = { label: string; onSelect: () => void; destructive?: boolean; disabled?: boolean };
+
+/**
+ * Shared 3-dot actions for a file, used by both the list row and the grid tile
+ * so the two views cannot drift. Order matches the file-manager sketch:
+ * download, rename, move, delete (resync is inserted only when the bytes are
+ * not yet durable on a node).
+ */
+function fileActions({
+  file,
+  downloading,
+  busy,
+  onDownload,
+  onResync,
+  onRename,
+  onMove,
+  onDelete,
+}: {
+  file: FileEntryView;
+  downloading: boolean;
+  busy: boolean;
+  onDownload: (file: FileEntryView) => void;
+  onResync: (file: FileEntryView) => void;
+  onRename: (file: FileEntryView) => void;
+  onMove: (file: FileEntryView) => void;
+  onDelete: (file: FileEntryView) => void;
+}): MenuItem[] {
+  return [
+    {
+      label: downloading ? "Downloading…" : "Download",
+      disabled: !file.downloadable || downloading,
+      onSelect: () => onDownload(file),
+    },
+    ...(file.storageState !== "node"
+      ? [{ label: "Resync", disabled: busy, onSelect: () => onResync(file) }]
+      : []),
+    { label: "Rename", disabled: busy, onSelect: () => onRename(file) },
+    { label: "Move", disabled: busy, onSelect: () => onMove(file) },
+    { label: "Delete", disabled: busy, destructive: true, onSelect: () => onDelete(file) },
+  ];
+}
+
+/** Grid tile icon scale → folder glyph size for the folder tiles. */
+const FOLDER_GLYPH_SIZE: Record<FilesIconSize, number> = { sm: 30, md: 44, lg: 64 };
+
+/**
+ * Responsive column classes per icon scale. Every file card now carries a
+ * preview image, so the counts are lower than a plain icon grid: larger scale
+ * means fewer, wider cards.
+ */
+const GRID_COLS: Record<FilesIconSize, string> = {
+  sm: "grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3",
+  md: "grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3",
+  lg: "grid grid-cols-1 sm:grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4",
+};
+
+// Grid-view folder card. Deliberately the same header + media + footer shape as
+// `FileTile` so folders and files share one grid and rows line up (an earlier
+// centered-glyph folder tile rendered at a different height and left a gap).
 function FolderTile({
+  folder,
+  busy,
+  downloading,
+  iconSize,
+  onOpen,
+  onRename,
+  onDownload,
+  onProperties,
+  onDelete,
+}: {
+  folder: FolderView;
+  busy: boolean;
+  downloading: boolean;
+  iconSize: FilesIconSize;
+  onOpen: (folder: FolderView) => void;
+  onRename: (folder: FolderView) => void;
+  onDownload: (folder: FolderView) => void;
+  onProperties: (folder: FolderView) => void;
+  onDelete: (folder: FolderView) => void;
+}) {
+  const mediaHeight = iconSize === "sm" ? 120 : iconSize === "lg" ? 240 : 170;
+  return (
+    <div className="card-interactive group relative flex flex-col gap-3 p-3 rounded-2xl border border-border bg-card hover:border-accent/50">
+      <div className="flex items-center gap-2.5 min-w-0">
+        <div className="flex items-center justify-center w-8 h-8 rounded-lg shrink-0 bg-accent text-accent-foreground">
+          <Icon name="folder" size={16} />
+        </div>
+        <button
+          type="button"
+          onClick={() => onOpen(folder)}
+          title={folder.name}
+          className="flex-1 min-w-0 text-left text-sm font-medium text-foreground truncate"
+        >
+          {folder.name}
+        </button>
+        <MenuButton
+          variant="inline"
+          size={22}
+          label={`Actions for ${folder.name}`}
+          items={[
+            { label: "Rename", disabled: busy, onSelect: () => onRename(folder) },
+            {
+              label: downloading ? "Downloading…" : "Download (.zip)",
+              disabled: downloading,
+              onSelect: () => onDownload(folder),
+            },
+            { label: "Properties", onSelect: () => onProperties(folder) },
+            { label: "Delete", disabled: busy, destructive: true, onSelect: () => onDelete(folder) },
+          ]}
+        />
+      </div>
+      <button
+        type="button"
+        onClick={() => onOpen(folder)}
+        title={folder.name}
+        className="w-full rounded-xl border border-border bg-secondary overflow-hidden flex items-center justify-center hover:border-accent/50 transition-colors"
+        style={{ height: mediaHeight }}
+      >
+        <Icon name="folder" size={FOLDER_GLYPH_SIZE[iconSize]} className="text-accent" />
+      </button>
+      <div className="flex items-center justify-between gap-2 px-0.5">
+        <span className="text-[11px] font-mono text-muted-foreground">Folder</span>
+      </div>
+      {busy && (
+        <span className="absolute bottom-1.5 right-2 text-[10px] text-muted-foreground">…</span>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Grid-view file card. Mirrors `FolderTile` (glyph box, name, metadata) and
+ * carries the same 3-dot actions as a list row so both views stay equivalent.
+ * Web has no in-app file detail view, so the tile body is informational and the
+ * menu is the only action surface.
+ */
+function FileTile({
+  file,
+  iconSize,
+  busy,
+  downloading,
+  deleting,
+  onDownload,
+  onResync,
+  onRename,
+  onMove,
+  onDelete,
+}: {
+  file: FileEntryView;
+  iconSize: FilesIconSize;
+  busy: boolean;
+  downloading: boolean;
+  deleting: boolean;
+  onDownload: (file: FileEntryView) => void;
+  onResync: (file: FileEntryView) => void;
+  onRename: (file: FileEntryView) => void;
+  onMove: (file: FileEntryView) => void;
+  onDelete: (file: FileEntryView) => void;
+}) {
+  const isImage = isImageFileName(file.name);
+  const ext = file.name.includes(".") ? file.name.split(".").pop()?.toUpperCase() : undefined;
+  // Encrypted image bytes must be downloaded+decrypted; the hook is best-effort
+  // and falls back to the extension placeholder until a preview is ready.
+  const preview = useImagePreview(file, isImage);
+  // The scale control now sets the media height, since every card is a preview.
+  const mediaHeight = iconSize === "sm" ? 120 : iconSize === "lg" ? 240 : 170;
+  return (
+    <div
+      className={`card-interactive group relative flex flex-col gap-3 p-3 rounded-2xl border border-border bg-card hover:border-accent/50 ${
+        deleting ? "opacity-50" : ""
+      }`}
+    >
+      {/* Header: type glyph, name, actions. The 3-dot is the card's only action
+          surface here, so it is rendered larger for an easy target. */}
+      <div className="flex items-center gap-2.5 min-w-0">
+        <div
+          className={`flex items-center justify-center w-8 h-8 rounded-lg shrink-0 ${
+            isImage ? "bg-accent text-accent-foreground" : "bg-secondary text-muted-foreground"
+          }`}
+        >
+          <Icon name={isImage ? "image" : "files"} size={16} />
+        </div>
+        <span className="flex-1 min-w-0 text-sm font-medium text-foreground truncate" title={file.name}>
+          {file.name}
+        </span>
+        <MenuButton
+          variant="inline"
+          size={22}
+          label={`Actions for ${file.name}`}
+          items={fileActions({ file, downloading, busy, onDownload, onResync, onRename, onMove, onDelete })}
+        />
+      </div>
+      <div
+        className="w-full rounded-xl border border-border bg-secondary overflow-hidden flex items-center justify-center"
+        style={{ height: mediaHeight }}
+      >
+        {preview ? (
+          // eslint-disable-next-line @next/next/no-img-element -- object URL, not a static asset
+          <img src={preview} alt="" className="w-full h-full object-cover" />
+        ) : (
+          <span className="font-mono text-muted-foreground text-lg">
+            {ext && ext.length <= 4 ? ext : "FILE"}
+          </span>
+        )}
+      </div>
+      <div className="flex items-center justify-between gap-2 px-0.5">
+        <span className="text-[11px] font-mono text-muted-foreground truncate">
+          {formatBytes(file.sizeBytes)} · {timeAgo(file.updatedAt)}
+        </span>
+        <FileStorageBadge state={file.storageState} />
+      </div>
+      {busy && (
+        <span className="absolute bottom-1.5 right-2 text-[10px] text-muted-foreground">…</span>
+      )}
+    </div>
+  );
+}
+
+/**
+ * List-view folder row. Mirrors `FileRowView` (glyph, name, trailing 3-dot) so
+ * list view presents folders and files as one uniform list instead of mixing
+ * tiles with rows.
+ */
+function FolderRowView({
   folder,
   busy,
   downloading,
@@ -211,35 +446,31 @@ function FolderTile({
   onDelete: (folder: FolderView) => void;
 }) {
   return (
-      <div className="card-interactive group relative flex flex-col items-center justify-start gap-2 p-4 rounded-2xl border border-border bg-card hover:border-accent/50">
+    <div className="flex items-center gap-4 px-5 py-3.5 border-b border-border last:border-0 hover:bg-secondary/40 transition-colors">
+      <Icon name="folder" size={20} className="text-accent shrink-0" />
       <button
         type="button"
         onClick={() => onOpen(folder)}
         title={folder.name}
-        className="flex flex-col items-center gap-2 w-full"
+        className="flex-1 min-w-0 text-left"
       >
-        <Icon name="folder" size={44} className="text-accent shrink-0" />
-        <span className="text-xs font-medium text-foreground text-center line-clamp-2 break-all">
-          {folder.name}
-        </span>
+        <div className="text-sm font-medium text-foreground truncate">{folder.name}</div>
+        <div className="text-[10px] font-mono text-muted-foreground mt-0.5">Folder</div>
       </button>
       <MenuButton
+        variant="inline"
         label={`Actions for ${folder.name}`}
         items={[
-          { label: "Rename", onSelect: () => onRename(folder) },
+          { label: "Rename", disabled: busy, onSelect: () => onRename(folder) },
           {
             label: downloading ? "Downloading…" : "Download (.zip)",
-            onSelect: () => {
-              if (!downloading) onDownload(folder);
-            },
+            disabled: downloading,
+            onSelect: () => onDownload(folder),
           },
           { label: "Properties", onSelect: () => onProperties(folder) },
-          { label: "Delete", onSelect: () => onDelete(folder), destructive: true },
+          { label: "Delete", disabled: busy, destructive: true, onSelect: () => onDelete(folder) },
         ]}
       />
-      {busy && (
-        <span className="absolute bottom-1.5 right-2 text-[10px] text-muted-foreground">…</span>
-      )}
     </div>
   );
 }
@@ -265,6 +496,9 @@ function FileRowView({
   onMove: (file: FileEntryView) => void;
   onDelete: (file: FileEntryView) => void;
 }) {
+  const isImage = isImageFileName(file.name);
+  const preview = useImagePreview(file, isImage);
+  const ext = file.name.includes(".") ? file.name.split(".").pop()?.toUpperCase() : undefined;
   return (
     <div
       className={`flex items-center gap-4 px-5 py-3.5 border-b border-border last:border-0 hover:bg-secondary/40 transition-colors ${
@@ -277,6 +511,18 @@ function FileRowView({
           backgroundColor: `var(--status-${file.status === "local-only" ? "local" : file.status})`,
         }}
       />
+      {/* Only image rows reserve a thumbnail, so the rest of the list keeps its
+          current compact layout and no row reflows when a preview arrives. */}
+      {isImage && (
+        <div className="w-9 h-9 shrink-0 border border-border bg-secondary overflow-hidden flex items-center justify-center">
+          {preview ? (
+            // eslint-disable-next-line @next/next/no-img-element -- object URL, not a static asset
+            <img src={preview} alt="" className="w-full h-full object-cover" />
+          ) : (
+            <span className="font-mono text-muted-foreground text-[9px]">{ext ?? "IMG"}</span>
+          )}
+        </div>
+      )}
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2">
           <span className="text-sm font-medium text-foreground truncate">{file.name}</span>
@@ -291,50 +537,11 @@ function FileRowView({
         </div>
       </div>
 
-      <button
-        type="button"
-        onClick={() => onDownload(file)}
-        disabled={!file.downloadable || downloading}
-        title={file.downloadable ? undefined : "No downloadable copy on a paired node"}
-        className="px-3 py-1.5 text-xs border border-border text-foreground hover:border-accent hover:text-accent transition-colors shrink-0 disabled:opacity-40 disabled:hover:border-border disabled:hover:text-foreground"
-      >
-        {downloading ? "Downloading…" : "Download"}
-      </button>
-      {file.storageState !== "node" && (
-        <button
-          type="button"
-          onClick={() => onResync(file)}
-          disabled={busy}
-          title="Retry backing this file up to a storage node"
-          className="hidden sm:inline-block px-3 py-1.5 text-xs border border-accent/40 text-accent hover:bg-accent/10 transition-colors shrink-0 disabled:opacity-40"
-        >
-          Resync
-        </button>
-      )}
-      <button
-        type="button"
-        onClick={() => onRename(file)}
-        disabled={busy}
-        className="hidden sm:inline-block px-3 py-1.5 text-xs border border-border text-foreground hover:border-accent hover:text-accent transition-colors shrink-0 disabled:opacity-40"
-      >
-        Rename
-      </button>
-      <button
-        type="button"
-        onClick={() => onMove(file)}
-        disabled={busy}
-        className="hidden sm:inline-block px-3 py-1.5 text-xs border border-border text-foreground hover:border-accent hover:text-accent transition-colors shrink-0 disabled:opacity-40"
-      >
-        Move
-      </button>
-      <button
-        type="button"
-        onClick={() => onDelete(file)}
-        disabled={busy}
-        className="hidden sm:inline-block px-3 py-1.5 text-xs border border-destructive/30 text-destructive hover:bg-destructive/10 transition-colors shrink-0 disabled:opacity-40"
-      >
-        Delete
-      </button>
+      <MenuButton
+        variant="inline"
+        label={`Actions for ${file.name}`}
+        items={fileActions({ file, downloading, busy, onDownload, onResync, onRename, onMove, onDelete })}
+      />
     </div>
   );
 }
@@ -402,8 +609,12 @@ export function FilesClient() {
   const mounted = useMounted();
   // Shard size is a device preference; the uploader and the duplicate-check
   // measurement must agree on it or the announced shard_count would drift.
-  const { preferences } = usePreferences();
+  const { preferences, update: updatePreferences } = usePreferences();
   const shardSizeBytes = preferences.shardSizeBytes;
+  // List/grid layout and grid icon scale are persisted preferences, so the
+  // choice survives navigation and reloads instead of resetting each visit.
+  const filesView = preferences.filesView;
+  const filesIconSize = preferences.filesIconSize;
   const [sortBy, setSortBy] = useState<SortKey>("modified");
   const [filterBy, setFilterBy] = useState<SyncStatus | "all">("all");
   const [nodes, setNodes] = useState<RelayNode[]>([]);
@@ -459,6 +670,49 @@ export function FilesClient() {
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [mutationError, setMutationError] = useState<string | null>(null);
   const [resyncHint, setResyncHint] = useState<string | null>(null);
+  // Drag-and-drop upload (web-only: native has no OS-level drag-and-drop). A
+  // file drag anywhere over the window reveals a translucent overlay across the
+  // Backups section; dropping on the section uploads into the current folder.
+  const [dragActive, setDragActive] = useState(false);
+  // Nested dragenter/dragleave pairs fire when crossing child elements, so a
+  // depth counter (not a boolean) decides when the drag has truly left.
+  const dragDepthRef = useRef(0);
+
+  // Detect a file drag at the window level so the overlay appears no matter
+  // which child the pointer is over, and so a drop outside the section is
+  // swallowed instead of the browser navigating to the file.
+  useEffect(() => {
+    const hasFiles = (event: DragEvent) =>
+      Array.from(event.dataTransfer?.types ?? []).includes("Files");
+    const onDragEnter = (event: DragEvent) => {
+      if (!hasFiles(event)) return;
+      dragDepthRef.current += 1;
+      setDragActive(true);
+    };
+    const onDragOver = (event: DragEvent) => {
+      // Without preventDefault the browser refuses the drop and opens the file.
+      if (hasFiles(event)) event.preventDefault();
+    };
+    const onDragLeave = () => {
+      dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+      if (dragDepthRef.current === 0) setDragActive(false);
+    };
+    const onDrop = (event: DragEvent) => {
+      dragDepthRef.current = 0;
+      setDragActive(false);
+      if (hasFiles(event)) event.preventDefault();
+    };
+    window.addEventListener("dragenter", onDragEnter);
+    window.addEventListener("dragover", onDragOver);
+    window.addEventListener("dragleave", onDragLeave);
+    window.addEventListener("drop", onDrop);
+    return () => {
+      window.removeEventListener("dragenter", onDragEnter);
+      window.removeEventListener("dragover", onDragOver);
+      window.removeEventListener("dragleave", onDragLeave);
+      window.removeEventListener("drop", onDrop);
+    };
+  }, []);
 
   // Load the node catalog to resolve an upload target (primary preferred), then
   // re-poll so a node that goes offline while this page is open is reflected in
@@ -1020,7 +1274,36 @@ export function FilesClient() {
   const moveOptions = useMemo(() => folderOptions(folders), [folders]);
 
   return (
-    <div className="mx-auto max-w-6xl space-y-8 p-6">
+    <div
+      className="relative mx-auto max-w-6xl space-y-8 p-6"
+      // Dropping anywhere in the section uploads into the current folder. The
+      // window-level listener already preventDefaults outside this node.
+      onDragOver={(event) => event.preventDefault()}
+      onDrop={(event) => {
+        event.preventDefault();
+        dragDepthRef.current = 0;
+        setDragActive(false);
+        if (event.dataTransfer?.files?.length) void handleFilesPicked(event.dataTransfer.files);
+      }}
+    >
+      {/* Translucent drop target that hovers the whole section during a file
+          drag (GDrive-style). pointer-events-none keeps it out of the drag
+          hit-testing so it cannot flicker the enter/leave counter. */}
+      {dragActive && (
+        <div
+          role="status"
+          aria-live="polite"
+          className="pointer-events-none absolute inset-0 z-40 flex items-center justify-center rounded-3xl border-2 border-dashed border-accent bg-background/70 backdrop-blur-sm"
+        >
+          <div className="flex flex-col items-center gap-3 px-6 text-center">
+            <Icon name="upload" size={48} className="text-accent" />
+            <p className="text-xl font-medium text-foreground">Drop files to upload</p>
+            <p className="text-xs text-muted-foreground">
+              {uploading ? "Upload in progress…" : uploadHint ?? "Release to back up to your nodes."}
+            </p>
+          </div>
+        </div>
+      )}
       {/* The upload queue widget is rendered globally by UploadProvider so it
           survives navigating away from this page mid-upload. */}
       <PageHeader
@@ -1057,9 +1340,10 @@ export function FilesClient() {
       <Section
         title="All files"
         action={
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2.5">
             <Select
               aria-label="Sort files"
+              size="md"
               value={sortBy}
               onChange={(e) => setSortBy(e.target.value as SortKey)}
             >
@@ -1069,6 +1353,7 @@ export function FilesClient() {
             </Select>
             <Select
               aria-label="Filter files"
+              size="md"
               value={filterBy}
               onChange={(e) => setFilterBy(e.target.value as SyncStatus | "all")}
             >
@@ -1078,17 +1363,61 @@ export function FilesClient() {
                 </option>
               ))}
             </Select>
-            <Button variant="secondary" size="sm" onClick={refresh}>
+            {/* View toggles: list vs grid. The icon-size control only applies
+                to grid, so it is hidden in list view to avoid a dead control. */}
+            <div className="flex items-center border border-border rounded-lg overflow-hidden">
+              <button
+                type="button"
+                aria-label="List view"
+                aria-pressed={filesView === "list"}
+                title="List view"
+                onClick={() => updatePreferences({ filesView: "list" })}
+                className={`px-2.5 py-2 transition-colors ${
+                  filesView === "list"
+                    ? "bg-accent/10 text-accent"
+                    : "text-muted-foreground hover:bg-secondary"
+                }`}
+              >
+                <Icon name="list-view" size={18} />
+              </button>
+              <button
+                type="button"
+                aria-label="Grid view"
+                aria-pressed={filesView === "grid"}
+                title="Grid view"
+                onClick={() => updatePreferences({ filesView: "grid" })}
+                className={`px-2.5 py-2 border-l border-border transition-colors ${
+                  filesView === "grid"
+                    ? "bg-accent/10 text-accent"
+                    : "text-muted-foreground hover:bg-secondary"
+                }`}
+              >
+                <Icon name="grid-view" size={18} />
+              </button>
+            </div>
+            {filesView === "grid" && (
+              <Select
+                aria-label="Grid icon size"
+                size="md"
+                value={filesIconSize}
+                onChange={(e) => updatePreferences({ filesIconSize: e.target.value as FilesIconSize })}
+              >
+                <option value="sm">Icons: Small</option>
+                <option value="md">Icons: Medium</option>
+                <option value="lg">Icons: Large</option>
+              </Select>
+            )}
+            <Button variant="secondary" size="lg" onClick={refresh}>
               Refresh
             </Button>
             {queuedCount > 0 && (
-              <Button variant="secondary" size="sm" onClick={() => retryPending()}>
+              <Button variant="secondary" size="lg" onClick={() => retryPending()}>
                 Retry {queuedCount} pending
               </Button>
             )}
             <Button
               variant="secondary"
-              size="sm"
+              size="lg"
               onClick={() => {
                 setMutationError(null);
                 setNewFolderName("");
@@ -1100,7 +1429,7 @@ export function FilesClient() {
             </Button>
             <Button
               variant="primary"
-              size="sm"
+              size="lg"
               onClick={() => fileInputRef.current?.click()}
               disabled={!canUpload}
               title={uploadHint ?? undefined}
@@ -1157,27 +1486,35 @@ export function FilesClient() {
           </p>
         )}
 
-        {/* Breadcrumb navigation. Root is always tappable so the tree can be
-            traversed without a separate sidebar. */}
-        <nav className="flex items-center gap-1.5 mb-3 text-xs" aria-label="Breadcrumb">
+        {/* Breadcrumb navigation. The root is a distinct home chip that stays
+            clickable from any depth, and every ancestor is a target, so the
+            tree is fully traversable without a separate sidebar. */}
+        <nav className="flex flex-wrap items-center gap-1 mb-4 text-sm" aria-label="Breadcrumb">
           <button
             type="button"
+            title="Back to Backups"
             onClick={() => setCurrentFolderId(null)}
-            className={currentFolderId === null ? "text-foreground font-medium" : "text-muted-foreground hover:text-accent"}
+            className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-md transition-colors ${
+              currentFolderId === null
+                ? "text-foreground font-medium bg-secondary"
+                : "text-muted-foreground hover:text-accent hover:bg-secondary"
+            }`}
           >
+            <Icon name="files" size={15} />
             Backups
           </button>
           {breadcrumb.map((folder) => (
-            <span key={folder.folderId} className="flex items-center gap-1.5">
-              <span className="text-muted-foreground">/</span>
+            <span key={folder.folderId} className="flex items-center gap-1 min-w-0">
+              <span className="text-muted-foreground/60 select-none">/</span>
               <button
                 type="button"
+                title={folder.name}
                 onClick={() => setCurrentFolderId(folder.folderId)}
-                className={
+                className={`px-2 py-1 rounded-md max-w-[240px] truncate transition-colors ${
                   folder.folderId === currentFolderId
-                    ? "text-foreground font-medium"
-                    : "text-muted-foreground hover:text-accent"
-                }
+                    ? "text-foreground font-medium bg-secondary"
+                    : "text-muted-foreground hover:text-accent hover:bg-secondary"
+                }`}
               >
                 {folder.name}
               </button>
@@ -1197,52 +1534,86 @@ export function FilesClient() {
                 : "Upload a file or create a folder here."
             }
           />
+        ) : filesView === "grid" ? (
+          // One grid for folders and files so they flow together and the card
+          // rows stay aligned, instead of two stacked grids with a gap.
+          <div className={GRID_COLS[filesIconSize]}>
+            {visibleFolders.map((folder) => (
+              <FolderTile
+                key={folder.folderId}
+                folder={folder}
+                busy={mutating}
+                downloading={folderDownloadId === folder.folderId}
+                iconSize={filesIconSize}
+                onOpen={(target) => setCurrentFolderId(target.folderId)}
+                onRename={(target) => {
+                  setMutationError(null);
+                  setFolderRenameValue(target.name);
+                  setFolderRenameTarget(target);
+                }}
+                onDownload={handleFolderDownload}
+                onProperties={(target) => setFolderPropsTarget(target)}
+                onDelete={(target) => {
+                  setMutationError(null);
+                  setDeleteFolderTarget(target);
+                }}
+              />
+            ))}
+            {visible.map((file) => (
+              <FileTile
+                key={file.fileId}
+                file={file}
+                iconSize={filesIconSize}
+                downloading={downloadingId === file.fileId}
+                busy={mutating}
+                deleting={deletingId === file.fileId}
+                onDownload={handleDownload}
+                onResync={resync}
+                onRename={openRename}
+                onMove={openMove}
+                onDelete={openDelete}
+              />
+            ))}
+          </div>
         ) : (
-          <div className="space-y-4">
-            {visibleFolders.length > 0 && (
-              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
-                {visibleFolders.map((folder) => (
-                  <FolderTile
-                    key={folder.folderId}
-                    folder={folder}
-                    busy={mutating}
-                    downloading={folderDownloadId === folder.folderId}
-                    onOpen={(target) => setCurrentFolderId(target.folderId)}
-                    onRename={(target) => {
-                      setMutationError(null);
-                      setFolderRenameValue(target.name);
-                      setFolderRenameTarget(target);
-                    }}
-                    onDownload={handleFolderDownload}
-                    onProperties={(target) => setFolderPropsTarget(target)}
-                    onDelete={(target) => {
-                      setMutationError(null);
-                      setDeleteFolderTarget(target);
-                    }}
-                  />
-                ))}
-              </div>
-            )}
-            {visible.length > 0 && (
-              <div className="border border-border rounded-2xl overflow-hidden bg-card elev-card">
-                {visible.map((file) => (
-                  <FileRowView
-                    key={file.fileId}
-                    file={file}
-                    downloading={downloadingId === file.fileId}
-                    busy={mutating}
-                    deleting={deletingId === file.fileId}
-                    onDownload={handleDownload}
-                    onResync={resync}
-                    onRename={openRename}
-                    onMove={openMove}
-                    onDelete={openDelete}
-                  />
-                ))}
-              </div>
-            )}
+          <div className="border border-border rounded-2xl overflow-hidden bg-card elev-card">
+            {visibleFolders.map((folder) => (
+              <FolderRowView
+                key={folder.folderId}
+                folder={folder}
+                busy={mutating}
+                downloading={folderDownloadId === folder.folderId}
+                onOpen={(target) => setCurrentFolderId(target.folderId)}
+                onRename={(target) => {
+                  setMutationError(null);
+                  setFolderRenameValue(target.name);
+                  setFolderRenameTarget(target);
+                }}
+                onDownload={handleFolderDownload}
+                onProperties={(target) => setFolderPropsTarget(target)}
+                onDelete={(target) => {
+                  setMutationError(null);
+                  setDeleteFolderTarget(target);
+                }}
+              />
+            ))}
+            {visible.map((file) => (
+              <FileRowView
+                key={file.fileId}
+                file={file}
+                downloading={downloadingId === file.fileId}
+                busy={mutating}
+                deleting={deletingId === file.fileId}
+                onDownload={handleDownload}
+                onResync={resync}
+                onRename={openRename}
+                onMove={openMove}
+                onDelete={openDelete}
+              />
+            ))}
           </div>
         )}
+
       </Section>
 
       {renameTarget && (

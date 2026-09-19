@@ -25,7 +25,9 @@ interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
 const sizes = {
   sm: "px-2 py-1",
   md: "px-2.5 py-1.5",
-  lg: "px-3 py-2",
+  // `lg` also raises the text size, for toolbar controls that need to be more
+  // prominent than the default.
+  lg: "px-3.5 py-2 text-sm",
 };
 
 export function Button({ variant = "secondary", size = "md", className = "", ...props }: ButtonProps) {

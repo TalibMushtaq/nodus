@@ -20,6 +20,7 @@ export type IconName =
   | "chevron-down"
   | "refresh"
   | "folder"
+  | "image"
   | "list-view"
   | "grid-view"
   | "close"
@@ -187,6 +188,22 @@ const icons: Record<IconName, { viewBox: string; node: ReactNode }> = {
     viewBox: "0 0 16 16",
     node: (
       <path d="M1.5 4.5h4l1.5-2h7.5v9h-13V4.5z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" />
+    ),
+  },
+  image: {
+    viewBox: "0 0 16 16",
+    node: (
+      <>
+        <rect x="1.5" y="2.5" width="13" height="11" rx="1.8" stroke="currentColor" strokeWidth="1.3" />
+        <circle cx="5.2" cy="6" r="1.2" fill="currentColor" />
+        <path
+          d="M2.2 11.5l3.4-3 2.7 2.4 2.4-1.9 2.9 2.5"
+          stroke="currentColor"
+          strokeWidth="1.3"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      </>
     ),
   },
   "list-view": {
