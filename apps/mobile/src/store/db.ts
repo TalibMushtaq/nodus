@@ -113,6 +113,16 @@ const MIGRATIONS: string[] = [
     );
     CREATE INDEX IF NOT EXISTS idx_transfer_log_created ON transfer_log(created_at);
   `,
+
+  // Migration 6: make the activity log part of the account-wide feed. `synced`
+  // flags locally-recorded terminal entries that still need uploading as
+  // ACTIVITY_LOGGED events; `device_id` records the origin of entries pulled
+  // from the Relay/Node so the UI can attribute them. `cleared_at` (preference)
+  // hides older rows after a local Clear.
+  `
+    ALTER TABLE transfer_log ADD COLUMN synced INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE transfer_log ADD COLUMN device_id TEXT;
+  `,
 ];
 
 let dbPromise: Promise<SQLite.SQLiteDatabase> | null = null;

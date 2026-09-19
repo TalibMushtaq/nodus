@@ -106,7 +106,8 @@ func deviceAllowedEventType(t string) bool {
 	switch t {
 	case "FILE_CREATED", "FILE_VERSION_ADDED", "FILE_MODIFIED", "FILE_DELETED",
 		"FOLDER_CREATED", "FOLDER_DELETED", "TOMBSTONE_CREATED", "TOMBSTONE_REMOVED",
-		"KEY_ENVELOPE_ADDED", "FOLDER_KEY_ENVELOPE_ADDED", "FILE_SHARD_MANIFEST", "CONFLICT_RESOLVED":
+		"KEY_ENVELOPE_ADDED", "FOLDER_KEY_ENVELOPE_ADDED", "FILE_SHARD_MANIFEST", "CONFLICT_RESOLVED",
+		"ACTIVITY_LOGGED":
 		return true
 	default:
 		return false
@@ -1152,6 +1153,38 @@ func applySingleEventTx(
 				return false
 			}
 		}
+
+	case "ACTIVITY_LOGGED":
+		// Project the terminal action into the account's activity feed. The
+		// payload carries no file name (names are E2E); `file_id` is kept so a
+		// client can resolve the display name locally. `origin_id` is the device
+		// that performed the action. created_at falls back to the event time.
+		var aData struct {
+			ActivityID string  `json:"activity_id"`
+			Kind       string  `json:"kind"`
+			Outcome    string  `json:"outcome"`
+			FileID     *string `json:"file_id"`
+			Path       *string `json:"path"`
+			Detail     *string `json:"detail"`
+			CreatedAt  string  `json:"created_at"`
+		}
+		if err := json.Unmarshal(item.Payload, &aData); err == nil && aData.ActivityID != "" {
+			createdAt := t
+			if aData.CreatedAt != "" {
+				if parsed, err := time.Parse(time.RFC3339, aData.CreatedAt); err == nil {
+					createdAt = parsed
+				}
+			}
+			if _, err := tx.Exec(ctx, `
+				INSERT INTO activities
+					(account_id, activity_id, origin_id, kind, outcome, file_id, path, detail, created_at)
+				VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+				ON CONFLICT (account_id, activity_id) DO NOTHING
+			`, accountID, aData.ActivityID, item.OriginID, aData.Kind, aData.Outcome,
+				aData.FileID, aData.Path, aData.Detail, createdAt); err != nil {
+				return false
+			}
+		}
 	}
 
 	// 5. Update cursor
@@ -1229,6 +1262,17 @@ func eventReferencesForeignFile(ctx context.Context, tx pgx.Tx, accountID string
 			return false, nil
 		}
 		fileID = data.FileID
+	case "ACTIVITY_LOGGED":
+		// Activities may reference a file; only the reference is checked, the
+		// entry itself is journaled for the feed. A null file_id is allowed
+		// (account-level actions such as a purge sweep).
+		var data struct {
+			FileID *string `json:"file_id"`
+		}
+		if err := json.Unmarshal(item.Payload, &data); err != nil || data.FileID == nil || *data.FileID == "" {
+			return false, nil
+		}
+		fileID = *data.FileID
 	default:
 		return false, nil
 	}

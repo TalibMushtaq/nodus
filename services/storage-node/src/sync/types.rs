@@ -313,6 +313,25 @@ pub struct ShardHashRecord {
     pub shard_hash: String,
 }
 
+/// A journaled `ACTIVITY_LOGGED` entry captured in a snapshot, so a rebuilt
+/// Relay keeps the account's activity feed (the node's `sync_events` is the only
+/// remaining copy otherwise). No file name is carried — names are E2E and the
+/// Relay must not see them; `device_id` is the origin device.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ActivitySnapshotRecord {
+    pub activity_id: String,
+    pub device_id: String,
+    pub kind: String,
+    pub outcome: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    pub created_at: String,
+}
+
 /// Snapshot chunk record — a single file_version/folder/envelope/tombstone/
 /// shard_hash row. `untagged` keeps records as plain JSON objects on the wire
 /// (matching the TS `SnapshotChunkPayloadSchema`); the outer `record_type`
@@ -328,6 +347,7 @@ pub enum SnapshotRecord {
     FolderKeyEnvelope(FolderKeyEnvelopeRecord),
     Tombstone(TombstoneRecord),
     ShardHash(ShardHashRecord),
+    Activity(ActivitySnapshotRecord),
 }
 
 /// Snapshot_begin metadata (§20).

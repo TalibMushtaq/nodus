@@ -23,6 +23,7 @@ export const EventTypes = {
   FOLDER_KEY_ENVELOPE_ADDED: "FOLDER_KEY_ENVELOPE_ADDED",
   FILE_SHARD_MANIFEST: "FILE_SHARD_MANIFEST",
   CONFLICT_RESOLVED: "CONFLICT_RESOLVED",
+  ACTIVITY_LOGGED: "ACTIVITY_LOGGED",
 } as const;
 
 export const EventTypeSchema = z.enum([
@@ -39,6 +40,7 @@ export const EventTypeSchema = z.enum([
   EventTypes.FOLDER_KEY_ENVELOPE_ADDED,
   EventTypes.FILE_SHARD_MANIFEST,
   EventTypes.CONFLICT_RESOLVED,
+  EventTypes.ACTIVITY_LOGGED,
 ]);
 
 export type EventType = z.infer<typeof EventTypeSchema>;
@@ -186,6 +188,32 @@ export const ConflictResolvedPayloadSchema = z.object({
   keep_version: z.number().int().positive().optional(),
 });
 
+/**
+ * Activity log entry (§ account-wide history). A client records a terminal
+ * action outcome (upload/download complete or failed, delete, restore, purge,
+ * rename, move, conflict) so the feed is durable on the Relay and the Storage
+ * Node and reads the same online or offline.
+ *
+ * Privacy: this deliberately carries **no file name** — file names are E2E and
+ * the Relay/Node must never see them. `file_id` lets each client resolve the
+ * display name from its own decrypted catalog/tombstone. `detail` is limited to
+ * non-sensitive text (error codes/messages, counts).
+ */
+export const ActivityLoggedPayloadSchema = z.object({
+  /** Client-generated uuid; the activity feed's dedupe/idempotency key. */
+  activity_id: z.string(),
+  kind: z.enum(["upload", "download", "delete", "restore", "purge", "rename", "move", "conflict"]),
+  outcome: z.enum(["complete", "failed"]),
+  /** File the action concerned, when it is file-scoped. */
+  file_id: z.string().nullable().optional(),
+  /** Transfer path vocabulary (`local`/`relay`/`buffered`/`queued`/`offline`). */
+  path: z.string().nullable().optional(),
+  /** Non-sensitive summary or error text. */
+  detail: z.string().nullable().optional(),
+  /** When the action finished, ISO 8601. */
+  created_at: z.string().datetime(),
+});
+
 // ── Event payload union ────────────────────────────────────────────
 
 /**
@@ -206,6 +234,7 @@ const EventPayloadMap: Record<EventType, z.ZodType> = {
   FOLDER_KEY_ENVELOPE_ADDED: FolderKeyEnvelopePayloadSchema,
   FILE_SHARD_MANIFEST: FileShardManifestPayloadSchema,
   CONFLICT_RESOLVED: ConflictResolvedPayloadSchema,
+  ACTIVITY_LOGGED: ActivityLoggedPayloadSchema,
 };
 
 /**

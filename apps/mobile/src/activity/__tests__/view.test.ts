@@ -15,6 +15,8 @@ function entry(partial: Partial<TransferLogEntry> = {}): TransferLogEntry {
     path: null,
     outcome: "complete",
     createdAt: "2026-09-17T00:00:00Z",
+    deviceId: null,
+    synced: false,
     ...partial,
   };
 }

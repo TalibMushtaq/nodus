@@ -5,8 +5,8 @@ import { NodeId, RecipientKindSchema, SnapshotId } from "../types.js";
 //
 // A snapshot is streamed as typed, homogeneous chunks. Each chunk carries one
 // record type ('file_version' | 'folder' | 'key_envelope' | 'folder_key_envelope'
-// | 'tombstone' | 'shard_hash') and an array of up to SNAPSHOT_CHUNK_MAX_RECORDS
-// records. Keeping each chunk homogeneous (one record type) rather than
+// | 'tombstone' | 'shard_hash' | 'activity') and an array of up to
+// SNAPSHOT_CHUNK_MAX_RECORDS records. Keeping each chunk homogeneous rather than
 // interleaving types is simpler to validate and apply, at the cost of slightly
 // more chunks for accounts with multiple record types.
 
@@ -21,6 +21,7 @@ export const SnapshotRecordTypeSchema = z.enum([
   "folder_key_envelope",
   "tombstone",
   "shard_hash",
+  "activity",
 ]);
 export type SnapshotRecordType = z.infer<typeof SnapshotRecordTypeSchema>;
 
@@ -117,6 +118,26 @@ export const ShardHashRecordSchema = z.object({
 
 export type ShardHashRecord = z.infer<typeof ShardHashRecordSchema>;
 
+/**
+ * A journaled `ACTIVITY_LOGGED` entry captured in a snapshot. Carried so a
+ * Relay rebuilt from an empty database keeps the account's activity feed; the
+ * node keeps these in its `sync_events`, so the snapshot is the only way they
+ * survive a rebuild. No file name is carried (names are E2E); `device_id` is
+ * the origin device.
+ */
+export const ActivitySnapshotRecordSchema = z.object({
+  activity_id: z.string(),
+  device_id: z.string(),
+  kind: z.string(),
+  outcome: z.string(),
+  file_id: z.string().nullable().optional(),
+  path: z.string().nullable().optional(),
+  detail: z.string().nullable().optional(),
+  created_at: z.string(),
+});
+
+export type ActivitySnapshotRecord = z.infer<typeof ActivitySnapshotRecordSchema>;
+
 // ── Snapshot Begin ─────────────────────────────────────────────────
 
 /**
@@ -180,6 +201,7 @@ export const SnapshotChunkPayloadSchema = z.object({
         FolderKeyEnvelopeRecordSchema,
         TombstoneRecordSchema,
         ShardHashRecordSchema,
+        ActivitySnapshotRecordSchema,
       ]),
     )
     .max(SNAPSHOT_CHUNK_MAX_RECORDS),

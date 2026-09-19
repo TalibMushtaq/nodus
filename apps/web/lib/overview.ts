@@ -136,11 +136,15 @@ const ACTIVITY_LABELS: Record<
   download: { complete: "Downloaded", progress: "Downloading", failed: "Download failed" },
   delete: { complete: "Deleted", progress: "Deleting", failed: "Delete failed" },
   restore: { complete: "Restored", progress: "Restoring", failed: "Restore failed" },
+  purge: { complete: "Permanently deleted", progress: "Deleting", failed: "Delete failed" },
+  rename: { complete: "Renamed", progress: "Renaming", failed: "Rename failed" },
+  move: { complete: "Moved", progress: "Moving", failed: "Move failed" },
+  conflict: { complete: "Conflict resolved", progress: "Resolving", failed: "Conflict action failed" },
 };
 
 /** Past-tense verb for an activity row's outcome (e.g. "Uploaded"). */
 export function activityLabel(entry: TransferLogEntry): string {
-  const labels = ACTIVITY_LABELS[entry.kind];
+  const labels = ACTIVITY_LABELS[entry.kind] ?? ACTIVITY_LABELS.upload;
   if (entry.outcome === "failed") return labels.failed;
   if (entry.outcome === "in-progress") return labels.progress;
   return labels.complete;

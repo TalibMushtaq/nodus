@@ -6,7 +6,7 @@
 
 import * as React from "react";
 import { View } from "react-native";
-import { timeAgo } from "@repo/sdk";
+import { describeDeviceInfo, shortId, timeAgo } from "@repo/sdk";
 
 import { AppStatusLine } from "../runtime/AppStatusLine";
 import { useApp } from "../runtime/context";
@@ -43,8 +43,28 @@ export function ActivityScreen() {
     [app.activity, filter],
   );
 
+  // Pull the account-wide feed (Relay online, else a trusted node) when the tab
+  // opens; pull-to-refresh re-runs it via `onRefresh`.
+  React.useEffect(() => {
+    if (app.authed) void app.loadActivity();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [app.authed]);
+
   const progress = app.uploadProgress;
   const progressRatio = progress && progress.totalBytes > 0 ? progress.completedBytes / progress.totalBytes : 0;
+
+  // Which device performed an action: its account name when set, else the
+  // auto-captured platform/browser ("Linux · Chrome 126"), else a short id.
+  const deviceLabel = (deviceId: string | null): string => {
+    if (!deviceId) return "This device";
+    const device = app.devices.find((candidate) => candidate.device_id === deviceId);
+    const named = device?.display_name?.trim();
+    if (named) return named;
+    const described = describeDeviceInfo(device?.device_info ?? null);
+    if (described) return described;
+    if (deviceId === app.device?.device_id) return "This device";
+    return shortId(deviceId);
+  };
 
   return (
     <View style={{ flex: 1 }}>
@@ -151,11 +171,15 @@ export function ActivityScreen() {
                     <View style={{ flex: 1, minWidth: 0 }}>
                       <View style={{ flexDirection: "row", alignItems: "center", gap: theme.spacing.sm }}>
                         <ThemedText variant="body" numberOfLines={1} style={{ flexShrink: 1 }}>
-                          {entry.fileName ?? entry.fileId ?? meta.label}
+                          {entry.fileName ??
+                            (entry.fileId ? app.fileNames[entry.fileId] : null) ??
+                            entry.fileId ??
+                            meta.label}
                         </ThemedText>
                         {isTransferPath(entry.path) ? <PathIndicator path={entry.path} /> : null}
                       </View>
-                      <ThemedText variant="monoSmall" tone="muted">
+                      <ThemedText variant="monoSmall" tone="muted" numberOfLines={1}>
+                        {deviceLabel(entry.deviceId ?? app.device?.device_id ?? null)} ·{" "}
                         {failed ? "Failed" : meta.label}
                         {entry.detail ? ` · ${entry.detail}` : ""} · {timeAgo(entry.createdAt)}
                       </ThemedText>

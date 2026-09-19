@@ -227,6 +227,16 @@ export {
   LocalRecoveryEnvelopesSchema,
   type LocalRecoveryEnvelopes,
 } from "./messages/local-recovery.js";
+export {
+  ActivityKindSchema,
+  type ActivityKind,
+  ActivityOutcomeSchema,
+  type ActivityOutcome,
+  ActivityRecordSchema,
+  type ActivityRecord,
+  ActivityListSchema,
+  type ActivityList,
+} from "./messages/activity.js";
 
 // ── Event types ────────────────────────────────────────────────────
 

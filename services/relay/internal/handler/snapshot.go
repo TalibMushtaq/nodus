@@ -108,6 +108,19 @@ type ShardHashRecord struct {
 	ShardHash     string `json:"shard_hash"`
 }
 
+// ActivityRecord is a journaled ACTIVITY_LOGGED entry captured in a snapshot,
+// restored into the account's activity feed on promotion.
+type ActivityRecord struct {
+	ActivityID string  `json:"activity_id"`
+	DeviceID   string  `json:"device_id"`
+	Kind       string  `json:"kind"`
+	Outcome    string  `json:"outcome"`
+	FileID     *string `json:"file_id"`
+	Path       *string `json:"path"`
+	Detail     *string `json:"detail"`
+	CreatedAt  string  `json:"created_at"`
+}
+
 type SnapshotChunkPayload struct {
 	SnapshotID string          `json:"snapshot_id"`
 	ChunkIndex int64           `json:"chunk_index"`
@@ -522,6 +535,35 @@ func stageRebuildChunk(ctx context.Context, pool *db.Pool, accountID string, chu
 				ON CONFLICT (account_id, file_id, version_number, shard_index) DO UPDATE SET
 					shard_hash = EXCLUDED.shard_hash
 			`, accountID, r.FileID, r.VersionNumber, r.ShardIndex, r.ShardHash); err != nil {
+				return err
+			}
+		}
+		return nil
+
+	case "activity":
+		var records []ActivityRecord
+		if err := json.Unmarshal(chunk.Records, &records); err != nil {
+			return fmt.Errorf("invalid activity records: %w", err)
+		}
+		for _, r := range records {
+			if r.ActivityID == "" {
+				continue
+			}
+			// created_at falls back to NOW() when absent/malformed so the row's
+			// NOT NULL constraint is always satisfied.
+			createdAt := time.Now().UTC()
+			if r.CreatedAt != "" {
+				if parsed, err := time.Parse(time.RFC3339, r.CreatedAt); err == nil {
+					createdAt = parsed
+				}
+			}
+			if _, err := pool.Exec(ctx, `
+				INSERT INTO rebuild_activities
+					(account_id, activity_id, origin_id, kind, outcome, file_id, path, detail, created_at)
+				VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+				ON CONFLICT (account_id, activity_id) DO NOTHING
+			`, accountID, r.ActivityID, r.DeviceID, r.Kind, r.Outcome,
+				r.FileID, r.Path, r.Detail, createdAt); err != nil {
 				return err
 			}
 		}

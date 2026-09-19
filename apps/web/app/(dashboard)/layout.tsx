@@ -3,6 +3,7 @@ import { AppShell } from "../../components/app-shell";
 import { TransferProvider } from "../../providers/transfer-provider";
 import { UploadProvider } from "../../providers/upload-provider";
 import { DownloadProvider } from "../../providers/download-provider";
+import { ActivityProvider } from "../../providers/activity-provider";
 import { requireAuth } from "../../lib/session";
 
 // Dashboard layout wraps every page under the (dashboard) group in AppShell.
@@ -19,7 +20,11 @@ export default async function DashboardLayout({ children }: { children: ReactNod
         {/* DownloadProvider owns the download widget so a download started on
             Files keeps showing stage progress after navigating away. */}
         <DownloadProvider>
-          <AppShell>{children}</AppShell>
+          {/* ActivityProvider syncs locally-recorded activity to the account-wide
+              feed (Relay/Node) in the background, independent of the page. */}
+          <ActivityProvider>
+            <AppShell>{children}</AppShell>
+          </ActivityProvider>
         </DownloadProvider>
       </UploadProvider>
     </TransferProvider>

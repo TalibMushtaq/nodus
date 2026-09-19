@@ -7,6 +7,8 @@
 
 import { ed25519 } from "@noble/curves/ed25519.js";
 import {
+  type ActivityRecord,
+  ActivityListSchema,
   type LocalChallengePayload,
   LocalChallengeResponsePayloadSchema,
   type LocalDiscoveryAdvertisement,
@@ -252,6 +254,51 @@ export class NodeClient {
       );
     }
     return LocalRecoveryEnvelopesSchema.parse(await res.json());
+  }
+
+  /**
+   * `GET /nodus/activities` — the account's activity feed over the LAN, the
+   * offline counterpart to the Relay's `GET /activities`. Uses the same
+   * stateless signed request as the recovery envelopes, with the message
+   * `"{device_id}:activities:{timestamp_ms}"`.
+   */
+  async listActivities(
+    deviceId: string,
+    sign: DeviceMessageSigner,
+    limit = 200,
+    timeoutMs: number = LOCAL_TIMEOUT_MS,
+  ): Promise<ActivityRecord[]> {
+    const timestamp = Date.now();
+    const signature = await sign(`${deviceId}:activities:${timestamp}`);
+    let res: Response;
+    try {
+      res = await fetch(`${this.baseUrl}/nodus/activities?limit=${encodeURIComponent(String(limit))}`, {
+        headers: {
+          "x-nodus-device-id": deviceId,
+          "x-nodus-timestamp": String(timestamp),
+          "x-nodus-signature": signature,
+        },
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+    } catch (err) {
+      throw new NodeClientError(
+        "network_error",
+        `activity fetch failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    if (!res.ok) {
+      let parsed: NodeErrorBody;
+      try {
+        parsed = (await res.json()) as NodeErrorBody;
+      } catch {
+        parsed = { message: (await res.text().catch(() => "")) || undefined };
+      }
+      throw new NodeClientError(
+        parsed.error ?? "http_error",
+        parsed.message ?? `HTTP ${res.status}`,
+      );
+    }
+    return ActivityListSchema.parse(await res.json()).activities;
   }
 
   /**

@@ -162,6 +162,27 @@ envelopes. Envelopes are carried in snapshots (`"key_envelope"` chunk record
 type), so a full Relay rebuild preserves them; the node stores them opaquely
 without being able to open them.
 
+### `ACTIVITY_LOGGED`
+
+A client records a terminal activity outcome so the Activity feed is durable on
+both the Relay and the Storage Node and reads the same online or offline. The
+Relay journals it in `sync_events` and serves it from `GET /activities`; the
+Node stores it and serves it over the LAN (`GET /nodus/activities`).
+
+Privacy: the payload carries **no file name** (names are E2E; the Relay/Node must
+never see them). `file_id` lets each client resolve the display name from its own
+decrypted catalog/tombstone; `detail` is limited to non-sensitive text.
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `activity_id` | string | yes | Client-generated uuid; the feed's dedupe key |
+| `kind` | enum | yes | `upload`, `download`, `delete`, `restore`, `purge`, `rename`, `move`, `conflict` |
+| `outcome` | enum | yes | `complete` or `failed` |
+| `file_id` | string \| null | no | File the action concerned |
+| `path` | string \| null | no | Transfer path (`local`/`relay`/`buffered`/`queued`/`offline`) |
+| `detail` | string \| null | no | Non-sensitive summary or error text |
+| `created_at` | ISO 8601 string | yes | When the action finished |
+
 ## Adding a new event type
 
 1. Add a literal to `EventTypes` in `src/events/event-types.ts`.

@@ -8,21 +8,26 @@ import { Button } from "@repo/ui/primitives/button";
 import { ConfirmDialog } from "@repo/ui/primitives/overlay";
 import { Icon } from "@repo/ui/primitives/icons";
 import { PathIndicator } from "@repo/ui/primitives/path-indicator";
+import type { IconName } from "@repo/ui/primitives/icons";
 
 import {
   listTransfers,
   clearTransfers,
+  importRemoteActivities,
   type TransferKind,
   type TransferLogEntry,
   type TransferOutcome,
 } from "../../../lib/transfer-log";
-import { timeAgo } from "../../../lib/format";
-import type { IconName } from "@repo/ui/primitives/icons";
+import { useAuth } from "../../../providers/auth-provider";
+import { useFiles } from "../../../lib/use-files";
+import { deviceLabel, fetchNodeActivities, fetchRelayActivities } from "../../../lib/activities";
+import { listDevices, type RelayDevice } from "../../../lib/pairing";
+import { describeDeviceInfo, shortId, timeAgo } from "../../../lib/format";
 
-// Activity is scoped to *this device*: the Relay has no historical activity
-// endpoint, so this renders the local action log the Files/Tombstone pages
-// write. The copy below makes that scope explicit so it is not mistaken for
-// account-wide history.
+// Account-wide activity: durable on the Relay and storage nodes, so the feed is
+// the same on every device and survives clearing browser data. Each entry shows
+// which device performed it (its account name, else the auto-captured
+// platform/browser). File names are E2E and resolve from the local catalog.
 
 type ActivityFilter = "all" | TransferKind | "failed";
 
@@ -32,6 +37,7 @@ const FILTERS: { value: ActivityFilter; label: string }[] = [
   { value: "download", label: "Downloads" },
   { value: "delete", label: "Deletes" },
   { value: "restore", label: "Restores" },
+  { value: "rename", label: "Renames" },
   { value: "failed", label: "Failed" },
 ];
 
@@ -40,6 +46,10 @@ const LABELS: Record<TransferKind, { complete: string; progress: string; failed:
   download: { complete: "Downloaded", progress: "Downloading", failed: "Download failed" },
   delete: { complete: "Deleted", progress: "Deleting", failed: "Delete failed" },
   restore: { complete: "Restored", progress: "Restoring", failed: "Restore failed" },
+  purge: { complete: "Permanently deleted", progress: "Deleting", failed: "Delete failed" },
+  rename: { complete: "Renamed", progress: "Renaming", failed: "Rename failed" },
+  move: { complete: "Moved", progress: "Moving", failed: "Move failed" },
+  conflict: { complete: "Conflict resolved", progress: "Resolving", failed: "Conflict action failed" },
 };
 
 const ICONS: Record<TransferKind, IconName> = {
@@ -47,10 +57,14 @@ const ICONS: Record<TransferKind, IconName> = {
   download: "download",
   delete: "trash",
   restore: "refresh",
+  purge: "trash",
+  rename: "files",
+  move: "folder",
+  conflict: "warning",
 };
 
 function eventLabel(entry: TransferLogEntry): string {
-  const labels = LABELS[entry.kind];
+  const labels = LABELS[entry.kind] ?? LABELS.upload;
   if (entry.outcome === "failed") return labels.failed;
   if (entry.outcome === "in-progress") return labels.progress;
   return labels.complete;
@@ -75,23 +89,55 @@ function OutcomeChip({ outcome }: { outcome: TransferOutcome }) {
 }
 
 export function ActivityClient() {
+  const { device, signer } = useAuth();
+  const { files } = useFiles();
   const [entries, setEntries] = useState<TransferLogEntry[]>([]);
+  const [devices, setDevices] = useState<RelayDevice[]>([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<ActivityFilter>("all");
   const [confirmClear, setConfirmClear] = useState(false);
   const [clearing, setClearing] = useState(false);
 
+  // Pull the account-wide feed (Relay online, else a trusted Node over the LAN).
+  // Failures return null so the locally-cached feed is used unchanged.
+  const fetchRemote = useCallback(async () => {
+    if (!device || !signer) return null;
+    try {
+      return await fetchRelayActivities();
+    } catch {
+      // Offline: fall back to a paired node so the feed still works.
+      try {
+        return await fetchNodeActivities(device.device_id, (message) => signer.sign(message));
+      } catch {
+        return null;
+      }
+    }
+  }, [device, signer]);
+
+  // Merge the remote feed into the local store, then read the combined list.
+  const load = useCallback(async () => {
+    const remote = await fetchRemote();
+    if (remote) await importRemoteActivities(remote);
+    setEntries(await listTransfers());
+    setLoading(false);
+  }, [fetchRemote]);
+
   useEffect(() => {
-    let cancelled = false;
-    listTransfers().then((rows) => {
-      if (cancelled) return;
-      setEntries(rows);
-      setLoading(false);
-    });
-    return () => {
-      cancelled = true;
-    };
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- initial fetch populates state
+    void load();
+  }, [load]);
+
+  useEffect(() => {
+    // Device names/info label the feed; a failure just leaves ids.
+    void listDevices()
+      .then(setDevices)
+      .catch(() => undefined);
   }, []);
+
+  const fileNames = useMemo(
+    () => new Map(files.map((file) => [file.fileId, file.name])),
+    [files],
+  );
 
   const visible = useMemo(() => {
     if (filter === "all") return entries;
@@ -115,11 +161,11 @@ export function ActivityClient() {
       <PageHeader
         eyebrow="Timeline"
         title="Activity"
-        description="Uploads, downloads, deletes, and restores recorded by this browser."
+        description="Uploads, downloads, deletes, and restores across all your devices."
       />
 
       <Section
-        title="Activity · this device"
+        title="Activity"
         action={
           entries.length > 0 ? (
             <Button variant="secondary" size="sm" onClick={() => setConfirmClear(true)}>
@@ -154,41 +200,52 @@ export function ActivityClient() {
             title={entries.length === 0 ? "No activity yet" : "Nothing matches this filter"}
             description={
               entries.length === 0
-                ? "Uploads, downloads, deletes, and restores from this browser will show up here."
+                ? "Uploads, downloads, deletes, and restores from any of your devices will show up here."
                 : "Try a different filter."
             }
           />
         ) : (
           <div className="border border-border rounded-2xl overflow-hidden bg-card elev-card">
-            {visible.map((entry) => (
-              <div
-                key={entry.id}
-                className="flex items-center gap-3 px-5 py-3.5 border-b border-border last:border-0"
-              >
-                <span className="text-muted-foreground shrink-0">
-                  <Icon name={ICONS[entry.kind]} size={14} />
-                </span>
-                <div className="flex-1 min-w-0">
-                  <div className="text-sm text-foreground truncate">
-                    <span className="text-muted-foreground">{eventLabel(entry)}</span>{" "}
-                    {entry.fileName}
+            {visible.map((entry) => {
+              const displayName =
+                entry.fileName || fileNames.get(entry.fileId) || (entry.fileId ? shortId(entry.fileId) : "");
+              const label = deviceLabel(
+                entry.deviceId ?? device?.device_id ?? "",
+                devices,
+                describeDeviceInfo,
+                device?.device_id,
+              );
+              return (
+                <div
+                  key={entry.id}
+                  className="flex items-center gap-3 px-5 py-3.5 border-b border-border last:border-0"
+                >
+                  <span className="text-muted-foreground shrink-0">
+                    <Icon name={ICONS[entry.kind] ?? "activity"} size={14} />
+                  </span>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm text-foreground truncate">
+                      <span className="text-muted-foreground">{eventLabel(entry)}</span>
+                      {displayName ? <> {displayName}</> : null}
+                    </div>
+                    <div className="text-[10px] text-muted-foreground truncate">
+                      <span className="text-foreground/80">{label}</span>
+                      {entry.detail ? ` · ${entry.detail}` : ""}
+                    </div>
                   </div>
-                  {entry.detail && (
-                    <div className="text-[10px] text-muted-foreground truncate">{entry.detail}</div>
-                  )}
+                  {/* Path is only present for entries logged after transfer-path
+                      capture shipped; older delete/restore rows have none. */}
+                  {entry.path && <PathIndicator path={entry.path} />}
+                  <OutcomeChip outcome={entry.outcome} />
+                  <div className="text-[10px] font-mono text-muted-foreground shrink-0">{timeAgo(entry.at)}</div>
                 </div>
-                {/* Path is only present for entries logged after transfer-path
-                    capture shipped; older delete/restore rows have none. */}
-                {entry.path && <PathIndicator path={entry.path} />}
-                <OutcomeChip outcome={entry.outcome} />
-                <div className="text-[10px] font-mono text-muted-foreground shrink-0">{timeAgo(entry.at)}</div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
 
         <p className="text-[10px] text-muted-foreground mt-3">
-          Local to this browser. Account-wide history is not synced by the Relay yet.
+          Synced across your devices via the Relay and your storage nodes.
         </p>
       </Section>
 
@@ -198,7 +255,7 @@ export function ActivityClient() {
           destructive
           busy={clearing}
           confirmLabel="Clear log"
-          description="This removes the transfer history stored in this browser. It does not affect your files."
+          description="This hides the current history on this device. New activity still syncs across your account."
           onConfirm={() => void clear()}
           onClose={() => setConfirmClear(false)}
         />

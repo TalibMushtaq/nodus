@@ -42,6 +42,8 @@ import {
   LocalAuthResultPayloadSchema,
   ErrorPayloadSchema,
   EventPayloadSchema,
+  ActivityRecordSchema,
+  ActivityListSchema,
   CURRENT_SCHEMA_VERSION,
   DEFAULT_SNAPSHOT_CHUNK_SIZE,
 } from "./index.js";
@@ -102,6 +104,10 @@ const entries: SchemaEntry[] = [
   { name: "local_auth_result", schema: LocalAuthResultPayloadSchema.toJSONSchema() },
   { name: "error", schema: ErrorPayloadSchema.toJSONSchema() },
   { name: "event", schema: EventPayloadSchema.toJSONSchema() },
+  // Account-wide activity feed: the record shape shared by the Relay's
+  // `GET /activities` and the Storage Node's `GET /nodus/activities`.
+  { name: "activity", schema: ActivityRecordSchema.toJSONSchema() },
+  { name: "activity_list", schema: ActivityListSchema.toJSONSchema() },
 ];
 
 const outputDir = dirname(fileURLToPath(import.meta.url)) + "/../schemas";

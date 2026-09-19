@@ -11,9 +11,9 @@ use futures_util::TryStreamExt;
 use sqlx::{Acquire, Row, SqliteConnection, SqlitePool};
 
 use super::types::{
-    FileVersionRecord, FolderKeyEnvelopeRecord, FolderRecord, KeyEnvelopeRecord,
-    RebuildRequiredPayload, ShardHashRecord, SnapshotBeginPayload, SnapshotChunkPayload,
-    SnapshotEndPayload, SnapshotRecord, SyncCursor, TombstoneRecord,
+    ActivitySnapshotRecord, FileVersionRecord, FolderKeyEnvelopeRecord, FolderRecord,
+    KeyEnvelopeRecord, RebuildRequiredPayload, ShardHashRecord, SnapshotBeginPayload,
+    SnapshotChunkPayload, SnapshotEndPayload, SnapshotRecord, SyncCursor, TombstoneRecord,
 };
 use crate::identity::NodeIdentity;
 
@@ -396,6 +396,53 @@ pub async fn emit_chunks(
     }
     drop(shard_rows);
 
+    // Activity feed entries. The node keeps ACTIVITY_LOGGED events in
+    // `sync_events`; carrying them here is what lets a Relay rebuilt from an
+    // empty database keep the account's history. The payload is JSON, so the
+    // fields are extracted defensively and a malformed row is skipped rather
+    // than failing the whole snapshot.
+    let mut activity_rows = sqlx::query(
+        r#"
+        SELECT origin_id, payload, timestamp
+        FROM sync_events
+        WHERE event_type = 'ACTIVITY_LOGGED'
+        ORDER BY timestamp ASC
+        "#,
+    )
+    .fetch(&mut *conn);
+    while let Some(row) = activity_rows.try_next().await? {
+        let origin_id: String = row.get("origin_id");
+        let payload_str: String = row.get("payload");
+        let row_timestamp: String = row.get("timestamp");
+        let payload: serde_json::Value = match serde_json::from_str(&payload_str) {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+        let str_field = |key: &str| payload.get(key).and_then(|value| value.as_str());
+        let activity_id = str_field("activity_id").unwrap_or("");
+        if activity_id.is_empty() {
+            continue;
+        }
+        writer
+            .push(
+                sink,
+                "activity",
+                SnapshotRecord::Activity(ActivitySnapshotRecord {
+                    activity_id: activity_id.to_string(),
+                    // The origin device comes from the row, not the payload.
+                    device_id: origin_id,
+                    kind: str_field("kind").unwrap_or("").to_string(),
+                    outcome: str_field("outcome").unwrap_or("").to_string(),
+                    file_id: str_field("file_id").map(str::to_string),
+                    path: str_field("path").map(str::to_string),
+                    detail: str_field("detail").map(str::to_string),
+                    created_at: str_field("created_at").unwrap_or(&row_timestamp).to_string(),
+                }),
+            )
+            .await?;
+    }
+    drop(activity_rows);
+
     writer.flush(sink).await?;
     Ok(())
 }
@@ -644,6 +691,50 @@ mod tests {
                 assert_eq!(s.shard_hash, "h0");
             }
             other => panic!("expected shard_hash record, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_build_snapshot_includes_activities() {
+        let dir = tempdir().unwrap();
+        let pool = db::open(dir.path()).await.unwrap();
+        let identity = crate::identity::load_or_generate(dir.path()).unwrap();
+
+        // An ACTIVITY_LOGGED event in the journal must surface as an `activity`
+        // snapshot chunk so a rebuilt Relay keeps the feed.
+        let payload = serde_json::json!({
+            "activity_id": "act-1",
+            "kind": "upload",
+            "outcome": "complete",
+            "file_id": "f1",
+            "path": "local",
+            "detail": "2 shards",
+            "created_at": "2026-09-19T10:00:00Z",
+        })
+        .to_string();
+        sqlx::query(
+            "INSERT INTO sync_events (event_id, origin_id, origin_sequence, event_type, payload, timestamp) \
+             VALUES ('ev-1', 'dev-1', 1, 'ACTIVITY_LOGGED', ?, '2026-09-19T10:00:00Z')",
+        )
+        .bind(payload)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let (_begin, chunks, _end) = build_snapshot(&pool, &identity).await.unwrap();
+
+        let activity_chunks: Vec<_> = chunks
+            .iter()
+            .filter(|c| c.record_type == "activity")
+            .collect();
+        assert_eq!(activity_chunks.len(), 1);
+        match &activity_chunks[0].records[0] {
+            SnapshotRecord::Activity(a) => {
+                assert_eq!(a.activity_id, "act-1");
+                assert_eq!(a.device_id, "dev-1");
+                assert_eq!(a.file_id.as_deref(), Some("f1"));
+            }
+            other => panic!("expected activity record, got {other:?}"),
         }
     }
 

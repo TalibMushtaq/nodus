@@ -33,7 +33,8 @@
               "KEY_ENVELOPE_ADDED",
               "FOLDER_KEY_ENVELOPE_ADDED",
               "FILE_SHARD_MANIFEST",
-              "CONFLICT_RESOLVED"
+              "CONFLICT_RESOLVED",
+              "ACTIVITY_LOGGED"
             ]
           },
           "payload": {

@@ -8,6 +8,7 @@
  */
 
 import { createAuthClient, type RecipientKind, type SessionInfo } from "@repo/sdk";
+import { ActivityListSchema, type ActivityRecord } from "@repo/protocol";
 import type { StoredDeviceIdentity } from "@repo/relay-client";
 
 import { RELAY_BASE, createNativeRelayHttp, getSessionToken } from "./adapters";
@@ -109,6 +110,12 @@ async function getJson<T>(path: string): Promise<T> {
   const res = await http.request<T>(path);
   if (!res.ok) throw new Error(`GET ${path} failed: HTTP ${res.status}${res.error ? `: ${res.error}` : ""}`);
   return res.json as T;
+}
+
+/** Account-wide activity feed from the Relay (`GET /activities`). */
+export async function relayActivities(limit = 200): Promise<ActivityRecord[]> {
+  const body = await getJson<unknown>(`/activities?limit=${limit}`);
+  return ActivityListSchema.parse(body).activities;
 }
 
 async function post<T>(path: string, body?: unknown): Promise<T> {

@@ -52,7 +52,7 @@ func promoteRebuild(ctx context.Context, pool *db.Pool, sess *rebuildSession) er
 	}
 
 	// Confirm staging data (defensive; a failed session must not reach here).
-	var stagedFiles, stagedFolders, stagedEnvelopes, stagedFolderEnvelopes, stagedVersions, stagedTombstones int64
+	var stagedFiles, stagedFolders, stagedEnvelopes, stagedFolderEnvelopes, stagedVersions, stagedTombstones, stagedActivities int64
 	if err := tx.QueryRow(ctx,
 		`SELECT COUNT(*) FROM rebuild_files WHERE account_id = $1`, acct).Scan(&stagedFiles); err != nil {
 		return fmt.Errorf("count staged files: %w", err)
@@ -77,6 +77,10 @@ func promoteRebuild(ctx context.Context, pool *db.Pool, sess *rebuildSession) er
 		`SELECT COUNT(*) FROM rebuild_tombstones WHERE account_id = $1`, acct).Scan(&stagedTombstones); err != nil {
 		return fmt.Errorf("count staged tombstones: %w", err)
 	}
+	if err := tx.QueryRow(ctx,
+		`SELECT COUNT(*) FROM rebuild_activities WHERE account_id = $1`, acct).Scan(&stagedActivities); err != nil {
+		return fmt.Errorf("count staged activities: %w", err)
+	}
 
 	// 2. Remove the account's rows from the shared live tables. file_locations
 	//    and key_envelopes survive because their cascade FKs were dropped above.
@@ -100,6 +104,11 @@ func promoteRebuild(ctx context.Context, pool *db.Pool, sess *rebuildSession) er
 	}
 	if _, err := tx.Exec(ctx, `DELETE FROM tombstones WHERE account_id = $1`, acct); err != nil {
 		return fmt.Errorf("delete live tombstones: %w", err)
+	}
+	// The snapshot is authoritative for the feed; anything created on the Relay
+	// after the snapshot was taken is re-delivered via the event journal.
+	if _, err := tx.Exec(ctx, `DELETE FROM activities WHERE account_id = $1`, acct); err != nil {
+		return fmt.Errorf("delete live activities: %w", err)
 	}
 	// sync_events are intentionally left untouched: the Relay is the durable
 	// origin stream, so erasing events would lose undelivered work. Replay is
@@ -185,6 +194,17 @@ func promoteRebuild(ctx context.Context, pool *db.Pool, sess *rebuildSession) er
 	`, acct); err != nil {
 		return fmt.Errorf("insert live tombstones: %w", err)
 	}
+	// Activity feed restored from the snapshot (projected live from
+	// ACTIVITY_LOGGED events; carried here so a rebuild keeps the history).
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO activities
+			(account_id, activity_id, origin_id, kind, outcome, file_id, path, detail, created_at)
+		SELECT account_id, activity_id, origin_id, kind, outcome, file_id, path, detail, created_at
+		FROM rebuild_activities
+		WHERE account_id = $1
+	`, acct); err != nil {
+		return fmt.Errorf("insert live activities: %w", err)
+	}
 
 	// 4. Repopulate per-origin sync_cursors from the snapshot's cursor map so
 	//    Phase 8 incremental sync resumes from the snapshot's checkpoint.
@@ -258,8 +278,8 @@ func promoteRebuild(ctx context.Context, pool *db.Pool, sess *rebuildSession) er
 	// 7. Clear this account's staged rows now that they've been promoted.
 	cleanupStagedData(ctx, pool, acct)
 
-	log.Printf("[snapshot] promoted rebuild for account=%s: files=%d folders=%d envelopes=%d folder_envelopes=%d versions=%d tombstones=%d cursors=%d",
-		acct, stagedFiles, stagedFolders, stagedEnvelopes, stagedFolderEnvelopes, stagedVersions, stagedTombstones, len(sess.cursors))
+	log.Printf("[snapshot] promoted rebuild for account=%s: files=%d folders=%d envelopes=%d folder_envelopes=%d versions=%d tombstones=%d activities=%d cursors=%d",
+		acct, stagedFiles, stagedFolders, stagedEnvelopes, stagedFolderEnvelopes, stagedVersions, stagedTombstones, stagedActivities, len(sess.cursors))
 	return nil
 }
 
@@ -284,6 +304,9 @@ func cleanupStagedData(ctx context.Context, pool *db.Pool, accountID string) {
 	}
 	if _, err := pool.Exec(ctx, `DELETE FROM rebuild_tombstones WHERE account_id = $1`, accountID); err != nil {
 		log.Printf("[snapshot] warning: clearing rebuild_tombstones for %s: %v", accountID, err)
+	}
+	if _, err := pool.Exec(ctx, `DELETE FROM rebuild_activities WHERE account_id = $1`, accountID); err != nil {
+		log.Printf("[snapshot] warning: clearing rebuild_activities for %s: %v", accountID, err)
 	}
 }
 

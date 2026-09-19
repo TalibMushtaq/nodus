@@ -182,6 +182,32 @@ struct RecoveryEnvelopes {
     folder_envelopes: Vec<RecoveryFolderEnvelope>,
 }
 
+/// One journaled `ACTIVITY_LOGGED` event, projected into the shared activity
+/// record shape (`packages/protocol/src/messages/activity.ts`). Carries no file
+/// name — names are E2E and the node must not see them; `file_id` lets the
+/// client resolve the display name locally.
+#[derive(Serialize, Deserialize)]
+struct LocalActivity {
+    activity_id: String,
+    kind: String,
+    outcome: String,
+    #[serde(default)]
+    file_id: Option<String>,
+    #[serde(default)]
+    path: Option<String>,
+    #[serde(default)]
+    detail: Option<String>,
+    created_at: String,
+    /// Origin device, filled from the sync_events row rather than the payload.
+    #[serde(default)]
+    device_id: String,
+}
+
+#[derive(Serialize)]
+struct LocalActivities {
+    activities: Vec<LocalActivity>,
+}
+
 #[derive(Serialize, Deserialize)]
 pub struct LocalError {
     pub error: String,
@@ -208,6 +234,10 @@ pub fn make_router(state: LocalState) -> Router {
         .route("/nodus/recovery/challenge", post(recovery_challenge))
         .route("/nodus/recovery", post(recovery_auth))
         .route("/nodus/recovery/envelopes", get(recovery_envelopes))
+        // Offline activity feed: the LAN counterpart to the Relay's
+        // `GET /activities`, so the Activity view reads the same records with
+        // no Internet.
+        .route("/nodus/activities", get(activities))
         .route("/nodus/shard/{object_id}", get(handle_shard_fetch))
         .route(
             "/nodus/webrtc/offer",
@@ -623,6 +653,46 @@ async fn recovery_envelopes(
             })
             .collect(),
     }))
+}
+
+/// `GET /nodus/activities` — the account's activity feed over the LAN, the
+/// offline counterpart to the Relay's `GET /activities`. A signed device
+/// request (same stateless scheme as recovery envelopes); the node is bound to
+/// a single account, so the journal needs no account filter. `sync_events`
+/// already holds every `ACTIVITY_LOGGED` event the node synced, so this reads
+/// that log directly — no separate projection.
+async fn activities(
+    State(state): State<LocalState>,
+    headers: HeaderMap,
+) -> Result<Json<LocalActivities>, LocalError> {
+    let (caller, _is_device, timestamp, _signature) = parse_signed_headers(&headers)?;
+    let message = format!("{caller}:activities:{timestamp}");
+    verify_signed_caller(&state.db, &headers, message.as_bytes()).await?;
+
+    let rows = sqlx::query_as::<_, (String, String)>(
+        "SELECT origin_id, payload FROM sync_events \
+         WHERE event_type = 'ACTIVITY_LOGGED' \
+         ORDER BY timestamp DESC LIMIT 200",
+    )
+    .fetch_all(&state.db)
+    .await
+    .map_err(internal_err)?;
+
+    let mut activities = Vec::with_capacity(rows.len());
+    for (origin_id, payload) in rows {
+        match serde_json::from_str::<LocalActivity>(&payload) {
+            Ok(mut activity) => {
+                // The origin is the device that produced the entry; the payload
+                // deliberately carries no device id of its own.
+                activity.device_id = origin_id;
+                activities.push(activity);
+            }
+            // Skip a malformed row rather than failing the whole feed.
+            Err(_) => continue,
+        }
+    }
+
+    Ok(Json(LocalActivities { activities }))
 }
 
 // ── Node-to-node shard fetch (§21a repair) ───────────────────────────────
@@ -2000,6 +2070,66 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
         let bytes = resp.into_body().collect().await.unwrap().to_bytes();
         assert_eq!(&bytes[..], payload);
+    }
+
+    #[tokio::test]
+    async fn test_activities_returns_journaled_activity() {
+        let (app, db, _identity, _dir) = setup_test_server().await;
+
+        let device_key = SigningKey::from_bytes(&[77u8; 32]);
+        let device_pubkey = device_key.verifying_key().to_bytes();
+        let device_id = "device-activity-1";
+        sqlx::query(
+            "INSERT INTO devices (device_id, public_key_bytes, status, created_at) VALUES (?, ?, 'ACTIVE', 'now')",
+        )
+        .bind(device_id)
+        .bind(&device_pubkey[..])
+        .execute(&db)
+        .await
+        .unwrap();
+
+        // The node stores ACTIVITY_LOGGED events from the sync journal; the
+        // endpoint projects them into the shared record shape and fills the
+        // device from the row's origin, not the payload.
+        let payload = serde_json::json!({
+            "activity_id": "act-1",
+            "kind": "upload",
+            "outcome": "complete",
+            "file_id": "file-1",
+            "path": "local",
+            "detail": "2 shards",
+            "created_at": "2026-09-19T10:00:00Z",
+        })
+        .to_string();
+        sqlx::query(
+            "INSERT INTO sync_events (event_id, origin_id, origin_sequence, event_type, payload, timestamp)
+             VALUES ('ev-1', ?, 1, 'ACTIVITY_LOGGED', ?, '2026-09-19T10:00:00Z')",
+        )
+        .bind(device_id)
+        .bind(payload)
+        .execute(&db)
+        .await
+        .unwrap();
+
+        let timestamp = chrono::Utc::now().timestamp_millis();
+        let message = format!("{device_id}:activities:{timestamp}");
+        let signature = hex::encode(device_key.sign(message.as_bytes()).to_bytes());
+        let req = Request::builder()
+            .uri("/nodus/activities")
+            .method("GET")
+            .header("x-nodus-device-id", device_id)
+            .header("x-nodus-timestamp", timestamp.to_string())
+            .header("x-nodus-signature", signature)
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let json: serde_json::Value =
+            serde_json::from_slice(&resp.into_body().collect().await.unwrap().to_bytes()).unwrap();
+        assert_eq!(json["activities"][0]["activity_id"], "act-1");
+        assert_eq!(json["activities"][0]["device_id"], device_id);
+        assert_eq!(json["activities"][0]["kind"], "upload");
     }
 
     #[tokio::test]

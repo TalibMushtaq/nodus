@@ -293,6 +293,10 @@ func main() {
 		// Phase 14: catalog read paths for the web client's cached catalog.
 		mux.Handle("GET /files", auth.RequireAuth(sessionStore, cfg)(handler.ListFiles(pool)))
 		mux.Handle("GET /folders", auth.RequireAuth(sessionStore, cfg)(handler.ListFolders(pool)))
+		// Account-wide activity feed: read from the sync_events journal. Served
+		// here so the feed is durable and identical on every device; the Storage
+		// Node serves the same records over the LAN for offline reads.
+		mux.Handle("GET /activities", auth.RequireAuth(sessionStore, cfg)(handler.ListActivities(pool)))
 		mux.Handle("GET /envelopes", auth.RequireAuth(sessionStore, cfg)(handler.ListEnvelopes(pool)))
 		// Security page: per-recipient coverage counts and a ciphertext-only
 		// backup of all envelopes. More specific than /envelopes, so the Go

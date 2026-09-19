@@ -18,7 +18,8 @@
         "key_envelope",
         "folder_key_envelope",
         "tombstone",
-        "shard_hash"
+        "shard_hash",
+        "activity"
       ]
     },
     "records": {
@@ -260,6 +261,64 @@
               "version_number",
               "shard_index",
               "shard_hash"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "activity_id": {
+                "type": "string"
+              },
+              "device_id": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "outcome": {
+                "type": "string"
+              },
+              "file_id": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "path": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "detail": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "created_at": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "activity_id",
+              "device_id",
+              "kind",
+              "outcome",
+              "created_at"
             ],
             "additionalProperties": false
           }

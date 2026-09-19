@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "activities": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "activity_id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "upload",
+              "download",
+              "delete",
+              "restore",
+              "purge",
+              "rename",
+              "move",
+              "conflict"
+            ]
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "complete",
+              "failed"
+            ]
+          },
+          "file_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "device_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "activity_id",
+          "kind",
+          "outcome",
+          "created_at",
+          "device_id"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "activities"
+  ],
+  "additionalProperties": false
+}

@@ -41,6 +41,8 @@
     "local_challenge_response": "local_challenge_response.schema.json",
     "local_auth_result": "local_auth_result.schema.json",
     "error": "error.schema.json",
-    "event": "event.schema.json"
+    "event": "event.schema.json",
+    "activity": "activity.schema.json",
+    "activity_list": "activity_list.schema.json"
   }
 }
