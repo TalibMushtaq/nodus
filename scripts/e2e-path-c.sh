@@ -16,10 +16,12 @@
 # Prints a PASS/FAIL line per check and exits non-zero if any fail.
 set -u
 
-# The Node harness imports @repo/relay-client and @repo/protocol from dist.
-if [ ! -f packages/relay-client/dist/index.js ] || [ ! -f packages/protocol/dist/index.js ]; then
+# The harness imports @repo/relay-client, @repo/protocol and @repo/sdk from
+# dist (the uploader drives apps/web/lib/uploader, which imports @repo/sdk), so
+# all three must be built before the first `tsx` run.
+if [ ! -f packages/relay-client/dist/index.js ] || [ ! -f packages/protocol/dist/index.js ] || [ ! -f packages/sdk/dist/index.js ]; then
   echo "building TypeScript workspace packages for the harness..."
-  pnpm exec turbo build --filter=@repo/relay-client... >/dev/null
+  pnpm exec turbo build --filter=@repo/relay-client... --filter=@repo/sdk... >/dev/null
 fi
 BASE=${BASE:-http://localhost}
 BIN=${BIN:-./services/storage-node/target/debug/storage-node}

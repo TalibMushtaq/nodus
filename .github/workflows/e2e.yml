@@ -55,7 +55,9 @@ jobs:
       - run: cargo build
         working-directory: services/storage-node
 
-      - run: pnpm exec turbo build --filter=@repo/relay-client...
+      # @repo/sdk is also required: the upload/download harness drives
+      # apps/web/lib/{uploader,download}, which import it from dist.
+      - run: pnpm exec turbo build --filter=@repo/relay-client... --filter=@repo/sdk...
 
       # Local HTTP unit: SITE_ADDRESS=:80 and the insecure-cookie default are
       # already what deploy/.env.example sets.
