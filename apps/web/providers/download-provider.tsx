@@ -6,6 +6,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
@@ -23,7 +24,7 @@ import { formatBytes, formatCountdown } from "../lib/format";
 // the download's async loop keeps running. The provider owns the queue and
 // renders the widget itself, mirroring UploadProvider.
 
-export type DownloadStatus = "active" | "done" | "error";
+export type DownloadStatus = "active" | "done" | "error" | "cancelled";
 
 /**
  * Map the transport the SDK actually used onto the shared transfer-path
@@ -74,16 +75,22 @@ const STATUS_COLOR: Record<DownloadStatus, string> = {
   active: "var(--status-pending)",
   done: "var(--status-synced)",
   error: "var(--status-conflict)",
+  cancelled: "var(--status-offline)",
 };
 
 interface DownloadContextValue {
   tasks: DownloadTask[];
-  /** Register a download and return its task id for progress reporting. */
-  startDownload: (input: { name: string }) => string;
+  /**
+   * Register a download and return its task id plus the signal the transfer
+   * loop must pass to `downloadFile`, so cancel aborts the in-flight fetch.
+   */
+  startDownload: (input: { name: string }) => { id: string; signal: AbortSignal };
   reportProgress: (id: string, event: DownloadProgressEvent) => void;
   /** Record which transport served the latest shard (LAN/Relay/WebRTC). */
   reportTransport: (id: string, transport: DownloadTransport) => void;
   finishDownload: (id: string, outcome: "done" | "error", error?: string) => void;
+  /** Abort an active download; the transfer loop rejects with CancelledError. */
+  cancelDownload: (id: string) => void;
   dismiss: () => void;
 }
 
@@ -91,9 +98,14 @@ const DownloadContext = createContext<DownloadContextValue | null>(null);
 
 export function DownloadProvider({ children }: { children: ReactNode }) {
   const [tasks, setTasks] = useState<DownloadTask[]>([]);
+  // One abort controller per active task. Kept in a ref (not state) because
+  // aborting must not trigger a render on its own — the task's status does.
+  const controllersRef = useRef(new Map<string, AbortController>());
 
   const startDownload = useCallback((input: { name: string }) => {
     const id = crypto.randomUUID();
+    const controller = new AbortController();
+    controllersRef.current.set(id, controller);
     setTasks((previous) => [
       ...previous,
       {
@@ -108,7 +120,7 @@ export function DownloadProvider({ children }: { children: ReactNode }) {
         startedAt: Date.now(),
       },
     ]);
-    return id;
+    return { id, signal: controller.signal };
   }, []);
 
   const reportProgress = useCallback((id: string, event: DownloadProgressEvent) => {
@@ -139,6 +151,7 @@ export function DownloadProvider({ children }: { children: ReactNode }) {
 
   const finishDownload = useCallback(
     (id: string, outcome: "done" | "error", error?: string) => {
+      controllersRef.current.delete(id);
       setTasks((previous) =>
         previous.map((task) =>
           task.id === id ? { ...task, status: outcome, error, phase: "done" } : task,
@@ -148,17 +161,34 @@ export function DownloadProvider({ children }: { children: ReactNode }) {
     [],
   );
 
-  const dismiss = useCallback(() => setTasks([]), []);
+  const cancelDownload = useCallback((id: string) => {
+    const controller = controllersRef.current.get(id);
+    controllersRef.current.delete(id);
+    controller?.abort();
+    // Mark it cancelled immediately so the UI stops spinning; the transfer
+    // loop's rejection is handled by the caller (which sees the abort).
+    setTasks((previous) =>
+      previous.map((task) => (task.id === id ? { ...task, status: "cancelled", error: undefined } : task)),
+    );
+  }, []);
+
+  const dismiss = useCallback(() => {
+    // Clear the list only after every in-flight transfer has been aborted, so a
+    // dismissed widget cannot leave a fetch running headless.
+    for (const controller of controllersRef.current.values()) controller.abort();
+    controllersRef.current.clear();
+    setTasks([]);
+  }, []);
 
   const value = useMemo<DownloadContextValue>(
-    () => ({ tasks, startDownload, reportProgress, reportTransport, finishDownload, dismiss }),
-    [tasks, startDownload, reportProgress, reportTransport, finishDownload, dismiss],
+    () => ({ tasks, startDownload, reportProgress, reportTransport, finishDownload, cancelDownload, dismiss }),
+    [tasks, startDownload, reportProgress, reportTransport, finishDownload, cancelDownload, dismiss],
   );
 
   return (
     <DownloadContext.Provider value={value}>
       {children}
-      <DownloadWidget tasks={tasks} onDismiss={dismiss} />
+      <DownloadWidget tasks={tasks} onDismiss={dismiss} onCancel={cancelDownload} />
     </DownloadContext.Provider>
   );
 }
@@ -178,15 +208,18 @@ export function useDownload(): DownloadContextValue {
 function DownloadWidget({
   tasks,
   onDismiss,
+  onCancel,
 }: {
   tasks: DownloadTask[];
   onDismiss: () => void;
+  onCancel: (id: string) => void;
 }) {
   const [collapsed, setCollapsed] = useState(false);
 
   const activeCount = tasks.filter((task) => task.status === "active").length;
   const errorCount = tasks.filter((task) => task.status === "error").length;
   const doneCount = tasks.filter((task) => task.status === "done").length;
+  const cancelledCount = tasks.filter((task) => task.status === "cancelled").length;
   const allDone = tasks.length > 0 && activeCount === 0;
 
   useEffect(() => {
@@ -212,7 +245,9 @@ function DownloadWidget({
       ? `Downloading ${activeCount} file${activeCount === 1 ? "" : "s"}`
       : errorCount > 0
         ? `${errorCount} download${errorCount === 1 ? "" : "s"} failed`
-        : `Downloaded ${doneCount} file${doneCount === 1 ? "" : "s"}`;
+        : doneCount > 0
+          ? `Downloaded ${doneCount} file${doneCount === 1 ? "" : "s"}`
+          : `Cancelled ${cancelledCount} download${cancelledCount === 1 ? "" : "s"}`;
 
   return (
     <div
@@ -247,9 +282,11 @@ function DownloadWidget({
             const label =
               task.status === "error"
                 ? "Failed"
-                : task.status === "done"
-                  ? "Downloaded"
-                  : PHASE_LABEL[task.phase];
+                : task.status === "cancelled"
+                  ? "Cancelled"
+                  : task.status === "done"
+                    ? "Downloaded"
+                    : PHASE_LABEL[task.phase];
             const { speedBps, etaSeconds } = downloadMetrics(task);
             return (
               <div key={task.id} className="px-4 py-2.5 border-b border-border last:border-0">
@@ -257,8 +294,21 @@ function DownloadWidget({
                   <span className="text-xs font-medium text-foreground truncate" title={task.name}>
                     {task.name}
                   </span>
-                  <span className="text-[10px] shrink-0" style={{ color: STATUS_COLOR[task.status] }}>
-                    {label}
+                  <span className="flex shrink-0 items-center gap-2">
+                    <span className="text-[10px]" style={{ color: STATUS_COLOR[task.status] }}>
+                      {label}
+                    </span>
+                    {task.status === "active" ? (
+                      <button
+                        type="button"
+                        onClick={() => onCancel(task.id)}
+                        aria-label={`Cancel ${task.name}`}
+                        title="Cancel download"
+                        className="text-muted-foreground transition-colors hover:text-destructive"
+                      >
+                        <Icon name="close" size={12} />
+                      </button>
+                    ) : null}
                   </span>
                 </div>
                 <div className="mt-1.5">

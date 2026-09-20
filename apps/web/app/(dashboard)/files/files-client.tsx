@@ -27,6 +27,7 @@ import { isNodeOnline, listNodes, type RelayNode } from "../../../lib/pairing";
 import {
   downloadFile,
   browserDownloadDeps,
+  DownloadCancelledError,
   MissingEnvelopeError,
   ShardUnavailableError,
   ShardIntegrityError,
@@ -976,8 +977,9 @@ export function FilesClient() {
         fileName: file.name,
       });
       // The widget survives navigation, so the stage progress keeps rendering
-      // even if the user leaves Files mid-download.
-      const taskId = startDownload({ name: file.name });
+      // even if the user leaves Files mid-download. `signal` lets the widget's
+      // cancel button abort the in-flight fetch.
+      const { id: taskId, signal } = startDownload({ name: file.name });
       let transport: DownloadTransport | null = null;
       try {
         const result = await downloadFile({
@@ -996,6 +998,7 @@ export function FilesClient() {
             downloadShardViaWebRtc,
           ),
           onProgress: (event) => reportDownloadProgress(taskId, event),
+          signal,
         });
         // Save without an intermediate URL leak: revoke once the click is queued.
         const blob = new Blob([result.data as unknown as BlobPart]);
@@ -1013,6 +1016,12 @@ export function FilesClient() {
           transport ? TRANSPORT_PATH[transport] : undefined,
         );
       } catch (err) {
+        // Cancellation is expected, not a failure: the widget already flipped
+        // the task to "cancelled", so only the activity log needs tidying.
+        if (err instanceof DownloadCancelledError) {
+          await finishTransfer(log.id, "failed", "Cancelled", transport ? TRANSPORT_PATH[transport] : undefined);
+          return;
+        }
         const message = describeDownloadError(err);
         finishDownload(taskId, "error", message);
         await finishTransfer(log.id, "failed", message, transport ? TRANSPORT_PATH[transport] : undefined);

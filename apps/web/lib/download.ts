@@ -7,6 +7,7 @@
 
 import { NodeClient, nodusBaseUrl } from "@repo/relay-client";
 import {
+  DownloadCancelledError,
   ShardUnavailableError,
   type DevicePublicIdentity,
   type DeviceSigner,
@@ -21,6 +22,7 @@ import { getTrustedNodes } from "./trusted-nodes";
 
 export {
   downloadFile,
+  DownloadCancelledError,
   MissingEnvelopeError,
   ShardUnavailableError,
   ShardIntegrityError,
@@ -44,6 +46,8 @@ export interface WebRtcShardFetch {
     nodeId: string;
     /** Cumulative bytes received for this shard, as chunks arrive. */
     onProgress?: (receivedBytes: number, totalBytes: number) => void;
+    /** Aborts the pull. */
+    signal?: AbortSignal;
   }): Promise<Uint8Array>;
 }
 
@@ -77,7 +81,10 @@ export function browserDownloadDeps(
       const entry = catalog.find((c) => c.file_id === fileId);
       return entry?.locations ?? [];
     },
-    async fetchShard(fileId, location, onProgress) {
+    async fetchShard(fileId, location, onProgress, signal) {
+      // Cancellation short-circuits the fallback chain: without this, an aborted
+      // attempt would be swallowed and the next transport tried anyway.
+      if (signal?.aborted) throw new DownloadCancelledError();
       // Direct WebRTC pull first: the node stores the ciphertext, so a
       // NODE_STORED shard can be streamed over a data channel (LAN-preferred,
       // relay-signaling fallback). Any failure falls through to the HTTP paths.
@@ -91,10 +98,12 @@ export function browserDownloadDeps(
             size: location.size_bytes ?? 0,
             nodeId: location.node_id,
             onProgress,
+            signal,
           });
           onTransport?.("webrtc");
           return data;
         } catch {
+          if (signal?.aborted) throw new DownloadCancelledError();
           // Fall through to LAN HTTP, then the Relay.
         }
       }
@@ -115,14 +124,16 @@ export function browserDownloadDeps(
               (message) => signer.sign(message),
               location.hash,
               onProgress,
+              signal,
             );
             onTransport?.("lan");
             return data;
           } catch {
+            if (signal?.aborted) throw new DownloadCancelledError();
             // Fall through to the Relay path below.
           }
         }
-        const viaRelay = await fetchShardViaRelay(location.hash, onProgress);
+        const viaRelay = await fetchShardViaRelay(location.hash, onProgress, signal);
         if (viaRelay.ok) {
           onTransport?.("relay");
           return viaRelay.data as Uint8Array;
@@ -149,9 +160,14 @@ export interface RelayShardFetchResult {
 export async function fetchShardViaRelay(
   hash: string,
   onProgress?: (receivedBytes: number, totalBytes: number) => void,
+  signal?: AbortSignal,
 ): Promise<RelayShardFetchResult> {
   try {
-    const res = await fetch(`/api/shard/${encodeURIComponent(hash)}`);
+    // Only attach an options object when there is a signal, so callers/tests
+    // that pass none issue a plain fetch.
+    const res = signal
+      ? await fetch(`/api/shard/${encodeURIComponent(hash)}`, { signal })
+      : await fetch(`/api/shard/${encodeURIComponent(hash)}`);
     if (!res.ok) {
       let message = `relay shard fetch failed: ${res.status}`;
       try {

@@ -19,7 +19,7 @@ const FLY_MS = 700;
 interface DownloadShardsProps {
   completed: number;
   total: number;
-  status: "active" | "done" | "error";
+  status: "active" | "done" | "error" | "cancelled";
   className?: string;
 }
 

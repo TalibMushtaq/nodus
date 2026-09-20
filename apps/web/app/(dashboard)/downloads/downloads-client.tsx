@@ -47,7 +47,7 @@ function outcomeLabel(outcome: TransferOutcome): string {
   return "In progress";
 }
 
-function ActiveRow({ task }: { task: DownloadTask }) {
+function ActiveRow({ task, onCancel }: { task: DownloadTask; onCancel: (id: string) => void }) {
   // Bytes arrive once per shard, so tick each second to keep the average
   // throughput and ETA readout moving between shard completions.
   const [, setTick] = useState(0);
@@ -64,8 +64,21 @@ function ActiveRow({ task }: { task: DownloadTask }) {
         <span className="text-sm font-medium text-foreground truncate" title={task.name}>
           {task.name}
         </span>
-        <span className="text-[10px] shrink-0" style={{ color: outcomeColor(task.status === "error" ? "failed" : task.status === "done" ? "complete" : "in-progress") }}>
-          {task.status === "error" ? "Failed" : task.status === "done" ? "Downloaded" : PHASE_LABEL[task.phase]}
+        <span className="flex shrink-0 items-center gap-2">
+          <span className="text-[10px]" style={{ color: outcomeColor(task.status === "error" ? "failed" : task.status === "done" ? "complete" : "in-progress") }}>
+            {task.status === "error" ? "Failed" : task.status === "done" ? "Downloaded" : PHASE_LABEL[task.phase]}
+          </span>
+          {task.status === "active" ? (
+            <button
+              type="button"
+              onClick={() => onCancel(task.id)}
+              aria-label={`Cancel ${task.name}`}
+              title="Cancel download"
+              className="text-muted-foreground transition-colors hover:text-destructive"
+            >
+              <Icon name="close" size={12} />
+            </button>
+          ) : null}
         </span>
       </div>
       <div className="mt-2">
@@ -95,7 +108,7 @@ function ActiveRow({ task }: { task: DownloadTask }) {
 export function DownloadsClient() {
   const { device, signer } = useAuth();
   const { files } = useFiles();
-  const { tasks } = useDownload();
+  const { tasks, cancelDownload } = useDownload();
   const [history, setHistory] = useState<TransferLogEntry[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -157,7 +170,7 @@ export function DownloadsClient() {
         ) : (
           <div className="border border-border rounded-2xl overflow-hidden bg-card elev-card">
             {active.map((task) => (
-              <ActiveRow key={task.id} task={task} />
+              <ActiveRow key={task.id} task={task} onCancel={cancelDownload} />
             ))}
           </div>
         )}

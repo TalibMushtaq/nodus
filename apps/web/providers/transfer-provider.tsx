@@ -34,6 +34,8 @@ export interface WebRtcShardFetchArgs {
   nodeId: string;
   /** Cumulative bytes received for this shard, as chunks arrive. */
   onProgress?: (receivedBytes: number, totalBytes: number) => void;
+  /** Aborts the pull; the session is closed so the channel is not reused. */
+  signal?: AbortSignal;
 }
 
 interface TransferContextValue {
@@ -228,9 +230,16 @@ export function TransferProvider({ children }: { children: ReactNode }) {
           size: args.size,
           sourceNode: args.nodeId,
           onProgress: args.onProgress,
+          signal: args.signal,
         });
         return result.data;
       } catch (err) {
+        // A user cancel is not a path failure: drop the session so the channel
+        // closes mid-stream, but do not bench the node (a retry should use it).
+        if (args.signal?.aborted) {
+          sessionCache.evict(key);
+          throw err;
+        }
         // Bench this node's direct path briefly so the remaining shards fall
         // straight through instead of each paying a negotiation timeout.
         sessionCache.markUnavailable(key);
