@@ -1,9 +1,9 @@
-// Signed-in navigation: four bottom tabs, each with its own stack.
+// Signed-in navigation: five bottom tabs, each with its own stack.
 //
-// Matches the mobile information architecture in the design brief
-// (Files · Devices · Activity · Settings). Tab roots render their own themed
-// header (title, subtitle, action icons); pushed detail screens use the native
-// header so the platform back gesture keeps working.
+// Matches the mobile information architecture (Files · Downloads · Devices ·
+// Activity · Settings). Tab roots render their own themed header (title,
+// subtitle, action icons); pushed detail screens use the native header so the
+// platform back gesture keeps working.
 
 import * as React from "react";
 import { StyleSheet } from "react-native";
@@ -16,6 +16,7 @@ import { ActivityScreen } from "../screens/ActivityScreen";
 import { ConflictsScreen } from "../screens/ConflictsScreen";
 import { DeviceDetailScreen } from "../screens/DeviceDetailScreen";
 import { DevicesScreen } from "../screens/DevicesScreen";
+import { DownloadsScreen } from "../screens/DownloadsScreen";
 import { FileDetailScreen } from "../screens/FileDetailScreen";
 import { FilesScreen } from "../screens/FilesScreen";
 import { NodeDetailScreen } from "../screens/NodeDetailScreen";
@@ -23,6 +24,7 @@ import { PairingScreen } from "../screens/PairingScreen";
 import { SecurityScreen } from "../screens/SecurityScreen";
 import { SettingsScreen } from "../screens/SettingsScreen";
 import { TrashScreen } from "../screens/TrashScreen";
+import { useApp } from "../runtime/context";
 import type { TabsParamList } from "./types";
 
 const Tab = createBottomTabNavigator<TabsParamList>();
@@ -30,6 +32,7 @@ const Stack = createNativeStackNavigator();
 
 const TAB_ICON: Record<keyof TabsParamList, IconName> = {
   FilesTab: "files",
+  DownloadsTab: "download",
   DevicesTab: "devices",
   ActivityTab: "activity",
   SettingsTab: "settings",
@@ -37,6 +40,7 @@ const TAB_ICON: Record<keyof TabsParamList, IconName> = {
 
 const TAB_LABEL: Record<keyof TabsParamList, string> = {
   FilesTab: "Files",
+  DownloadsTab: "Downloads",
   DevicesTab: "Devices",
   ActivityTab: "Activity",
   SettingsTab: "Settings",
@@ -67,6 +71,14 @@ function FilesStack() {
       <Stack.Screen name="Files" component={FilesScreen} />
       <Stack.Screen name="Conflicts" component={ConflictsScreen} options={{ ...chrome, headerShown: true, title: "Conflicts" }} />
       <Stack.Screen name="FileDetail" component={FileDetailScreen} options={{ ...chrome, headerShown: true, title: "File" }} />
+    </Stack.Navigator>
+  );
+}
+
+function DownloadsStack() {
+  return (
+    <Stack.Navigator screenOptions={{ headerShown: false }}>
+      <Stack.Screen name="Downloads" component={DownloadsScreen} />
     </Stack.Navigator>
   );
 }
@@ -105,6 +117,9 @@ function SettingsStack() {
 export function TabsNavigator() {
   const theme = useTheme();
   const insets = useSafeAreaInsets();
+  // Only one download runs at a time on mobile, so a boolean badge is enough;
+  // it clears itself as soon as the download finishes.
+  const app = useApp();
 
   return (
     <Tab.Navigator
@@ -129,6 +144,14 @@ export function TabsNavigator() {
       })}
     >
       <Tab.Screen name="FilesTab" component={FilesStack} />
+      <Tab.Screen
+        name="DownloadsTab"
+        component={DownloadsStack}
+        options={{
+          tabBarBadge: app.downloadProgress ? "•" : undefined,
+          tabBarBadgeStyle: { backgroundColor: theme.colors.accent, fontSize: 8, minWidth: 14, height: 14, lineHeight: 14 },
+        }}
+      />
       <Tab.Screen name="DevicesTab" component={DevicesStack} />
       <Tab.Screen name="ActivityTab" component={ActivityStack} />
       <Tab.Screen name="SettingsTab" component={SettingsStack} />

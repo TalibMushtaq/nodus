@@ -4,7 +4,7 @@
 // device's sealed Relay envelope; shard locations come from `GET /files`; shard
 // bytes prefer a trusted LAN node and fall back to the Relay's pull-through.
 
-import { type DownloadDeps } from "@repo/sdk";
+import { type DownloadDeps, type DownloadTransport } from "@repo/sdk";
 import {
   NodeClient,
   identityPrivateKey,
@@ -17,8 +17,12 @@ import { fetchRelayShard, relayFiles } from "../relay";
 import { getTrustedNodes } from "../store/trusted-nodes";
 import { fetchMobileFileKey } from "./keys";
 
-export function mobileDownloadDeps(device: StoredDeviceIdentity): DownloadDeps {
+export function mobileDownloadDeps(
+  device: StoredDeviceIdentity,
+  onTransport?: (transport: DownloadTransport) => void,
+): DownloadDeps {
   return {
+    onTransport,
     fetchFileKey: (fileId) => fetchMobileFileKey(device, fileId),
 
     async getShardLocations(fileId) {
@@ -39,15 +43,18 @@ export function mobileDownloadDeps(device: StoredDeviceIdentity): DownloadDeps {
         try {
           const client = new NodeClient(nodusBaseUrl(host));
           // Mobile keeps its Ed25519 seed in the keychain; wrap it as a signer.
-          return await client.fetchShard(
+          const data = await client.fetchShard(
             device.device_id,
             (message) => signDeviceMessage(identityPrivateKey(device), message),
             location.hash,
           );
+          onTransport?.("lan");
+          return data;
         } catch {
           // Unpaired/unreachable/auth-rejected: fall through to the Relay.
         }
       }
+      onTransport?.("relay");
       return fetchRelayShard(location.hash);
     },
   };

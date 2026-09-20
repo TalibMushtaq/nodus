@@ -32,6 +32,7 @@ import {
   uploadFile,
   type ConflictEntry,
   type DownloadPhase,
+  type DownloadTransport,
   type SessionInfo,
   type StoredEncryptionIdentity,
   type UploadProgressEvent,
@@ -105,6 +106,7 @@ import { rotateRecoveryKey } from "../recovery/rotate";
 import { sqliteRecoveryStore } from "../recovery/store";
 import { registerBackgroundSync } from "../background/sync";
 import { saveAndShare } from "../download/save";
+import { downloadTransportPath } from "../download/transport";
 import { loadImagePreview } from "../files/preview";
 import { activityLoggedEvent } from "../activity/events";
 import { loadNodeActivities } from "../activity/remote";
@@ -240,6 +242,9 @@ export function useNodusApp() {
   const [fileNames, setFileNames] = React.useState<Record<string, string | null>>({});
   const [downloadStatus, setDownloadStatus] = React.useState<string | null>(null);
   const [downloadProgress, setDownloadProgress] = React.useState<DownloadProgress | null>(null);
+  // Transport that served the newest downloaded shard (LAN / Relay / WebRTC),
+  // so the Downloads tab can label how the bytes arrived.
+  const [downloadTransport, setDownloadTransport] = React.useState<DownloadTransport | null>(null);
   /** New name for the Rename action on a file row. */
   const [fileNameInput, setFileNameInput] = React.useState("");
 
@@ -1226,8 +1231,12 @@ export function useNodusApp() {
       setNotice(null);
       setDownloadStatus("decrypting…");
       setDownloadProgress(null);
+      setDownloadTransport(null);
       // Best-effort display name; the decrypted name replaces it once fetched.
       const displayName = fileNames[file.file_id] ?? "file";
+      // Captured locally as well as in state: the activity entry is written from
+      // this closure, where a state read could still be stale.
+      let transport: DownloadTransport | null = null;
       try {
         const result = await downloadFile({
           fileId: file.file_id,
@@ -1235,7 +1244,10 @@ export function useNodusApp() {
           shardCount: latest.shard_count,
           encryptedName: file.encrypted_name,
           expectedVersionHash: latest.version_hash,
-          deps: mobileDownloadDeps(device),
+          deps: mobileDownloadDeps(device, (value) => {
+            transport = value;
+            setDownloadTransport(value);
+          }),
           // Surface fetch/verify/decrypt stages so Activity can render progress.
           onProgress: (event) =>
             setDownloadProgress({ fileName: displayName, ...event }),
@@ -1250,6 +1262,7 @@ export function useNodusApp() {
           fileId: file.file_id,
           fileName: name,
           detail: `${result.data.length} bytes`,
+          path: transport ? downloadTransportPath(transport) : null,
           outcome: "complete",
         });
       } catch (err) {
@@ -1261,6 +1274,7 @@ export function useNodusApp() {
           fileId: file.file_id,
           fileName: fileNames[file.file_id] ?? null,
           detail: message,
+          path: transport ? downloadTransportPath(transport) : null,
           outcome: "failed",
         });
       } finally {
@@ -1891,6 +1905,7 @@ export function useNodusApp() {
     setFileNameInput,
     downloadStatus,
     downloadProgress,
+    downloadTransport,
     // folders
     loadFolders,
     folders,

@@ -7,29 +7,35 @@
 import * as React from "react";
 import { ActivityIndicator, View } from "react-native";
 
-import { Progress, ThemedText, useTheme } from "../design";
+import { PathIndicator, ThemedText, useTheme } from "../design";
+import { ShardProgress } from "../download/ShardProgress";
+import { downloadTransportPath } from "../download/transport";
 import { useApp } from "./context";
 
 export function AppStatusLine() {
-  const { busy, error, notice, downloadProgress } = useApp();
+  const { busy, error, notice, downloadProgress, downloadTransport } = useApp();
   const theme = useTheme();
   if (!busy && !error && !notice && !downloadProgress) return null;
   return (
     <View style={{ gap: theme.spacing.xs, marginBottom: theme.spacing.sm }}>
       {downloadProgress ? (
-        // Fetch/verify/decrypt stages with a shard progress bar, so the CPU-bound
-        // AEAD pass reads as progress rather than a stall (parity with web).
+        // Fetch/verify/decrypt stages with the shard-merge animation, so the
+        // CPU-bound AEAD pass reads as progress rather than a stall (parity with
+        // the web download widget).
         <View style={{ gap: theme.spacing.xs }}>
-          <ThemedText variant="caption" tone="muted" numberOfLines={1}>
-            {downloadProgress.fileName} · {downloadProgress.phase} · shard{" "}
-            {downloadProgress.completedShards}/{downloadProgress.totalShards}
-          </ThemedText>
-          <Progress
-            value={
-              downloadProgress.totalShards === 0
-                ? 0
-                : downloadProgress.completedShards / downloadProgress.totalShards
-            }
+          <View style={{ flexDirection: "row", alignItems: "center", gap: theme.spacing.sm }}>
+            <ThemedText variant="caption" tone="muted" numberOfLines={1} style={{ flex: 1 }}>
+              {downloadProgress.fileName} · {downloadProgress.phase} · shard{" "}
+              {downloadProgress.completedShards}/{downloadProgress.totalShards}
+            </ThemedText>
+            {downloadTransport ? (
+              <PathIndicator path={downloadTransportPath(downloadTransport)} />
+            ) : null}
+          </View>
+          <ShardProgress
+            completed={downloadProgress.completedShards}
+            total={downloadProgress.totalShards}
+            status="active"
           />
         </View>
       ) : null}
