@@ -32,6 +32,8 @@ export interface WebRtcShardFetchArgs {
   hash: string;
   size: number;
   nodeId: string;
+  /** Cumulative bytes received for this shard, as chunks arrive. */
+  onProgress?: (receivedBytes: number, totalBytes: number) => void;
 }
 
 interface TransferContextValue {
@@ -225,6 +227,7 @@ export function TransferProvider({ children }: { children: ReactNode }) {
           hash: args.hash,
           size: args.size,
           sourceNode: args.nodeId,
+          onProgress: args.onProgress,
         });
         return result.data;
       } catch (err) {

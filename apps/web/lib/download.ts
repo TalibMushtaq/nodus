@@ -42,6 +42,8 @@ export interface WebRtcShardFetch {
     hash: string;
     size: number;
     nodeId: string;
+    /** Cumulative bytes received for this shard, as chunks arrive. */
+    onProgress?: (receivedBytes: number, totalBytes: number) => void;
   }): Promise<Uint8Array>;
 }
 
@@ -75,7 +77,7 @@ export function browserDownloadDeps(
       const entry = catalog.find((c) => c.file_id === fileId);
       return entry?.locations ?? [];
     },
-    async fetchShard(fileId, location) {
+    async fetchShard(fileId, location, onProgress) {
       // Direct WebRTC pull first: the node stores the ciphertext, so a
       // NODE_STORED shard can be streamed over a data channel (LAN-preferred,
       // relay-signaling fallback). Any failure falls through to the HTTP paths.
@@ -88,6 +90,7 @@ export function browserDownloadDeps(
             hash: location.hash,
             size: location.size_bytes ?? 0,
             nodeId: location.node_id,
+            onProgress,
           });
           onTransport?.("webrtc");
           return data;
@@ -107,14 +110,19 @@ export function browserDownloadDeps(
         if (host) {
           try {
             const client = new NodeClient(nodusBaseUrl(host));
-            const data = await client.fetchShard(device.device_id, (message) => signer.sign(message), location.hash);
+            const data = await client.fetchShard(
+              device.device_id,
+              (message) => signer.sign(message),
+              location.hash,
+              onProgress,
+            );
             onTransport?.("lan");
             return data;
           } catch {
             // Fall through to the Relay path below.
           }
         }
-        const viaRelay = await fetchShardViaRelay(location.hash);
+        const viaRelay = await fetchShardViaRelay(location.hash, onProgress);
         if (viaRelay.ok) {
           onTransport?.("relay");
           return viaRelay.data as Uint8Array;
@@ -138,7 +146,10 @@ export interface RelayShardFetchResult {
  * connection, and streams the raw ciphertext bytes back. Only ever a fallback
  * — the direct LAN fetch is preferred when a trusted host exists.
  */
-export async function fetchShardViaRelay(hash: string): Promise<RelayShardFetchResult> {
+export async function fetchShardViaRelay(
+  hash: string,
+  onProgress?: (receivedBytes: number, totalBytes: number) => void,
+): Promise<RelayShardFetchResult> {
   try {
     const res = await fetch(`/api/shard/${encodeURIComponent(hash)}`);
     if (!res.ok) {
@@ -151,7 +162,39 @@ export async function fetchShardViaRelay(hash: string): Promise<RelayShardFetchR
       }
       return { ok: false, error: message };
     }
-    return { ok: true, data: new Uint8Array(await res.arrayBuffer()) };
+    // The proxy streams the Relay pull-through, so read it incrementally when a
+    // reader is available; otherwise fall back to a buffered read.
+    const reader = res.body?.getReader?.();
+    if (!reader) {
+      return { ok: true, data: new Uint8Array(await res.arrayBuffer()) };
+    }
+    const total = Number(res.headers.get("content-length")) || 0;
+    const chunks: Uint8Array[] = [];
+    let received = 0;
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (value) {
+          chunks.push(value);
+          received += value.byteLength;
+          try {
+            onProgress?.(received, total);
+          } catch {
+            // Advisory only: a throwing subscriber must not abort the read.
+          }
+        }
+      }
+    } finally {
+      reader.releaseLock();
+    }
+    const data = new Uint8Array(received);
+    let offset = 0;
+    for (const chunk of chunks) {
+      data.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return { ok: true, data };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
