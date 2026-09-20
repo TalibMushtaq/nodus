@@ -13,8 +13,26 @@ import { createBrowserRelayChannel } from "../lib/transfer/relay-signaling";
 import { WebRtcSessionCache } from "../lib/transfer/webrtc-session";
 import { IndexedDBLocalQueue } from "../lib/transfer/local-queue";
 import { IndexedDBPathCache } from "../lib/transfer/path-cache";
+import { createLocalSignalingChannel } from "@repo/webrtc-transport";
+import { NODUS_LOCAL_PORT } from "@repo/relay-client";
+import { getTrustedNodes } from "../lib/trusted-nodes";
+import {
+  canAttemptLocalPath,
+  canAttemptRelaySignaling,
+  getWebRtcCapabilities,
+} from "../lib/local-network";
 import { useAuth } from "./auth-provider";
 import { useWs } from "./ws-provider";
+
+/** Arguments for pulling one stored shard directly from a node over WebRTC. */
+export interface WebRtcShardFetchArgs {
+  fileId: string;
+  versionNumber: number;
+  shardIndex: number;
+  hash: string;
+  size: number;
+  nodeId: string;
+}
 
 interface TransferContextValue {
   /** Undefined until IndexedDB hydration + manager construction complete. */
@@ -29,6 +47,13 @@ interface TransferContextValue {
   retryPending: () => void;
   /** Null until capabilities resolve after mount (SSR-safe). */
   capabilities: WebRtcCapabilities | null;
+  /**
+   * Fetch one stored shard directly from a node over WebRTC (LAN or relay
+   * signaling), reusing the provider's persistent session cache. Throws when
+   * WebRTC is unavailable in this context, letting the download fall back to
+   * LAN HTTP / the Relay proxy.
+   */
+  downloadShardViaWebRtc: (args: WebRtcShardFetchArgs) => Promise<Uint8Array>;
   /**
    * Report a node's Relay-derived online state so the transfer manager can skip
    * direct WebRTC paths for an offline node. Callers (the Files page) update it
@@ -58,6 +83,9 @@ export function TransferProvider({ children }: { children: ReactNode }) {
   const [manager, setManager] = useState<TransferManager | null>(null);
   const [queuedCount, setQueuedCount] = useState(0);
   const queueRef = useRef<IndexedDBLocalQueue | null>(null);
+  // Shared by downloads so a shard pull reuses the same negotiated session as
+  // uploads instead of paying a fresh SDP/ICE round trip per shard.
+  const sessionCacheRef = useRef<WebRtcSessionCache | null>(null);
   const capabilities = useWebRtcCapabilities();
 
   // Path B signals through the Relay, so the attempt path needs the *current*
@@ -82,6 +110,7 @@ export function TransferProvider({ children }: { children: ReactNode }) {
     // Persistent WebRTC sessions outlive individual shards; the provider owns
     // them so an unmount closes the peer connections and signaling sockets.
     const sessionCache = new WebRtcSessionCache();
+    sessionCacheRef.current = sessionCache;
     Promise.all([cache.hydrate(), queue.hydrate()]).then(() => {
       if (cancelled) return;
       const attemptPath = createBrowserAttemptPath({
@@ -122,6 +151,7 @@ export function TransferProvider({ children }: { children: ReactNode }) {
     return () => {
       cancelled = true;
       queueRef.current = null;
+      sessionCacheRef.current = null;
       sessionCache.closeAll();
     };
   }, [device, signer, wsSend, wsOn]);
@@ -136,6 +166,77 @@ export function TransferProvider({ children }: { children: ReactNode }) {
     const timer = setTimeout(syncQueued, 0);
     return () => clearTimeout(timer);
   }, [wsStatus, manager, syncQueued]);
+
+  // Download counterpart of the upload chain's Path A/B: negotiate one
+  // persistent data channel to the node (LAN-preferred, relay fallback) and ask
+  // it to stream a stored shard back. Any failure throws so `lib/download.ts`
+  // falls through to the LAN HTTP / Relay-proxy paths.
+  const downloadShardViaWebRtc = useCallback(
+    async (args: WebRtcShardFetchArgs): Promise<Uint8Array> => {
+      const sessionCache = sessionCacheRef.current;
+      if (!sessionCache || !device || !signer) {
+        throw new Error("WebRTC download unavailable");
+      }
+      const caps = getWebRtcCapabilities();
+      if (!caps.peerConnection) throw new Error("WebRTC unavailable in this browser");
+
+      // One session per node for downloads, distinct from the upload session:
+      // a shared channel would serialize a pull behind the upload's frame tail.
+      const key = `download:${args.nodeId}`;
+      if (!sessionCache.isAvailable(key)) throw new Error("WebRTC session recently failed");
+
+      const host =
+        (await getTrustedNodes()).find((node) => node.node_id === args.nodeId)?.host ?? null;
+      const useLocal = Boolean(host) && canAttemptLocalPath(caps);
+      const useRelay =
+        !useLocal && canAttemptRelaySignaling(caps) && wsStatusRef.current === "connected";
+      if (!useLocal && !useRelay) throw new Error("no direct path to node");
+
+      const session = sessionCache.get(key, () => ({
+        createChannel: () => {
+          if (useLocal && host) {
+            return createLocalSignalingChannel({
+              baseUrl: `http://${host}:${NODUS_LOCAL_PORT}`,
+              deviceId: device.device_id,
+              sign: (message) => signer.sign(message),
+            });
+          }
+          const channel = createBrowserRelayChannel({
+            send: wsSend,
+            on: wsOn,
+            fromPeer: device.device_id,
+            toPeer: args.nodeId,
+            sign: (message) => signer.sign(message),
+          });
+          if (!channel) throw new Error("relay signaling channel unavailable");
+          return channel;
+        },
+        // Downloads can be large; the SDK scales its own receive timeout off
+        // this negotiation budget.
+        negotiationTimeoutMs: 8000,
+      }));
+
+      try {
+        const result = await session.receive({
+          transferId: crypto.randomUUID(),
+          fileId: args.fileId,
+          versionNumber: args.versionNumber,
+          shardIndex: args.shardIndex,
+          hash: args.hash,
+          size: args.size,
+          sourceNode: args.nodeId,
+        });
+        return result.data;
+      } catch (err) {
+        // Bench this node's direct path briefly so the remaining shards fall
+        // straight through instead of each paying a negotiation timeout.
+        sessionCache.markUnavailable(key);
+        sessionCache.evict(key);
+        throw err;
+      }
+    },
+    [device, signer, wsSend, wsOn],
+  );
 
   const value = useMemo<TransferContextValue>(
     () => ({
@@ -154,8 +255,9 @@ export function TransferProvider({ children }: { children: ReactNode }) {
       },
       capabilities,
       setNodeOnline,
+      downloadShardViaWebRtc,
     }),
-    [manager, queuedCount, syncQueued, capabilities, setNodeOnline],
+    [manager, queuedCount, syncQueued, capabilities, setNodeOnline, downloadShardViaWebRtc],
   );
 
   return <TransferContext.Provider value={value}>{children}</TransferContext.Provider>;

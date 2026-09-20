@@ -773,6 +773,7 @@ export function FilesClient() {
     hasPending,
     retryPending,
     setNodeOnline,
+    downloadShardViaWebRtc,
   } = useTransfer();
 
   // Mirror the catalog's online state so the Transfer Manager skips direct
@@ -985,10 +986,15 @@ export function FilesClient() {
           shardCount: file.shardCount,
           encryptedName: file.encryptedName,
           expectedVersionHash: file.versionHash,
-          deps: browserDownloadDeps(device, signer, (value) => {
-            transport = value;
-            reportDownloadTransport(taskId, value);
-          }),
+          deps: browserDownloadDeps(
+            device,
+            signer,
+            (value) => {
+              transport = value;
+              reportDownloadTransport(taskId, value);
+            },
+            downloadShardViaWebRtc,
+          ),
           onProgress: (event) => reportDownloadProgress(taskId, event),
         });
         // Save without an intermediate URL leak: revoke once the click is queued.
@@ -1015,7 +1021,15 @@ export function FilesClient() {
         setDownloadingId(null);
       }
     },
-    [device, signer, startDownload, reportDownloadProgress, reportDownloadTransport, finishDownload],
+    [
+      device,
+      signer,
+      startDownload,
+      reportDownloadProgress,
+      reportDownloadTransport,
+      finishDownload,
+      downloadShardViaWebRtc,
+    ],
   );
 
   const openRename = useCallback((file: FileEntryView) => {

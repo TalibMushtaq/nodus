@@ -33,18 +33,32 @@ export type {
   RelayFileLocation,
 } from "@repo/sdk";
 
+/** Pull one stored shard directly from a node over WebRTC (provider-bound). */
+export interface WebRtcShardFetch {
+  (args: {
+    fileId: string;
+    versionNumber: number;
+    shardIndex: number;
+    hash: string;
+    size: number;
+    nodeId: string;
+  }): Promise<Uint8Array>;
+}
+
 /**
  * Browser deps: FEK from the device's envelope, locations from the cached
- * catalog, shards from the trusted LAN node that stores them.
+ * catalog, shards from a trusted LAN node or the Relay. When a `fetchViaWebRtc`
+ * binding is supplied, a direct data-channel pull is attempted first.
  *
  * `onTransport` is called with the transport that actually served each shard so
- * the widget/page can label the download ("Local P2P" vs "Relay buffer"). It is
- * advisory: the SDK never awaits it and a throw is swallowed by the caller.
+ * the widget/page can label the download ("Local P2P" / "WebRTC" vs "Relay
+ * buffer"). It is advisory: the SDK never awaits it and a throw is swallowed.
  */
 export function browserDownloadDeps(
   device: DevicePublicIdentity,
   signer: DeviceSigner,
   onTransport?: (transport: DownloadTransport) => void,
+  fetchViaWebRtc?: WebRtcShardFetch,
 ): DownloadDeps {
   return {
     onTransport,
@@ -61,7 +75,26 @@ export function browserDownloadDeps(
       const entry = catalog.find((c) => c.file_id === fileId);
       return entry?.locations ?? [];
     },
-    async fetchShard(_fileId, location) {
+    async fetchShard(fileId, location) {
+      // Direct WebRTC pull first: the node stores the ciphertext, so a
+      // NODE_STORED shard can be streamed over a data channel (LAN-preferred,
+      // relay-signaling fallback). Any failure falls through to the HTTP paths.
+      if (location.hash && location.status === "NODE_STORED" && fetchViaWebRtc) {
+        try {
+          const data = await fetchViaWebRtc({
+            fileId,
+            versionNumber: location.version_number,
+            shardIndex: location.shard_index,
+            hash: location.hash,
+            size: location.size_bytes ?? 0,
+            nodeId: location.node_id,
+          });
+          onTransport?.("webrtc");
+          return data;
+        } catch {
+          // Fall through to LAN HTTP, then the Relay.
+        }
+      }
       // Preferred path: a trusted LAN host for the storing node. A buffered
       // shard is not on the node yet, so skip the LAN attempt and go straight
       // to the Relay (which serves its buffer). If a LAN fetch fails for ANY
