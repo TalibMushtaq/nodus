@@ -39,6 +39,27 @@ export interface ShardReceiveOptions {
   timeoutMs?: number;
 }
 
+/** A device asking a node for one stored shard over an open data channel. */
+export interface ShardRequestOptions {
+  transferId: string;
+  fileId: string;
+  versionNumber: number;
+  shardIndex: number;
+  /** BLAKE3 hex of the stored ciphertext being requested. */
+  hash: string;
+  size: number;
+  sourceNode?: string;
+  timeoutMs?: number;
+}
+
+/** A node streaming one stored shard back over an open data channel. */
+export interface ShardDataSendOptions {
+  transferId: string;
+  /** BLAKE3 hex of the ciphertext `data`. */
+  hash: string;
+  data: Uint8Array;
+}
+
 export interface SignalingChannel {
   sendOffer(sdp: string): Promise<void>;
   sendAnswer(sdp: string): Promise<void>;

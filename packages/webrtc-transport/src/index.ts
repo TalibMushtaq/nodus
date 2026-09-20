@@ -7,6 +7,8 @@ export {
   waitForChannelOpen,
   sendShard,
   receiveShard,
+  requestShard,
+  sendShardData,
 } from "./data-channel.js";
 
 export {
@@ -31,6 +33,8 @@ export type {
   PeerConnectionState,
   ShardSendOptions,
   ShardReceiveOptions,
+  ShardRequestOptions,
+  ShardDataSendOptions,
   SignalingChannel,
   WebRtcShardTransferOptions,
   WebRtcShardTransferResult,

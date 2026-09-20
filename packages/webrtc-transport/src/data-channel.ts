@@ -3,6 +3,8 @@ import { bytesToHex } from "@noble/hashes/utils";
 import {
   type ShardAckPayload,
   ShardAckPayloadSchema,
+  ShardDataHeaderSchema,
+  ShardFetchRequestPayloadSchema,
   type ShardUploadPayload,
   ShardUploadPayloadSchema,
   toProtocolFileId,
@@ -10,7 +12,9 @@ import {
 import {
   DataChannelIntegrityError,
   DataChannelTimeoutError,
+  type ShardDataSendOptions,
   type ShardReceiveOptions,
+  type ShardRequestOptions,
   type ShardSendOptions,
   WebRtcTransferError,
 } from "./types.js";
@@ -328,4 +332,175 @@ export async function receiveShard(opts: ShardReceiveOptions): Promise<{
     channel.addEventListener("error", onError);
     channel.addEventListener("close", onClose);
   });
+}
+
+/**
+ * Request one stored shard and receive it over a DataChannel — the download
+ * counterpart of `sendShard`. Frames: request text, then the node's
+ * `shard_data` header, binary chunks, `shard_data_done`. The returned bytes are
+ * BLAKE3-verified against the requested hash, so a corrupted/hostile stream is
+ * rejected here rather than handed to the decryptor.
+ */
+export async function requestShard(
+  channel: RTCDataChannel,
+  opts: ShardRequestOptions,
+): Promise<Uint8Array> {
+  await waitForChannelOpen(channel);
+  channel.binaryType = "arraybuffer";
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_ACK_TIMEOUT_MS;
+
+  return new Promise((resolve, reject) => {
+    let expectedHash = opts.hash;
+    let expectedSize = opts.size;
+    const chunks: Uint8Array[] = [];
+    let receivedBytes = 0;
+
+    const cleanup = () => {
+      clearTimeout(timer);
+      channel.removeEventListener("message", onMessage);
+      channel.removeEventListener("error", onError);
+      channel.removeEventListener("close", onClose);
+    };
+
+    const finish = () => {
+      cleanup();
+      const full = new Uint8Array(receivedBytes);
+      let offset = 0;
+      for (const chunk of chunks) {
+        full.set(chunk, offset);
+        offset += chunk.byteLength;
+      }
+      const actualHash = bytesToHex(blake3(full));
+      if (actualHash !== expectedHash || (expectedSize > 0 && receivedBytes !== expectedSize)) {
+        reject(
+          new DataChannelIntegrityError(
+            `Download integrity check failed: got ${actualHash} (${receivedBytes}B), expected ${expectedHash} (${expectedSize}B)`,
+          ),
+        );
+        return;
+      }
+      resolve(full);
+    };
+
+    const onMessage = (ev: MessageEvent) => {
+      if (typeof ev.data === "string") {
+        try {
+          const parsed = JSON.parse(ev.data);
+          // Explicit boolean markers, matching the Rust sender's contract.
+          if (parsed.shard_data_done === true) {
+            finish();
+            return;
+          }
+          if (parsed.shard_data_error === true) {
+            cleanup();
+            reject(
+              new WebRtcTransferError(
+                "SHARD_FETCH_FAILED",
+                typeof parsed.error_message === "string"
+                  ? parsed.error_message
+                  : "node refused the shard fetch",
+              ),
+            );
+            return;
+          }
+          const header = ShardDataHeaderSchema.safeParse(parsed);
+          if (header.success) {
+            expectedHash = header.data.hash;
+            expectedSize = header.data.size;
+          }
+        } catch {
+          // Ignore malformed/unrelated frames.
+        }
+      } else if (ev.data instanceof ArrayBuffer) {
+        chunks.push(new Uint8Array(ev.data));
+        receivedBytes += ev.data.byteLength;
+      } else if (ArrayBuffer.isView(ev.data)) {
+        const view = new Uint8Array(ev.data.buffer, ev.data.byteOffset, ev.data.byteLength);
+        chunks.push(view);
+        receivedBytes += view.byteLength;
+      }
+    };
+
+    const onError = (ev: Event) => {
+      cleanup();
+      reject(new WebRtcTransferError("CHANNEL_ERROR", `DataChannel error during shard fetch: ${ev.type}`));
+    };
+    const onClose = () => {
+      cleanup();
+      reject(new WebRtcTransferError("CHANNEL_CLOSED", "DataChannel closed during shard fetch"));
+    };
+
+    const timer = setTimeout(() => {
+      cleanup();
+      reject(new DataChannelTimeoutError("Timed out waiting for shard data"));
+    }, timeoutMs);
+
+    channel.addEventListener("message", onMessage);
+    channel.addEventListener("error", onError);
+    channel.addEventListener("close", onClose);
+
+    // Send the request only after the listeners are attached, so the node's
+    // header/first chunk cannot arrive before we are ready to read it.
+    const request = ShardFetchRequestPayloadSchema.parse({
+      shard_fetch: true,
+      file_id: toProtocolFileId(opts.fileId),
+      version_number: opts.versionNumber,
+      shard_index: opts.shardIndex,
+      hash: opts.hash,
+      size: opts.size,
+      transfer_id: opts.transferId,
+      source_node: opts.sourceNode,
+    });
+    try {
+      channel.send(JSON.stringify(request));
+    } catch (err) {
+      cleanup();
+      reject(new WebRtcTransferError("REQUEST_SEND_FAILED", `Failed to send shard request: ${err}`));
+    }
+  });
+}
+
+/**
+ * Stream one stored shard back over a DataChannel — the node-side counterpart
+ * of `requestShard`, kept here so the framing has a single TS definition and
+ * the round-trip is testable without a Rust build.
+ */
+export async function sendShardData(
+  channel: RTCDataChannel,
+  opts: ShardDataSendOptions,
+): Promise<void> {
+  await waitForChannelOpen(channel);
+  channel.binaryType = "arraybuffer";
+
+  const header = ShardDataHeaderSchema.parse({
+    shard_data: true,
+    hash: opts.hash,
+    size: opts.data.byteLength,
+    transfer_id: opts.transferId,
+  });
+  channel.send(JSON.stringify(header));
+
+  let offset = 0;
+  const total = opts.data.byteLength;
+  while (offset < total) {
+    if (channel.bufferedAmount > HIGH_WATER_MARK) {
+      await new Promise<void>((resolve) => {
+        const onLow = () => {
+          channel.removeEventListener("bufferedamountlow", onLow);
+          resolve();
+        };
+        channel.bufferedAmountLowThreshold = HIGH_WATER_MARK / 2;
+        channel.addEventListener("bufferedamountlow", onLow);
+        setTimeout(() => {
+          channel.removeEventListener("bufferedamountlow", onLow);
+          resolve();
+        }, 1000);
+      });
+    }
+    const end = Math.min(offset + CHUNK_SIZE, total);
+    channel.send(opts.data.subarray(offset, end) as unknown as ArrayBufferView<ArrayBuffer>);
+    offset = end;
+  }
+
+  channel.send(JSON.stringify({ shard_data_done: true }));
 }

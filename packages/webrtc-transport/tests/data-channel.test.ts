@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { blake3 } from "@noble/hashes/blake3";
 import { bytesToHex } from "@noble/hashes/utils";
-import { receiveShard, sendShard } from "../src/data-channel.js";
+import { receiveShard, requestShard, sendShard, sendShardData } from "../src/data-channel.js";
 import { MockRTCDataChannel } from "./mock-datachannel.js";
 
 describe("WebRTC DataChannel shard transport", () => {
@@ -120,5 +120,86 @@ describe("WebRTC DataChannel shard transport", () => {
     });
 
     await expect(Promise.all([sendPromise, recvPromise])).rejects.toThrow();
+  });
+});
+
+describe("WebRTC DataChannel shard fetch (download direction)", () => {
+  it("requests and receives a stored shard with BLAKE3 validation", async () => {
+    const [nodeChan, clientChan] = MockRTCDataChannel.createPair();
+
+    const payload = new Uint8Array(48 * 1024);
+    for (let i = 0; i < payload.length; i++) payload[i] = (i * 7) % 256;
+    const hash = bytesToHex(blake3(payload));
+
+    // Start the requester first so its listeners are attached before the node's
+    // header/first chunk can be delivered.
+    const recvPromise = requestShard(clientChan as unknown as RTCDataChannel, {
+      transferId: "tr-fetch-1",
+      fileId: "00000000-0000-0000-0000-0000000000f1",
+      versionNumber: 2,
+      shardIndex: 5,
+      hash,
+      size: payload.byteLength,
+    });
+    await Promise.resolve();
+    const sendPromise = sendShardData(nodeChan as unknown as RTCDataChannel, {
+      transferId: "tr-fetch-1",
+      hash,
+      data: payload,
+    });
+
+    const [received] = await Promise.all([recvPromise, sendPromise]);
+    expect(received.byteLength).toBe(payload.byteLength);
+    expect(bytesToHex(blake3(received))).toBe(hash);
+  });
+
+  it("rejects when the node reports a fetch error", async () => {
+    const [nodeChan, clientChan] = MockRTCDataChannel.createPair();
+
+    const recvPromise = requestShard(clientChan as unknown as RTCDataChannel, {
+      transferId: "tr-fetch-2",
+      fileId: "00000000-0000-0000-0000-0000000000f2",
+      versionNumber: 1,
+      shardIndex: 0,
+      hash: "00".repeat(32),
+      size: 10,
+    });
+    await Promise.resolve();
+    nodeChan.send(JSON.stringify({ shard_data_error: true, error_message: "not stored" }));
+
+    await expect(recvPromise).rejects.toThrow("not stored");
+  });
+
+  it("sends the canonical shard-data frame markers the Rust node mirrors", async () => {
+    const [nodeChan, clientChan] = MockRTCDataChannel.createPair();
+    const textFrames: string[] = [];
+    clientChan.on("message", (ev: MessageEvent) => {
+      if (typeof ev.data === "string") textFrames.push(ev.data);
+    });
+
+    const payload = new Uint8Array([9, 8, 7]);
+    const hash = bytesToHex(blake3(payload));
+
+    const recvPromise = requestShard(clientChan as unknown as RTCDataChannel, {
+      transferId: "tr-fetch-3",
+      fileId: "00000000-0000-0000-0000-0000000000f3",
+      versionNumber: 1,
+      shardIndex: 1,
+      hash,
+      size: payload.byteLength,
+    });
+    await Promise.resolve();
+    const sendPromise = sendShardData(nodeChan as unknown as RTCDataChannel, {
+      transferId: "tr-fetch-3",
+      hash,
+      data: payload,
+    });
+    await Promise.all([recvPromise, sendPromise]);
+
+    const parsed = textFrames.map((frame) => JSON.parse(frame));
+    expect(parsed).toContainEqual(
+      expect.objectContaining({ shard_data: true, hash }),
+    );
+    expect(parsed).toContainEqual({ shard_data_done: true });
   });
 });
