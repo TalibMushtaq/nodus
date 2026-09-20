@@ -1,5 +1,19 @@
 # Changelog
 
+## [2026-09-20] - Retry a failed or cancelled download
+
+**What changed:** A failed or cancelled download can be re-run from the web widget and the Downloads page, and the last failed download can be retried from the mobile Downloads screen.
+
+- Web provider (`apps/web/providers/download-provider.tsx`): tasks gain a `retryable` flag; `registerDownloadRetry(id, run)` stores an opaque runner (the provider doesn't own download mechanics) and `retryDownload(id)` aborts any lingering transfer, mints a fresh `AbortSignal`, resets the task to active, and invokes the runner. The widget and Downloads page render a Retry control on failed/cancelled tasks, and the page gains a "Needs attention" section. State resets are unit-tested in `providers/__tests__/download-provider.test.tsx`.
+- Web Files (`apps/web/app/(dashboard)/files/files-client.tsx`): the transfer body is extracted into `runDownload(file, taskId, signal)` so `handleDownload` can register a retry runner that re-enters the same task; each retry writes a fresh activity entry via a new `startTransfer`.
+- Mobile (`apps/mobile/src/runtime/useNodusApp.ts`, `screens/DownloadsScreen.tsx`): the last download and a `lastDownloadFailed` flag are tracked, with `retryDownload()` re-calling `downloadOne` for the recorded file; the Downloads screen shows a "Retry last download" button after a failure or cancellation.
+
+**Why:** Cancellation and failed transfers left the user with no way to recover other than navigating back to Files and finding the file again. Retry keeps the context (the same task row / the last file) and is the natural companion to the cancel control added just before.
+
+**Impact:** `apps/web/providers/download-provider.tsx`, `apps/web/app/(dashboard)/downloads/downloads-client.tsx`, `apps/web/app/(dashboard)/files/files-client.tsx`, `apps/mobile/src/runtime/useNodusApp.ts`, `apps/mobile/src/screens/DownloadsScreen.tsx`. Retry is opt-in per task (`retryable`), so tasks started without a registered runner simply do not show the control. Verified: web (220) + typecheck + lint + build, mobile (22) + typecheck + lint.
+
+**Follow-ups:** Retry starts a brand-new attempt from shard zero; there is no mid-file resume (the SDK downloads every shard each run). Mobile exposes retry only for the most recent download, not a per-row history action.
+
 ## [2026-09-20] - Cancel an active download
 
 **What changed:** In-flight downloads can be cancelled from the web widget, the Downloads page, and the mobile Downloads screen/status line. Cancelling aborts the actual fetch (HTTP or WebRTC) rather than only hiding the UI.
