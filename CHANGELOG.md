@@ -1,5 +1,22 @@
 # Changelog
 
+## [2026-09-20] - WebRTC download path: devices pull stored shards over a data channel
+
+**What changed:** Downloads can now take a direct WebRTC path (LAN-preferred, relay-signaling fallback) instead of always fetching over HTTP. The browser/mobile offer a data channel to the Storage Node, send a `shard_fetch` request, and the node streams the stored ciphertext back; the download transport readout now lights up as "Local P2P" for these transfers.
+
+- Protocol (`packages/protocol/src/messages/webrtc.ts`, `index.ts`, `schema-gen.ts`, regenerated `schemas/`): added `ShardFetchRequestPayloadSchema` and `ShardDataHeaderSchema` for the data-channel frames, with explicit boolean markers (`shard_fetch`/`shard_data`) matching the `shard_done` convention so the Rust node parses them unambiguously. `manifest.json` + two new JSON schemas generated.
+- Transport (`packages/webrtc-transport/src/{data-channel.ts,types.ts,index.ts}`): added `requestShard` (client pulls, BLAKE3-verifies, rejects on `shard_data_error`) and `sendShardData` (node-side framing), plus `ShardRequestOptions`/`ShardDataSendOptions`.
+- SDK (`packages/sdk/src/transfer/webrtc-session.ts`, `index.ts`): `PersistentWebRtcSession.receive` fetches a shard over the same persistent channel used for uploads, serialized on the shared `tail` so the two directions never interleave frames.
+- Web (`apps/web/providers/transfer-provider.tsx`, `apps/web/lib/download.ts`, `files-client.tsx`): the provider exposes `downloadShardViaWebRtc` (reusing its session cache and channel builders, LAN then relay signaling, with a cooldown on failure); `browserDownloadDeps` attempts it first for `NODE_STORED` shards and reports transport `"webrtc"`, falling through to LAN HTTP then the Relay.
+- Mobile (`apps/mobile/src/transfer/manager.ts`, `download/deps.ts`, `runtime/useNodusApp.ts`): `MobileTransferManager.downloadShardViaWebRtc` mirrors the web path via react-native-webrtc; `mobileDownloadDeps` tries it first and reports `"webrtc"`.
+- Node (`services/storage-node/src/webrtc/session.rs`): the session's data-channel handler now recognises a `shard_fetch` frame — checked before the upload-metadata parser, since a fetch request carries every upload field — authorizes it against the `shards`/`pending_shard_fetches` rows for that file/version (so a guessed hash cannot read arbitrary objects), reads via `ObjectStore::get`, and streams `[shard_data header][binary][shard_data_done]`, or a `shard_data_error` on failure.
+
+**Why:** The previous change shipped the Downloads UI with the transport readout recognising `"webrtc"`, but downloads were still HTTP-only; WebRTC was upload-only. The user asked for the readout to reflect a real WebRTC path, and for downloads to be able to move device-to-node directly rather than through the Relay proxy.
+
+**Impact:** `packages/protocol` (+ generated schemas), `packages/webrtc-transport`, `packages/sdk`, `apps/web` (transfer provider, download deps, Files), `apps/mobile` (transfer manager, download deps, `useNodusApp`), `services/storage-node/src/webrtc/session.rs`. Requires a **Storage Node redeploy** for the serving side; older nodes simply make the client fall through to LAN HTTP/Relay, and older clients are unaffected. Downloads still work with no WebRTC (LAN HTTP → Relay). Verified: protocol (63), webrtc-transport (10), sdk (41), web (211) + typecheck + lint + build, mobile (19) + typecheck + lint, `cargo test webrtc` including a new live end-to-end `webrtc_download_transfer_test.rs` that seeds a stored shard, completes a real SDP/ICE handshake, and asserts the exact bytes are streamed back.
+
+**Follow-ups:** The node authorizes a fetch only against its own `shards`/`pending_shard_fetches` rows and the paired-device session; it does not additionally check a per-device key envelope, so any device paired to the account can pull any stored shard it knows the hash of (same trust model as uploads). Relay-signaled (Path B) downloads reuse the existing signed channel and are covered only by the shared transport tests, not a live relay e2e. The mobile path needs a native rebuild to exercise.
+
 ## [2026-09-20] - Downloads tab with animated shard progress and per-download transport readout
 
 **What changed:** Downloads are now a first-class destination on both clients. The download widget/page animates shards flying into a merged block as they land, each download is labelled with the transport that served its shards (Local P2P vs Relay buffer), and there is a dedicated Downloads tab showing active plus past downloads.
