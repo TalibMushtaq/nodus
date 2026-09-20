@@ -15,7 +15,8 @@ import type { TransferPath } from "@repo/ui/primitives/path-indicator";
 import type { DownloadProgressEvent, DownloadPhase, DownloadTransport } from "@repo/sdk";
 
 import { DownloadShards } from "../components/download-shards";
-import { formatBytes } from "../lib/format";
+import { downloadMetrics } from "../lib/download-metrics";
+import { formatBytes, formatCountdown } from "../lib/format";
 
 // Download queue state lives here (not in FilesClient) so the floating widget
 // survives route changes: navigating away from Files unmounts that page while
@@ -46,10 +47,14 @@ export interface DownloadTask {
   completedBytes: number;
   totalBytes: number;
   status: DownloadStatus;
+  /** Epoch-ms the download started; the basis for average throughput/ETA. */
+  startedAt: number;
   /** Transport that served the most recent shard, when known. */
   transport?: DownloadTransport;
   error?: string;
 }
+
+export { downloadMetrics } from "../lib/download-metrics";
 
 /**
  * Stage labels. "Decrypting" is called out explicitly because the AEAD open is
@@ -100,6 +105,7 @@ export function DownloadProvider({ children }: { children: ReactNode }) {
         completedBytes: 0,
         totalBytes: 0,
         status: "active",
+        startedAt: Date.now(),
       },
     ]);
     return id;
@@ -189,6 +195,16 @@ function DownloadWidget({
     return () => clearTimeout(timer);
   }, [allDone, errorCount, onDismiss]);
 
+  // The SDK reports bytes once per shard, so without a ticker the speed/ETA
+  // readout would sit frozen between shard arrivals. Re-rendering each second
+  // recomputes the average against the wall clock.
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    if (activeCount === 0) return;
+    const timer = setInterval(() => setTick((value) => value + 1), 1000);
+    return () => clearInterval(timer);
+  }, [activeCount]);
+
   if (tasks.length === 0) return null;
 
   const heading =
@@ -234,6 +250,7 @@ function DownloadWidget({
                 : task.status === "done"
                   ? "Downloaded"
                   : PHASE_LABEL[task.phase];
+            const { speedBps, etaSeconds } = downloadMetrics(task);
             return (
               <div key={task.id} className="px-4 py-2.5 border-b border-border last:border-0">
                 <div className="flex items-center justify-between gap-3">
@@ -257,6 +274,12 @@ function DownloadWidget({
                       ? `${formatBytes(task.completedBytes)} / ${formatBytes(task.totalBytes)}`
                       : `${task.completedShards} / ${task.totalShards} shards`}
                   </span>
+                  {task.status === "active" && speedBps > 0 ? (
+                    <span>{formatBytes(speedBps)}/s</span>
+                  ) : null}
+                  {task.status === "active" && etaSeconds != null ? (
+                    <span>ETA {formatCountdown(etaSeconds)}</span>
+                  ) : null}
                   {task.transport && task.status !== "error" ? (
                     <span className="ml-auto">
                       <PathIndicator path={TRANSPORT_PATH[task.transport]} />

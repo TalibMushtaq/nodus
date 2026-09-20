@@ -12,6 +12,7 @@ import { DownloadShards } from "../../../components/download-shards";
 import {
   PHASE_LABEL,
   TRANSPORT_PATH,
+  downloadMetrics,
   useDownload,
   type DownloadTask,
 } from "../../../providers/download-provider";
@@ -24,7 +25,7 @@ import {
 import { fetchNodeActivities, fetchRelayActivities } from "../../../lib/activities";
 import { useAuth } from "../../../providers/auth-provider";
 import { useFiles } from "../../../lib/use-files";
-import { formatBytes, shortId, timeAgo } from "../../../lib/format";
+import { formatBytes, formatCountdown, shortId, timeAgo } from "../../../lib/format";
 
 // Downloads view. Two sources, deliberately kept distinct:
 //  - Active: the in-memory DownloadProvider queue, which owns the live stage and
@@ -47,6 +48,16 @@ function outcomeLabel(outcome: TransferOutcome): string {
 }
 
 function ActiveRow({ task }: { task: DownloadTask }) {
+  // Bytes arrive once per shard, so tick each second to keep the average
+  // throughput and ETA readout moving between shard completions.
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const timer = setInterval(() => setTick((value) => value + 1), 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const { speedBps, etaSeconds } = downloadMetrics(task);
+
   return (
     <div className="px-5 py-3.5 border-b border-border last:border-0">
       <div className="flex items-center justify-between gap-3">
@@ -66,6 +77,8 @@ function ActiveRow({ task }: { task: DownloadTask }) {
             ? `${formatBytes(task.completedBytes)} / ${formatBytes(task.totalBytes)}`
             : `${task.completedShards} / ${task.totalShards} shards`}
         </span>
+        {task.status === "active" && speedBps > 0 ? <span>{formatBytes(speedBps)}/s</span> : null}
+        {task.status === "active" && etaSeconds != null ? <span>ETA {formatCountdown(etaSeconds)}</span> : null}
         {task.transport && task.status !== "error" ? (
           <span className="ml-auto">
             <PathIndicator path={TRANSPORT_PATH[task.transport]} />
