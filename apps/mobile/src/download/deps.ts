@@ -28,6 +28,8 @@ export interface MobileWebRtcShardFetch {
     nodeId: string;
     /** Cumulative bytes received for this shard, as chunks arrive. */
     onProgress?: (receivedBytes: number, totalBytes: number) => void;
+    /** Aborts the pull. */
+    signal?: AbortSignal;
   }): Promise<Uint8Array>;
 }
 
@@ -45,8 +47,10 @@ export function mobileDownloadDeps(
       return files.find((f) => f.file_id === fileId)?.locations ?? [];
     },
 
-    async fetchShard(fileId, location, onProgress) {
+    async fetchShard(fileId, location, onProgress, signal) {
       if (!location.hash) throw new Error("shard location has no hash");
+      // Cancellation short-circuits the fallback chain.
+      if (signal?.aborted) throw new Error("download cancelled");
       // Direct WebRTC pull first (LAN-preferred, relay-signaling fallback); any
       // failure falls through to the HTTP paths below.
       if (location.status === "NODE_STORED" && fetchViaWebRtc) {
@@ -59,10 +63,12 @@ export function mobileDownloadDeps(
             size: location.size_bytes ?? 0,
             nodeId: location.node_id,
             onProgress,
+            signal,
           });
           onTransport?.("webrtc");
           return data;
         } catch {
+          if (signal?.aborted) throw new Error("download cancelled");
           // Fall through to LAN HTTP, then the Relay.
         }
       }
@@ -82,15 +88,17 @@ export function mobileDownloadDeps(
             (message) => signDeviceMessage(identityPrivateKey(device), message),
             location.hash,
             onProgress,
+            signal,
           );
           onTransport?.("lan");
           return data;
         } catch {
+          if (signal?.aborted) throw new Error("download cancelled");
           // Unpaired/unreachable/auth-rejected: fall through to the Relay.
         }
       }
       onTransport?.("relay");
-      return fetchRelayShard(location.hash, onProgress);
+      return fetchRelayShard(location.hash, onProgress, signal);
     },
   };
 }

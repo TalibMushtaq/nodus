@@ -18,6 +18,7 @@ import {
   Card,
   EmptyState,
   Icon,
+  IconButton,
   PathIndicator,
   Screen,
   ScreenHeader,
@@ -103,6 +104,15 @@ export function DownloadsScreen() {
               {app.downloadTransport ? (
                 <PathIndicator path={downloadTransportPath(app.downloadTransport)} />
               ) : null}
+              <View style={{ marginLeft: "auto" }}>
+                <IconButton
+                  name="close"
+                  size={18}
+                  color={theme.colors.mutedForeground}
+                  onPress={app.cancelDownload}
+                  accessibilityLabel="Cancel download"
+                />
+              </View>
             </View>
           </Card>
         ) : (

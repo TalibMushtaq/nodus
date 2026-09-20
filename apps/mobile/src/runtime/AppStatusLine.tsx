@@ -8,14 +8,14 @@ import * as React from "react";
 import { ActivityIndicator, View } from "react-native";
 import { formatBytes, formatCountdown } from "@repo/sdk";
 
-import { PathIndicator, ThemedText, useTheme } from "../design";
+import { IconButton, PathIndicator, ThemedText, useTheme } from "../design";
 import { ShardProgress } from "../download/ShardProgress";
 import { downloadMetrics } from "../download/metrics";
 import { downloadTransportPath } from "../download/transport";
 import { useApp } from "./context";
 
 export function AppStatusLine() {
-  const { busy, error, notice, downloadProgress, downloadTransport } = useApp();
+  const { busy, error, notice, downloadProgress, downloadTransport, cancelDownload } = useApp();
   const theme = useTheme();
 
   // Bytes arrive once per shard, so tick each second to keep the throughput/ETA
@@ -45,6 +45,13 @@ export function AppStatusLine() {
             {downloadTransport ? (
               <PathIndicator path={downloadTransportPath(downloadTransport)} />
             ) : null}
+            <IconButton
+              name="close"
+              size={16}
+              color={theme.colors.mutedForeground}
+              onPress={cancelDownload}
+              accessibilityLabel="Cancel download"
+            />
           </View>
           {metrics && metrics.speedBps > 0 ? (
             <ThemedText variant="caption" tone="muted" numberOfLines={1}>

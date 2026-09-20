@@ -27,6 +27,8 @@ export interface MobileShardFetchArgs {
   nodeId: string;
   /** Cumulative bytes received for this shard, as chunks arrive. */
   onProgress?: (receivedBytes: number, totalBytes: number) => void;
+  /** Aborts the pull; the session is closed so the channel is not reused. */
+  signal?: AbortSignal;
 }
 
 export interface MobileTransferManager {
@@ -137,9 +139,16 @@ export async function createMobileTransferManager(
         size: args.size,
         sourceNode: args.nodeId,
         onProgress: args.onProgress,
+        signal: args.signal,
       });
       return result.data;
     } catch (err) {
+      // A user cancel is not a path failure: close the session but do not bench
+      // the node, so a retry can still use the direct path.
+      if (args.signal?.aborted) {
+        sessionCache.evict(key);
+        throw err;
+      }
       // Bench the node's direct path briefly so remaining shards skip it.
       sessionCache.markUnavailable(key);
       sessionCache.evict(key);

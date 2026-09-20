@@ -430,10 +430,12 @@ export async function relayFolderEnvelopes(): Promise<RelayFolderEnvelope[]> {
 export async function fetchRelayShard(
   hash: string,
   onProgress?: (receivedBytes: number, totalBytes: number) => void,
+  signal?: AbortSignal,
 ): Promise<Uint8Array> {
   const token = await getSessionToken();
   const res = await fetch(`${RELAY_BASE}/shards/${encodeURIComponent(hash)}`, {
     headers: token ? { authorization: `Bearer ${token}` } : undefined,
+    signal,
   });
   if (!res.ok) {
     throw new Error(`relay shard fetch failed: HTTP ${res.status}`);

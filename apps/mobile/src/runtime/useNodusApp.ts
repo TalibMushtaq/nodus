@@ -30,6 +30,7 @@ import {
   listConflicts,
   toCatalogEntry,
   uploadFile,
+  DownloadCancelledError,
   type ConflictEntry,
   type DownloadPhase,
   type DownloadTransport,
@@ -247,6 +248,8 @@ export function useNodusApp() {
   // Transport that served the newest downloaded shard (LAN / Relay / WebRTC),
   // so the Downloads tab can label how the bytes arrived.
   const [downloadTransport, setDownloadTransport] = React.useState<DownloadTransport | null>(null);
+  // Aborts the active download when the user cancels; null between downloads.
+  const downloadAbortRef = React.useRef<AbortController | null>(null);
   /** New name for the Rename action on a file row. */
   const [fileNameInput, setFileNameInput] = React.useState("");
 
@@ -1239,6 +1242,8 @@ export function useNodusApp() {
       // Captured locally as well as in state: the activity entry is written from
       // this closure, where a state read could still be stale.
       let transport: DownloadTransport | null = null;
+      const controller = new AbortController();
+      downloadAbortRef.current = controller;
       try {
         const result = await downloadFile({
           fileId: file.file_id,
@@ -1266,6 +1271,7 @@ export function useNodusApp() {
               startedAt: previous?.startedAt ?? Date.now(),
               ...event,
             })),
+          signal: controller.signal,
         });
         const name = result.name ?? `${file.file_id}.bin`;
         setDownloadStatus(`saving ${name}…`);
@@ -1282,23 +1288,45 @@ export function useNodusApp() {
         });
       } catch (err) {
         setDownloadStatus(null);
-        const message = err instanceof Error ? err.message : String(err);
-        setError(message);
-        await logActivity({
-          kind: "download",
-          fileId: file.file_id,
-          fileName: fileNames[file.file_id] ?? null,
-          detail: message,
-          path: transport ? downloadTransportPath(transport) : null,
-          outcome: "failed",
-        });
+        // A user cancel is expected, not an error: surface a notice and log it
+        // as cancelled rather than raising the destructive error line.
+        if (err instanceof DownloadCancelledError || controller.signal.aborted) {
+          setNotice("Download cancelled.");
+          await logActivity({
+            kind: "download",
+            fileId: file.file_id,
+            fileName: fileNames[file.file_id] ?? null,
+            detail: "Cancelled",
+            path: transport ? downloadTransportPath(transport) : null,
+            outcome: "failed",
+          });
+        } else {
+          const message = err instanceof Error ? err.message : String(err);
+          setError(message);
+          await logActivity({
+            kind: "download",
+            fileId: file.file_id,
+            fileName: fileNames[file.file_id] ?? null,
+            detail: message,
+            path: transport ? downloadTransportPath(transport) : null,
+            outcome: "failed",
+          });
+        }
       } finally {
+        // Only clear the ref if this download still owns it (a cancel for a
+        // newer download must not be nulled out by the previous one finishing).
+        if (downloadAbortRef.current === controller) downloadAbortRef.current = null;
         setDownloadProgress(null);
         setBusy(null);
       }
     },
     [device, fileNames, logActivity, transferManager],
   );
+
+  /** Cancel the active download; the transfer loop rejects and unwinds. */
+  const cancelDownload = React.useCallback(() => {
+    downloadAbortRef.current?.abort();
+  }, []);
 
   // Best-effort image preview (list/grid thumbnails). Deliberately silent:
   // unlike downloadOne it never sets busy/error or logs activity, because a
@@ -1921,6 +1949,7 @@ export function useNodusApp() {
     downloadStatus,
     downloadProgress,
     downloadTransport,
+    cancelDownload,
     // folders
     loadFolders,
     folders,
