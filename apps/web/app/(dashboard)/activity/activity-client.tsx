@@ -157,7 +157,7 @@ export function ActivityClient() {
   }, []);
 
   return (
-    <div className="mx-auto max-w-5xl space-y-8 p-6">
+    <div className="w-full space-y-8 p-6">
       <PageHeader
         eyebrow="Timeline"
         title="Activity"

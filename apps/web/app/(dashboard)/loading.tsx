@@ -3,7 +3,7 @@
 // swap to real content does not jump the layout.
 export default function DashboardLoading() {
   return (
-    <div className="mx-auto max-w-6xl space-y-8 p-6" role="status" aria-live="polite">
+    <div className="w-full space-y-8 p-6" role="status" aria-live="polite">
       <div className="animate-pulse space-y-3">
         <span className="block h-3 w-20 rounded-full bg-border" />
         <span className="block h-7 w-52 rounded-lg bg-border" />

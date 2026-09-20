@@ -256,9 +256,12 @@ const FOLDER_GLYPH_SIZE: Record<FilesIconSize, number> = { sm: 30, md: 44, lg: 6
  * means fewer, wider cards.
  */
 const GRID_COLS: Record<FilesIconSize, string> = {
-  sm: "grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3",
-  md: "grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3",
-  lg: "grid grid-cols-1 sm:grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4",
+  // `auto-fill` rather than a fixed column count so the grid fills the full
+  // dashboard width: a wide screen shows more tiles instead of stretching a
+  // capped number of them.
+  sm: "grid grid-cols-[repeat(auto-fill,minmax(150px,1fr))] gap-3",
+  md: "grid grid-cols-[repeat(auto-fill,minmax(210px,1fr))] gap-3",
+  lg: "grid grid-cols-[repeat(auto-fill,minmax(280px,1fr))] gap-4",
 };
 
 // Grid-view folder card. Deliberately the same header + media + footer shape as
@@ -1334,7 +1337,7 @@ export function FilesClient() {
 
   return (
     <div
-      className="relative mx-auto max-w-6xl space-y-8 p-6"
+      className="relative w-full space-y-8 p-6"
       // Dropping anywhere in the section uploads into the current folder. The
       // window-level listener already preventDefaults outside this node.
       onDragOver={(event) => event.preventDefault()}

@@ -146,7 +146,7 @@ export function TombstonesClient() {
   }, [purgeTarget, refresh, names]);
 
   return (
-    <div className="mx-auto max-w-5xl space-y-8 p-6">
+    <div className="w-full space-y-8 p-6">
       <PageHeader
         eyebrow="Recovery"
         title="Tombstone"

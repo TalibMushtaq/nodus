@@ -236,7 +236,7 @@ export function OverviewClient({ publicRelayUrl }: OverviewClientProps) {
   const nothingConnected = !loading && nodes.length === 0 && devices.length === 0;
 
   return (
-    <div className="mx-auto max-w-6xl space-y-8 p-6">
+    <div className="w-full space-y-8 p-6">
       <PageHeader
         eyebrow="Dashboard"
         title="Overview"

@@ -114,7 +114,7 @@ export default function SecurityPage() {
   }, []);
 
   return (
-    <div className="mx-auto max-w-4xl space-y-8 p-6">
+    <div className="w-full space-y-8 p-6">
       <PageHeader
         eyebrow="Trust"
         title="Security"
