@@ -1,5 +1,18 @@
 # Changelog
 
+## [2026-09-20] - Storage Node CLI surfaces recorded security events
+
+**What changed:** The node's interactive CLI can now show the audit trail added with the WebRTC fetch authorization: a new "Security events" menu item lists recent rows, and the storage summary flags when any exist.
+
+- `services/storage-node/src/report.rs`: `StorageSummary` gains `security_event_count` (from a new `SUMMARY_SQL` subquery); new `SecurityEventRow`, `security_events(pool, limit)` (newest first) and `print_security_events(pool)` (last 50, with a one-line explanation of `shard_fetch_without_envelope`). `print_summary` prints a `Security: N event(s) recorded` line only when nonzero.
+- `services/storage-node/src/menu.rs`: added the "Security events" item after "Show status" and shifted the subsequent dispatch arms accordingly.
+
+**Why:** The previous change began writing `security_events` rows but nothing read them, so the audit existed only in the database. This closes that loop so an operator can actually see that a shard was served before a device's envelope arrived.
+
+**Impact:** `services/storage-node/src/report.rs`, `services/storage-node/src/menu.rs`. Read-only reporting; no schema, protocol, or transfer behavior change. Verified: `cargo test --lib` (218), including a new `security_events_report_rows_newest_first` test covering ordering, the limit, and the summary count.
+
+**Follow-ups:** The list is capped at 50 rows and not filterable, and the menu has no export. `security_events` is never pruned, so a long-lived node accumulates rows (bounded in practice by the one-row-per-device+file dedup).
+
 ## [2026-09-20] - Storage Node audits WebRTC shard fetches missing a key envelope
 
 **What changed:** When a paired device pulls a stored shard over WebRTC before the node has synced that device's key envelope for the file, the node now still serves the shard but records a durable audit event.
