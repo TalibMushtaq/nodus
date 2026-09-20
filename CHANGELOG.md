@@ -1,5 +1,21 @@
 # Changelog
 
+## [2026-09-20] - Cancel an active download
+
+**What changed:** In-flight downloads can be cancelled from the web widget, the Downloads page, and the mobile Downloads screen/status line. Cancelling aborts the actual fetch (HTTP or WebRTC) rather than only hiding the UI.
+
+- SDK (`packages/sdk/src/download/download.ts`): new `DownloadCancelledError` and an optional `signal` on `DownloadFileOptions`; `DownloadDeps.fetchShard` takes the signal and the loop checks it at each shard boundary, converting any transport abort into `DownloadCancelledError`. `PersistentShardFetchRequest` (`transfer/webrtc-session.ts`) forwards the signal.
+- WebRTC transport (`packages/webrtc-transport/src/{types.ts,data-channel.ts}`): `ShardRequestOptions.signal` makes `requestShard` reject on abort (with a listener that is cleaned up).
+- Relay client (`packages/relay-client/src/local-discovery.ts`): `NodeClient.fetchShard` accepts a signal and combines it with its timeout via `AbortSignal.any` (falling back to the signal where `any` is unavailable).
+- Web (`apps/web/providers/download-provider.tsx`, `lib/download.ts`, `providers/transfer-provider.tsx`, `files-client.tsx`, downloads page/widget): `startDownload` returns `{ id, signal }` backed by a per-task `AbortController`; new `cancelDownload`; a `cancelled` task status (own label/colour, does not keep the widget pinned), and a cancel control per active row. The transfer provider drops the WebRTC session on cancel without benching the node, and the deps short-circuit the LAN/Relay fallback chain once aborted.
+- Mobile (`apps/mobile/src/runtime/useNodusApp.ts`, `download/deps.ts`, `relay.ts`, `transfer/manager.ts`, `AppStatusLine.tsx`, `DownloadsScreen.tsx`): an abort controller per transfer, `signal` threaded through the deps, and `cancelDownload` exposed to the Cancel button; cancellation shows a notice instead of an error.
+
+**Why:** Once a large download started there was no way to stop it — a mistaken or unwanted transfer would run to completion, holding the widget open and consuming bandwidth. Uploads already support cancel/retry-style control; this closes the gap.
+
+**Impact:** `packages/sdk`, `packages/webrtc-transport`, `packages/relay-client`, `apps/web` (download provider, deps, transfer provider, Files, Downloads page/widget, shard component type), `apps/mobile` (download deps, relay, transfer manager, `useNodusApp`, status line, Downloads screen). The signal is optional throughout, so callers that don't pass one are unaffected. Cancelled downloads are recorded in the activity log with detail "Cancelled". Verified: protocol (63), relay-client (50), webrtc-transport (12), sdk (41), web (218) + typecheck + lint + build, mobile (22) + typecheck + lint.
+
+**Follow-ups:** The React Native/`AbortSignal.any` fallback drops the per-request timeout on runtimes without `any`, so a cancellable fetch there is bounded only by the caller. Cancel while a shard is mid-decrypt on the main thread cannot preempt the CPU work; it stops before the next shard.
+
 ## [2026-09-20] - Live mid-shard download progress (streamed bytes)
 
 **What changed:** Download transports now report bytes as chunks arrive, so the byte counter and throughput/ETA update mid-shard instead of jumping once per shard.
