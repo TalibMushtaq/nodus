@@ -2,7 +2,7 @@ import { act, renderHook } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import type { ReactNode } from "react";
 
-import { DownloadProvider, useDownload } from "../download-provider";
+import { DownloadProvider, useDownload, useDownloadActions } from "../download-provider";
 
 function wrapper({ children }: { children: ReactNode }) {
   return <DownloadProvider>{children}</DownloadProvider>;
@@ -36,6 +36,30 @@ describe("DownloadProvider retry", () => {
     expect(retrySignal?.aborted).toBe(false);
     // The task is reset to active for the new attempt.
     expect(result.current.tasks.find((task) => task.id === taskId)?.status).toBe("active");
+  });
+
+  it("keeps the actions object stable across task updates (Files must not re-render)", () => {
+    const { result } = renderHook(
+      () => ({ actions: useDownloadActions(), tasks: useDownload().tasks }),
+      { wrapper },
+    );
+    const firstActions = result.current.actions;
+
+    act(() => {
+      const { id } = result.current.actions.startDownload({ name: "big.iso" });
+      // A progress tick must not change the actions identity, or action-only
+      // consumers would re-render on every network chunk.
+      result.current.actions.reportProgress(id, {
+        phase: "fetching",
+        completedShards: 0,
+        totalShards: 4,
+        completedBytes: 1,
+        totalBytes: 4,
+      });
+    });
+
+    expect(result.current.actions).toBe(firstActions);
+    expect(result.current.tasks).toHaveLength(1);
   });
 
   it("does nothing when no runner was registered for the task", () => {

@@ -80,8 +80,14 @@ const STATUS_COLOR: Record<DownloadStatus, string> = {
   cancelled: "var(--status-offline)",
 };
 
-interface DownloadContextValue {
-  tasks: DownloadTask[];
+/**
+ * The stable half of the download API: every action has an identity that never
+ * changes for the provider's lifetime. Consumers that only *drive* downloads
+ * (the Files page) subscribe here, so a progress update that replaces `tasks`
+ * does not re-render them. Before this split the whole Files page re-rendered
+ * on every network chunk, which is what made the UI stutter during a download.
+ */
+interface DownloadActions {
   /**
    * Register a download and return its task id plus the signal the transfer
    * loop must pass to `downloadFile`, so cancel aborts the in-flight fetch.
@@ -104,6 +110,11 @@ interface DownloadContextValue {
   dismiss: () => void;
 }
 
+interface DownloadContextValue extends DownloadActions {
+  tasks: DownloadTask[];
+}
+
+const DownloadActionsContext = createContext<DownloadActions | null>(null);
 const DownloadContext = createContext<DownloadContextValue | null>(null);
 
 export function DownloadProvider({ children }: { children: ReactNode }) {
@@ -114,6 +125,43 @@ export function DownloadProvider({ children }: { children: ReactNode }) {
   // How to re-run each task, supplied by whoever started it (Files). Kept out
   // of task state because functions are not render-serializable.
   const retryRunnersRef = useRef(new Map<string, (signal: AbortSignal) => void>());
+  // Latest uncommitted progress per task, flushed once per animation frame.
+  // A transport reports up to a few hundred times per shard (one per network
+  // chunk); committing each to React re-rendered every consumer and made a
+  // download freeze the tab. Coalescing keeps only the newest event per frame.
+  const pendingProgressRef = useRef(new Map<string, DownloadProgressEvent>());
+  const frameRef = useRef<number | null>(null);
+
+  const flushProgress = useCallback(() => {
+    frameRef.current = null;
+    const pending = pendingProgressRef.current;
+    if (pending.size === 0) return;
+    const batch = new Map(pending);
+    pending.clear();
+    setTasks((previous) =>
+      previous.map((task) => {
+        const event = batch.get(task.id);
+        if (!event) return task;
+        return {
+          ...task,
+          phase: event.phase,
+          completedShards: event.completedShards,
+          totalShards: event.totalShards,
+          completedBytes: event.completedBytes,
+          totalBytes: event.totalBytes,
+          status: event.phase === "done" ? "done" : "active",
+        };
+      }),
+    );
+  }, []);
+
+  // Drop a queued frame on unmount so it cannot setState after teardown.
+  useEffect(
+    () => () => {
+      if (frameRef.current !== null) cancelAnimationFrame(frameRef.current);
+    },
+    [],
+  );
 
   const startDownload = useCallback((input: { name: string }) => {
     const id = crypto.randomUUID();
@@ -136,23 +184,16 @@ export function DownloadProvider({ children }: { children: ReactNode }) {
     return { id, signal: controller.signal };
   }, []);
 
-  const reportProgress = useCallback((id: string, event: DownloadProgressEvent) => {
-    setTasks((previous) =>
-      previous.map((task) =>
-        task.id === id
-          ? {
-              ...task,
-              phase: event.phase,
-              completedShards: event.completedShards,
-              totalShards: event.totalShards,
-              completedBytes: event.completedBytes,
-              totalBytes: event.totalBytes,
-              status: event.phase === "done" ? "done" : "active",
-            }
-          : task,
-      ),
-    );
-  }, []);
+  const reportProgress = useCallback(
+    (id: string, event: DownloadProgressEvent) => {
+      // Keep only the newest event for this task; the frame flush commits it.
+      pendingProgressRef.current.set(id, event);
+      if (frameRef.current === null) {
+        frameRef.current = requestAnimationFrame(flushProgress);
+      }
+    },
+    [flushProgress],
+  );
 
   const reportTransport = useCallback((id: string, transport: DownloadTransport) => {
     // Only the newest transport matters for the label: a transient LAN miss that
@@ -165,6 +206,9 @@ export function DownloadProvider({ children }: { children: ReactNode }) {
   const finishDownload = useCallback(
     (id: string, outcome: "done" | "error", error?: string) => {
       controllersRef.current.delete(id);
+      // A progress frame queued from the last chunk must not land after the
+      // terminal status and flip the task back to "active".
+      pendingProgressRef.current.delete(id);
       setTasks((previous) =>
         previous.map((task) =>
           task.id === id ? { ...task, status: outcome, error, phase: "done" } : task,
@@ -178,6 +222,8 @@ export function DownloadProvider({ children }: { children: ReactNode }) {
     const controller = controllersRef.current.get(id);
     controllersRef.current.delete(id);
     controller?.abort();
+    // Drop any queued progress so it cannot overwrite "cancelled".
+    pendingProgressRef.current.delete(id);
     // Mark it cancelled immediately so the UI stops spinning; the transfer
     // loop's rejection is handled by the caller (which sees the abort).
     setTasks((previous) =>
@@ -200,6 +246,7 @@ export function DownloadProvider({ children }: { children: ReactNode }) {
     controllersRef.current.get(id)?.abort();
     const controller = new AbortController();
     controllersRef.current.set(id, controller);
+    pendingProgressRef.current.delete(id);
     setTasks((previous) =>
       previous.map((task) =>
         task.id === id
@@ -226,12 +273,14 @@ export function DownloadProvider({ children }: { children: ReactNode }) {
     for (const controller of controllersRef.current.values()) controller.abort();
     controllersRef.current.clear();
     retryRunnersRef.current.clear();
+    pendingProgressRef.current.clear();
     setTasks([]);
   }, []);
 
-  const value = useMemo<DownloadContextValue>(
+  // Stable for the provider's lifetime (every callback above has no reactive
+  // deps), so action-only consumers never re-render on a task update.
+  const actions = useMemo<DownloadActions>(
     () => ({
-      tasks,
       startDownload,
       reportProgress,
       reportTransport,
@@ -242,7 +291,6 @@ export function DownloadProvider({ children }: { children: ReactNode }) {
       dismiss,
     }),
     [
-      tasks,
       startDownload,
       reportProgress,
       reportTransport,
@@ -254,22 +302,41 @@ export function DownloadProvider({ children }: { children: ReactNode }) {
     ],
   );
 
+  const value = useMemo<DownloadContextValue>(
+    () => ({ tasks, ...actions }),
+    [tasks, actions],
+  );
+
   return (
-    <DownloadContext.Provider value={value}>
-      {children}
-      <DownloadWidget
-        tasks={tasks}
-        onDismiss={dismiss}
-        onCancel={cancelDownload}
-        onRetry={retryDownload}
-      />
-    </DownloadContext.Provider>
+    <DownloadActionsContext.Provider value={actions}>
+      <DownloadContext.Provider value={value}>
+        {children}
+        <DownloadWidget
+          tasks={tasks}
+          onDismiss={dismiss}
+          onCancel={cancelDownload}
+          onRetry={retryDownload}
+        />
+      </DownloadContext.Provider>
+    </DownloadActionsContext.Provider>
   );
 }
 
+/** Tasks + actions. Re-renders the caller whenever any task changes. */
 export function useDownload(): DownloadContextValue {
   const ctx = useContext(DownloadContext);
   if (!ctx) throw new Error("useDownload must be used within a DownloadProvider");
+  return ctx;
+}
+
+/**
+ * Actions only, with a stable identity. Use this in components that start or
+ * cancel downloads but do not render task progress (e.g. the Files page), so a
+ * progress update does not re-render them.
+ */
+export function useDownloadActions(): DownloadActions {
+  const ctx = useContext(DownloadActionsContext);
+  if (!ctx) throw new Error("useDownloadActions must be used within a DownloadProvider");
   return ctx;
 }
 

@@ -45,7 +45,7 @@ import {
   type UploadProgressEvent,
 } from "../../../lib/uploader";
 import { useUpload, type UploadTask } from "../../../providers/upload-provider";
-import { TRANSPORT_PATH, useDownload } from "../../../providers/download-provider";
+import { TRANSPORT_PATH, useDownloadActions } from "../../../providers/download-provider";
 import { findIncompleteByHash, findStoredDuplicate, type FileStorageState } from "../../../lib/file-view";
 import { isImageFileName, useImagePreview } from "../../../lib/preview";
 
@@ -627,13 +627,15 @@ export function FilesClient() {
   const { tasks: uploads, setTasks: setUploads, setActiveId, reportProgress, reportPath } = useUpload();
   // Download widget sink: a downloaded file reports unlocking → downloading →
   // verifying → decrypting → assembling so the AEAD pass is visible, not a hang.
+  // Actions only: the Files page never renders task progress, so it must not
+  // re-render on every download progress tick.
   const {
     startDownload,
     reportProgress: reportDownloadProgress,
     reportTransport: reportDownloadTransport,
     finishDownload,
     registerDownloadRetry,
-  } = useDownload();
+  } = useDownloadActions();
   const [actionError, setActionError] = useState<string | null>(null);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
   // Set when a download failed because no trusted node host was known, or when
