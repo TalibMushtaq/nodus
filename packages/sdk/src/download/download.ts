@@ -43,6 +43,14 @@ export function isFetchableLocation(location: RelayFileLocation): boolean {
   );
 }
 
+/**
+ * How a shard's bytes actually crossed the wire. Reported by the platform deps
+ * (only they know which transport served a given fetch) so the UI can label a
+ * download honestly instead of assuming one path for the whole file. A single
+ * file can mix transports if a node goes unreachable mid-download.
+ */
+export type DownloadTransport = "lan" | "relay" | "webrtc";
+
 /** This device has no FEK envelope for the file (shared before it was added). */
 export class MissingEnvelopeError extends Error {
   constructor(fileId: string) {
@@ -72,6 +80,12 @@ export interface DownloadDeps {
   getShardLocations(fileId: string, versionNumber: number): Promise<RelayFileLocation[]>;
   /** Fetch the packed (nonce||ciphertext) shard bytes from its location. */
   fetchShard(fileId: string, location: RelayFileLocation): Promise<Uint8Array>;
+  /**
+   * Best-effort notification of which transport served the fetch, so the UI can
+   * show "Local P2P" vs "Relay buffer" vs "WebRTC" per download. Optional and
+   * never awaited: a throwing subscriber must not abort the transfer.
+   */
+  onTransport?(transport: DownloadTransport): void;
 }
 
 /**

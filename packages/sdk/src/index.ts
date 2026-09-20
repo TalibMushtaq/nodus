@@ -118,6 +118,7 @@ export type {
   DownloadPhase,
   DownloadProgressEvent,
   DownloadResult,
+  DownloadTransport,
   RelayFileLocation,
 } from "./download/download.js";
 export { PersistentWebRtcSession, WebRtcSessionCache } from "./transfer/webrtc-session.js";
