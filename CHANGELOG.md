@@ -1,5 +1,19 @@
 # Changelog
 
+## [2026-09-20] - Storage Node audits WebRTC shard fetches missing a key envelope
+
+**What changed:** When a paired device pulls a stored shard over WebRTC before the node has synced that device's key envelope for the file, the node now still serves the shard but records a durable audit event.
+
+- Migration `20260920000001_security_events.sql` adds a `security_events` table (id, event_type, device_id, file_id, detail, created_at) with indexes on `created_at` and `event_type`. The `id` is deterministic for dedupable events.
+- `services/storage-node/src/webrtc/session.rs`: the data-channel fetch branch now captures the session's `device_id` and calls `device_has_file_envelope`; when false it calls `audit_missing_envelope`, which writes one `shard_fetch_without_envelope` row per device+file (`INSERT OR IGNORE` on a deterministic id) and logs a warning. The fetch proceeds regardless, so a legitimately just-uploaded file is never blocked by envelope sync lag.
+- Tests: unit tests for `device_has_file_envelope` (false → true after a `key_envelopes` insert, and only for the addressed device) and for audit dedup; the live `webrtc_download_transfer_test.rs` now asserts the audit row is written exactly once.
+
+**Why:** The earlier WebRTC download path authorizes a fetch only against the node's own `shards`/`pending_shard_fetches` rows plus the paired session, so any device on the account knowing a hash could read a stored shard — and there was no record of it. Option (b) from the security discussion: keep availability (do not hard-deny on a missing envelope, which can lag), but leave an auditable trail.
+
+**Impact:** `services/storage-node` (new migration, `webrtc/session.rs`, tests). Additive only: a new table and an audit write on a path that previously proceeded silently; no protocol or client change, and the served bytes are unchanged. Requires a Storage Node redeploy for the migration. Verified: `cargo test --lib` (217) and all four WebRTC integration tests including the updated download test.
+
+**Follow-ups:** `security_events` is written but not yet surfaced in the node report/menu UI; a future pass could count or list recent events. The node still does not require an envelope to serve, by design (option b) — option (a), hard-deny, remains available if the deployment prefers strictness.
+
 ## [2026-09-20] - Retry a failed or cancelled download
 
 **What changed:** A failed or cancelled download can be re-run from the web widget and the Downloads page, and the last failed download can be retried from the mobile Downloads screen.
