@@ -1,5 +1,21 @@
 # Changelog
 
+## [2026-09-21] - Keep the UI responsive while a download runs
+
+**What changed:** Downloading no longer makes the tab/app stutter or block tab changes. The per-chunk progress stream is coalesced, and the web Files page no longer subscribes to task state.
+
+- Web (`apps/web/providers/download-provider.tsx`): split the context into a stable `DownloadActionsContext` (every action identity fixed for the provider's lifetime) and the task-bearing `DownloadContext`. New `useDownloadActions()`; `useDownload()` still returns both. `reportProgress` now buffers the newest event per task and flushes once per animation frame instead of calling `setState` on every 16 KB chunk; pending events are dropped when a task finishes, is cancelled, retried, or dismissed so a late frame cannot overwrite the terminal status.
+- Web (`apps/web/app/(dashboard)/files/files-client.tsx`): uses `useDownloadActions()`. It only drives downloads, so the whole Files page (and its file list) previously re-rendered on every network chunk — the main source of the freeze.
+- Mobile (`apps/mobile/src/runtime/useNodusApp.ts`): `downloadOne`'s `onProgress` coalesces to a ~100 ms timer before `setDownloadProgress`, so the monolithic app hook no longer re-renders the entire app per chunk; the timer is cleared in `finally` so a late flush cannot re-show a finished download.
+- Mobile (`apps/mobile/src/download/ShardProgress.tsx`): the ghost animation uses `useNativeDriver: true` (translateX + opacity), moving it off the JS thread.
+- Test: `apps/web/providers/__tests__/download-provider.test.tsx` asserts the actions object identity is stable across a task update.
+
+**Why:** With live mid-shard progress, a transport reports progress many times per shard (one call per network chunk). Each call committed a React state update, and because the Files page and the mobile app subscribed to the whole task state, a download re-rendered large subtrees hundreds of times per second — on top of main-thread BLAKE3/AES-GCM shard work — which read as the UI "getting stuck" and made tab switches lag.
+
+**Impact:** `apps/web/providers/download-provider.tsx`, `apps/web/app/(dashboard)/files/files-client.tsx`, `apps/mobile/src/runtime/useNodusApp.ts`, `apps/mobile/src/download/ShardProgress.tsx`, plus the provider test. Public hooks are unchanged (`useDownload` still works); `useDownloadActions` is additive. Progress still updates at display refresh rate, so the byte counter, speed/ETA, and shard animation remain live. Verified: web tests (225) + lint + typecheck + build; mobile typecheck + lint + tests (22).
+
+**Follow-ups:** The per-shard BLAKE3 verify and AES-GCM decrypt still run synchronously on the JS thread; a very large shard can still cause a brief hitch. Moving them to a Web Worker / native module is the next step if that shows up in practice. The mobile app's single context still re-renders broadly on a flush (~10/s), which is acceptable but could be split later.
+
 ## [2026-09-21] - Theme choice reliably persists across sessions (web + mobile)
 
 **What changed:** The light/dark/system choice survives a reload/restart on both clients, and is no longer transiently overwritten on load.
