@@ -59,7 +59,8 @@ export default function RootLayout({
       className={`${inter.variable} ${jetbrainsMono.variable} ${spaceGrotesk.variable}`}
     >
       <head>
-        {/* Pre-hydration theme application to avoid a light-mode flash. */}
+        {/* Pre-hydration theme application to avoid a light-mode flash. The key
+            must stay in sync with THEME_STORAGE_KEY in providers/theme-provider. */}
         <script
           dangerouslySetInnerHTML={{
             __html: `(function(){try{var t=localStorage.getItem("nodus.theme")||"system";var d=t==="dark"||(t==="system"&&window.matchMedia("(prefers-color-scheme: dark)").matches);if(d)document.documentElement.classList.add("dark");}catch(e){}})();`,
