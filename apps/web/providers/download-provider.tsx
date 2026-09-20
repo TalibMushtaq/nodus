@@ -10,9 +10,11 @@ import {
   type ReactNode,
 } from "react";
 import { Icon } from "@repo/ui/primitives/icons";
-import { Progress } from "@repo/ui/primitives/progress";
-import type { DownloadProgressEvent, DownloadPhase } from "@repo/sdk";
+import { PathIndicator } from "@repo/ui/primitives/path-indicator";
+import type { TransferPath } from "@repo/ui/primitives/path-indicator";
+import type { DownloadProgressEvent, DownloadPhase, DownloadTransport } from "@repo/sdk";
 
+import { DownloadShards } from "../components/download-shards";
 import { formatBytes } from "../lib/format";
 
 // Download queue state lives here (not in FilesClient) so the floating widget
@@ -21,6 +23,19 @@ import { formatBytes } from "../lib/format";
 // renders the widget itself, mirroring UploadProvider.
 
 export type DownloadStatus = "active" | "done" | "error";
+
+/**
+ * Map the transport the SDK actually used onto the shared transfer-path
+ * vocabulary the PathIndicator renders. Downloads are LAN-direct by default,
+ * the Relay proxy when the node is unreachable, and (once the node can serve
+ * shards over a data channel) WebRTC — which is a direct P2P hop, so it reads
+ * as "local".
+ */
+export const TRANSPORT_PATH: Record<DownloadTransport, TransferPath> = {
+  lan: "local",
+  relay: "buffered",
+  webrtc: "local",
+};
 
 export interface DownloadTask {
   id: string;
@@ -31,6 +46,8 @@ export interface DownloadTask {
   completedBytes: number;
   totalBytes: number;
   status: DownloadStatus;
+  /** Transport that served the most recent shard, when known. */
+  transport?: DownloadTransport;
   error?: string;
 }
 
@@ -39,7 +56,7 @@ export interface DownloadTask {
  * CPU-bound and, on a large version, is a visible pause after the bytes land —
  * "Downloading" alone made that look like a hang.
  */
-const PHASE_LABEL: Record<DownloadPhase, string> = {
+export const PHASE_LABEL: Record<DownloadPhase, string> = {
   unlocking: "Unlocking key",
   fetching: "Downloading",
   verifying: "Verifying",
@@ -59,6 +76,8 @@ interface DownloadContextValue {
   /** Register a download and return its task id for progress reporting. */
   startDownload: (input: { name: string }) => string;
   reportProgress: (id: string, event: DownloadProgressEvent) => void;
+  /** Record which transport served the latest shard (LAN/Relay/WebRTC). */
+  reportTransport: (id: string, transport: DownloadTransport) => void;
   finishDownload: (id: string, outcome: "done" | "error", error?: string) => void;
   dismiss: () => void;
 }
@@ -104,6 +123,14 @@ export function DownloadProvider({ children }: { children: ReactNode }) {
     );
   }, []);
 
+  const reportTransport = useCallback((id: string, transport: DownloadTransport) => {
+    // Only the newest transport matters for the label: a transient LAN miss that
+    // fell back to the Relay should not leave the chip claiming "Local P2P".
+    setTasks((previous) =>
+      previous.map((task) => (task.id === id ? { ...task, transport } : task)),
+    );
+  }, []);
+
   const finishDownload = useCallback(
     (id: string, outcome: "done" | "error", error?: string) => {
       setTasks((previous) =>
@@ -118,8 +145,8 @@ export function DownloadProvider({ children }: { children: ReactNode }) {
   const dismiss = useCallback(() => setTasks([]), []);
 
   const value = useMemo<DownloadContextValue>(
-    () => ({ tasks, startDownload, reportProgress, finishDownload, dismiss }),
-    [tasks, startDownload, reportProgress, finishDownload, dismiss],
+    () => ({ tasks, startDownload, reportProgress, reportTransport, finishDownload, dismiss }),
+    [tasks, startDownload, reportProgress, reportTransport, finishDownload, dismiss],
   );
 
   return (
@@ -201,12 +228,6 @@ function DownloadWidget({
       {!collapsed && (
         <div className="border-t border-border max-h-72 overflow-y-auto">
           {tasks.map((task) => {
-            const pct =
-              task.totalBytes > 0
-                ? (task.completedBytes / task.totalBytes) * 100
-                : task.totalShards > 0
-                  ? (task.completedShards / task.totalShards) * 100
-                  : 0;
             const label =
               task.status === "error"
                 ? "Failed"
@@ -224,12 +245,23 @@ function DownloadWidget({
                   </span>
                 </div>
                 <div className="mt-1.5">
-                  <Progress value={pct} />
+                  <DownloadShards
+                    completed={task.completedShards}
+                    total={task.totalShards}
+                    status={task.status}
+                  />
                 </div>
-                <div className="mt-1 text-[10px] font-mono text-muted-foreground">
-                  {task.totalBytes > 0
-                    ? `${formatBytes(task.completedBytes)} / ${formatBytes(task.totalBytes)}`
-                    : `${task.completedShards} / ${task.totalShards} shards`}
+                <div className="mt-1 flex items-center gap-2 text-[10px] font-mono text-muted-foreground">
+                  <span>
+                    {task.totalBytes > 0
+                      ? `${formatBytes(task.completedBytes)} / ${formatBytes(task.totalBytes)}`
+                      : `${task.completedShards} / ${task.totalShards} shards`}
+                  </span>
+                  {task.transport && task.status !== "error" ? (
+                    <span className="ml-auto">
+                      <PathIndicator path={TRANSPORT_PATH[task.transport]} />
+                    </span>
+                  ) : null}
                   {task.error ? ` · ${task.error}` : ""}
                 </div>
               </div>

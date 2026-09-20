@@ -110,12 +110,51 @@
 .stagger > *:nth-child(7) { animation-delay: 360ms; }
 .stagger > *:nth-child(8) { animation-delay: 420ms; }
 
+/* ── Download shard motion ──────────────────────────────────────────────
+ * Each shard cell that lands pops, then a ghost flies from its slot into the
+ * centre where it is absorbed by the merged block. Purely decorative; the exact
+ * byte counter sits next to it. */
+@keyframes shard-land {
+  0% { transform: scale(0.7); }
+  60% { transform: scale(1.25); }
+  100% { transform: scale(1); }
+}
+.shard-land {
+  animation: shard-land 320ms cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+
+@keyframes shard-fly-merge {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.5);
+  }
+  25% {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1.15);
+  }
+  100% {
+    left: 50%;
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.35);
+  }
+}
+.shard-fly-merge {
+  animation-name: shard-fly-merge;
+  animation-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+  animation-fill-mode: forwards;
+}
+
 /* Respect the OS reduce-motion preference: content must still be fully
  * visible, so the animations are removed rather than shortened. */
 @media (prefers-reduced-motion: reduce) {
   .rise,
-  .stagger > * {
+  .stagger > *,
+  .shard-land,
+  .shard-fly-merge {
     animation: none;
+  }
+  .shard-fly-merge {
+    display: none;
   }
   .card-interactive,
   .card-interactive:hover {

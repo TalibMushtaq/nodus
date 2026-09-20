@@ -11,6 +11,7 @@ import {
   type DevicePublicIdentity,
   type DeviceSigner,
   type DownloadDeps,
+  type DownloadTransport,
 } from "@repo/sdk";
 
 import { getCachedCatalog } from "./catalog";
@@ -24,17 +25,29 @@ export {
   ShardUnavailableError,
   ShardIntegrityError,
 } from "@repo/sdk";
-export type { DownloadDeps, DownloadFileOptions, DownloadResult, RelayFileLocation } from "@repo/sdk";
+export type {
+  DownloadDeps,
+  DownloadFileOptions,
+  DownloadResult,
+  DownloadTransport,
+  RelayFileLocation,
+} from "@repo/sdk";
 
 /**
  * Browser deps: FEK from the device's envelope, locations from the cached
  * catalog, shards from the trusted LAN node that stores them.
+ *
+ * `onTransport` is called with the transport that actually served each shard so
+ * the widget/page can label the download ("Local P2P" vs "Relay buffer"). It is
+ * advisory: the SDK never awaits it and a throw is swallowed by the caller.
  */
 export function browserDownloadDeps(
   device: DevicePublicIdentity,
   signer: DeviceSigner,
+  onTransport?: (transport: DownloadTransport) => void,
 ): DownloadDeps {
   return {
+    onTransport,
     async fetchFileKey(fileId) {
       // Prefer the locally cached FEK (this device's own upload, or a key
       // materialized from a recovery envelope), then fall back to this device's
@@ -61,13 +74,18 @@ export function browserDownloadDeps(
         if (host) {
           try {
             const client = new NodeClient(nodusBaseUrl(host));
-            return await client.fetchShard(device.device_id, (message) => signer.sign(message), location.hash);
+            const data = await client.fetchShard(device.device_id, (message) => signer.sign(message), location.hash);
+            onTransport?.("lan");
+            return data;
           } catch {
             // Fall through to the Relay path below.
           }
         }
         const viaRelay = await fetchShardViaRelay(location.hash);
-        if (viaRelay.ok) return viaRelay.data as Uint8Array;
+        if (viaRelay.ok) {
+          onTransport?.("relay");
+          return viaRelay.data as Uint8Array;
+        }
         throw new ShardUnavailableError(location.shard_index, viaRelay.error ?? "relay_unavailable");
       }
       throw new ShardUnavailableError(location.shard_index, "no_trusted_host");

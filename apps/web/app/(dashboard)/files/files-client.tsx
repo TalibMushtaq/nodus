@@ -30,6 +30,7 @@ import {
   MissingEnvelopeError,
   ShardUnavailableError,
   ShardIntegrityError,
+  type DownloadTransport,
 } from "../../../lib/download";
 import { buildFolderZip, describeFolderSkips, triggerBlobDownload } from "../../../lib/folder-download";
 import { getTrustedNodes } from "../../../lib/trusted-nodes";
@@ -43,7 +44,7 @@ import {
   type UploadProgressEvent,
 } from "../../../lib/uploader";
 import { useUpload, type UploadTask } from "../../../providers/upload-provider";
-import { useDownload } from "../../../providers/download-provider";
+import { TRANSPORT_PATH, useDownload } from "../../../providers/download-provider";
 import { findIncompleteByHash, findStoredDuplicate, type FileStorageState } from "../../../lib/file-view";
 import { isImageFileName, useImagePreview } from "../../../lib/preview";
 
@@ -625,7 +626,12 @@ export function FilesClient() {
   const { tasks: uploads, setTasks: setUploads, setActiveId, reportProgress, reportPath } = useUpload();
   // Download widget sink: a downloaded file reports unlocking → downloading →
   // verifying → decrypting → assembling so the AEAD pass is visible, not a hang.
-  const { startDownload, reportProgress: reportDownloadProgress, finishDownload } = useDownload();
+  const {
+    startDownload,
+    reportProgress: reportDownloadProgress,
+    reportTransport: reportDownloadTransport,
+    finishDownload,
+  } = useDownload();
   const [actionError, setActionError] = useState<string | null>(null);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
   // Set when a download failed because no trusted node host was known, or when
@@ -960,17 +966,18 @@ export function FilesClient() {
       if (!device || !signer || file.latestVersionNumber == null || file.shardCount == null) return;
       setDownloadingId(file.fileId);
       setActionError(null);
-      // Downloads fetch straight from a trusted LAN node, so the path is local
-      // P2P by construction; recorded so Activity can label it.
+      // The path is not known up front: the LAN fetch is preferred but a miss
+      // falls back to the Relay, so the real transport is captured during the
+      // transfer and written to Activity on completion.
       const log = await startTransfer({
         kind: "download",
         fileId: file.fileId,
         fileName: file.name,
-        path: "local",
       });
       // The widget survives navigation, so the stage progress keeps rendering
       // even if the user leaves Files mid-download.
       const taskId = startDownload({ name: file.name });
+      let transport: DownloadTransport | null = null;
       try {
         const result = await downloadFile({
           fileId: file.fileId,
@@ -978,7 +985,10 @@ export function FilesClient() {
           shardCount: file.shardCount,
           encryptedName: file.encryptedName,
           expectedVersionHash: file.versionHash,
-          deps: browserDownloadDeps(device, signer),
+          deps: browserDownloadDeps(device, signer, (value) => {
+            transport = value;
+            reportDownloadTransport(taskId, value);
+          }),
           onProgress: (event) => reportDownloadProgress(taskId, event),
         });
         // Save without an intermediate URL leak: revoke once the click is queued.
@@ -990,17 +1000,22 @@ export function FilesClient() {
         anchor.click();
         URL.revokeObjectURL(url);
         finishDownload(taskId, "done");
-        await finishTransfer(log.id, "complete", formatBytes(result.data.length));
+        await finishTransfer(
+          log.id,
+          "complete",
+          formatBytes(result.data.length),
+          transport ? TRANSPORT_PATH[transport] : undefined,
+        );
       } catch (err) {
         const message = describeDownloadError(err);
         finishDownload(taskId, "error", message);
-        await finishTransfer(log.id, "failed", message);
+        await finishTransfer(log.id, "failed", message, transport ? TRANSPORT_PATH[transport] : undefined);
         setActionError(message);
       } finally {
         setDownloadingId(null);
       }
     },
-    [device, signer, startDownload, reportDownloadProgress, finishDownload],
+    [device, signer, startDownload, reportDownloadProgress, reportDownloadTransport, finishDownload],
   );
 
   const openRename = useCallback((file: FileEntryView) => {
