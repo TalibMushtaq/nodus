@@ -1,5 +1,18 @@
 # Changelog
 
+## [2026-09-21] - Restore the /api/devices/register proxy that the Path C E2E needs
+
+**What changed:** `POST /api/devices/register` exists again as an authenticated BFF proxy to the Relay's `POST /devices/register`, and the Path C harness now enrolls its second device through it, verifies the row is ACTIVE, and fails immediately on any setup/API error.
+
+- `apps/web/app/api/devices/register/route.ts`: restored (removed as "unused" by `0bbdcd5`) with a comment explaining why it must stay. New regression test `apps/web/app/api/devices/__tests__/register.test.ts` covers the 201 pass-through and the Relay error body.
+- `scripts/e2e-path-c.sh`: `set -u` → `set -euo pipefail`; Device B registration switched to `curl --fail-with-body -sS` against `/api/devices/register`, followed by an explicit check that the device appears ACTIVE in `/api/devices`, each exiting 1 on failure. The node-pair call (which may legitimately exit non-zero under `timeout`) and the transient `psqlq` poll are guarded so they cannot abort before the PASS/FAIL summary.
+
+**Why:** `0bbdcd5` deleted the `register` route as unused, but `scripts/e2e-path-c.sh` registers its second device through it. Without the route Device B was never added to the account, `publishEnvelopes()` sealed no envelope for it, and its download failed with `MissingEnvelopeError` — the failing `e2e` job. The script also ran without `set -e`, so the failed registration was silently ignored and surfaced much later as a misleading decrypt error. `POST /api/devices` (the suggested replacement) is not a route: `/api/devices` only implements `GET`.
+
+**Impact:** `apps/web/app/api/devices/register/route.ts` (new), `apps/web/app/api/devices/__tests__/register.test.ts` (new), `scripts/e2e-path-c.sh`. No client code path changed — the web UI registers devices via `POST /api/auth/{register,login}`; this proxy is for non-UI enrollment (the harness, and any tooling that needs a second device). Verified: web tests (222) + lint + typecheck + build (route listed in the build output).
+
+**Follow-ups:** The route has no dedicated rate limit beyond the Relay's own; device enrollment is session-authenticated and ownership-checked on the Relay side.
+
 ## [2026-09-20] - Storage Node CLI surfaces recorded security events
 
 **What changed:** The node's interactive CLI can now show the audit trail added with the WebRTC fetch authorization: a new "Security events" menu item lists recent rows, and the storage summary flags when any exist.
