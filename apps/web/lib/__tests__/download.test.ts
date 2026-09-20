@@ -182,7 +182,7 @@ describe("downloadFile", () => {
 
   it("cancels a download that is mid-shard", async () => {
     const fek = generateFileEncryptionKey();
-    const { packed, locations } = setup([new Uint8Array([1, 2, 3])], fek);
+    const { locations } = setup([new Uint8Array([1, 2, 3])], fek);
     const controller = new AbortController();
 
     let entered!: () => void;
