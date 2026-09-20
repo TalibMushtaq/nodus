@@ -1,5 +1,18 @@
 # Changelog
 
+## [2026-09-21] - Dashboard pages use the full content width
+
+**What changed:** The dashboard no longer caps its content in a centered column; each page fills the available width, and the Files grid flows to as many columns as fit.
+
+- Every dashboard page wrapper dropped `mx-auto max-w-{3,4,5,6}xl` for `w-full` (`overview`, `files`, `devices`, `activity`, `security`, `settings`, `tombstones`, `conflicts`, `downloads`, and the `loading` skeleton).
+- `apps/web/app/(dashboard)/files/files-client.tsx`: `GRID_COLS` switched from fixed responsive column counts to `repeat(auto-fill, minmax(…, 1fr))` per icon scale, so a wide screen shows more tiles instead of stretching a capped number of them.
+
+**Why:** On a wide display the Backups page (and the rest of the dashboard) was pinned to a roughly 1152 px centered column, leaving large empty margins and forcing the file grid into four oversized tiles.
+
+**Impact:** `apps/web/app/(dashboard)/**` page wrappers and the Files grid. `PageHeader`'s description paragraph keeps its own `max-w-2xl` for line length, and modals keep `max-w-full`. Narrow form pages (settings, security) now stretch too, for consistency; their `SettingRow`s are already full-width rows. Verified: web tests (225) + lint + typecheck + build.
+
+**Follow-ups:** If the settings/security forms read too wide on very large monitors, they can be capped selectively later. The grid tile min-widths (150/210/280 px) are a first pass and easy to tune.
+
 ## [2026-09-21] - Keep the UI responsive while a download runs
 
 **What changed:** Downloading no longer makes the tab/app stutter or block tab changes. The per-chunk progress stream is coalesced, and the web Files page no longer subscribes to task state.
