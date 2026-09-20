@@ -168,6 +168,38 @@ fn is_shard_done(text: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// A device's request to pull one stored shard back over the data channel. This
+/// is the download counterpart of `ShardUploadPayload`; `source_node` and any
+/// future fields are ignored by serde so the frame can grow without breaking
+/// this parser.
+#[derive(Debug, Clone, Deserialize)]
+struct ShardFetchRequest {
+    file_id: String,
+    version_number: i64,
+    shard_index: i64,
+    hash: String,
+    size: i64,
+    transfer_id: String,
+}
+
+/// Parse a text frame as a shard-fetch request, but only when the explicit
+/// boolean marker is set. The marker check must come before any
+/// `ShardUploadPayload` parse: a fetch request carries every upload field, so
+/// without it the node would mistake a pull for an upload and stall waiting for
+/// binary that never comes.
+fn parse_shard_fetch(text: &str) -> Option<ShardFetchRequest> {
+    let value: serde_json::Value = serde_json::from_str(text).ok()?;
+    if value.get("shard_fetch").and_then(|b| b.as_bool()) != Some(true) {
+        return None;
+    }
+    serde_json::from_value(value).ok()
+}
+
+/// A shard-fetch failure the node reports back to the requesting device.
+fn shard_data_error(error_message: &str) -> String {
+    serde_json::json!({ "shard_data_error": true, "error_message": error_message }).to_string()
+}
+
 pub struct WebRtcSession {
     #[allow(dead_code)]
     pub session_id: String,
@@ -513,6 +545,80 @@ impl WebRtcSession {
                                 };
                                 if let Ok(ack_json) = serde_json::to_string(&ack) {
                                     let _ = dc.send_text(ack_json).await;
+                                }
+                            } else if let Some(req) = parse_shard_fetch(&text) {
+                                // Download path: the device asks for a stored
+                                // shard and the node streams the ciphertext back
+                                // as [header][binary][done]. Only shards this
+                                // node actually records for the file/version are
+                                // served, so a paired device cannot pass a
+                                // guessed hash to read arbitrary stored objects.
+                                let known: Option<String> = sqlx::query_scalar(
+                                    "SELECT object_id FROM shards \
+                                     WHERE file_id = ? AND version_number = ? AND shard_index = ? \
+                                     UNION \
+                                     SELECT object_id FROM pending_shard_fetches \
+                                     WHERE file_id = ? AND version_number = ? AND shard_index = ? \
+                                     LIMIT 1",
+                                )
+                                .bind(&req.file_id)
+                                .bind(req.version_number)
+                                .bind(req.shard_index)
+                                .bind(&req.file_id)
+                                .bind(req.version_number)
+                                .bind(req.shard_index)
+                                .fetch_optional(&db)
+                                .await
+                                .ok()
+                                .flatten();
+
+                                if known.as_deref() != Some(req.hash.as_str()) {
+                                    let _ = dc
+                                        .send_text(shard_data_error(
+                                            "shard not found for this file/version",
+                                        ))
+                                        .await;
+                                    return;
+                                }
+
+                                match store.get(&req.hash).await {
+                                    Ok(bytes) if bytes.len() as i64 == req.size => {
+                                        let header = serde_json::json!({
+                                            "shard_data": true,
+                                            "hash": req.hash,
+                                            "size": bytes.len(),
+                                            "transfer_id": req.transfer_id,
+                                        });
+                                        if dc.send_text(header.to_string()).await.is_err() {
+                                            return;
+                                        }
+                                        // webrtc-rs fragments the SCTP stream;
+                                        // a single send mirrors the outbound
+                                        // (node→node) repair path.
+                                        if dc.send(&bytes::Bytes::from(bytes)).await.is_err() {
+                                            return;
+                                        }
+                                        let _ = dc
+                                            .send_text(
+                                                serde_json::json!({ "shard_data_done": true })
+                                                    .to_string(),
+                                            )
+                                            .await;
+                                    }
+                                    Ok(bytes) => {
+                                        let message = format!(
+                                            "stored shard size {} does not match requested {}",
+                                            bytes.len(),
+                                            req.size
+                                        );
+                                        let _ = dc.send_text(shard_data_error(&message)).await;
+                                    }
+                                    Err(e) => {
+                                        eprintln!("[webrtc] shard fetch read failed: {e}");
+                                        let _ = dc
+                                            .send_text(shard_data_error("stored shard unavailable"))
+                                            .await;
+                                    }
                                 }
                             } else if let Ok(meta) =
                                 serde_json::from_str::<ShardUploadPayload>(&text)
@@ -908,6 +1014,29 @@ mod tests {
         assert!(!is_shard_done(r#"{"file_id":"shard_done","size":1}"#));
         assert!(!is_shard_done(r#"{"shard_done":"true"}"#));
         assert!(!is_shard_done("not json"));
+    }
+
+    #[test]
+    fn shard_fetch_requires_explicit_boolean_marker() {
+        let frame = r#"{"shard_fetch":true,"file_id":"f","version_number":1,"shard_index":0,"hash":"aa","size":10,"transfer_id":"t"}"#;
+        let parsed = parse_shard_fetch(frame).expect("valid fetch request");
+        assert_eq!(parsed.file_id, "f");
+        assert_eq!(parsed.version_number, 1);
+        assert_eq!(parsed.shard_index, 0);
+        assert_eq!(parsed.size, 10);
+        // A frame without the boolean (or with a string) is not a fetch request,
+        // so it can never be mistaken for one and shadow the upload parser.
+        assert!(parse_shard_fetch(r#"{"file_id":"shard_fetch","size":1}"#).is_none());
+        assert!(parse_shard_fetch(r#"{"shard_fetch":"true"}"#).is_none());
+        assert!(parse_shard_fetch("not json").is_none());
+    }
+
+    #[test]
+    fn shard_data_error_is_an_explicit_marker() {
+        let value: serde_json::Value =
+            serde_json::from_str(&shard_data_error("nope")).unwrap();
+        assert_eq!(value.get("shard_data_error").and_then(|b| b.as_bool()), Some(true));
+        assert_eq!(value.get("error_message").and_then(|s| s.as_str()), Some("nope"));
     }
 
     #[test]
