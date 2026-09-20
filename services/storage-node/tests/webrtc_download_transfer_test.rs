@@ -220,4 +220,15 @@ async fn test_live_webrtc_serves_a_stored_shard() {
         payload.as_slice(),
         "node streamed the wrong bytes"
     );
+
+    // The device has no key envelope for this file on the node, so the fetch is
+    // allowed but audited (option b: do not block a download whose envelope has
+    // not synced yet), exactly once despite the request.
+    let audit: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM security_events WHERE event_type = 'shard_fetch_without_envelope'",
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(audit, 1, "missing envelope should be audited exactly once");
 }

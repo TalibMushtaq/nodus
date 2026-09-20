@@ -200,6 +200,51 @@ fn shard_data_error(error_message: &str) -> String {
     serde_json::json!({ "shard_data_error": true, "error_message": error_message }).to_string()
 }
 
+/// Whether this device holds a key envelope for the file on this node. A
+/// missing envelope does not block the fetch (it may simply not have synced
+/// yet), but it is audited.
+async fn device_has_file_envelope(db: &SqlitePool, device_id: &str, file_id: &str) -> bool {
+    sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM key_envelopes WHERE file_id = ? AND recipient_id = ?",
+    )
+    .bind(file_id)
+    .bind(device_id)
+    .fetch_one(db)
+    .await
+    .map(|count| count > 0)
+    .unwrap_or(false)
+}
+
+/// Audit (once per device+file) that a paired device fetched a shard before its
+/// key envelope for that file had reached this node.
+///
+/// Advisory only: the fetch still proceeds, because the envelope syncs from the
+/// Relay and can lag a freshly-uploaded shard, so blocking here would reject a
+/// legitimate download. The deterministic id plus `INSERT OR IGNORE` keeps a
+/// many-shard download from writing a row per shard.
+async fn audit_missing_envelope(db: &SqlitePool, device_id: &str, file_id: &str) {
+    let id = format!("fetch_no_envelope:{device_id}:{file_id}");
+    let now = chrono::Utc::now().to_rfc3339();
+    let _ = sqlx::query(
+        "INSERT OR IGNORE INTO security_events \
+         (id, event_type, device_id, file_id, detail, created_at) \
+         VALUES (?, 'shard_fetch_without_envelope', ?, ?, ?, ?)",
+    )
+    .bind(&id)
+    .bind(device_id)
+    .bind(file_id)
+    .bind(
+        "WebRTC shard fetch proceeded before this device's key envelope reached the node",
+    )
+    .bind(&now)
+    .execute(db)
+    .await;
+    eprintln!(
+        "[webrtc] shard fetch without a device key envelope (allowed, audited): \
+         device={device_id} file={file_id}"
+    );
+}
+
 pub struct WebRtcSession {
     #[allow(dead_code)]
     pub session_id: String,
@@ -270,6 +315,9 @@ impl WebRtcSession {
         let db_clone = db.clone();
         let store_clone = store.clone();
         let identity_clone = identity.clone();
+        // The paired device this session belongs to, needed by the download path
+        // to check (and, when missing, audit) its key envelope for a file.
+        let device_id_clone = device_id.clone();
         let last_active = Arc::new(AtomicU64::new(now_millis()));
         let channel_last_active = last_active.clone();
         let channel_count_cb = channel_count.clone();
@@ -278,6 +326,7 @@ impl WebRtcSession {
             let db = db_clone.clone();
             let store = store_clone.clone();
             let identity = identity_clone.clone();
+            let device_id = device_id_clone.clone();
             let session_last_active = channel_last_active.clone();
             let channels = channel_count_cb.clone();
 
@@ -332,6 +381,7 @@ impl WebRtcSession {
                     let db = db.clone();
                     let store = store.clone();
                     let identity = identity.clone();
+                    let device_id = device_id.clone();
                     let session_last_active = session_last_active.clone();
 
                     Box::pin(async move {
@@ -579,6 +629,15 @@ impl WebRtcSession {
                                         ))
                                         .await;
                                     return;
+                                }
+
+                                // Authorization: the fetch is allowed, but only
+                                // a device that holds a key envelope for the file
+                                // should be able to decrypt it. Records are
+                                // deduped per device+file, so a many-shard
+                                // download writes at most one audit row.
+                                if !device_has_file_envelope(&db, &device_id, &req.file_id).await {
+                                    audit_missing_envelope(&db, &device_id, &req.file_id).await;
                                 }
 
                                 match store.get(&req.hash).await {
@@ -1082,6 +1141,52 @@ mod tests {
         // that as "infinitely old" and reap every session.
         assert!(!should_prune(0, 0, 0, false));
         assert!(!should_prune(1, 999, 0, false));
+    }
+
+    #[tokio::test]
+    async fn device_envelope_check_reflects_key_envelopes() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::db::open(dir.path()).await.unwrap();
+
+        assert!(!device_has_file_envelope(&db, "dev-1", "file-1").await);
+        sqlx::query(
+            "INSERT INTO key_envelopes (file_id, recipient_id, recipient_kind, encrypted_key, created_at) \
+             VALUES ('file-1', 'dev-1', 'device', 'opaque', 'now')",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+
+        assert!(device_has_file_envelope(&db, "dev-1", "file-1").await);
+        // Only the addressed device is covered.
+        assert!(!device_has_file_envelope(&db, "dev-2", "file-1").await);
+    }
+
+    #[tokio::test]
+    async fn audit_missing_envelope_dedupes_per_device_and_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::db::open(dir.path()).await.unwrap();
+
+        // Repeated fetches of the same file by the same device collapse to one row.
+        audit_missing_envelope(&db, "dev-1", "file-1").await;
+        audit_missing_envelope(&db, "dev-1", "file-1").await;
+        let first: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM security_events WHERE event_type = 'shard_fetch_without_envelope'",
+        )
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert_eq!(first, 1);
+
+        // A different file is a distinct event.
+        audit_missing_envelope(&db, "dev-1", "file-2").await;
+        let second: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM security_events WHERE event_type = 'shard_fetch_without_envelope'",
+        )
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert_eq!(second, 2);
     }
 
     #[tokio::test]
