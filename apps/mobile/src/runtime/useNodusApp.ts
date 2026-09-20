@@ -250,6 +250,9 @@ export function useNodusApp() {
   const [downloadTransport, setDownloadTransport] = React.useState<DownloadTransport | null>(null);
   // Aborts the active download when the user cancels; null between downloads.
   const downloadAbortRef = React.useRef<AbortController | null>(null);
+  // Last file downloaded, so a failed/cancelled transfer can be retried.
+  const [lastDownload, setLastDownload] = React.useState<RelayFile | null>(null);
+  const [lastDownloadFailed, setLastDownloadFailed] = React.useState(false);
   /** New name for the Rename action on a file row. */
   const [fileNameInput, setFileNameInput] = React.useState("");
 
@@ -1234,6 +1237,8 @@ export function useNodusApp() {
       setBusy(`downloading-${file.file_id}`);
       setError(null);
       setNotice(null);
+      // Record the attempt so the Downloads tab can offer Retry after a failure.
+      setLastDownload(file);
       setDownloadStatus("decrypting…");
       setDownloadProgress(null);
       setDownloadTransport(null);
@@ -1278,6 +1283,7 @@ export function useNodusApp() {
         await saveAndShare(result.data, name);
         setDownloadStatus(`downloaded ${name} (${result.data.length} bytes)`);
         setNotice("Download complete.");
+        setLastDownloadFailed(false);
         await logActivity({
           kind: "download",
           fileId: file.file_id,
@@ -1288,6 +1294,9 @@ export function useNodusApp() {
         });
       } catch (err) {
         setDownloadStatus(null);
+        // Either way the attempt is retryable, so the Downloads tab can re-run
+        // it against the still-recorded `lastDownload`.
+        setLastDownloadFailed(true);
         // A user cancel is expected, not an error: surface a notice and log it
         // as cancelled rather than raising the destructive error line.
         if (err instanceof DownloadCancelledError || controller.signal.aborted) {
@@ -1327,6 +1336,11 @@ export function useNodusApp() {
   const cancelDownload = React.useCallback(() => {
     downloadAbortRef.current?.abort();
   }, []);
+
+  /** Re-run the last download after a failure or cancel. */
+  const retryDownload = React.useCallback(() => {
+    if (lastDownload) void downloadOne(lastDownload);
+  }, [lastDownload, downloadOne]);
 
   // Best-effort image preview (list/grid thumbnails). Deliberately silent:
   // unlike downloadOne it never sets busy/error or logs activity, because a
@@ -1950,6 +1964,8 @@ export function useNodusApp() {
     downloadProgress,
     downloadTransport,
     cancelDownload,
+    retryDownload,
+    lastDownloadFailed,
     // folders
     loadFolders,
     folders,

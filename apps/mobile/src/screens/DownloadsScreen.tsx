@@ -15,6 +15,7 @@ import { downloadMetrics } from "../download/metrics";
 import { downloadTransportPath } from "../download/transport";
 import { isTransferPath } from "../activity/view";
 import {
+  Button,
   Card,
   EmptyState,
   Icon,
@@ -116,11 +117,20 @@ export function DownloadsScreen() {
             </View>
           </Card>
         ) : (
-          <EmptyState
-            icon="download"
-            title="No download in progress"
-            description="Downloading a file shows its shard progress and transport here."
-          />
+          <View style={{ gap: theme.spacing.sm }}>
+            <EmptyState
+              icon="download"
+              title="No download in progress"
+              description="Downloading a file shows its shard progress and transport here."
+            />
+            {app.lastDownloadFailed ? (
+              <Button
+                title="Retry last download"
+                variant="secondary"
+                onPress={app.retryDownload}
+              />
+            ) : null}
+          </View>
         )}
 
         <ThemedText
