@@ -313,6 +313,7 @@ export class NodeClient {
     deviceId: string,
     sign: DeviceMessageSigner,
     objectId: string,
+    onProgress?: (receivedBytes: number, totalBytes: number) => void,
     timeoutMs: number = LOCAL_TIMEOUT_MS,
   ): Promise<Uint8Array> {
     const timestamp = Date.now();
@@ -345,7 +346,41 @@ export class NodeClient {
         parsed.message ?? `HTTP ${res.status}`,
       );
     }
-    return new Uint8Array(await res.arrayBuffer());
+    // Stream the body when the runtime exposes a reader (browsers do; React
+    // Native's fetch may not), so a large shard reports bytes as they arrive
+    // instead of after the whole body lands. A missing reader falls back to the
+    // buffered read, which is still correct — just coarse.
+    const reader = res.body?.getReader?.();
+    if (!reader) {
+      return new Uint8Array(await res.arrayBuffer());
+    }
+    const total = Number(res.headers.get("content-length")) || 0;
+    const chunks: Uint8Array[] = [];
+    let received = 0;
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (value) {
+          chunks.push(value);
+          received += value.byteLength;
+          try {
+            onProgress?.(received, total);
+          } catch {
+            // Advisory only: a throwing subscriber must not abort the read.
+          }
+        }
+      }
+    } finally {
+      reader.releaseLock();
+    }
+    const out = new Uint8Array(received);
+    let offset = 0;
+    for (const chunk of chunks) {
+      out.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return out;
   }
 
   private async post<T>(
