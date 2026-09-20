@@ -5,19 +5,38 @@
 // session cache, so shards prefer a direct/local path and only fall back to the
 // Relay buffer or the persistent queue when those are unavailable.
 
-import { WebRtcSessionCache } from "@repo/sdk";
+import { createSignedRelayChannel, WebRtcSessionCache } from "@repo/sdk";
 import { TransferManager } from "@repo/transfer-manager";
-import type { StoredDeviceIdentity } from "@repo/relay-client";
+import { NODUS_LOCAL_PORT, identityPrivateKey, signDeviceMessage, type StoredDeviceIdentity } from "@repo/relay-client";
+import { createLocalSignalingChannel } from "@repo/webrtc-transport";
 
 import { SqliteLocalQueue } from "../store/local-queue";
 import { SqlitePathCache } from "../store/path-cache";
+import { getTrustedNodes } from "../store/trusted-nodes";
 import type { MobileWs } from "../ws";
 import { createMobileAttemptPath } from "./attempt-path";
+import { createNativePeerConnectionFactory } from "./webrtc";
+
+/** One stored shard to pull directly from a node over WebRTC. */
+export interface MobileShardFetchArgs {
+  fileId: string;
+  versionNumber: number;
+  shardIndex: number;
+  hash: string;
+  size: number;
+  nodeId: string;
+}
 
 export interface MobileTransferManager {
   manager: TransferManager;
   localQueue: SqliteLocalQueue;
   sessionCache: WebRtcSessionCache;
+  /**
+   * Download counterpart of the upload chain: pull a stored shard over a
+   * persistent data channel (LAN-preferred, relay-signaling fallback). Throws
+   * when no direct path applies so the caller falls back to LAN HTTP/Relay.
+   */
+  downloadShardViaWebRtc: (args: MobileShardFetchArgs) => Promise<Uint8Array>;
   /** Tear down sessions/caches; call on sign-out. */
   close: () => void;
 }
@@ -68,10 +87,68 @@ export async function createMobileTransferManager(
 
   const manager = new TransferManager(attemptPath, undefined, pathCache, localQueue);
 
+  const sign = (message: string) => signDeviceMessage(identityPrivateKey(device), message);
+  const peerConnectionFactory = createNativePeerConnectionFactory();
+  const localAllowed = () => options.canAttemptLocal?.() ?? true;
+
+  const downloadShardViaWebRtc = async (args: MobileShardFetchArgs): Promise<Uint8Array> => {
+    // Separate session key from uploads so a pull never queues behind an
+    // in-flight upload's frame tail on the same channel.
+    const key = `download:${args.nodeId}`;
+    if (!sessionCache.isAvailable(key)) throw new Error("WebRTC session recently failed");
+
+    const host = (await getTrustedNodes()).find((node) => node.node_id === args.nodeId)?.host ?? null;
+    const useLocal = Boolean(host) && localAllowed();
+    const useRelay = !useLocal && ws.isConnected;
+    if (!useLocal && !useRelay) throw new Error("no direct path to node");
+
+    const session = sessionCache.get(key, () => ({
+      createChannel: () => {
+        if (useLocal && host) {
+          return createLocalSignalingChannel({
+            baseUrl: `http://${host}:${NODUS_LOCAL_PORT}`,
+            deviceId: device.device_id,
+            sign,
+          });
+        }
+        const channel = createSignedRelayChannel({
+          send: (msg) => ws.send(msg.type, msg.payload),
+          on: (type, handler) => ws.on(type, handler),
+          fromPeer: device.device_id,
+          toPeer: args.nodeId,
+          sign,
+        });
+        if (!channel) throw new Error("relay signaling channel unavailable");
+        return channel;
+      },
+      peerConnectionFactory,
+      negotiationTimeoutMs: 8000,
+    }));
+
+    try {
+      const result = await session.receive({
+        transferId: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`,
+        fileId: args.fileId,
+        versionNumber: args.versionNumber,
+        shardIndex: args.shardIndex,
+        hash: args.hash,
+        size: args.size,
+        sourceNode: args.nodeId,
+      });
+      return result.data;
+    } catch (err) {
+      // Bench the node's direct path briefly so remaining shards skip it.
+      sessionCache.markUnavailable(key);
+      sessionCache.evict(key);
+      throw err;
+    }
+  };
+
   return {
     manager,
     localQueue,
     sessionCache,
+    downloadShardViaWebRtc,
     close: () => {
       sessionCache.closeAll();
     },

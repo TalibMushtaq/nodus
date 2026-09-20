@@ -17,9 +17,22 @@ import { fetchRelayShard, relayFiles } from "../relay";
 import { getTrustedNodes } from "../store/trusted-nodes";
 import { fetchMobileFileKey } from "./keys";
 
+/** Pull one stored shard directly from a node over WebRTC (app-bound). */
+export interface MobileWebRtcShardFetch {
+  (args: {
+    fileId: string;
+    versionNumber: number;
+    shardIndex: number;
+    hash: string;
+    size: number;
+    nodeId: string;
+  }): Promise<Uint8Array>;
+}
+
 export function mobileDownloadDeps(
   device: StoredDeviceIdentity,
   onTransport?: (transport: DownloadTransport) => void,
+  fetchViaWebRtc?: MobileWebRtcShardFetch,
 ): DownloadDeps {
   return {
     onTransport,
@@ -30,8 +43,26 @@ export function mobileDownloadDeps(
       return files.find((f) => f.file_id === fileId)?.locations ?? [];
     },
 
-    async fetchShard(_fileId, location) {
+    async fetchShard(fileId, location) {
       if (!location.hash) throw new Error("shard location has no hash");
+      // Direct WebRTC pull first (LAN-preferred, relay-signaling fallback); any
+      // failure falls through to the HTTP paths below.
+      if (location.status === "NODE_STORED" && fetchViaWebRtc) {
+        try {
+          const data = await fetchViaWebRtc({
+            fileId,
+            versionNumber: location.version_number,
+            shardIndex: location.shard_index,
+            hash: location.hash,
+            size: location.size_bytes ?? 0,
+            nodeId: location.node_id,
+          });
+          onTransport?.("webrtc");
+          return data;
+        } catch {
+          // Fall through to LAN HTTP, then the Relay.
+        }
+      }
       // Direct LAN fetch first (device-authenticated), then the Relay fallback.
       // A buffered shard is not on the node yet, so skip straight to the Relay,
       // which serves its buffer.

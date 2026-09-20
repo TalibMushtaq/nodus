@@ -1244,10 +1244,16 @@ export function useNodusApp() {
           shardCount: latest.shard_count,
           encryptedName: file.encrypted_name,
           expectedVersionHash: latest.version_hash,
-          deps: mobileDownloadDeps(device, (value) => {
-            transport = value;
-            setDownloadTransport(value);
-          }),
+          deps: mobileDownloadDeps(
+            device,
+            (value) => {
+              transport = value;
+              setDownloadTransport(value);
+            },
+            // Preferred path: pull the shard over WebRTC once the manager has
+            // hydrated; until then (or if it throws) the deps fall back to HTTP.
+            transferManager?.downloadShardViaWebRtc,
+          ),
           // Surface fetch/verify/decrypt stages so Activity can render progress.
           onProgress: (event) =>
             setDownloadProgress({ fileName: displayName, ...event }),
@@ -1282,7 +1288,7 @@ export function useNodusApp() {
         setBusy(null);
       }
     },
-    [device, fileNames, logActivity],
+    [device, fileNames, logActivity, transferManager],
   );
 
   // Best-effort image preview (list/grid thumbnails). Deliberately silent:
