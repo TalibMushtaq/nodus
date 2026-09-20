@@ -95,6 +95,10 @@ export {
   type WebRTCIceCandidatePayload,
   NodeShardFetchPayloadSchema,
   type NodeShardFetchPayload,
+  ShardFetchRequestPayloadSchema,
+  type ShardFetchRequestPayload,
+  ShardDataHeaderSchema,
+  type ShardDataHeader,
 } from "./messages/webrtc.js";
 
 // ── Transfer messages ──────────────────────────────────────────────

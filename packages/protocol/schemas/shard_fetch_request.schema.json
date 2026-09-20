@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "shard_fetch": {
+      "type": "boolean",
+      "const": true
+    },
+    "file_id": {
+      "type": "string"
+    },
+    "version_number": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "shard_index": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "hash": {
+      "type": "string"
+    },
+    "size": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "transfer_id": {
+      "type": "string"
+    },
+    "source_node": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "shard_fetch",
+    "file_id",
+    "version_number",
+    "shard_index",
+    "hash",
+    "size",
+    "transfer_id"
+  ],
+  "additionalProperties": false
+}

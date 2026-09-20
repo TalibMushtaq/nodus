@@ -3,6 +3,8 @@ import {
   parseMessage,
   MessageTypes,
   CURRENT_SCHEMA_VERSION,
+  ShardFetchRequestPayloadSchema,
+  ShardDataHeaderSchema,
   type MessageId,
 } from "../src/index.js";
 
@@ -503,6 +505,46 @@ describe("phase 11 local-HTTP contracts validate directly", () => {
       token: "tok-123",
     });
     expect(ok.success).toBe(false);
+  });
+});
+
+describe("data-channel shard fetch frames", () => {
+  const request = {
+    shard_fetch: true as const,
+    file_id: "00000000-0000-0000-0000-000000000001",
+    version_number: 1,
+    shard_index: 0,
+    hash: "a".repeat(64),
+    size: 4096,
+    transfer_id: "tr-1",
+  };
+
+  it("parses a fetch request, with source_node optional", () => {
+    expect(ShardFetchRequestPayloadSchema.safeParse(request).success).toBe(true);
+    expect(
+      ShardFetchRequestPayloadSchema.safeParse({ ...request, source_node: "node-1" }).success,
+    ).toBe(true);
+  });
+
+  it("requires the explicit shard_fetch marker", () => {
+    // Guards the cross-stack contract: the Rust node only treats a frame as a
+    // fetch when `shard_fetch` is boolean true, exactly like `shard_done`.
+    const withoutMarker: Record<string, unknown> = { ...request };
+    delete withoutMarker.shard_fetch;
+    expect(ShardFetchRequestPayloadSchema.safeParse(withoutMarker).success).toBe(false);
+    expect(
+      ShardFetchRequestPayloadSchema.safeParse({ ...request, shard_fetch: "true" }).success,
+    ).toBe(false);
+  });
+
+  it("parses a shard-data header", () => {
+    const header = ShardDataHeaderSchema.safeParse({
+      shard_data: true,
+      hash: "b".repeat(64),
+      size: 2048,
+      transfer_id: "tr-1",
+    });
+    expect(header.success).toBe(true);
   });
 });
 

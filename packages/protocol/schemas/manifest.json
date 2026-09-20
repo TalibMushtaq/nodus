@@ -13,6 +13,8 @@
     "webrtc_answer": "webrtc_answer.schema.json",
     "webrtc_ice_candidate": "webrtc_ice_candidate.schema.json",
     "node_shard_fetch": "node_shard_fetch.schema.json",
+    "shard_fetch_request": "shard_fetch_request.schema.json",
+    "shard_data_header": "shard_data_header.schema.json",
     "shard_upload": "shard_upload.schema.json",
     "shard_ack": "shard_ack.schema.json",
     "pending_notify": "pending_notify.schema.json",
