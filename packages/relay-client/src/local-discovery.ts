@@ -314,10 +314,20 @@ export class NodeClient {
     sign: DeviceMessageSigner,
     objectId: string,
     onProgress?: (receivedBytes: number, totalBytes: number) => void,
+    signal?: AbortSignal,
     timeoutMs: number = LOCAL_TIMEOUT_MS,
   ): Promise<Uint8Array> {
     const timestamp = Date.now();
     const signature = await sign(`${deviceId}:${objectId}:${timestamp}`);
+    // Combine the per-request timeout with the caller's cancellation signal.
+    // `AbortSignal.any` may be absent on some React Native runtimes, in which
+    // case a provided signal wins (a download is explicitly cancellable) and
+    // the timeout is dropped for that request.
+    const timeout = AbortSignal.timeout(timeoutMs);
+    const requestSignal =
+      signal && typeof AbortSignal.any === "function"
+        ? AbortSignal.any([timeout, signal])
+        : (signal ?? timeout);
     let res: Response;
     try {
       res = await fetch(`${this.baseUrl}/nodus/shard/${encodeURIComponent(objectId)}`, {
@@ -326,7 +336,7 @@ export class NodeClient {
           "x-nodus-timestamp": String(timestamp),
           "x-nodus-signature": signature,
         },
-        signal: AbortSignal.timeout(timeoutMs),
+        signal: requestSignal,
       });
     } catch (err) {
       throw new NodeClientError(
