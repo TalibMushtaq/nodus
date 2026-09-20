@@ -1,5 +1,18 @@
 # Changelog
 
+## [2026-09-21] - Theme choice reliably persists across sessions (web + mobile)
+
+**What changed:** The light/dark/system choice survives a reload/restart on both clients, and is no longer transiently overwritten on load.
+
+- Web (`apps/web/providers/theme-provider.tsx`): the hydrate and persist steps are now a single ordered effect guarded by a `hydrated` ref, so the SSR default (`"system"`) is never written to `localStorage` before the saved value is read. The old two-effect version wrote the default on mount and could clobber a saved `dark`/`light` (and briefly un-apply the class, flashing light). Exported `THEME_STORAGE_KEY` and documented that `app/layout.tsx`'s pre-hydration script must match it. New `providers/__tests__/theme-provider.test.tsx` proves the value persists across a remount and isn't overwritten, and that an explicit choice wins over the OS.
+- Mobile (`apps/mobile/src/design/theme.tsx`, `App.tsx`): the persisted `theme` preference is already written via the SQLite preferences store; the hydrate read now catches a failure (a not-yet-ready DB) instead of rejecting unhandled, and the status bar follows the *resolved* theme (`ThemedStatusBar`) rather than the OS, so a forced mode also fixes icon contrast.
+
+**Why:** The user reported the theme not persisting across sessions. On web the stored value was correct in steady state but the mount-order write of the default could drop it on a fast reload and caused a light flash; the mobile persistence existed but a failed preference read could leave the app stuck on "system". Mobile already round-trips the choice through SQLite on restart.
+
+**Impact:** `apps/web/providers/theme-provider.tsx`, `apps/web/app/layout.tsx` (comment only), `apps/mobile/src/design/theme.tsx`, `apps/mobile/App.tsx`, plus the new web test. No storage format change: the key remains `nodus.theme` (web) and the `theme` preference row (mobile), both backward compatible. Verified: web tests (224) + lint + typecheck + build; mobile typecheck + lint + tests (22).
+
+**Follow-ups:** The choice is per device/origin, not account-synced, so it does not follow the user between devices or between `localhost:3000` and the deployed origin. The mobile preference round-trip is covered only by manual testing (no RN renderer in the mobile vitest setup).
+
 ## [2026-09-21] - Restore the /api/devices/register proxy that the Path C E2E needs
 
 **What changed:** `POST /api/devices/register` exists again as an authenticated BFF proxy to the Relay's `POST /devices/register`, and the Path C harness now enrolls its second device through it, verifies the row is ACTIVE, and fails immediately on any setup/API error.
