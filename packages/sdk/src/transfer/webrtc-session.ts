@@ -61,6 +61,8 @@ export interface PersistentShardFetchRequest {
   sourceNode?: string;
   /** Cumulative bytes received for this shard, as chunks arrive. */
   onProgress?: (receivedBytes: number, totalBytes: number) => void;
+  /** Aborts the fetch; the session is invalidated so the channel is not reused. */
+  signal?: AbortSignal;
 }
 
 export interface PersistentShardFetchResult {
@@ -146,6 +148,7 @@ export class PersistentWebRtcSession {
       size: request.size,
       sourceNode: request.sourceNode,
       onProgress: request.onProgress,
+      signal: request.signal,
       // A shard can be many MB on a slow link; the budget scales with the
       // negotiation budget rather than the 30s default the upload path uses.
       timeoutMs: (this.deps.negotiationTimeoutMs ?? DEFAULT_NEGOTIATION_TIMEOUT_MS) * 30,

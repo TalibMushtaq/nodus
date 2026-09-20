@@ -67,6 +67,14 @@ export class ShardUnavailableError extends Error {
   }
 }
 
+/** The caller aborted the download via its AbortSignal. */
+export class DownloadCancelledError extends Error {
+  constructor() {
+    super("download cancelled");
+    this.name = "DownloadCancelledError";
+  }
+}
+
 /** Fetched bytes did not match the recorded BLAKE3 hash. */
 export class ShardIntegrityError extends Error {
   constructor(shardIndex: number) {
@@ -91,6 +99,7 @@ export interface DownloadDeps {
     fileId: string,
     location: RelayFileLocation,
     onProgress?: (receivedBytes: number, totalBytes: number) => void,
+    signal?: AbortSignal,
   ): Promise<Uint8Array>;
   /**
    * Best-effort notification of which transport served the fetch, so the UI can
@@ -137,6 +146,11 @@ export interface DownloadFileOptions {
    * it, so a slow or throwing callback cannot stall or fail the transfer.
    */
   onProgress?: (event: DownloadProgressEvent) => void;
+  /**
+   * Cancellation. Aborting rejects with `DownloadCancelledError` and, where the
+   * transport supports it, aborts the in-flight fetch so no more bytes move.
+   */
+  signal?: AbortSignal;
 }
 
 export interface DownloadResult {
@@ -150,7 +164,7 @@ export interface DownloadResult {
  * modes a caller should surface differently.
  */
 export async function downloadFile(options: DownloadFileOptions): Promise<DownloadResult> {
-  const { fileId, versionNumber, shardCount, encryptedName, expectedVersionHash, deps, onProgress } =
+  const { fileId, versionNumber, shardCount, encryptedName, expectedVersionHash, deps, onProgress, signal } =
     options;
 
   // Progress is advisory: a throwing subscriber must not abort a download.
@@ -162,9 +176,17 @@ export async function downloadFile(options: DownloadFileOptions): Promise<Downlo
     }
   };
 
+  // Normalize cancellation: a transport may reject with its own abort error, so
+  // this throws the SDK's typed error whenever the caller's signal is aborted.
+  const throwIfCancelled = () => {
+    if (signal?.aborted) throw new DownloadCancelledError();
+  };
+
+  throwIfCancelled();
   emit("unlocking", 0, 0, 0);
 
   const fek = await deps.fetchFileKey(fileId);
+  throwIfCancelled();
   if (!fek) {
     throw new MissingEnvelopeError(fileId);
   }
@@ -186,6 +208,7 @@ export async function downloadFile(options: DownloadFileOptions): Promise<Downlo
   const shards: Shard[] = [];
   let fetchedBytes = 0;
   for (let index = 0; index < shardCount; index += 1) {
+    throwIfCancelled();
     const location = byIndex.get(index);
     if (!location) {
       const anyStatus = locations.find((l) => l.shard_index === index)?.status ?? "missing";
@@ -196,9 +219,22 @@ export async function downloadFile(options: DownloadFileOptions): Promise<Downlo
     // Mid-shard progress is reported relative to this shard's start, so the
     // running total stays monotonic as chunks arrive. `emit` swallows callback
     // errors, so a misbehaving transport cannot abort the download.
-    const packed = await deps.fetchShard(fileId, location, (received) => {
-      emit("fetching", index, fetchedBytes + received, totalBytes);
-    });
+    let packed: Uint8Array;
+    try {
+      packed = await deps.fetchShard(
+        fileId,
+        location,
+        (received) => {
+          emit("fetching", index, fetchedBytes + received, totalBytes);
+        },
+        signal,
+      );
+    } catch (err) {
+      // A transport that aborted with its own error should still surface as a
+      // cancellation, not as a transport failure.
+      if (signal?.aborted) throw new DownloadCancelledError();
+      throw err;
+    }
     fetchedBytes += packed.length;
     // Integrity stage: BLAKE3 compare before the AEAD open.
     emit("verifying", index, fetchedBytes, totalBytes);
@@ -212,6 +248,7 @@ export async function downloadFile(options: DownloadFileOptions): Promise<Downlo
     emit("fetching", index + 1, fetchedBytes, totalBytes);
   }
 
+  throwIfCancelled();
   emit("assembling", shardCount, fetchedBytes, totalBytes);
   shards.sort((a, b) => a.index - b.index);
   const data = reconstructFromShards(shards);

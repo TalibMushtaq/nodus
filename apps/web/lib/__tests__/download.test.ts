@@ -8,7 +8,13 @@ import {
 } from "@repo/core";
 import type { FileId, ShardIndex } from "@repo/core";
 
-import { MissingEnvelopeError, ShardIntegrityError, ShardUnavailableError, downloadFile } from "../download";
+import {
+  DownloadCancelledError,
+  MissingEnvelopeError,
+  ShardIntegrityError,
+  ShardUnavailableError,
+  downloadFile,
+} from "../download";
 import type { DownloadDeps } from "../download";
 import type { RelayFileLocation } from "../catalog";
 
@@ -155,6 +161,58 @@ describe("downloadFile", () => {
     const totalBytes = packed.reduce((sum, bytes) => sum + bytes.length, 0);
     // The final fetching event after each completed shard accounts for all bytes.
     expect(reported[reported.length - 1]).toBe(totalBytes);
+  });
+
+  it("rejects with DownloadCancelledError when the signal is already aborted", async () => {
+    const fek = generateFileEncryptionKey();
+    const { packed, locations } = setup([new Uint8Array([1])], fek);
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(
+      downloadFile({
+        fileId,
+        versionNumber: 1,
+        shardCount: 1,
+        deps: depsFor(fek, packed, locations),
+        signal: controller.signal,
+      }),
+    ).rejects.toBeInstanceOf(DownloadCancelledError);
+  });
+
+  it("cancels a download that is mid-shard", async () => {
+    const fek = generateFileEncryptionKey();
+    const { packed, locations } = setup([new Uint8Array([1, 2, 3])], fek);
+    const controller = new AbortController();
+
+    let entered!: () => void;
+    const enteredPromise = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const deps: DownloadDeps = {
+      fetchFileKey: async () => fek,
+      getShardLocations: async () => locations,
+      // A transport that hangs until aborted, proving the in-flight fetch is
+      // actually cancelled rather than merely ignored at the next checkpoint.
+      fetchShard: (_fileId, _location, _onProgress, signal) => {
+        entered();
+        return new Promise<Uint8Array>((_resolve, reject) => {
+          signal?.addEventListener("abort", () => reject(new Error("aborted")));
+        });
+      },
+    };
+
+    const promise = downloadFile({
+      fileId,
+      versionNumber: 1,
+      shardCount: 1,
+      deps,
+      signal: controller.signal,
+    });
+    await enteredPromise;
+    controller.abort();
+
+    await expect(promise).rejects.toBeInstanceOf(DownloadCancelledError);
   });
 
   it("throws ShardUnavailableError when a shard has no fetchable copy yet", async () => {

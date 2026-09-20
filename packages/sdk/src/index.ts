@@ -108,6 +108,7 @@ export type { FolderMutationDeps, FolderMutations } from "./folders/folders.js";
 export {
   downloadFile,
   isFetchableLocation,
+  DownloadCancelledError,
   MissingEnvelopeError,
   ShardUnavailableError,
   ShardIntegrityError,
