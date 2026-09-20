@@ -122,6 +122,41 @@ describe("downloadFile", () => {
     expect(Array.from(result.data)).toEqual([9, 8, 7]);
   });
 
+  it("surfaces mid-shard byte progress from a streaming transport", async () => {
+    const fek = generateFileEncryptionKey();
+    const original = new Uint8Array([1, 2, 3, 4, 5, 6]);
+    const { packed, locations } = setup([original.slice(0, 3), original.slice(3)], fek);
+
+    const reported: number[] = [];
+    const deps: DownloadDeps = {
+      fetchFileKey: async () => fek,
+      getShardLocations: async () => locations,
+      // Mimic a streaming transport: report bytes in two chunks before resolving.
+      fetchShard: async (_fileId, location, onProgress) => {
+        const bytes = packed[location.shard_index]!;
+        onProgress?.(Math.floor(bytes.length / 2), bytes.length);
+        onProgress?.(bytes.length, bytes.length);
+        return bytes;
+      },
+    };
+
+    await downloadFile({
+      fileId,
+      versionNumber: 1,
+      shardCount: 2,
+      deps,
+      onProgress: (event) => {
+        if (event.phase === "fetching") reported.push(event.completedBytes);
+      },
+    });
+
+    // Bytes advanced before the shard finished, not only at shard boundaries.
+    expect(reported.length).toBeGreaterThan(2);
+    const totalBytes = packed.reduce((sum, bytes) => sum + bytes.length, 0);
+    // The final fetching event after each completed shard accounts for all bytes.
+    expect(reported[reported.length - 1]).toBe(totalBytes);
+  });
+
   it("throws ShardUnavailableError when a shard has no fetchable copy yet", async () => {
     const fek = generateFileEncryptionKey();
     const { packed, locations } = setup([new Uint8Array([1])], fek);

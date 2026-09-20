@@ -78,8 +78,20 @@ export class ShardIntegrityError extends Error {
 export interface DownloadDeps {
   fetchFileKey(fileId: string): Promise<Uint8Array | null>;
   getShardLocations(fileId: string, versionNumber: number): Promise<RelayFileLocation[]>;
-  /** Fetch the packed (nonce||ciphertext) shard bytes from its location. */
-  fetchShard(fileId: string, location: RelayFileLocation): Promise<Uint8Array>;
+  /**
+   * Fetch the packed (nonce||ciphertext) shard bytes from its location.
+   *
+   * `onProgress` is optional and advisory: transports that can stream (WebRTC
+   * data channel, HTTP with a readable body) report cumulative bytes for the
+   * current shard as they arrive, so the UI's byte counter and speed update
+   * mid-shard instead of jumping once per shard. A transport that cannot stream
+   * simply never calls it, and the caller still gets the final shard event.
+   */
+  fetchShard(
+    fileId: string,
+    location: RelayFileLocation,
+    onProgress?: (receivedBytes: number, totalBytes: number) => void,
+  ): Promise<Uint8Array>;
   /**
    * Best-effort notification of which transport served the fetch, so the UI can
    * show "Local P2P" vs "Relay buffer" vs "WebRTC" per download. Optional and
@@ -181,7 +193,12 @@ export async function downloadFile(options: DownloadFileOptions): Promise<Downlo
     }
     // Network stage: bytes cross the wire here (LAN node, then Relay fallback).
     emit("fetching", index, fetchedBytes, totalBytes);
-    const packed = await deps.fetchShard(fileId, location);
+    // Mid-shard progress is reported relative to this shard's start, so the
+    // running total stays monotonic as chunks arrive. `emit` swallows callback
+    // errors, so a misbehaving transport cannot abort the download.
+    const packed = await deps.fetchShard(fileId, location, (received) => {
+      emit("fetching", index, fetchedBytes + received, totalBytes);
+    });
     fetchedBytes += packed.length;
     // Integrity stage: BLAKE3 compare before the AEAD open.
     emit("verifying", index, fetchedBytes, totalBytes);
