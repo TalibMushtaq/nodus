@@ -186,6 +186,8 @@ export interface DownloadProgress {
   totalBytes: number;
   completedShards: number;
   totalShards: number;
+  /** Epoch-ms the download started; the basis for average throughput/ETA. */
+  startedAt: number;
 }
 
 export function useNodusApp() {
@@ -1255,8 +1257,15 @@ export function useNodusApp() {
             transferManager?.downloadShardViaWebRtc,
           ),
           // Surface fetch/verify/decrypt stages so Activity can render progress.
+          // `startedAt` is stamped on the first event only, so the average
+          // throughput is measured from the transfer start rather than reset
+          // by every progress report.
           onProgress: (event) =>
-            setDownloadProgress({ fileName: displayName, ...event }),
+            setDownloadProgress((previous) => ({
+              fileName: displayName,
+              startedAt: previous?.startedAt ?? Date.now(),
+              ...event,
+            })),
         });
         const name = result.name ?? `${file.file_id}.bin`;
         setDownloadStatus(`saving ${name}…`);

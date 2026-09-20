@@ -6,16 +6,30 @@
 
 import * as React from "react";
 import { ActivityIndicator, View } from "react-native";
+import { formatBytes, formatCountdown } from "@repo/sdk";
 
 import { PathIndicator, ThemedText, useTheme } from "../design";
 import { ShardProgress } from "../download/ShardProgress";
+import { downloadMetrics } from "../download/metrics";
 import { downloadTransportPath } from "../download/transport";
 import { useApp } from "./context";
 
 export function AppStatusLine() {
   const { busy, error, notice, downloadProgress, downloadTransport } = useApp();
   const theme = useTheme();
+
+  // Bytes arrive once per shard, so tick each second to keep the throughput/ETA
+  // readout moving between shard completions. Hook runs above the early return
+  // so the hook order stays stable when the line is hidden.
+  const [, setTick] = React.useState(0);
+  React.useEffect(() => {
+    if (!downloadProgress) return;
+    const timer = setInterval(() => setTick((value) => value + 1), 1000);
+    return () => clearInterval(timer);
+  }, [downloadProgress]);
+
   if (!busy && !error && !notice && !downloadProgress) return null;
+  const metrics = downloadProgress ? downloadMetrics(downloadProgress) : null;
   return (
     <View style={{ gap: theme.spacing.xs, marginBottom: theme.spacing.sm }}>
       {downloadProgress ? (
@@ -32,6 +46,12 @@ export function AppStatusLine() {
               <PathIndicator path={downloadTransportPath(downloadTransport)} />
             ) : null}
           </View>
+          {metrics && metrics.speedBps > 0 ? (
+            <ThemedText variant="caption" tone="muted" numberOfLines={1}>
+              {formatBytes(metrics.speedBps)}/s
+              {metrics.etaSeconds != null ? ` · ETA ${formatCountdown(metrics.etaSeconds)}` : ""}
+            </ThemedText>
+          ) : null}
           <ShardProgress
             completed={downloadProgress.completedShards}
             total={downloadProgress.totalShards}

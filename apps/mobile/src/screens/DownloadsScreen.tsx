@@ -6,11 +6,12 @@
 
 import * as React from "react";
 import { View } from "react-native";
-import { timeAgo } from "@repo/sdk";
+import { formatBytes, formatCountdown, timeAgo } from "@repo/sdk";
 
 import { AppStatusLine } from "../runtime/AppStatusLine";
 import { useApp } from "../runtime/context";
 import { ShardProgress } from "../download/ShardProgress";
+import { downloadMetrics } from "../download/metrics";
 import { downloadTransportPath } from "../download/transport";
 import { isTransferPath } from "../activity/view";
 import {
@@ -33,6 +34,16 @@ export function DownloadsScreen() {
     progress && progress.totalShards > 0
       ? progress.completedShards / progress.totalShards
       : 0;
+
+  // Tick each second so the average throughput/ETA keeps moving between shard
+  // completions (the SDK reports bytes per shard, not per chunk).
+  const [, setTick] = React.useState(0);
+  React.useEffect(() => {
+    if (!progress) return;
+    const timer = setInterval(() => setTick((value) => value + 1), 1000);
+    return () => clearInterval(timer);
+  }, [progress]);
+  const metrics = progress ? downloadMetrics(progress) : null;
 
   // Refresh the account-wide feed into the local log when the tab opens; the
   // shared `activity` array is the source of truth for history.
@@ -84,6 +95,10 @@ export function DownloadsScreen() {
             <View style={{ flexDirection: "row", alignItems: "center", gap: theme.spacing.sm }}>
               <ThemedText variant="monoSmall" tone="muted">
                 {progress.phase} · {Math.round(ratio * 100)}%
+                {metrics && metrics.speedBps > 0 ? ` · ${formatBytes(metrics.speedBps)}/s` : ""}
+                {metrics && metrics.etaSeconds != null
+                  ? ` · ETA ${formatCountdown(metrics.etaSeconds)}`
+                  : ""}
               </ThemedText>
               {app.downloadTransport ? (
                 <PathIndicator path={downloadTransportPath(app.downloadTransport)} />
