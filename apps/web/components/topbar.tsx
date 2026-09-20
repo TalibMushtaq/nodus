@@ -6,6 +6,7 @@ import { Icon } from "@repo/ui/primitives/icons";
 import { Avatar } from "@repo/ui/primitives/brand";
 import { useTheme } from "../providers/theme-provider";
 import { useAuth } from "../providers/auth-provider";
+import { useDownload } from "../providers/download-provider";
 
 // The persistent top bar: page title, theme toggle, and the account menu.
 //
@@ -23,7 +24,11 @@ interface TopBarProps {
 export function TopBar({ title, onMenuClick }: TopBarProps) {
   const { theme, setTheme, resolvedDark } = useTheme();
   const { session, logout } = useAuth();
+  const { tasks } = useDownload();
   const router = useRouter();
+  // Drives the badge on the downloads shortcut; only in-flight work counts, so a
+  // finished list doesn't leave a permanent notification dot.
+  const activeDownloads = tasks.filter((task) => task.status === "active").length;
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
 
@@ -97,6 +102,26 @@ export function TopBar({ title, onMenuClick }: TopBarProps) {
         title={`Current: ${theme}${theme === "system" ? ` (${resolvedDark ? "dark" : "light"})` : ""}`}
       >
         <Icon name={resolvedDark ? "sun" : "moon"} size={16} />
+      </button>
+
+      {/* Downloads shortcut — the dedicated tab the widget funnels into. Lives
+          here (next to the account avatar) rather than only in the sidebar so an
+          in-flight transfer is reachable from any page via one click. */}
+      <button
+        type="button"
+        onClick={() => router.push("/downloads")}
+        aria-label={
+          activeDownloads > 0 ? `Downloads, ${activeDownloads} active` : "Downloads"
+        }
+        title="Downloads"
+        className="relative flex h-7 w-7 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+      >
+        <Icon name="download" size={16} className={activeDownloads > 0 ? "animate-pulse" : ""} />
+        {activeDownloads > 0 && (
+          <span className="absolute -right-0.5 -top-0.5 flex h-3.5 min-w-3.5 items-center justify-center rounded-full accent-gradient px-1 text-[9px] font-semibold text-white">
+            {activeDownloads > 9 ? "9+" : activeDownloads}
+          </span>
+        )}
       </button>
 
       {/* Account menu */}
