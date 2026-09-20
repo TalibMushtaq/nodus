@@ -50,6 +50,8 @@ export interface ShardRequestOptions {
   size: number;
   sourceNode?: string;
   timeoutMs?: number;
+  /** Cumulative bytes received for this shard, as chunks arrive. */
+  onProgress?: (receivedBytes: number, totalBytes: number) => void;
 }
 
 /** A node streaming one stored shard back over an open data channel. */

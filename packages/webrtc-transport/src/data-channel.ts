@@ -414,10 +414,12 @@ export async function requestShard(
       } else if (ev.data instanceof ArrayBuffer) {
         chunks.push(new Uint8Array(ev.data));
         receivedBytes += ev.data.byteLength;
+        opts.onProgress?.(receivedBytes, expectedSize);
       } else if (ArrayBuffer.isView(ev.data)) {
         const view = new Uint8Array(ev.data.buffer, ev.data.byteOffset, ev.data.byteLength);
         chunks.push(view);
         receivedBytes += view.byteLength;
+        opts.onProgress?.(receivedBytes, expectedSize);
       }
     };
 

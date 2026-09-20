@@ -153,6 +153,37 @@ describe("WebRTC DataChannel shard fetch (download direction)", () => {
     expect(bytesToHex(blake3(received))).toBe(hash);
   });
 
+  it("reports cumulative bytes for each received chunk", async () => {
+    const [nodeChan, clientChan] = MockRTCDataChannel.createPair();
+
+    const payload = new Uint8Array(40 * 1024);
+    for (let i = 0; i < payload.length; i++) payload[i] = i % 251;
+    const hash = bytesToHex(blake3(payload));
+
+    const progress: number[] = [];
+    const recvPromise = requestShard(clientChan as unknown as RTCDataChannel, {
+      transferId: "tr-fetch-progress",
+      fileId: "00000000-0000-0000-0000-0000000000f4",
+      versionNumber: 1,
+      shardIndex: 0,
+      hash,
+      size: payload.byteLength,
+      onProgress: (received) => progress.push(received),
+    });
+    await Promise.resolve();
+    const sendPromise = sendShardData(nodeChan as unknown as RTCDataChannel, {
+      transferId: "tr-fetch-progress",
+      hash,
+      data: payload,
+    });
+    await Promise.all([recvPromise, sendPromise]);
+
+    // One report per chunk, strictly increasing, ending at the full size.
+    expect(progress.length).toBeGreaterThan(1);
+    expect(progress).toEqual([...progress].sort((a, b) => a - b));
+    expect(progress[progress.length - 1]).toBe(payload.byteLength);
+  });
+
   it("rejects when the node reports a fetch error", async () => {
     const [nodeChan, clientChan] = MockRTCDataChannel.createPair();
 
