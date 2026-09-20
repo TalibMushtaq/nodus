@@ -632,6 +632,7 @@ export function FilesClient() {
     reportProgress: reportDownloadProgress,
     reportTransport: reportDownloadTransport,
     finishDownload,
+    registerDownloadRetry,
   } = useDownload();
   const [actionError, setActionError] = useState<string | null>(null);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
@@ -963,9 +964,18 @@ export function FilesClient() {
     [targetNode, nodes, upload, refresh, files, onProgress, currentFolderId, shardSizeBytes, setUploads, setActiveId, reportProgress, reportPath],
   );
 
-  const handleDownload = useCallback(
-    async (file: FileEntryView) => {
-      if (!device || !signer || file.latestVersionNumber == null || file.shardCount == null) return;
+  // The transfer itself, decoupled from task creation so Retry can re-run it
+  // into the same task with a fresh signal (and a fresh activity entry).
+  const runDownload = useCallback(
+    async (file: FileEntryView, taskId: string, signal: AbortSignal) => {
+      if (
+        !device ||
+        !signer ||
+        file.latestVersionNumber == null ||
+        file.shardCount == null
+      ) {
+        return;
+      }
       setDownloadingId(file.fileId);
       setActionError(null);
       // The path is not known up front: the LAN fetch is preferred but a miss
@@ -976,10 +986,6 @@ export function FilesClient() {
         fileId: file.fileId,
         fileName: file.name,
       });
-      // The widget survives navigation, so the stage progress keeps rendering
-      // even if the user leaves Files mid-download. `signal` lets the widget's
-      // cancel button abort the in-flight fetch.
-      const { id: taskId, signal } = startDownload({ name: file.name });
       let transport: DownloadTransport | null = null;
       try {
         const result = await downloadFile({
@@ -1033,12 +1039,25 @@ export function FilesClient() {
     [
       device,
       signer,
-      startDownload,
       reportDownloadProgress,
       reportDownloadTransport,
       finishDownload,
       downloadShardViaWebRtc,
     ],
+  );
+
+  const handleDownload = useCallback(
+    async (file: FileEntryView) => {
+      if (!device || !signer || file.latestVersionNumber == null || file.shardCount == null) return;
+      // The widget/page own cancel and Retry, so the task carries a fresh-signal
+      // runner that re-enters the transfer loop for this file.
+      const { id: taskId, signal } = startDownload({ name: file.name });
+      registerDownloadRetry(taskId, (retrySignal) => {
+        void runDownload(file, taskId, retrySignal);
+      });
+      await runDownload(file, taskId, signal);
+    },
+    [device, signer, startDownload, registerDownloadRetry, runDownload],
   );
 
   const openRename = useCallback((file: FileEntryView) => {

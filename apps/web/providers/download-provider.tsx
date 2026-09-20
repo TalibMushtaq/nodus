@@ -52,6 +52,8 @@ export interface DownloadTask {
   startedAt: number;
   /** Transport that served the most recent shard, when known. */
   transport?: DownloadTransport;
+  /** True once the caller registered a retry runner for this task. */
+  retryable?: boolean;
   error?: string;
 }
 
@@ -91,6 +93,14 @@ interface DownloadContextValue {
   finishDownload: (id: string, outcome: "done" | "error", error?: string) => void;
   /** Abort an active download; the transfer loop rejects with CancelledError. */
   cancelDownload: (id: string) => void;
+  /**
+   * Register how to re-run a task. The Files page owns the download mechanics,
+   * so the provider only carries this opaque runner; it is invoked with a fresh
+   * signal when the user retries.
+   */
+  registerDownloadRetry: (id: string, run: (signal: AbortSignal) => void) => void;
+  /** Re-run a failed/cancelled task with a new signal, resetting its state. */
+  retryDownload: (id: string) => void;
   dismiss: () => void;
 }
 
@@ -101,6 +111,9 @@ export function DownloadProvider({ children }: { children: ReactNode }) {
   // One abort controller per active task. Kept in a ref (not state) because
   // aborting must not trigger a render on its own — the task's status does.
   const controllersRef = useRef(new Map<string, AbortController>());
+  // How to re-run each task, supplied by whoever started it (Files). Kept out
+  // of task state because functions are not render-serializable.
+  const retryRunnersRef = useRef(new Map<string, (signal: AbortSignal) => void>());
 
   const startDownload = useCallback((input: { name: string }) => {
     const id = crypto.randomUUID();
@@ -172,23 +185,84 @@ export function DownloadProvider({ children }: { children: ReactNode }) {
     );
   }, []);
 
+  const registerDownloadRetry = useCallback((id: string, run: (signal: AbortSignal) => void) => {
+    retryRunnersRef.current.set(id, run);
+    setTasks((previous) =>
+      previous.map((task) => (task.id === id ? { ...task, retryable: true } : task)),
+    );
+  }, []);
+
+  const retryDownload = useCallback((id: string) => {
+    const run = retryRunnersRef.current.get(id);
+    if (!run) return;
+    // A retry is a fresh attempt: abort any lingering transfer, mint a new
+    // signal, and reset the visible state before the runner reports progress.
+    controllersRef.current.get(id)?.abort();
+    const controller = new AbortController();
+    controllersRef.current.set(id, controller);
+    setTasks((previous) =>
+      previous.map((task) =>
+        task.id === id
+          ? {
+              ...task,
+              phase: "unlocking",
+              completedShards: 0,
+              completedBytes: 0,
+              totalBytes: 0,
+              status: "active",
+              transport: undefined,
+              error: undefined,
+              startedAt: Date.now(),
+            }
+          : task,
+      ),
+    );
+    run(controller.signal);
+  }, []);
+
   const dismiss = useCallback(() => {
     // Clear the list only after every in-flight transfer has been aborted, so a
     // dismissed widget cannot leave a fetch running headless.
     for (const controller of controllersRef.current.values()) controller.abort();
     controllersRef.current.clear();
+    retryRunnersRef.current.clear();
     setTasks([]);
   }, []);
 
   const value = useMemo<DownloadContextValue>(
-    () => ({ tasks, startDownload, reportProgress, reportTransport, finishDownload, cancelDownload, dismiss }),
-    [tasks, startDownload, reportProgress, reportTransport, finishDownload, cancelDownload, dismiss],
+    () => ({
+      tasks,
+      startDownload,
+      reportProgress,
+      reportTransport,
+      finishDownload,
+      cancelDownload,
+      registerDownloadRetry,
+      retryDownload,
+      dismiss,
+    }),
+    [
+      tasks,
+      startDownload,
+      reportProgress,
+      reportTransport,
+      finishDownload,
+      cancelDownload,
+      registerDownloadRetry,
+      retryDownload,
+      dismiss,
+    ],
   );
 
   return (
     <DownloadContext.Provider value={value}>
       {children}
-      <DownloadWidget tasks={tasks} onDismiss={dismiss} onCancel={cancelDownload} />
+      <DownloadWidget
+        tasks={tasks}
+        onDismiss={dismiss}
+        onCancel={cancelDownload}
+        onRetry={retryDownload}
+      />
     </DownloadContext.Provider>
   );
 }
@@ -209,10 +283,12 @@ function DownloadWidget({
   tasks,
   onDismiss,
   onCancel,
+  onRetry,
 }: {
   tasks: DownloadTask[];
   onDismiss: () => void;
   onCancel: (id: string) => void;
+  onRetry: (id: string) => void;
 }) {
   const [collapsed, setCollapsed] = useState(false);
 
@@ -307,6 +383,17 @@ function DownloadWidget({
                         className="text-muted-foreground transition-colors hover:text-destructive"
                       >
                         <Icon name="close" size={12} />
+                      </button>
+                    ) : null}
+                    {task.retryable && (task.status === "error" || task.status === "cancelled") ? (
+                      <button
+                        type="button"
+                        onClick={() => onRetry(task.id)}
+                        aria-label={`Retry ${task.name}`}
+                        title="Retry download"
+                        className="text-muted-foreground transition-colors hover:text-foreground"
+                      >
+                        <Icon name="refresh" size={12} />
                       </button>
                     ) : null}
                   </span>

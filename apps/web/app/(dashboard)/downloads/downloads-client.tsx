@@ -47,6 +47,33 @@ function outcomeLabel(outcome: TransferOutcome): string {
   return "In progress";
 }
 
+function RetryableRow({ task, onRetry }: { task: DownloadTask; onRetry: (id: string) => void }) {
+  const failed = task.status === "error";
+  return (
+    <div className="flex items-center gap-3 px-5 py-3.5 border-b border-border last:border-0">
+      <span className="text-muted-foreground shrink-0">
+        <Icon name={failed ? "warning" : "close"} size={14} />
+      </span>
+      <div className="flex-1 min-w-0">
+        <div className="text-sm text-foreground truncate" title={task.name}>
+          {task.name}
+        </div>
+        <div className="text-[10px] truncate" style={{ color: failed ? "var(--status-conflict)" : "var(--status-offline)" }}>
+          {failed ? task.error || "Download failed" : "Cancelled"}
+        </div>
+      </div>
+      <button
+        type="button"
+        onClick={() => onRetry(task.id)}
+        className="inline-flex items-center gap-1.5 rounded-lg border border-border px-2.5 py-1 text-[10px] text-muted-foreground transition-colors hover:border-accent/40 hover:text-foreground"
+      >
+        <Icon name="refresh" size={11} />
+        Retry
+      </button>
+    </div>
+  );
+}
+
 function ActiveRow({ task, onCancel }: { task: DownloadTask; onCancel: (id: string) => void }) {
   // Bytes arrive once per shard, so tick each second to keep the average
   // throughput and ETA readout moving between shard completions.
@@ -108,11 +135,16 @@ function ActiveRow({ task, onCancel }: { task: DownloadTask; onCancel: (id: stri
 export function DownloadsClient() {
   const { device, signer } = useAuth();
   const { files } = useFiles();
-  const { tasks, cancelDownload } = useDownload();
+  const { tasks, cancelDownload, retryDownload } = useDownload();
   const [history, setHistory] = useState<TransferLogEntry[]>([]);
   const [loading, setLoading] = useState(true);
 
   const active = tasks.filter((task) => task.status === "active");
+  // Failed/cancelled tasks the user can re-run. Kept separate from the durable
+  // history below, which is a log and cannot retry.
+  const retryable = tasks.filter(
+    (task) => (task.status === "error" || task.status === "cancelled") && task.retryable,
+  );
 
   // A stable signature of task lifecycle changes: reloading history on every
   // progress tick (many per second) would hammer IndexedDB for no reason, so we
@@ -163,6 +195,16 @@ export function DownloadsClient() {
         title="Downloads"
         description="Active and past downloads, with the transport each one used."
       />
+
+      {retryable.length > 0 && (
+        <Section title="Needs attention">
+          <div className="border border-border rounded-2xl overflow-hidden bg-card elev-card">
+            {retryable.map((task) => (
+              <RetryableRow key={task.id} task={task} onRetry={retryDownload} />
+            ))}
+          </div>
+        </Section>
+      )}
 
       <Section title={active.length > 0 ? `Active (${active.length})` : "Active"}>
         {active.length === 0 ? (
