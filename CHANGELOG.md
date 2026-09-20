@@ -1,5 +1,22 @@
 # Changelog
 
+## [2026-09-20] - Downloads tab with animated shard progress and per-download transport readout
+
+**What changed:** Downloads are now a first-class destination on both clients. The download widget/page animates shards flying into a merged block as they land, each download is labelled with the transport that served its shards (Local P2P vs Relay buffer), and there is a dedicated Downloads tab showing active plus past downloads.
+
+- SDK (`packages/sdk/src/download/download.ts`): added `DownloadTransport = "lan" | "relay" | "webrtc"` and an optional `onTransport?(transport)` hook on `DownloadDeps`; exported from `packages/sdk/src/index.ts`. Progress semantics are unchanged — the hook is advisory and never awaited.
+- Web transport (`apps/web/lib/download.ts`): `browserDownloadDeps(device, signer, onTransport?)` now reports `"lan"` after a trusted-node HTTP fetch and `"relay"` after the Relay proxy fallback.
+- Web provider (`apps/web/providers/download-provider.tsx`): `DownloadTask.transport` + `reportTransport`, the exported `TRANSPORT_PATH`/`PHASE_LABEL` maps, and a `PathIndicator` per row. The flat `Progress` bar is replaced by `DownloadShards`.
+- Web animation (`apps/web/components/download-shards.tsx`, `apps/web/app/globals.css`): a capped row of shard cells with a growing merged block and one flying "ghost" per newly-landed shard; `shard-land`/`shard-fly-merge` keyframes, disabled under `prefers-reduced-motion`.
+- Web page/nav: new `app/(dashboard)/downloads/{page,downloads-client}.tsx` (active from `DownloadProvider`, history from the download slice of the existing transfer log, account-wide feed merged in); "Downloads" added to `components/sidebar.tsx` and `components/app-shell.tsx`; `components/topbar.tsx` gains a Downloads shortcut with an active-count badge next to the avatar.
+- Mobile (`apps/mobile/src/...`): `download/deps.ts` reports `"lan"`/`"relay"`; `download/transport.ts` maps transports onto `TransferPath`; `download/ShardProgress.tsx` is the RN `Animated` shard-fly-merge visual; `runtime/AppStatusLine.tsx` uses it and shows the transport chip; `runtime/useNodusApp.ts` tracks `downloadTransport` and writes the mapped path onto download activity entries; new `screens/DownloadsScreen.tsx`; `navigation/types.ts` + `navigation/TabsNavigator.tsx` add a `DownloadsTab` with an active badge.
+
+**Why:** A download only ever showed a flat bar and an unqualified "Downloading" label, gave no signal about how the bytes were arriving (LAN, Relay buffer, or — once the node can serve shards over a data channel — WebRTC), and vanished once finished. The requested experience was animated "shards merging" progress, a transport readout, and a permanent place to see active and past downloads. This lays the UI groundwork ahead of the WebRTC download path: `"webrtc"` is already a recognized transport that maps to Local P2P, so the readout lights up without further UI work once the node side ships.
+
+**Impact:** `packages/sdk` (download deps + exports), `apps/web` (lib/download, download-provider, new component/route, sidebar/app-shell/topbar, globals.css), `apps/mobile` (download deps/transport/ShardProgress, AppStatusLine, useNodusApp, DownloadsScreen, navigation). No new persistence layer — history reuses the existing transfer log (web IndexedDB, mobile SQLite) and its account-wide sync, so "Clear" remains a single Activity action. Verified: web typecheck + lint + tests (211), mobile typecheck + lint + tests (19), SDK tests (41).
+
+**Follow-ups:** The WebRTC download path itself (protocol fetch frames, `PersistentWebRtcSession.receive`, the download attempt chain, and the Rust node data-channel serving in `services/storage-node/src/webrtc/session.rs`) is tracked as the planned Phase 4 follow-up; until then downloads remain LAN HTTP with a Relay fallback. The mobile tab badge is a boolean dot because only one download runs at a time there.
+
 ## [2026-09-19] - Activities survive a Relay rebuild (snapshot/rebuild path)
 
 **What changed:** The activity feed is now a first-class Relay table projected live and restored from a Node snapshot, so a full Relay rebuild keeps it.
