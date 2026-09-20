@@ -124,6 +124,8 @@ export type {
 export { PersistentWebRtcSession, WebRtcSessionCache } from "./transfer/webrtc-session.js";
 export type {
   PersistentSessionDeps,
+  PersistentShardFetchRequest,
+  PersistentShardFetchResult,
   PersistentShardRequest,
   PersistentShardResult,
 } from "./transfer/webrtc-session.js";

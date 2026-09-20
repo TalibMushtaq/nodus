@@ -1,4 +1,4 @@
-import { NodusRTCPeerConnection, sendShard, waitForChannelOpen } from "@repo/webrtc-transport";
+import { NodusRTCPeerConnection, requestShard, sendShard, waitForChannelOpen } from "@repo/webrtc-transport";
 import type { PeerConnectionConfig, SignalingChannel } from "@repo/webrtc-transport";
 import type { ShardAckPayload } from "@repo/protocol";
 
@@ -49,6 +49,25 @@ export interface PersistentShardResult {
   ack: ShardAckPayload;
 }
 
+/** One stored shard to pull from a node over the persistent session. */
+export interface PersistentShardFetchRequest {
+  transferId: string;
+  fileId: string;
+  versionNumber: number;
+  shardIndex: number;
+  /** BLAKE3 hex of the stored ciphertext. */
+  hash: string;
+  size: number;
+  sourceNode?: string;
+}
+
+export interface PersistentShardFetchResult {
+  durationMs: number;
+  bytesTransferred: number;
+  /** Verified ciphertext bytes for the requested shard. */
+  data: Uint8Array;
+}
+
 export class PersistentWebRtcSession {
   private pc: NodusRTCPeerConnection | null = null;
   private channel: RTCDataChannel | null = null;
@@ -89,6 +108,51 @@ export class PersistentWebRtcSession {
       },
     );
     return run;
+  }
+
+  /**
+   * Fetch one stored shard from the peer (Storage Node) over the same
+   * persistent channel used for uploads. Download and upload share one `tail`
+   * so frames from the two directions never interleave on a single channel.
+   */
+  receive(request: PersistentShardFetchRequest): Promise<PersistentShardFetchResult> {
+    const run = this.tail.then(() => this.doReceive(request));
+    this.tail = run.then(
+      () => undefined,
+      () => {
+        this.invalidate();
+      },
+    );
+    return run;
+  }
+
+  private async doReceive(request: PersistentShardFetchRequest): Promise<PersistentShardFetchResult> {
+    if (!this.healthy) throw new Error("WebRTC session is no longer usable");
+    await this.ensureConnected();
+    const channel = this.channel;
+    if (!channel || channel.readyState !== "open") {
+      throw new Error("WebRTC data channel is not open");
+    }
+
+    const startedAt = Date.now();
+    const data = await requestShard(channel, {
+      transferId: request.transferId,
+      fileId: request.fileId,
+      versionNumber: request.versionNumber,
+      shardIndex: request.shardIndex,
+      hash: request.hash,
+      size: request.size,
+      sourceNode: request.sourceNode,
+      // A shard can be many MB on a slow link; the budget scales with the
+      // negotiation budget rather than the 30s default the upload path uses.
+      timeoutMs: (this.deps.negotiationTimeoutMs ?? DEFAULT_NEGOTIATION_TIMEOUT_MS) * 30,
+    });
+    this.touchIdleTimer();
+    return {
+      durationMs: Date.now() - startedAt,
+      bytesTransferred: data.byteLength,
+      data,
+    };
   }
 
   private async doSend(request: PersistentShardRequest): Promise<PersistentShardResult> {
