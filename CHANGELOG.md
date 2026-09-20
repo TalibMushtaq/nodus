@@ -1,5 +1,21 @@
 # Changelog
 
+## [2026-09-20] - Live mid-shard download progress (streamed bytes)
+
+**What changed:** Download transports now report bytes as chunks arrive, so the byte counter and throughput/ETA update mid-shard instead of jumping once per shard.
+
+- SDK (`packages/sdk/src/download/download.ts`): `DownloadDeps.fetchShard` accepts an optional `onProgress(receivedBytes, totalBytes)`; the download loop emits a `fetching` event per report, offset by the bytes already fetched so the running total stays monotonic. `PersistentShardFetchRequest` (`transfer/webrtc-session.ts`) forwards `onProgress` to the data-channel request.
+- WebRTC transport (`packages/webrtc-transport/src/{types.ts,data-channel.ts}`): `ShardRequestOptions.onProgress` fires per received chunk with cumulative bytes and the declared size.
+- Relay client (`packages/relay-client/src/local-discovery.ts`): `NodeClient.fetchShard` takes an optional `onProgress` and streams the response body through a reader when the runtime exposes one (falling back to a buffered read otherwise).
+- Web (`apps/web/lib/download.ts`, `providers/transfer-provider.tsx`): `browserDownloadDeps` threads the callback through the WebRTC, LAN HTTP and Relay-proxy paths (`fetchShardViaRelay` now streams), and `downloadShardViaWebRtc` forwards it to the session.
+- Mobile (`apps/mobile/src/download/deps.ts`, `relay.ts`, `transfer/manager.ts`): the same threading; the Relay shard fetch streams when React Native exposes a body reader.
+
+**Why:** A download's byte counter only advanced when a whole shard landed, so on an 8 MB shard the UI sat still for the entire fetch and the (average) speed/ETA added earlier could only update at shard boundaries. Streaming the response body and the data channel makes the readout responsive.
+
+**Impact:** `packages/sdk`, `packages/webrtc-transport`, `packages/relay-client`, `apps/web` (download deps + transfer provider), `apps/mobile` (download deps, relay, transfer manager). All hooks are optional and advisory: transports or runtimes that cannot stream simply never call `onProgress`, and callers still receive the final per-shard event, so behavior is unchanged downstream. Verified: protocol (63), relay-client (50), webrtc-transport (11), sdk (41), web (216) + typecheck + lint + build, mobile (22) + typecheck + lint.
+
+**Follow-ups:** React Native's global `fetch` may not expose `response.body.getReader()`, in which case mobile HTTP downloads stay coarse (WebRTC pulls do stream). The metric remains an average since transfer start, now updated frequently; a short-window sampler could become viable but risks the zero-between-shards problem this change mitigates.
+
 ## [2026-09-20] - Download throughput and ETA in the widget and Downloads tab
 
 **What changed:** Active downloads now show an average transfer rate and an ETA alongside their byte counter, on both clients.
