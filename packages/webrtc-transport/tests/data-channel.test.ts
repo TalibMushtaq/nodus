@@ -184,6 +184,24 @@ describe("WebRTC DataChannel shard fetch (download direction)", () => {
     expect(progress[progress.length - 1]).toBe(payload.byteLength);
   });
 
+  it("aborts an in-flight shard fetch when the signal fires", async () => {
+    const [, clientChan] = MockRTCDataChannel.createPair();
+    const controller = new AbortController();
+
+    const promise = requestShard(clientChan as unknown as RTCDataChannel, {
+      transferId: "tr-fetch-abort",
+      fileId: "00000000-0000-0000-0000-0000000000f5",
+      versionNumber: 1,
+      shardIndex: 0,
+      hash: "00".repeat(32),
+      size: 1024,
+      signal: controller.signal,
+    });
+    controller.abort();
+
+    await expect(promise).rejects.toThrow(/abort/i);
+  });
+
   it("rejects when the node reports a fetch error", async () => {
     const [nodeChan, clientChan] = MockRTCDataChannel.createPair();
 

@@ -52,6 +52,8 @@ export interface ShardRequestOptions {
   timeoutMs?: number;
   /** Cumulative bytes received for this shard, as chunks arrive. */
   onProgress?: (receivedBytes: number, totalBytes: number) => void;
+  /** Aborts the fetch; the caller is expected to also close the channel. */
+  signal?: AbortSignal;
 }
 
 /** A node streaming one stored shard back over an open data channel. */

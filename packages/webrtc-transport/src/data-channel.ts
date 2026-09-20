@@ -360,7 +360,18 @@ export async function requestShard(
       channel.removeEventListener("message", onMessage);
       channel.removeEventListener("error", onError);
       channel.removeEventListener("close", onClose);
+      opts.signal?.removeEventListener("abort", onAbort);
     };
+
+    const onAbort = () => {
+      cleanup();
+      reject(new WebRtcTransferError("ABORTED", "shard fetch aborted"));
+    };
+
+    if (opts.signal?.aborted) {
+      reject(new WebRtcTransferError("ABORTED", "shard fetch aborted"));
+      return;
+    }
 
     const finish = () => {
       cleanup();
@@ -437,6 +448,7 @@ export async function requestShard(
       reject(new DataChannelTimeoutError("Timed out waiting for shard data"));
     }, timeoutMs);
 
+    opts.signal?.addEventListener("abort", onAbort);
     channel.addEventListener("message", onMessage);
     channel.addEventListener("error", onError);
     channel.addEventListener("close", onClose);
