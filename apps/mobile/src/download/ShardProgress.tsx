@@ -71,7 +71,9 @@ export function ShardProgress({ completed, total, status, style }: ShardProgress
           toValue: 1,
           duration: FLY_MS,
           easing: Easing.out(Easing.cubic),
-          useNativeDriver: false, // animates `left`-derived translateX, not transform-only
+          // translateX + opacity are native-driver eligible, so the ghosts run
+          // on the UI thread instead of competing with JS during a download.
+          useNativeDriver: true,
         }),
       ),
     ).start(() => {

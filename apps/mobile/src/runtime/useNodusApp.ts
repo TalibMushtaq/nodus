@@ -250,6 +250,16 @@ export function useNodusApp() {
   const [downloadTransport, setDownloadTransport] = React.useState<DownloadTransport | null>(null);
   // Aborts the active download when the user cancels; null between downloads.
   const downloadAbortRef = React.useRef<AbortController | null>(null);
+  // A transport reports progress many times per shard (once per network chunk).
+  // Committing each to this hook re-rendered the whole app, which is what made
+  // the UI freeze during a download, so updates are coalesced to ~10/s.
+  const downloadProgressPendingRef = React.useRef<DownloadProgress | null>(null);
+  const downloadProgressTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const flushDownloadProgress = React.useCallback(() => {
+    downloadProgressTimerRef.current = null;
+    const next = downloadProgressPendingRef.current;
+    if (next) setDownloadProgress(next);
+  }, []);
   // Last file downloaded, so a failed/cancelled transfer can be retried.
   const [lastDownload, setLastDownload] = React.useState<RelayFile | null>(null);
   const [lastDownloadFailed, setLastDownloadFailed] = React.useState(false);
@@ -1267,15 +1277,20 @@ export function useNodusApp() {
             transferManager?.downloadShardViaWebRtc,
           ),
           // Surface fetch/verify/decrypt stages so Activity can render progress.
-          // `startedAt` is stamped on the first event only, so the average
-          // throughput is measured from the transfer start rather than reset
-          // by every progress report.
-          onProgress: (event) =>
-            setDownloadProgress((previous) => ({
+          // Coalesced: store the newest event and flush on a short timer instead
+          // of re-rendering the app on every network chunk. `startedAt` is
+          // stamped once, so the average throughput is measured from the
+          // transfer start rather than reset by every report.
+          onProgress: (event) => {
+            downloadProgressPendingRef.current = {
               fileName: displayName,
-              startedAt: previous?.startedAt ?? Date.now(),
+              startedAt: downloadProgressPendingRef.current?.startedAt ?? Date.now(),
               ...event,
-            })),
+            };
+            if (downloadProgressTimerRef.current === null) {
+              downloadProgressTimerRef.current = setTimeout(flushDownloadProgress, 100);
+            }
+          },
           signal: controller.signal,
         });
         const name = result.name ?? `${file.file_id}.bin`;
@@ -1325,11 +1340,18 @@ export function useNodusApp() {
         // Only clear the ref if this download still owns it (a cancel for a
         // newer download must not be nulled out by the previous one finishing).
         if (downloadAbortRef.current === controller) downloadAbortRef.current = null;
+        // Drop any queued progress before clearing, or a late flush would
+        // re-show a finished download.
+        if (downloadProgressTimerRef.current !== null) {
+          clearTimeout(downloadProgressTimerRef.current);
+          downloadProgressTimerRef.current = null;
+        }
+        downloadProgressPendingRef.current = null;
         setDownloadProgress(null);
         setBusy(null);
       }
     },
-    [device, fileNames, logActivity, transferManager],
+    [device, fileNames, logActivity, transferManager, flushDownloadProgress],
   );
 
   /** Cancel the active download; the transfer loop rejects and unwinds. */
