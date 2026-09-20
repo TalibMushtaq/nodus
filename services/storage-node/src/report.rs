@@ -41,6 +41,19 @@ pub struct StorageSummary {
     pub folder_count: i64,
     pub version_count: i64,
     pub shard_count: i64,
+    /// Rows in `security_events` (e.g. WebRTC fetches without an envelope).
+    pub security_event_count: i64,
+}
+
+/// One recorded security event (see `20260920000001_security_events.sql`).
+#[derive(Debug, PartialEq, Eq)]
+pub struct SecurityEventRow {
+    pub id: String,
+    pub event_type: String,
+    pub device_id: Option<String>,
+    pub file_id: Option<String>,
+    pub detail: Option<String>,
+    pub created_at: String,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -116,7 +129,16 @@ SELECT
   (SELECT COUNT(*) FROM files) AS file_count,
   (SELECT COUNT(*) FROM folders) AS folder_count,
   (SELECT COUNT(*) FROM file_versions) AS version_count,
-  (SELECT COUNT(*) FROM shards) AS shard_count
+  (SELECT COUNT(*) FROM shards) AS shard_count,
+  (SELECT COUNT(*) FROM security_events) AS security_event_count
+"#;
+
+/// Most recent security events, newest first.
+const SECURITY_EVENTS_SQL: &str = r#"
+SELECT id, event_type, device_id, file_id, detail, created_at
+FROM security_events
+ORDER BY created_at DESC
+LIMIT ?
 "#;
 
 /// Files with per-file version/shard counts and the latest version's bytes.
@@ -158,7 +180,24 @@ pub async fn summary(pool: &SqlitePool) -> anyhow::Result<StorageSummary> {
         folder_count: row.get("folder_count"),
         version_count: row.get("version_count"),
         shard_count: row.get("shard_count"),
+        security_event_count: row.get("security_event_count"),
     })
+}
+
+/// Recent security events, newest first, capped at `limit`.
+pub async fn security_events(pool: &SqlitePool, limit: i64) -> anyhow::Result<Vec<SecurityEventRow>> {
+    let rows = sqlx::query(SECURITY_EVENTS_SQL).bind(limit).fetch_all(pool).await?;
+    Ok(rows
+        .into_iter()
+        .map(|row| SecurityEventRow {
+            id: row.get("id"),
+            event_type: row.get("event_type"),
+            device_id: row.get("device_id"),
+            file_id: row.get("file_id"),
+            detail: row.get("detail"),
+            created_at: row.get("created_at"),
+        })
+        .collect())
 }
 
 pub async fn files(pool: &SqlitePool) -> anyhow::Result<Vec<FileRow>> {
@@ -255,6 +294,40 @@ pub async fn print_summary(pool: &SqlitePool) -> anyhow::Result<()> {
         s.file_count, s.version_count, s.shard_count
     );
     println!("  Folders:       {}", s.folder_count);
+    // Only surfaced when there is something to look at, so a clean node stays
+    // quiet; nonzero points the operator at "Security events" in the menu.
+    if s.security_event_count > 0 {
+        println!("  Security:      {} event(s) recorded", s.security_event_count);
+    }
+    println!();
+    Ok(())
+}
+
+pub async fn print_security_events(pool: &SqlitePool) -> anyhow::Result<()> {
+    let rows = security_events(pool, 50).await?;
+    println!();
+    if rows.is_empty() {
+        println!("No security events recorded on this node.");
+        println!();
+        return Ok(());
+    }
+    println!("Security events ({})", rows.len());
+    println!("  {:<20} {:<22} {:<14} WHEN", "WHEN", "EVENT", "DEVICE");
+    for row in rows {
+        println!(
+            "  {:<20} {:<22} {:<14} {}",
+            short(&row.created_at, 19),
+            short(&row.event_type, 21),
+            short(row.device_id.as_deref().unwrap_or("—"), 12),
+            short(row.file_id.as_deref().unwrap_or("—"), 12),
+        );
+    }
+    println!();
+    println!(
+        "A \"shard_fetch_without_envelope\" event means a device fetched a shard \
+         over WebRTC before its key envelope reached this node; the fetch was \
+         allowed but recorded."
+    );
     println!();
     Ok(())
 }
@@ -460,6 +533,37 @@ mod tests {
         assert_eq!(short("abc", 12), "abc");
         assert_eq!(name_hint(&Some("short".into())), "short");
         assert_eq!(name_hint(&None), "—");
+    }
+
+    #[tokio::test]
+    async fn security_events_report_rows_newest_first() {
+        let dir = tempdir().unwrap();
+        let pool = db::open(dir.path()).await.unwrap();
+        for (id, file, at) in [
+            ("a", "file-1", "2026-01-01T00:00:00Z"),
+            ("b", "file-2", "2026-01-02T00:00:00Z"),
+        ] {
+            sqlx::query(
+                "INSERT INTO security_events (id, event_type, device_id, file_id, detail, created_at) \
+                 VALUES (?, 'shard_fetch_without_envelope', 'dev-1', ?, 'x', ?)",
+            )
+            .bind(id)
+            .bind(file)
+            .bind(at)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        let rows = security_events(&pool, 50).await.unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].file_id.as_deref(), Some("file-2"), "newest first");
+
+        let limited = security_events(&pool, 1).await.unwrap();
+        assert_eq!(limited.len(), 1);
+
+        // The summary surfaces the count so the menu can point at them.
+        assert_eq!(summary(&pool).await.unwrap().security_event_count, 2);
     }
 
     #[tokio::test]

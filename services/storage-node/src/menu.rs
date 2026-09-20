@@ -25,6 +25,7 @@ const MENU_ITEMS: &[&str] = &[
     "List files",
     "List folders",
     "Show status",
+    "Security events",
     "Change data location",
     "Pair / re-pair this node",
     "Factory reset (delete everything)",
@@ -75,7 +76,8 @@ pub async fn run_interactive(cli: &Cli) -> anyhow::Result<()> {
             2 => report::print_files(&pool).await?,
             3 => report::print_folders(&pool).await?,
             4 => print_status(&cfg),
-            5 => {
+            5 => report::print_security_events(&pool).await?,
+            6 => {
                 // Change the backup location through the same first-run wizard
                 // the node uses on setup, so the operator never hand-edits
                 // config.toml. The new path is persisted (relay pair preserved)
@@ -111,10 +113,10 @@ pub async fn run_interactive(cli: &Cli) -> anyhow::Result<()> {
                     }
                 }
             }
-            6 => {
+            7 => {
                 pair_wizard(&mut cfg, cli).await?;
             }
-            7 => {
+            8 => {
                 // Destructive and irreversible: requires the operator to type
                 // the exact confirmation phrase, and closes the pool before the
                 // DB files are unlinked. On success the menu exits so the next
