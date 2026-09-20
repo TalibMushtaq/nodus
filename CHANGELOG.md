@@ -1,5 +1,18 @@
 # Changelog
 
+## [2026-09-20] - Download throughput and ETA in the widget and Downloads tab
+
+**What changed:** Active downloads now show an average transfer rate and an ETA alongside their byte counter, on both clients.
+
+- Web: new `apps/web/lib/download-metrics.ts` (`downloadMetrics`) computes an average rate from bytes over elapsed time and the remaining seconds; `providers/download-provider.tsx` stamps `DownloadTask.startedAt` and renders the rate/ETA in the floating widget (with a 1s ticker so it keeps moving between shard arrivals); `downloads-client.tsx` shows the same in its active rows. Unit tests in `lib/__tests__/download-metrics.test.ts`.
+- Mobile: new `apps/mobile/src/download/metrics.ts`; `runtime/useNodusApp.ts` adds `DownloadProgress.startedAt` (stamped on the first progress event only, via a functional update, so it is not reset by each report); `runtime/AppStatusLine.tsx` and `screens/DownloadsScreen.tsx` render the rate/ETA with a 1s ticker. Unit tests in `src/download/__tests__/metrics.test.ts`.
+
+**Why:** Uploads show throughput and stall state, but downloads only showed a byte counter and a shard bar — no sense of how fast a large file was actually moving or how long it had left. The SDK reports bytes once per shard (not per chunk), so a short-window sampler would read zero between shards and spike on arrival; the metric is therefore an average over wall-clock time with a per-second ticker to keep the display live.
+
+**Impact:** `apps/web/lib/download-metrics.ts`, `apps/web/providers/download-provider.tsx`, `apps/web/app/(dashboard)/downloads/downloads-client.tsx`, `apps/mobile/src/download/metrics.ts`, `apps/mobile/src/runtime/{useNodusApp.ts,AppStatusLine.tsx}`, `apps/mobile/src/screens/DownloadsScreen.tsx`. Display-only; no protocol or transport changes. Verified: web typecheck + lint + tests (215), mobile typecheck + lint + tests (22).
+
+**Follow-ups:** The rate is an average, not an instantaneous sample, so it lags a sudden speed change until the next shard completes; per-chunk progress from the fetch/WebRTC transports would make it responsive (tracked as a possible refinement). ETA formats as `MM:SS`, so a transfer longer than an hour shows minutes beyond 60.
+
 ## [2026-09-20] - WebRTC download path: devices pull stored shards over a data channel
 
 **What changed:** Downloads can now take a direct WebRTC path (LAN-preferred, relay-signaling fallback) instead of always fetching over HTTP. The browser/mobile offer a data channel to the Storage Node, send a `shard_fetch` request, and the node streams the stored ciphertext back; the download transport readout now lights up as "Local P2P" for these transfers.
