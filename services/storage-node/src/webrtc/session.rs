@@ -233,9 +233,7 @@ async fn audit_missing_envelope(db: &SqlitePool, device_id: &str, file_id: &str)
     .bind(&id)
     .bind(device_id)
     .bind(file_id)
-    .bind(
-        "WebRTC shard fetch proceeded before this device's key envelope reached the node",
-    )
+    .bind("WebRTC shard fetch proceeded before this device's key envelope reached the node")
     .bind(&now)
     .execute(db)
     .await;
@@ -1092,10 +1090,15 @@ mod tests {
 
     #[test]
     fn shard_data_error_is_an_explicit_marker() {
-        let value: serde_json::Value =
-            serde_json::from_str(&shard_data_error("nope")).unwrap();
-        assert_eq!(value.get("shard_data_error").and_then(|b| b.as_bool()), Some(true));
-        assert_eq!(value.get("error_message").and_then(|s| s.as_str()), Some("nope"));
+        let value: serde_json::Value = serde_json::from_str(&shard_data_error("nope")).unwrap();
+        assert_eq!(
+            value.get("shard_data_error").and_then(|b| b.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            value.get("error_message").and_then(|s| s.as_str()),
+            Some("nope")
+        );
     }
 
     #[test]

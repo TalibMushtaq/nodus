@@ -185,8 +185,14 @@ pub async fn summary(pool: &SqlitePool) -> anyhow::Result<StorageSummary> {
 }
 
 /// Recent security events, newest first, capped at `limit`.
-pub async fn security_events(pool: &SqlitePool, limit: i64) -> anyhow::Result<Vec<SecurityEventRow>> {
-    let rows = sqlx::query(SECURITY_EVENTS_SQL).bind(limit).fetch_all(pool).await?;
+pub async fn security_events(
+    pool: &SqlitePool,
+    limit: i64,
+) -> anyhow::Result<Vec<SecurityEventRow>> {
+    let rows = sqlx::query(SECURITY_EVENTS_SQL)
+        .bind(limit)
+        .fetch_all(pool)
+        .await?;
     Ok(rows
         .into_iter()
         .map(|row| SecurityEventRow {
@@ -297,7 +303,10 @@ pub async fn print_summary(pool: &SqlitePool) -> anyhow::Result<()> {
     // Only surfaced when there is something to look at, so a clean node stays
     // quiet; nonzero points the operator at "Security events" in the menu.
     if s.security_event_count > 0 {
-        println!("  Security:      {} event(s) recorded", s.security_event_count);
+        println!(
+            "  Security:      {} event(s) recorded",
+            s.security_event_count
+        );
     }
     println!();
     Ok(())
