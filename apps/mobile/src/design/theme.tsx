@@ -41,11 +41,18 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
 
   // Hydrate the persisted choice once. Until it resolves we follow the OS,
   // which is also the default, so there is no visible flash for new installs.
+  // A read failure (e.g. a DB that is not ready yet) must not reject
+  // unhandled: the app keeps following the OS until the next launch.
   React.useEffect(() => {
     let cancelled = false;
-    void getPreference(THEME_PREF_KEY).then((stored) => {
-      if (!cancelled && isThemeMode(stored)) setModeState(stored);
-    });
+    void getPreference(THEME_PREF_KEY)
+      .then((stored) => {
+        if (!cancelled && isThemeMode(stored)) setModeState(stored);
+      })
+      .catch(() => {
+        // Fall back to the OS-following default; persistence resumes on the
+        // next successful write.
+      });
     return () => {
       cancelled = true;
     };

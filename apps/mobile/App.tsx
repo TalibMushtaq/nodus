@@ -24,6 +24,16 @@ import { AuthScreen } from "./src/screens/AuthScreen";
 
 const RootStack = createNativeStackNavigator();
 
+/**
+ * Status bar that follows the *resolved* theme rather than the OS, so forcing
+ * light on a dark device (or vice versa) also flips the icon contrast. Must be
+ * a child of ThemeProvider to read the theme.
+ */
+function ThemedStatusBar() {
+  const theme = useTheme();
+  return <StatusBar style={theme.dark ? "light" : "dark"} />;
+}
+
 function RootNavigator() {
   const app = useNodusApp();
   const theme = useTheme();
@@ -79,7 +89,7 @@ export default function App() {
   return (
     <SafeAreaProvider>
       <ThemeProvider>
-        <StatusBar style="auto" />
+        <ThemedStatusBar />
         {/* Hold the first frame until the typefaces load so text never flashes
             the system font; `useAppFonts` resolves true on error too, so a
             font failure degrades instead of blocking. */}
