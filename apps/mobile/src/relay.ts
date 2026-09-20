@@ -427,7 +427,10 @@ export async function relayFolderEnvelopes(): Promise<RelayFolderEnvelope[]> {
  * from whichever node holds it; the SDK adapter's JSON path cannot return raw
  * bytes, so this reads the response body directly.
  */
-export async function fetchRelayShard(hash: string): Promise<Uint8Array> {
+export async function fetchRelayShard(
+  hash: string,
+  onProgress?: (receivedBytes: number, totalBytes: number) => void,
+): Promise<Uint8Array> {
   const token = await getSessionToken();
   const res = await fetch(`${RELAY_BASE}/shards/${encodeURIComponent(hash)}`, {
     headers: token ? { authorization: `Bearer ${token}` } : undefined,
@@ -435,5 +438,37 @@ export async function fetchRelayShard(hash: string): Promise<Uint8Array> {
   if (!res.ok) {
     throw new Error(`relay shard fetch failed: HTTP ${res.status}`);
   }
-  return new Uint8Array(await res.arrayBuffer());
+  // React Native's fetch may not expose a body reader; when it does, stream for
+  // mid-shard progress, otherwise fall back to a buffered read.
+  const reader = res.body?.getReader?.();
+  if (!reader) {
+    return new Uint8Array(await res.arrayBuffer());
+  }
+  const total = Number(res.headers.get("content-length")) || 0;
+  const chunks: Uint8Array[] = [];
+  let received = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value) {
+        chunks.push(value);
+        received += value.byteLength;
+        try {
+          onProgress?.(received, total);
+        } catch {
+          // Advisory only: a throwing subscriber must not abort the read.
+        }
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const out = new Uint8Array(received);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return out;
 }

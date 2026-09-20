@@ -25,6 +25,8 @@ export interface MobileShardFetchArgs {
   hash: string;
   size: number;
   nodeId: string;
+  /** Cumulative bytes received for this shard, as chunks arrive. */
+  onProgress?: (receivedBytes: number, totalBytes: number) => void;
 }
 
 export interface MobileTransferManager {
@@ -134,6 +136,7 @@ export async function createMobileTransferManager(
         hash: args.hash,
         size: args.size,
         sourceNode: args.nodeId,
+        onProgress: args.onProgress,
       });
       return result.data;
     } catch (err) {

@@ -26,6 +26,8 @@ export interface MobileWebRtcShardFetch {
     hash: string;
     size: number;
     nodeId: string;
+    /** Cumulative bytes received for this shard, as chunks arrive. */
+    onProgress?: (receivedBytes: number, totalBytes: number) => void;
   }): Promise<Uint8Array>;
 }
 
@@ -43,7 +45,7 @@ export function mobileDownloadDeps(
       return files.find((f) => f.file_id === fileId)?.locations ?? [];
     },
 
-    async fetchShard(fileId, location) {
+    async fetchShard(fileId, location, onProgress) {
       if (!location.hash) throw new Error("shard location has no hash");
       // Direct WebRTC pull first (LAN-preferred, relay-signaling fallback); any
       // failure falls through to the HTTP paths below.
@@ -56,6 +58,7 @@ export function mobileDownloadDeps(
             hash: location.hash,
             size: location.size_bytes ?? 0,
             nodeId: location.node_id,
+            onProgress,
           });
           onTransport?.("webrtc");
           return data;
@@ -78,6 +81,7 @@ export function mobileDownloadDeps(
             device.device_id,
             (message) => signDeviceMessage(identityPrivateKey(device), message),
             location.hash,
+            onProgress,
           );
           onTransport?.("lan");
           return data;
@@ -86,7 +90,7 @@ export function mobileDownloadDeps(
         }
       }
       onTransport?.("relay");
-      return fetchRelayShard(location.hash);
+      return fetchRelayShard(location.hash, onProgress);
     },
   };
 }
