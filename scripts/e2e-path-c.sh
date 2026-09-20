@@ -13,8 +13,10 @@
 #      their dist output is missing)
 #
 # Usage: bash scripts/e2e-path-c.sh
-# Prints a PASS/FAIL line per check and exits non-zero if any fail.
-set -u
+# Prints a PASS/FAIL line per check and exits non-zero if any fail. Runs under
+# `set -e` so a failed setup/API call stops the run instead of surfacing later
+# as a confusing missing-envelope or decrypt error.
+set -euo pipefail
 
 # The harness imports @repo/relay-client, @repo/protocol and @repo/sdk from
 # dist (the uploader drives apps/web/lib/uploader, which imports @repo/sdk), so
@@ -55,12 +57,39 @@ COOKIE="nodus_session=$(cookie_val "$JAR")"
 echo "account=$ACCT deviceA=$DEV_A"
 
 # Device B is a second device on the same account; the uploader seals a FEK
-# envelope for it and it downloads the file at the end.
+# envelope for it and it downloads the file at the end. It is enrolled through
+# the Relay's ownership-safe /devices/register (proxied by the BFF): the device
+# row must exist *and be ACTIVE*, or publishEnvelopes() will not list B as a
+# recipient and its download fails with MissingEnvelopeError.
 SEED_B=$(openssl rand -hex 32)
 DEV_B=$(identity_field "$SEED_B" device_id)
 PUB_B=$(identity_field "$SEED_B" public_key)
-curl -fsS -b "$JAR" -X POST "$BASE/api/devices/register" -H 'content-type: application/json' \
-  -d "{\"device_id\":\"$DEV_B\",\"public_key\":\"$PUB_B\"}" >/dev/null
+if ! curl --fail-with-body -sS -b "$JAR" -X POST "$BASE/api/devices/register" \
+  -H 'content-type: application/json' \
+  -d "{\"device_id\":\"$DEV_B\",\"public_key\":\"$PUB_B\"}" >/tmp/pathc-registerB.json; then
+  echo "FAIL: device B registration request failed:"
+  cat /tmp/pathc-registerB.json
+  exit 1
+fi
+# Verify the row is actually visible and ACTIVE before relying on it.
+if ! curl --fail-with-body -sS -b "$JAR" "$BASE/api/devices" \
+  | python3 - "$DEV_B" <<'PY'
+import json
+import sys
+
+device_id = sys.argv[1]
+devices = json.load(sys.stdin)
+matches = [
+    d for d in devices
+    if d.get("device_id") == device_id and d.get("status") == "ACTIVE"
+]
+if len(matches) != 1:
+    raise SystemExit(f"device {device_id} was not registered and active")
+PY
+then
+  echo "FAIL: device B is not ACTIVE after registration"
+  exit 1
+fi
 echo "deviceB=$DEV_B"
 
 TMP=$(mktemp -d)
@@ -68,7 +97,12 @@ trap 'rm -rf "$TMP"' EXIT
 
 echo "===== Pair a fresh Storage Node ====="
 CODE=$(mint "$JAR")
-env -u NODUS_RELAY_URL HOME="$TMP" timeout 14 "$BIN" node pair --data-dir "$TMP/data" --relay "$BASE" --code "$CODE" >/tmp/pathc-pair.log 2>&1
+# `timeout` returns 124 on expiry and the node can exit non-zero on a pairing
+# error; neither should abort the run before the PASS/FAIL summary, so treat it
+# as an unchecked step and let the "node paired" check below report it.
+if ! env -u NODUS_RELAY_URL HOME="$TMP" timeout 14 "$BIN" node pair --data-dir "$TMP/data" --relay "$BASE" --code "$CODE" >/tmp/pathc-pair.log 2>&1; then
+  echo "note: node pair exited non-zero (see /tmp/pathc-pair.log)"
+fi
 NODE_ID=$(cat "$TMP/.nodus/identity/node_id" 2>/dev/null || echo none)
 check "node paired" "$(curl -fsS -b "$JAR" "$BASE/api/nodes" | grep -c "$NODE_ID")" "1"
 
@@ -99,7 +133,9 @@ NODE_PID=$!
 for _ in $(seq 1 20); do curl -fsS "$NODE_LOCAL/nodus/discovery" >/dev/null 2>&1 && break; sleep 1; done
 stored="0"
 for _ in $(seq 1 30); do
-  stored=$(psqlq "SELECT count(*) FROM file_locations WHERE file_id='$FILE_ID' AND status='NODE_STORED'")
+  # `|| true` keeps a transient psql error from aborting under `set -e`; the
+  # check below reports the final state either way.
+  stored=$(psqlq "SELECT count(*) FROM file_locations WHERE file_id='$FILE_ID' AND status='NODE_STORED'" || true)
   [ "$stored" = "2" ] && break
   sleep 1
 done
