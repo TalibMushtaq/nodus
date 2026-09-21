@@ -7,6 +7,7 @@ import type { DevicePublicIdentity, DeviceSigner } from "@repo/sdk";
 import { fetchSession, login, register, logout } from "../lib/auth-client";
 import { getOrCreateDevice, getOrCreateEncryptionIdentity } from "../lib/device";
 import { detectDeviceInfo } from "../lib/device-info";
+import { removePushSubscriptionQuietly } from "../lib/web-push";
 import type { SessionInfo } from "../lib/session";
 
 // AuthProvider (re)auths against the Relay-backed session cookie on the
@@ -124,6 +125,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   );
 
   const handleLogout = useCallback(async () => {
+    // Drop this browser's push subscription before the session is invalidated:
+    // the DELETE proxy needs the cookie, and a shared browser must not keep
+    // receiving the signed-out account's alerts.
+    await removePushSubscriptionQuietly();
     await logout();
     setSession(null);
     setStatus("unauthenticated");
