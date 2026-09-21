@@ -115,7 +115,9 @@ async fn test_outbound_session_streams_a_shard_into_answerer() {
     }
 
     // ── one shard ────────────────────────────────────────────────────────────
-    let payload = b"outbound-path-b-shard".to_vec();
+    // Above SCTP's 64 KiB default max-message-size so this exercises the
+    // chunked send; a single `dc.send` of this size would fail outright.
+    let payload: Vec<u8> = (0..200_000u32).map(|i| (i % 251) as u8).collect();
     let hash = blake3::hash(&payload).to_hex().to_string();
     let meta = ShardUploadPayload {
         file_id: "file-path-b".to_string(),

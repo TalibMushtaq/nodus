@@ -50,7 +50,10 @@ async fn test_live_webrtc_serves_a_stored_shard() {
     // file_versions, so it stands in for a shard whose version event has not
     // arrived yet — the same state the fetch authorization accepts.
     let file_id = "file-download";
-    let payload = b"stored-shard-ciphertext-for-download".to_vec();
+    // Larger than SCTP's default max-message-size (64 KiB). A single `dc.send`
+    // of this size fails with ErrOutboundPacketTooLarge, so this guards the
+    // chunked-streaming fix: the node must split the shard into <=16 KiB frames.
+    let payload: Vec<u8> = (0..200_000u32).map(|i| (i % 251) as u8).collect();
     let hash = store.put(&payload).await.unwrap();
     sqlx::query(
         "INSERT INTO pending_shard_fetches \

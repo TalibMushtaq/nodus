@@ -41,6 +41,16 @@ const MAX_CHANNELS_PER_CONNECTION: usize = 16;
 /// cannot hold a live session (and its memory) forever.
 const MAX_SESSION_LIFETIME: Duration = Duration::from_secs(24 * 3600);
 
+/// Outbound shard-download chunk size. SCTP caps one DataChannel message at the
+/// negotiated max-message-size (webrtc-sctp defaults to and commonly negotiates
+/// 64 KiB), and its `prepare_write` rejects anything larger with
+/// `ErrOutboundPacketTooLarge` *before* any fragmentation. A multi-MiB shard
+/// therefore must be streamed as chunks, matching the browser sender's 16 KiB.
+pub(crate) const SHARD_CHUNK_BYTES: usize = 16 * 1024;
+/// Pause streaming a shard while this many bytes are still queued on the
+/// channel, so a fast disk read cannot outrun a slow link and grow unbounded.
+pub(crate) const SHARD_CHUNK_HIGH_WATER: usize = 256 * 1024;
+
 /// Unused WebRTC sessions are reaped after this much wall time *without* an
 /// active peer connection. Sessions with live traffic (`touch`) or an active
 /// `Connected` transport are never pruned, regardless of how long they live.
@@ -640,20 +650,40 @@ impl WebRtcSession {
 
                                 match store.get(&req.hash).await {
                                     Ok(bytes) if bytes.len() as i64 == req.size => {
+                                        let payload = bytes::Bytes::from(bytes);
                                         let header = serde_json::json!({
                                             "shard_data": true,
                                             "hash": req.hash,
-                                            "size": bytes.len(),
+                                            "size": payload.len(),
                                             "transfer_id": req.transfer_id,
                                         });
                                         if dc.send_text(header.to_string()).await.is_err() {
                                             return;
                                         }
-                                        // webrtc-rs fragments the SCTP stream;
-                                        // a single send mirrors the outbound
-                                        // (node→node) repair path.
-                                        if dc.send(&bytes::Bytes::from(bytes)).await.is_err() {
-                                            return;
+                                        // SCTP rejects a message larger than the
+                                        // negotiated max-message-size, so stream
+                                        // the shard in chunks with flow control.
+                                        // A failed send MUST report an error
+                                        // frame: otherwise the client waits out
+                                        // its full (minutes-long) receive
+                                        // timeout instead of falling back.
+                                        let mut offset = 0;
+                                        while offset < payload.len() {
+                                            if dc.buffered_amount().await > SHARD_CHUNK_HIGH_WATER {
+                                                tokio::time::sleep(Duration::from_millis(5)).await;
+                                                continue;
+                                            }
+                                            let end =
+                                                (offset + SHARD_CHUNK_BYTES).min(payload.len());
+                                            if dc.send(&payload.slice(offset..end)).await.is_err() {
+                                                let _ = dc
+                                                    .send_text(shard_data_error(
+                                                        "failed to stream shard bytes",
+                                                    ))
+                                                    .await;
+                                                return;
+                                            }
+                                            offset = end;
                                         }
                                         let _ = dc
                                             .send_text(

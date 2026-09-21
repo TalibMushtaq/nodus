@@ -27,7 +27,9 @@ use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 
-use super::session::{ShardAckPayload, ShardUploadPayload};
+use super::session::{
+    SHARD_CHUNK_BYTES, SHARD_CHUNK_HIGH_WATER, ShardAckPayload, ShardUploadPayload,
+};
 
 /// Must match the label the answerer accepts on its `on_data_channel`.
 const DATA_CHANNEL_LABEL: &str = "nodus-shard";
@@ -181,10 +183,24 @@ impl OutboundSession {
             .send_text(serde_json::to_string(meta).context("serializing shard metadata")?)
             .await
             .context("sending shard metadata")?;
-        self.data_channel
-            .send(&bytes::Bytes::copy_from_slice(bytes))
-            .await
-            .context("sending shard bytes")?;
+        // SCTP rejects a message larger than the negotiated max-message-size,
+        // so stream the shard in chunks with flow control (the answerer's
+        // `on_binary` already accumulates chunks). A single send of a multi-MiB
+        // shard failed with `ErrOutboundPacketTooLarge` and stalled the repair.
+        let payload = bytes::Bytes::copy_from_slice(bytes);
+        let mut offset = 0;
+        while offset < payload.len() {
+            if self.data_channel.buffered_amount().await > SHARD_CHUNK_HIGH_WATER {
+                sleep(Duration::from_millis(5)).await;
+                continue;
+            }
+            let end = (offset + SHARD_CHUNK_BYTES).min(payload.len());
+            self.data_channel
+                .send(&payload.slice(offset..end))
+                .await
+                .context("sending shard bytes")?;
+            offset = end;
+        }
         self.data_channel
             .send_text(serde_json::json!({ "shard_done": true }).to_string())
             .await

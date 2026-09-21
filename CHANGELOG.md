@@ -1,5 +1,20 @@
 # Changelog
 
+## [2026-09-21] - Stream WebRTC shards in chunks so large downloads stop stalling
+
+**What changed:** The Storage Node now streams a stored shard over the WebRTC data channel in 16 KiB chunks with flow control, and reports an error frame if a chunk send fails, instead of sending the whole shard as one DataChannel message.
+
+- `services/storage-node/src/webrtc/session.rs`: the data-channel `shard_fetch` branch sends `[header][chunk…][shard_data_done]`. A new `SHARD_CHUNK_BYTES` (16 KiB) / `SHARD_CHUNK_HIGH_WATER` (256 KiB) pair paces the send against `buffered_amount()`, and a failed `send` now emits `shard_data_error` before returning.
+- `services/storage-node/src/webrtc/outbound.rs`: the node→node repair sender (`send_shard`) streams shard bytes through the same chunked loop; its `on_binary` receiver already accumulates chunks.
+- `services/storage-node/src/webrtc/session.rs`: the constants are shared with `outbound.rs` so the two senders cannot drift.
+- Tests (`services/storage-node/tests/webrtc_download_transfer_test.rs`, `webrtc_outbound_transfer_test.rs`): the shard payloads are now 200 KB — above SCTP's 64 KiB default max-message-size — so the old single-send path is a reproducible failure instead of passing on a few dozen bytes.
+
+**Why:** webrtc-sctp rejects a message larger than the negotiated max-message-size (default 64 KiB) with `ErrOutboundPacketTooLarge` *before* fragmenting, so an 8 MiB shard could never be sent in one `dc.send`. The old code (`if dc.send(...).is_err() { return; }`) then returned silently, sending neither the binary nor an error or `shard_data_done` frame. The browser's `requestShard` waited out its full receive timeout (`negotiationTimeoutMs × 30` = 240 s) with zero bytes, so a large download sat on "Connecting" for minutes before falling back to the Relay. The old comment claiming webrtc-rs fragments the stream was wrong.
+
+**Impact:** `services/storage-node` WebRTC download (device pulls a stored shard) and node→node shard repair. No protocol or framing change — the receiver already expected a stream of binary frames. Requires a Storage Node rebuild/redeploy; the browser/mobile clients need no change. Verified: `cargo build`, `cargo clippy --all-targets -D warnings`, `cargo fmt --check`, and `cargo test --lib` (218).
+
+**Follow-ups:** The browser's per-shard receive timeout is still a single 240 s budget rather than an idle timeout; with the node fix a stall now fails fast via the error frame, but a truly dead channel still waits out the budget. The node `send` error frame is best-effort (the channel may already be gone), matching the existing `shard_data_error` handling.
+
 ## [2026-09-21] - Show a "Connecting" stage while a download negotiates its path
 
 **What changed:** A large download no longer sits silently on "Downloading · 0 B" while its transport is chosen. The SDK reports a new `connecting` download phase for the first shard, before any byte has arrived, and the web widget renders it as an indeterminate sweep.
