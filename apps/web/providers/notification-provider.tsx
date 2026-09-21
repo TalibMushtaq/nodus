@@ -4,6 +4,7 @@ import { useEffect, useRef } from "react";
 import type { ReactNode } from "react";
 import { MessageTypes } from "@repo/protocol";
 
+import { getCachedCatalog, type CatalogEntry } from "../lib/catalog";
 import { listConflicts } from "../lib/conflicts";
 import { refreshCatalog } from "../lib/files";
 import {
@@ -18,29 +19,72 @@ import { useAuth } from "./auth-provider";
 import { useWs } from "./ws-provider";
 
 // Keeps local browser notifications wired to real events for the whole signed-in
-// session. It does three things: mirror the user's toggles into the notification
-// module, register the service worker (the display surface), and watch for new
-// conflicts globally — the Conflicts page only polls while it is mounted, but an
-// alert must fire wherever the user happens to be.
+// session. It mirrors the user's toggles into the notification module, registers
+// the service worker (the display surface), and watches the catalog globally —
+// the Conflicts page only polls while it is mounted, but an alert must fire
+// wherever the user happens to be. Two catalog-derived alerts are covered:
+// newly-flagged conflicts and files that finished backing up to a node.
 
 /** File ids already alerted for, so a re-poll does not re-notify. */
 const NOTIFIED_CONFLICTS_KEY = "nodus.notifiedConflicts";
+/** `file_id:version` keys already alerted as backed up. */
+const NOTIFIED_BACKUPS_KEY = "nodus.notifiedBackups";
 
-function readNotifiedConflicts(): Set<string> {
+function readIdSet(key: string): Set<string> {
   if (typeof window === "undefined") return new Set();
   try {
-    const raw = window.localStorage.getItem(NOTIFIED_CONFLICTS_KEY);
+    const raw = window.localStorage.getItem(key);
     return new Set(raw ? (JSON.parse(raw) as string[]) : []);
   } catch {
     return new Set();
   }
 }
 
-function writeNotifiedConflicts(ids: Set<string>): void {
+function writeIdSet(key: string, ids: Set<string>): void {
   if (typeof window === "undefined") return;
   // Bound the set so it cannot grow forever; the oldest ids have long since been
   // resolved or acknowledged by the time they fall off.
-  window.localStorage.setItem(NOTIFIED_CONFLICTS_KEY, JSON.stringify([...ids].slice(-500)));
+  window.localStorage.setItem(key, JSON.stringify([...ids].slice(-500)));
+}
+
+/**
+ * Alert for conflicts not seen before. The first pass (`seedOnly`) only records
+ * what already exists: a conflict that predates this tab must not alert on every
+ * load. Returns the ids so the caller can persist the union in one write.
+ */
+async function alertNewConflicts(rows: { fileId: string }[], seedOnly: boolean): Promise<void> {
+  const ids = rows.map((row) => row.fileId);
+  const notified = readIdSet(NOTIFIED_CONFLICTS_KEY);
+  const fresh = ids.filter((id) => !notified.has(id));
+  if (!seedOnly && fresh.length > 0 && isLocalNotificationEnabled("conflicts")) {
+    await notifyLocal("conflicts", {
+      title: fresh.length === 1 ? "New file conflict" : `${fresh.length} new file conflicts`,
+      body: "A file has a conflicting copy that needs review.",
+    });
+  }
+  for (const id of ids) notified.add(id);
+  writeIdSet(NOTIFIED_CONFLICTS_KEY, notified);
+}
+
+/**
+ * Alert for files whose latest version just reached `stored` (every shard on a
+ * node). Keyed by `file_id:version` so a later re-upload of the same file alerts
+ * again. Like conflicts, the first pass only seeds.
+ */
+async function alertNewBackups(entries: CatalogEntry[], seedOnly: boolean): Promise<void> {
+  const keys = entries
+    .filter((entry) => entry.storage_status === "stored" && entry.latest_version_number != null)
+    .map((entry) => `${entry.file_id}:${entry.latest_version_number}`);
+  const notified = readIdSet(NOTIFIED_BACKUPS_KEY);
+  const fresh = keys.filter((key) => !notified.has(key));
+  if (!seedOnly && fresh.length > 0 && isLocalNotificationEnabled("sync_complete")) {
+    await notifyLocal("sync_complete", {
+      title: fresh.length === 1 ? "Backup complete" : `${fresh.length} backups complete`,
+      body: "A file finished syncing to your storage node.",
+    });
+  }
+  for (const key of keys) notified.add(key);
+  writeIdSet(NOTIFIED_BACKUPS_KEY, notified);
 }
 
 export function NotificationProvider({ children }: { children: ReactNode }) {
@@ -79,8 +123,9 @@ export function NotificationProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  // Global conflict watcher. `CATALOG_CHANGED` is the app's existing signal that  // the Relay catalog moved; refresh it, derive the flagged set, and alert only
-  // for files not seen before.
+  // Catalog watcher. `CATALOG_CHANGED` is the app's existing signal that the
+  // Relay catalog moved; refresh once, then derive both alert classes from the
+  // same snapshot so a single change does not fetch twice.
   const seededRef = useRef(false);
   useEffect(() => {
     if (!device) return;
@@ -88,21 +133,14 @@ export function NotificationProvider({ children }: { children: ReactNode }) {
     const check = async () => {
       try {
         await refreshCatalog();
-        const rows = await listConflicts(device);
+        const [conflicts, catalog] = await Promise.all([
+          listConflicts(device),
+          getCachedCatalog(),
+        ]);
         if (cancelled) return;
-        const ids = rows.map((row) => row.fileId);
-        const notified = readNotifiedConflicts();
-        const fresh = ids.filter((id) => !notified.has(id));
-        // The first pass only seeds: conflicts that predate this tab must not
-        // alert on every load. Later passes alert for genuinely new ones.
-        if (seededRef.current && fresh.length > 0 && isLocalNotificationEnabled("conflicts")) {
-          await notifyLocal("conflicts", {
-            title: fresh.length === 1 ? "New file conflict" : `${fresh.length} new file conflicts`,
-            body: "A file has a conflicting copy that needs review.",
-          });
-        }
-        for (const id of ids) notified.add(id);
-        writeNotifiedConflicts(notified);
+        const seedOnly = !seededRef.current;
+        await alertNewConflicts(conflicts, seedOnly);
+        await alertNewBackups(catalog, seedOnly);
         seededRef.current = true;
       } catch {
         // Relay/cache unavailable: retry on the next catalog change.
