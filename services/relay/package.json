@@ -2,6 +2,6 @@
   "name": "relay",
   "private": true,
   "scripts": {
-    "dev": "docker compose up -d && go run ."
+    "dev": "docker compose up -d && sh -c 'set -a; [ -f .env ] && . ./.env; set +a; exec go run .'"
   }
 }
