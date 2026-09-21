@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   NodeClient,
+  NodeClientError,
   nodusBaseUrl,
   parsePairingUrl,
 } from "../src/index.js";
@@ -25,6 +26,7 @@ function b64(bytes: Uint8Array): string {
 const ORIGINAL_FETCH = globalThis.fetch;
 afterEach(() => {
   globalThis.fetch = ORIGINAL_FETCH;
+  vi.useRealTimers();
   vi.restoreAllMocks();
 });
 
@@ -156,5 +158,105 @@ describe("NodeClient", () => {
       code: "key_mismatch",
       message: "nope",
     });
+  });
+});
+
+describe("NodeClient.fetchShard idle timeout", () => {
+  const sign = async () => "00";
+
+  /**
+   * Mock `fetch` with a body stream built from the request's AbortSignal. A real
+   * fetch errors the body stream when its signal aborts; mirroring that lets the
+   * idle-timeout abort interrupt a pending `reader.read()`.
+   */
+  function mockFetchStream(
+    makeStream: (signal: AbortSignal) => ReadableStream<Uint8Array>,
+    contentLength: number,
+  ): void {
+    globalThis.fetch = vi.fn(async (_url: string, init?: RequestInit) => {
+      const signal = init?.signal ?? new AbortController().signal;
+      return new Response(makeStream(signal), {
+        headers: { "content-length": String(contentLength) },
+      });
+    }) as unknown as typeof fetch;
+  }
+
+  function signalAwareStream(
+    signal: AbortSignal,
+    pull: (controller: ReadableStreamDefaultController<Uint8Array>) => Promise<void>,
+  ): ReadableStream<Uint8Array> {
+    let controllerRef: ReadableStreamDefaultController<Uint8Array> | null = null;
+    signal.addEventListener("abort", () => {
+      controllerRef?.error(new DOMException("aborted", "AbortError"));
+    });
+    return new ReadableStream<Uint8Array>({
+      start(controller) {
+        controllerRef = controller;
+      },
+      pull,
+    });
+  }
+
+  it("is an idle timeout: a slow shard that keeps making progress completes", async () => {
+    vi.useFakeTimers();
+    const chunks = [new Uint8Array([0]), new Uint8Array([1]), new Uint8Array([2])];
+    let sent = 0;
+    mockFetchStream(
+      (signal) =>
+        signalAwareStream(signal, async (controller) => {
+          if (sent >= chunks.length) {
+            controller.close();
+            return;
+          }
+          const chunk = chunks[sent++];
+          // 4 s between chunks is under the 15 s idle window, even though the
+          // whole transfer (8 s) exceeds the old 3 s fixed budget.
+          if (sent > 1) await new Promise((resolve) => setTimeout(resolve, 4_000));
+          controller.enqueue(chunk);
+        }),
+      chunks.length,
+    );
+    const client = new NodeClient("http://node.test:9378");
+    const promise = client.fetchShard("dev-1", sign, "a".repeat(64));
+
+    await vi.advanceTimersByTimeAsync(20_000);
+
+    await expect(promise).resolves.toEqual(new Uint8Array([0, 1, 2]));
+  });
+
+  it("fails a shard that stops making progress", async () => {
+    vi.useFakeTimers();
+    let sent = false;
+    mockFetchStream(
+      (signal) =>
+        signalAwareStream(signal, async (controller) => {
+          if (!sent) {
+            sent = true;
+            controller.enqueue(new Uint8Array([0]));
+            return;
+          }
+          // Never resolve: the connection stalls with no further bytes.
+          await new Promise(() => {});
+        }),
+      5,
+    );
+    const client = new NodeClient("http://node.test:9378");
+    const promise = client.fetchShard("dev-1", sign, "a".repeat(64));
+    const rejection = expect(promise).rejects.toThrow(/abort/i);
+
+    await vi.advanceTimersByTimeAsync(20_000);
+
+    await rejection;
+  });
+
+  it("rejects immediately when the caller signal is already aborted", async () => {
+    mockFetchStream((signal) => signalAwareStream(signal, async () => {}), 1);
+    const client = new NodeClient("http://node.test:9378");
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(
+      client.fetchShard("dev-1", sign, "a".repeat(64), undefined, controller.signal),
+    ).rejects.toBeInstanceOf(NodeClientError);
   });
 });

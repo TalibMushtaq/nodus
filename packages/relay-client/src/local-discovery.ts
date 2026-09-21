@@ -28,6 +28,15 @@ export const NODUS_LOCAL_PORT = 9378;
 const LOCAL_TIMEOUT_MS = 3_000;
 
 /**
+ * Idle window for a LAN shard download (`fetchShard`). Unlike a total deadline,
+ * this resets on every chunk, so a multi-MiB shard may take as long as it needs
+ * while a stalled connection still fails. The plain 3 s probe budget was used as
+ * a hard total timeout here, aborting large shards mid-body and pushing them
+ * onto the Relay fallback (which buffers the whole shard before sending).
+ */
+const SHARD_IDLE_TIMEOUT_MS = 15_000;
+
+/**
  * Signs a message's UTF-8 bytes and returns a hex-encoded Ed25519 signature.
  * Web passes a non-extractable WebCrypto handle (ADR-0008); mobile passes a
  * noble-based wrapper over its keychain seed.
@@ -308,6 +317,9 @@ export class NodeClient {
    * `"{device_id}:{object_id}:{timestamp_ms}"` is signed with the device's
    * Ed25519 key. The returned bytes are still ciphertext; the caller verifies
    * the BLAKE3 hash and decrypts.
+   *
+   * `timeoutMs` is an idle window (reset per chunk), not a total deadline, so a
+   * large shard can run as long as it keeps making progress.
    */
   async fetchShard(
     deviceId: string,
@@ -315,82 +327,97 @@ export class NodeClient {
     objectId: string,
     onProgress?: (receivedBytes: number, totalBytes: number) => void,
     signal?: AbortSignal,
-    timeoutMs: number = LOCAL_TIMEOUT_MS,
+    timeoutMs: number = SHARD_IDLE_TIMEOUT_MS,
   ): Promise<Uint8Array> {
     const timestamp = Date.now();
     const signature = await sign(`${deviceId}:${objectId}:${timestamp}`);
-    // Combine the per-request timeout with the caller's cancellation signal.
-    // `AbortSignal.any` may be absent on some React Native runtimes, in which
-    // case a provided signal wins (a download is explicitly cancellable) and
-    // the timeout is dropped for that request.
-    const timeout = AbortSignal.timeout(timeoutMs);
-    const requestSignal =
-      signal && typeof AbortSignal.any === "function"
-        ? AbortSignal.any([timeout, signal])
-        : (signal ?? timeout);
-    let res: Response;
-    try {
-      res = await fetch(`${this.baseUrl}/nodus/shard/${encodeURIComponent(objectId)}`, {
-        headers: {
-          "x-nodus-device-id": deviceId,
-          "x-nodus-timestamp": String(timestamp),
-          "x-nodus-signature": signature,
-        },
-        signal: requestSignal,
-      });
-    } catch (err) {
-      throw new NodeClientError(
-        "network_error",
-        `shard fetch failed: ${err instanceof Error ? err.message : String(err)}`,
-      );
+    // Idle timeout: reset on every chunk so a large shard is not cut off by a
+    // fixed budget, but a connection that sends nothing for `timeoutMs` fails.
+    // The caller's cancellation signal aborts the same controller immediately;
+    // using a manual controller (instead of `AbortSignal.timeout` + `.any`)
+    // keeps this working on React Native runtimes that lack `AbortSignal.any`.
+    const controller = new AbortController();
+    let idleTimer: ReturnType<typeof setTimeout> | null = null;
+    const armIdle = () => {
+      if (idleTimer) clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => controller.abort(), timeoutMs);
+    };
+    const onCallerAbort = () => controller.abort();
+    if (signal?.aborted) {
+      throw new NodeClientError("network_error", "shard fetch aborted");
     }
-    if (!res.ok) {
-      let parsed: NodeErrorBody;
+    signal?.addEventListener("abort", onCallerAbort);
+    armIdle();
+    try {
+      let res: Response;
       try {
-        parsed = (await res.json()) as NodeErrorBody;
-      } catch {
-        parsed = { message: (await res.text().catch(() => "")) || undefined };
+        res = await fetch(`${this.baseUrl}/nodus/shard/${encodeURIComponent(objectId)}`, {
+          headers: {
+            "x-nodus-device-id": deviceId,
+            "x-nodus-timestamp": String(timestamp),
+            "x-nodus-signature": signature,
+          },
+          signal: controller.signal,
+        });
+      } catch (err) {
+        throw new NodeClientError(
+          "network_error",
+          `shard fetch failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
       }
-      throw new NodeClientError(
-        parsed.error ?? "http_error",
-        parsed.message ?? `HTTP ${res.status}`,
-      );
-    }
-    // Stream the body when the runtime exposes a reader (browsers do; React
-    // Native's fetch may not), so a large shard reports bytes as they arrive
-    // instead of after the whole body lands. A missing reader falls back to the
-    // buffered read, which is still correct — just coarse.
-    const reader = res.body?.getReader?.();
-    if (!reader) {
-      return new Uint8Array(await res.arrayBuffer());
-    }
-    const total = Number(res.headers.get("content-length")) || 0;
-    const chunks: Uint8Array[] = [];
-    let received = 0;
-    try {
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        if (value) {
-          chunks.push(value);
-          received += value.byteLength;
-          try {
-            onProgress?.(received, total);
-          } catch {
-            // Advisory only: a throwing subscriber must not abort the read.
+      if (!res.ok) {
+        let parsed: NodeErrorBody;
+        try {
+          parsed = (await res.json()) as NodeErrorBody;
+        } catch {
+          parsed = { message: (await res.text().catch(() => "")) || undefined };
+        }
+        throw new NodeClientError(
+          parsed.error ?? "http_error",
+          parsed.message ?? `HTTP ${res.status}`,
+        );
+      }
+      // Stream the body when the runtime exposes a reader (browsers do; React
+      // Native's fetch may not), so a large shard reports bytes as they arrive
+      // instead of after the whole body lands. A missing reader falls back to the
+      // buffered read, which is still correct — just coarse.
+      const reader = res.body?.getReader?.();
+      if (!reader) {
+        return new Uint8Array(await res.arrayBuffer());
+      }
+      const total = Number(res.headers.get("content-length")) || 0;
+      const chunks: Uint8Array[] = [];
+      let received = 0;
+      try {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          // Any chunk is progress: push the idle deadline out.
+          armIdle();
+          if (value) {
+            chunks.push(value);
+            received += value.byteLength;
+            try {
+              onProgress?.(received, total);
+            } catch {
+              // Advisory only: a throwing subscriber must not abort the read.
+            }
           }
         }
+      } finally {
+        reader.releaseLock();
       }
+      const out = new Uint8Array(received);
+      let offset = 0;
+      for (const chunk of chunks) {
+        out.set(chunk, offset);
+        offset += chunk.byteLength;
+      }
+      return out;
     } finally {
-      reader.releaseLock();
+      if (idleTimer) clearTimeout(idleTimer);
+      signal?.removeEventListener("abort", onCallerAbort);
     }
-    const out = new Uint8Array(received);
-    let offset = 0;
-    for (const chunk of chunks) {
-      out.set(chunk, offset);
-      offset += chunk.byteLength;
-    }
-    return out;
   }
 
   private async post<T>(

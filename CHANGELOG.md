@@ -1,5 +1,18 @@
 # Changelog
 
+## [2026-09-21] - LAN shard downloads use an idle timeout instead of a 3-second deadline
+
+**What changed:** `NodeClient.fetchShard` no longer applies a fixed total timeout to a shard download. It now aborts only after `timeoutMs` of *no* progress, resetting the timer on each received chunk, and uses a dedicated `SHARD_IDLE_TIMEOUT_MS` (15 s) default rather than the 3 s probe budget.
+
+- `packages/relay-client/src/local-discovery.ts`: new `SHARD_IDLE_TIMEOUT_MS`; `fetchShard` creates an `AbortController`, arms an idle timer that is reset after every `reader.read()` chunk, and wires the caller's `signal` to the same controller (replacing `AbortSignal.timeout` + `AbortSignal.any`, which also drops the `any` availability problem on React Native). The timer and abort listener are cleared in a `finally`.
+- Test (`packages/relay-client/tests/local-discovery.test.ts`): new `NodeClient.fetchShard idle timeout` suite — a slow-but-progressing shard whose total time exceeds the old 3 s budget still completes; a stalled stream fails after the idle window; an already-aborted caller signal rejects immediately.
+
+**Why:** `timeoutMs` defaulted to `LOCAL_TIMEOUT_MS = 3000` and was used as a hard total deadline via `AbortSignal.timeout`. A multi-MiB shard over Wi-Fi routinely takes longer than 3 s, so it was aborted mid-body and pushed to the Relay fallback (design A), which buffers a whole shard on the node→Relay hop before writing anything to the browser. That is why small shards (which fit in 3 s) downloaded instantly while a large file sat at "0 B" until the Relay finally delivered the first shard.
+
+**Impact:** `packages/relay-client` and every LAN shard download (web + mobile). The generic `LOCAL_TIMEOUT_MS` still bounds discovery, auth, pairing and activities. No API or protocol change. Verified: relay-client tests (53) + typecheck + lint, web tests (226) + typecheck + lint.
+
+**Follow-ups:** The `PathIndicator` labels both LAN HTTP and WebRTC as "Local P2P", so the UI cannot show which of the two served a shard — worth distinguishing now that the two paths have different failure modes. A dead (rather than slow) LAN node now costs up to 15 s of idle before the Relay fallback, in exchange for not dropping large shards mid-transfer.
+
 ## [2026-09-21] - Stream WebRTC shards in chunks so large downloads stop stalling
 
 **What changed:** The Storage Node now streams a stored shard over the WebRTC data channel in 16 KiB chunks with flow control, and reports an error frame if a chunk send fails, instead of sending the whole shard as one DataChannel message.
