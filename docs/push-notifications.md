@@ -90,10 +90,10 @@ permission-based **local** channel still works while the tab is open:
   and the Notification permission. It draws through the service worker so the
   `notificationclick` handler owns focus + routing, and falls back to a bare
   `Notification` when no worker is registered.
-- Transfers alert from `lib/transfer-log.ts` (`finishTransfer`); conflicts are
-  watched globally by `providers/notification-provider.tsx` on the relay's
-  `CATALOG_CHANGED` signal; node outages are detected in `useNodeStatus` on the
-  online→offline edge (with a cooldown).
+- Transfers alert from `lib/transfer-log.ts` (`finishTransfer`); conflicts and
+  completed backups are watched globally by `providers/notification-provider.tsx`
+  on the relay's `CATALOG_CHANGED` signal; node outages are detected in
+  `useNodeStatus` on the online→offline edge (with a cooldown).
 - While a push subscription is active, the three server categories are left to
   the relay so the same event is not shown twice; the local-only "Uploads &
   downloads" category still alerts.
@@ -112,8 +112,10 @@ permission-based **local** channel still works while the tab is open:
 - **Storage node offline** — fired when a node's last WebSocket connection
   closes. Client devices are deliberately excluded (they reconnect/background
   constantly).
-- **Backup complete** — fired once when every shard of a file version reaches
-  `NODE_STORED` (`sync_notices`).
+- **Backup complete** — the relay fires once when every shard of a file version
+  reaches `NODE_STORED` (`sync_notices`); without a push subscription the web
+  client derives the same event from its catalog when the latest version's
+  storage rollup becomes `stored`.
 
 ## CI
 

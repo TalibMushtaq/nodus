@@ -1,5 +1,15 @@
 # Changelog
 
+## [2026-09-21] - Local backup-complete notifications
+
+**What changed:** The web client now alerts when a file finishes backing up even without a Web Push subscription. `providers/notification-provider.tsx` derives the event from the cached catalog: on the relay's `CATALOG_CHANGED` signal it refreshes once and, alongside the conflict diff, reports files whose latest version's storage rollup is `stored` (every shard `NODE_STORED`). Alerts are keyed by `file_id:version` in `nodus.notifiedBackups`, the first pass only seeds, and the earlier `alertNewConflicts` logic was folded into the same pass so a single change fetches once.
+
+**Why:** "Backup complete" was push-only, so a user without VAPID configured (or without a subscription) got no confirmation that a file reached their node — the last remaining alert with no local path.
+
+**Impact:** `apps/web/providers/notification-provider.tsx`, `docs/push-notifications.md`. No new API or relay change; the local channel is still gated by the Notification permission, the `notifySyncComplete` toggle, and the active-subscription dedupe. Verified: web `check-types` + `lint` clean, web tests 243 passed.
+
+**Follow-ups:** The local derivation reports once per `file_id:version`; a version whose shards later degrade from `stored` back to `buffered` is not re-alerted when it recovers (the relay's `sync_notices` has the same one-shot property).
+
 ## [2026-09-21] - Browser notifications: local alerts, category toggles, push cleanup
 
 **What changed:** The web client now shows notifications for four alert classes and lets each be toggled independently, and the existing Web Push opt-in is fully wired.
@@ -20,7 +30,7 @@
 
 **Impact:** `apps/web` (providers, components, lib, env), `services/relay` (dev `package.json` + local `.env`), `docs/push-notifications.md`. No relay Go code changed. Local notifications are subject to the Notification permission and require a secure context (HTTPS or `localhost`). Verified: web `check-types` + `lint` clean, web tests 243 passed (21 new).
 
-**Follow-ups:** "Backup complete" has no local-only path — without a push subscription it is delivered by neither channel. The local conflict watcher calls `refreshCatalog()` on `CATALOG_CHANGED`, duplicating the Files page's refresh.
+**Follow-ups:** The local conflict watcher calls `refreshCatalog()` on `CATALOG_CHANGED`, duplicating the Files page's refresh. (A local backup-complete path was added in the following entry.)
 
 ## [2026-09-21] - Stream relay-mediated shard downloads end to end
 
