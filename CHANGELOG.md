@@ -1,5 +1,13 @@
 # Changelog
 
+## [2026-09-21] - Send a test notification from Settings
+
+**What changed:** `lib/local-notifications.ts` gained `showTestNotification`, which draws through the shared delivery path (service worker, then `Notification` fallback) regardless of the category toggles but still gated on the Notification permission; the delivery code was factored into a private `displayNotification(tag, url, input)`. Settings shows a **Send test** row once permission is granted.
+
+**Why:** After enabling, there was no way to confirm notifications actually surface on the machine — a permission granted but blocked at the OS/browser level looked identical to a working setup until a real event fired.
+
+**Impact:** `apps/web/lib/local-notifications.ts`, `apps/web/components/browser-notifications.tsx`, `docs/push-notifications.md`. Verified: web `check-types` + `lint` clean, web tests 245 passed (2 new).
+
 ## [2026-09-21] - Keep the web push registration fresh
 
 **What changed:** `providers/notification-provider.tsx` now owns push-registration reconciliation: on mount, whenever the category preferences change, and on a `PUSH_SUBSCRIPTION_EVENT`, it confirms the subscription and re-POSTs it to `/api/push/subscribe` with the current opt-outs. `public/sw.js` handles `pushsubscriptionchange` by messaging open tabs, which triggers the same reconcile (the worker holds no VAPID key). `components/browser-notifications.tsx` no longer posts on its own — enable/disable now only subscribe/unsubscribe and announce, leaving registration to the provider.

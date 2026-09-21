@@ -99,6 +99,8 @@ permission-based **local** channel still works while the tab is open:
   downloads" category still alerts.
 - Tapping a notification focuses an open tab and routes it to the alert's page
   (`/downloads`, `/conflicts`, `/devices`, or `/files`).
+- Settings offers **Send test**, which bypasses the category toggles (but not the
+  permission) so the user can confirm notifications surface on their machine.
 - The subscription is refreshed whenever the session loads or a category
   toggle changes, mirroring mobile's `syncPushRegistration`. If the browser
   rotates the subscription (`pushsubscriptionchange`), the worker pings an open
