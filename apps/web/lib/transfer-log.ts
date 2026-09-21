@@ -8,6 +8,7 @@
 // bound.
 
 import { STORE_TRANSFER_LOG, idbClear, idbDelete, idbGetAll, idbPut } from "./db";
+import { notifyLocal } from "./local-notifications";
 import type { ActivityRecord } from "@repo/protocol";
 
 // Mirrors the protocol `ActivityKind` so entries pulled from other devices
@@ -117,6 +118,28 @@ export async function finishTransfer(
     at: new Date().toISOString(),
     // A completed outcome must be re-emitted; an in-progress row is not sent.
     synced: false,
+  });
+  void notifyTransferOutcome(existing.kind, existing.fileName, outcome, detail);
+}
+
+/**
+ * Surface a finished upload/download as a browser notification. Only the two
+ * transfer kinds alert: delete/restore are one-shot UI actions the user just
+ * performed and do not need a desktop notice.
+ */
+async function notifyTransferOutcome(
+  kind: TransferKind,
+  fileName: string,
+  outcome: Exclude<TransferOutcome, "in-progress">,
+  detail?: string,
+): Promise<void> {
+  if (kind !== "upload" && kind !== "download") return;
+  const label = kind === "upload" ? "Upload" : "Download";
+  const name = fileName || "File";
+  const ok = outcome === "complete";
+  await notifyLocal("transfers", {
+    title: ok ? `${label} complete` : `${label} failed`,
+    body: ok ? name : detail ? `${name} — ${detail}` : name,
   });
 }
 
