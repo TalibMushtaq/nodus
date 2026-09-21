@@ -1,5 +1,20 @@
 # Changelog
 
+## [2026-09-21] - Stream relay-mediated shard downloads end to end
+
+**What changed:** A browser download served by the Relay now receives the shard in chunks as the node sends them, instead of the Relay buffering the whole shard before writing any byte.
+
+- Storage Node (`services/storage-node/src/sync/client.rs`): a `shard_fetch_request` answer is now `shard_fetch_result` (ok) + a stream of 256 KiB binary frames + a `shard_fetch_done` text marker, rather than one whole-shard binary frame.
+- Relay (`services/relay/internal/handler/shard_fetch.go`): `ShardFetchRegistry` streams to the waiting HTTP handler (a `shardFetchChunk` channel; `ResolveBinary` forwards each frame and keeps the connection armed until `HandleDone`, and cleanup disarms it). `FetchShard` writes and flushes each chunk to the response, clears the server write deadline for the stream, and treats `shardFetchTimeout` as a per-chunk idle budget. `serveBufferedShard` chunk-writes and flushes as well.
+- Relay (`services/relay/internal/handler/ws.go`): dispatches the node-only `shard_fetch_done` marker to `HandleDone`, and adds it to the node-only guard set.
+- Tests: registry tests cover streaming (two chunks + done), error, other-node/unarmed-frame rejection, and cleanup; the integration test's fake node streams two frames then done.
+
+**Why:** The Relay pulled the shard as one WS binary frame and wrote it to the browser only after it had fully arrived, so a large shard showed zero bytes until the entire node→Relay hop completed. Combined with the server's 15 s `WriteTimeout` (shorter than the 30 s fetch budget), a slow node could also truncate the response. Streaming removes both the first-byte stall and the truncation window.
+
+**Impact:** `services/relay` and `services/storage-node` (both need a redeploy). The wire change is confined to the node↔Relay link (`shard_fetch_done` added; binary frames now multiple); the device↔Relay HTTP response is still opaque ciphertext, and browser/mobile clients are unchanged (the streamed node path uses chunked transfer, no `Content-Length`). Verified: relay `go build`/`go vet`/`gofmt`/`go test ./...`; storage-node `cargo build`/`cargo fmt --check`/`cargo clippy --all-targets -D warnings`/`cargo test --lib` (218). The DB-backed integration test was updated and is skipped here without `TEST_DATABASE_URL`.
+
+**Follow-ups:** The buffered path still reads the whole buffer file into memory before chunk-writing it (`buf.Fetch`); a reader-based stream would remove that. The relay↔node stream has no per-chunk checksum, relying on the client's BLAKE3 verify as before.
+
 ## [2026-09-21] - Reachability probes over the Relay WebSocket
 
 **What changed:** The Devices page's manual Ping now travels over the browser's existing Relay socket instead of an HTTP round trip.

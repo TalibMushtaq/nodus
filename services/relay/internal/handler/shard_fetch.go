@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -20,10 +21,10 @@ import (
 	"github.com/google/uuid"
 )
 
-// shardFetchTimeout bounds how long the Relay waits for one node to answer a
-// shard_fetch_request before giving up and trying the next holder (or failing
-// the whole fetch). Shards are up to 8 MB; a slow disk read plus transport is
-// covered comfortably while the browser's overall download stays responsive.
+// shardFetchTimeout is the *idle* budget for one node's shard fetch: it bounds
+// the wait for the first chunk and the gap between chunks, not the total
+// transfer. A large shard may legitimately stream for longer than this; only a
+// node that stops making progress is dropped so the next holder can be tried.
 const shardFetchTimeout = 30 * time.Second
 
 // shardFetchRequestPayload is the relay → node wire body: which stored object
@@ -44,13 +45,17 @@ type shardFetchResultPayload struct {
 	Error     string `json:"error,omitempty"`
 }
 
-type shardFetchAnswer struct {
-	bytes []byte
-	err   string
+// shardFetchChunk is one streamed unit of a shard fetch. The node sends zero or
+// more data chunks after an "ok" result, then a done marker; an err chunk ends
+// the stream before any bytes (the holder reported missing/error).
+type shardFetchChunk struct {
+	data []byte
+	err  string
+	done bool
 }
 
 type shardFetchWait struct {
-	ch       chan shardFetchAnswer
+	ch       chan shardFetchChunk
 	fromNode string
 }
 
@@ -60,12 +65,15 @@ type shardFetchWait struct {
 //
 //   - each waiter records the node it was assigned to, so a result or binary
 //     frame from a *different* node can never resolve it, and
-//   - "ok" results arm the connection for the binary frame that immediately
-//     follows, keeping the raw shard bytes out of JSON entirely.
+//   - "ok" results arm the connection for the stream of binary frames that
+//     follows, keeping the raw shard bytes out of JSON entirely. The stream (and
+//     the armed flag) stays open until the node sends `shard_fetch_done`, so a
+//     multi-MiB shard can be forwarded to the browser as it arrives instead of
+//     being buffered whole.
 type ShardFetchRegistry struct {
 	mu       sync.Mutex
 	waiters  map[string]shardFetchWait
-	armedBin map[string]string // connID -> requestID awaiting its binary frame
+	armedBin map[string]string // connID -> requestID currently streaming
 }
 
 func NewShardFetchRegistry() *ShardFetchRegistry {
@@ -78,21 +86,30 @@ func NewShardFetchRegistry() *ShardFetchRegistry {
 // register publishes a waiter for requestID assigned to fromNode. The returned
 // cleanup must be called once the HTTP handler finishes (success, timeout, or
 // client disconnect); it is idempotent with any resolve.
-func (r *ShardFetchRegistry) register(requestID, fromNode string) (<-chan shardFetchAnswer, func()) {
-	ch := make(chan shardFetchAnswer, 1)
+func (r *ShardFetchRegistry) register(requestID, fromNode string) (<-chan shardFetchChunk, func()) {
+	// Buffered so a burst of chunks from a fast node does not hand backpressure
+	// to the relay's WS read loop before the HTTP writer drains them.
+	ch := make(chan shardFetchChunk, 32)
 	r.mu.Lock()
 	r.waiters[requestID] = shardFetchWait{ch: ch, fromNode: fromNode}
 	r.mu.Unlock()
 	return ch, func() {
 		r.mu.Lock()
 		delete(r.waiters, requestID)
+		// A cleanup before the node's done marker must also disarm the
+		// connection, or the next orphan binary frame would be misrouted.
+		for conn, req := range r.armedBin {
+			if req == requestID {
+				delete(r.armedBin, conn)
+			}
+		}
 		r.mu.Unlock()
 	}
 }
 
-// HandleResult processes a node's shard_fetch_result. A non-ok status resolves
-// the waiter with an error so the HTTP handler can try the next holder; "ok"
-// just arms the connection for the binary frame that follows.
+// HandleResult processes a node's shard_fetch_result. A non-ok status ends the
+// waiter with an error so the HTTP handler can try the next holder; "ok" just
+// arms the connection for the stream of binary frames that follows.
 func (r *ShardFetchRegistry) HandleResult(c *hub.Client, env ProtocolEnvelope) {
 	if r == nil || c == nil || c.NodeID == "" {
 		return
@@ -113,39 +130,90 @@ func (r *ShardFetchRegistry) HandleResult(c *hub.Client, env ProtocolEnvelope) {
 			message = "node reported status " + payload.Status
 		}
 		delete(r.waiters, payload.RequestID)
-		wait.ch <- shardFetchAnswer{err: message}
+		r.mu.Unlock()
+		wait.ch <- shardFetchChunk{err: message, done: true}
+		return
+	}
+	if ok {
+		r.armedBin[c.ConnID] = payload.RequestID
 	}
 	r.mu.Unlock()
-
-	if ok && payload.Status == "ok" {
-		r.mu.Lock()
-		r.armedBin[c.ConnID] = payload.RequestID
-		r.mu.Unlock()
-	}
 }
 
-// ResolveBinary completes an armed shard fetch with the raw bytes carried by
-// the binary frame that followed an "ok" result. Frames without an armed
-// request are dropped.
+// ResolveBinary forwards one streamed chunk of an armed shard fetch. Frames
+// without an armed request are dropped. The armed flag is kept until
+// `shard_fetch_done` (or cleanup), so every chunk of a multi-frame stream lands
+// on the right waiter.
 func (r *ShardFetchRegistry) ResolveBinary(c *hub.Client, binary []byte) {
 	if r == nil || c == nil {
 		return
 	}
 	r.mu.Lock()
-	requestID := r.armedBin[c.ConnID]
-	delete(r.armedBin, c.ConnID)
+	requestID, armed := r.armedBin[c.ConnID]
+	if !armed {
+		r.mu.Unlock()
+		return
+	}
 	wait, ok := r.waiters[requestID]
 	if ok && wait.fromNode != c.NodeID {
 		ok = false
 	}
-	if ok {
-		delete(r.waiters, requestID)
-	}
 	r.mu.Unlock()
-	if !ok || requestID == "" {
+	if !ok {
 		return
 	}
-	wait.ch <- shardFetchAnswer{bytes: binary}
+	// Copy: the WS read buffer may be reused once the callback returns.
+	chunk := make([]byte, len(binary))
+	copy(chunk, binary)
+	wait.ch <- shardFetchChunk{data: chunk}
+}
+
+// HandleDone ends an armed shard-fetch stream. It disarms the connection and
+// signals the waiter that the last chunk has been delivered.
+func (r *ShardFetchRegistry) HandleDone(c *hub.Client, env ProtocolEnvelope) {
+	if r == nil || c == nil {
+		return
+	}
+	var payload struct {
+		RequestID string `json:"request_id"`
+	}
+	if err := json.Unmarshal(env.Payload, &payload); err != nil || payload.RequestID == "" {
+		return
+	}
+
+	r.mu.Lock()
+	delete(r.armedBin, c.ConnID)
+	wait, ok := r.waiters[payload.RequestID]
+	if ok && wait.fromNode != c.NodeID {
+		ok = false
+	}
+	if ok {
+		delete(r.waiters, payload.RequestID)
+	}
+	r.mu.Unlock()
+	if ok {
+		wait.ch <- shardFetchChunk{done: true}
+	}
+}
+
+// waitForShardChunk waits for the next streamed chunk, the caller's
+// cancellation, or the idle timeout. A closed channel reports false.
+func waitForShardChunk(
+	ctx context.Context,
+	ch <-chan shardFetchChunk,
+	d time.Duration,
+) (shardFetchChunk, bool) {
+	select {
+	case chunk, ok := <-ch:
+		if !ok {
+			return shardFetchChunk{}, false
+		}
+		return chunk, true
+	case <-time.After(d):
+		return shardFetchChunk{}, false
+	case <-ctx.Done():
+		return shardFetchChunk{}, false
+	}
 }
 
 // validShardObjectID matches the node's own object-id validation (layout.rs):
@@ -160,10 +228,13 @@ func validShardObjectID(id string) bool {
 
 // FetchShard serves GET /shards/{object_id} — a session-authenticated download
 // of a shard. It first tries the durable copy: every node that holds the object
-// is asked, one at a time, over its live WS connection, and the first byte
-// payload wins (design A fallback for browser downloads). When no node has it
-// yet, the Relay serves the shard straight from its own buffer, so a file that
-// reached the Relay but has not been picked up by a node is still downloadable.
+// is asked, one at a time, over its live WS connection, and the first to start
+// streaming wins (design A fallback for browser downloads). The shard is
+// forwarded to the HTTP response chunk by chunk as the node sends it, so a
+// multi-MiB shard is never buffered whole and the browser sees its first byte
+// immediately. When no node has it yet, the Relay serves the shard straight
+// from its own buffer, so a file that reached the Relay but has not been picked
+// up by a node is still downloadable.
 //
 // Ownership is enforced on the relay side: only file_locations rows whose file
 // belongs to the requesting account are considered, so a client can never use
@@ -245,28 +316,71 @@ func FetchShard(pool *db.Pool, h *hub.Hub, shards *ShardFetchRegistry, buf *buff
 				continue
 			}
 
-			select {
-			case answer := <-ch:
-				cleanup()
-				if answer.err != "" {
-					log.Printf("[shard-fetch] node %s reported error for %s: %s", nodeID, objectID, answer.err)
-					continue
-				}
-				w.Header().Set("Content-Type", "application/octet-stream")
-				w.Header().Set("Content-Length", strconv.Itoa(len(answer.bytes)))
-				w.WriteHeader(http.StatusOK)
-				if _, werr := w.Write(answer.bytes); werr != nil {
-					log.Printf("[shard-fetch] write error for %s: %v", objectID, werr)
-				}
-				return
-			case <-time.After(shardFetchTimeout):
+			// Wait for the first chunk. Until the first byte we can still send a
+			// clean 404 and try the next holder; "ok" is followed by data chunks.
+			first, ok := waitForShardChunk(r.Context(), ch, shardFetchTimeout)
+			if !ok {
 				cleanup()
 				log.Printf("[shard-fetch] node %s did not answer for %s within %s", nodeID, objectID, shardFetchTimeout)
 				continue
-			case <-r.Context().Done():
+			}
+			if first.err != "" {
+				cleanup()
+				log.Printf("[shard-fetch] node %s reported error for %s: %s", nodeID, objectID, first.err)
+				continue
+			}
+
+			// Stream the shard to the browser as each chunk arrives. The server's
+			// WriteTimeout (set for small requests) would truncate a large shard,
+			// so clear it for this response, and flush per chunk so the client
+			// sees progress instead of waiting for the whole transfer.
+			rc := http.NewResponseController(w)
+			if derr := rc.SetWriteDeadline(time.Time{}); derr != nil {
+				log.Printf("[shard-fetch] could not clear write deadline for %s: %v", objectID, derr)
+			}
+			w.Header().Set("Content-Type", "application/octet-stream")
+			w.WriteHeader(http.StatusOK)
+			flusher, _ := w.(http.Flusher)
+
+			writeChunk := func(data []byte) bool {
+				if len(data) == 0 {
+					return true
+				}
+				if _, werr := w.Write(data); werr != nil {
+					log.Printf("[shard-fetch] write error for %s: %v", objectID, werr)
+					return false
+				}
+				if flusher != nil {
+					flusher.Flush()
+				}
+				return true
+			}
+
+			if !writeChunk(first.data) {
 				cleanup()
 				return
 			}
+			done := first.done
+			for !done {
+				next, ok := waitForShardChunk(r.Context(), ch, shardFetchTimeout)
+				if !ok {
+					log.Printf("[shard-fetch] stream for %s from %s stalled", objectID, nodeID)
+					cleanup()
+					return
+				}
+				if next.err != "" {
+					log.Printf("[shard-fetch] node %s stream error for %s: %s", nodeID, objectID, next.err)
+					cleanup()
+					return
+				}
+				if !writeChunk(next.data) {
+					cleanup()
+					return
+				}
+				done = next.done
+			}
+			cleanup()
+			return
 		}
 
 		respondJSON(w, http.StatusNotFound, map[string]any{
@@ -324,11 +438,27 @@ func serveBufferedShard(
 		return false
 	}
 
+	// The buffered copy is already in memory, but still stream it in chunks and
+	// flush so the client can start consuming before the whole shard is written.
+	// Clear the server write deadline for the same reason as the node path.
+	rc := http.NewResponseController(w)
+	if derr := rc.SetWriteDeadline(time.Time{}); derr != nil {
+		log.Printf("[shard-fetch] could not clear write deadline for buffered %s: %v", objectID, derr)
+	}
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
 	w.WriteHeader(http.StatusOK)
-	if _, werr := w.Write(data); werr != nil {
-		log.Printf("[shard-fetch] write error for buffered %s: %v", objectID, werr)
+	flusher, _ := w.(http.Flusher)
+	const bufferedChunk = 64 * 1024
+	for off := 0; off < len(data); off += bufferedChunk {
+		end := min(off+bufferedChunk, len(data))
+		if _, werr := w.Write(data[off:end]); werr != nil {
+			log.Printf("[shard-fetch] write error for buffered %s: %v", objectID, werr)
+			return true
+		}
+		if flusher != nil {
+			flusher.Flush()
+		}
 	}
 	return true
 }

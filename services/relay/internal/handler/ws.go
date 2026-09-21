@@ -82,7 +82,7 @@ type PendingNotifyPayload struct {
 // rows buffer_upload.go requires before it accepts shards.
 func messageRequiresNode(messageType string) bool {
 	switch messageType {
-	case "sync_hello", "snapshot_begin", "snapshot_chunk", "snapshot_end", "shard_ack", "tombstone_ack", "shard_fetch_result":
+	case "sync_hello", "snapshot_begin", "snapshot_chunk", "snapshot_end", "shard_ack", "tombstone_ack", "shard_fetch_result", "shard_fetch_done":
 		return true
 	default:
 		return false
@@ -160,10 +160,11 @@ func WebSocket(h *hub.Hub, pool *db.Pool, rClient *rdb.Client, buf *buffer.Buffe
 		go client.WritePump()
 		go client.ReadPump(func(c *hub.Client, msgType int, payload []byte) {
 			// Design A: a storage node answers a shard_fetch_request with a text
-			// result envelope followed by ONE binary frame carrying the raw
-			// shard bytes. Binary frames are never part of the text envelope
-			// protocol, so route them straight to the registry that correlated
-			// the fetch — anything unarmed is dropped there.
+			// result envelope followed by a stream of binary frames carrying the
+			// raw shard bytes, ended by a text `shard_fetch_done`. Binary frames
+			// are never part of the text envelope protocol, so route them
+			// straight to the registry that correlated the fetch — anything
+			// unarmed is dropped there.
 			if msgType == websocket.BinaryMessage {
 				if shards != nil && c.NodeID != "" {
 					shards.ResolveBinary(c, payload)
@@ -242,6 +243,11 @@ func handleIncomingEnvelope(
 		// Design A: node's answer to a relay-mediated shard fetch. Resolved by
 		// the registry that correlated the request with the node's outbound WS.
 		shards.HandleResult(c, env)
+
+	case "shard_fetch_done":
+		// Design A: end of the node's streamed shard bytes. Disarms the
+		// connection and lets the HTTP handler finish the response.
+		shards.HandleDone(c, env)
 
 	case "webrtc_offer", "webrtc_answer", "webrtc_ice_candidate", "node_shard_fetch":
 		HandleWebRTCSignaling(ctx, c, env, h)

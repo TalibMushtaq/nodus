@@ -203,7 +203,12 @@ func TestFetchShardEndToEndViaVirtualNode(t *testing.T) {
 				reg.mu.Lock()
 				reg.armedBin[connID] = requestID
 				reg.mu.Unlock()
-				reg.ResolveBinary(nodeClient, []byte("virtual-shard-bytes"))
+				// Two chunks then the done marker: a streamed shard.
+				reg.ResolveBinary(nodeClient, []byte("virtual-"))
+				reg.ResolveBinary(nodeClient, []byte("shard-bytes"))
+				reg.HandleDone(nodeClient, ProtocolEnvelope{
+					Payload: []byte(`{"request_id":"` + requestID + `"}`),
+				})
 				return
 			}
 			time.Sleep(10 * time.Millisecond)

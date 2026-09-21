@@ -13,7 +13,18 @@ func shardClient(connID, nodeID string) *hub.Client {
 	return &hub.Client{ConnID: connID, NodeID: nodeID}
 }
 
-func TestShardFetchOkResultArmsBinaryAndResolves(t *testing.T) {
+func recvChunk(t *testing.T, ch <-chan shardFetchChunk) shardFetchChunk {
+	t.Helper()
+	select {
+	case chunk := <-ch:
+		return chunk
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for a shard chunk")
+		return shardFetchChunk{}
+	}
+}
+
+func TestShardFetchOkResultStreamsChunksThenDone(t *testing.T) {
 	reg := NewShardFetchRegistry()
 	ch, cleanup := reg.register("req-1", "node-a")
 	defer cleanup()
@@ -21,15 +32,16 @@ func TestShardFetchOkResultArmsBinaryAndResolves(t *testing.T) {
 	reg.HandleResult(shardClient("conn-a", "node-a"), ProtocolEnvelope{
 		Payload: []byte(`{"request_id":"req-1","object_id":"obj","status":"ok"}`),
 	})
-	// The binary frame that follows on the same connection resolves the waiter.
-	reg.ResolveBinary(shardClient("conn-a", "node-a"), []byte("shard-bytes"))
+	// Multiple binary frames then the done marker: one streamed shard.
+	reg.ResolveBinary(shardClient("conn-a", "node-a"), []byte("shard-"))
+	reg.ResolveBinary(shardClient("conn-a", "node-a"), []byte("bytes"))
+	reg.HandleDone(shardClient("conn-a", "node-a"), ProtocolEnvelope{
+		Payload: []byte(`{"request_id":"req-1"}`),
+	})
 
-	select {
-	case answer := <-ch:
-		require.Equal(t, "shard-bytes", string(answer.bytes))
-	case <-time.After(time.Second):
-		t.Fatal("ok result + binary frame did not resolve the shard fetch")
-	}
+	require.Equal(t, "shard-", string(recvChunk(t, ch).data))
+	require.Equal(t, "bytes", string(recvChunk(t, ch).data))
+	require.True(t, recvChunk(t, ch).done)
 }
 
 func TestShardFetchErrorResolvesWithoutBinary(t *testing.T) {
@@ -41,13 +53,10 @@ func TestShardFetchErrorResolvesWithoutBinary(t *testing.T) {
 		Payload: []byte(`{"request_id":"req-2","object_id":"obj","status":"missing","error":"not found"}`),
 	})
 
-	select {
-	case answer := <-ch:
-		require.Empty(t, answer.bytes)
-		require.Contains(t, answer.err, "not found")
-	case <-time.After(time.Second):
-		t.Fatal("error result did not resolve the waiter")
-	}
+	chunk := recvChunk(t, ch)
+	require.Empty(t, chunk.data)
+	require.Contains(t, chunk.err, "not found")
+	require.True(t, chunk.done)
 }
 
 func TestShardFetchIgnoresOtherNodeAndUnarmedBinary(t *testing.T) {
@@ -62,8 +71,8 @@ func TestShardFetchIgnoresOtherNodeAndUnarmedBinary(t *testing.T) {
 	reg.ResolveBinary(shardClient("conn-b", "node-b"), []byte("stray"))
 
 	select {
-	case <-ch:
-		t.Fatal("a different node resolved the shard fetch")
+	case chunk := <-ch:
+		t.Fatalf("a different node resolved the shard fetch: %+v", chunk)
 	case <-time.After(50 * time.Millisecond):
 	}
 

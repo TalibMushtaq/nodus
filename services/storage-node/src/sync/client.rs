@@ -365,6 +365,12 @@ const RELAY_FETCH_TIMEOUT: Duration = Duration::from_secs(30);
 /// chunk) while still failing deterministically.
 const WS_WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Size of each binary frame when streaming a shard to the Relay for a browser
+/// download. The Relay forwards each frame to the HTTP response as it arrives,
+/// so a multi-MiB shard no longer has to be buffered whole before the browser
+/// sees its first byte. 256 KiB stays well under the Relay's WS read limit.
+const SHARD_STREAM_CHUNK_BYTES: usize = 256 * 1024;
+
 /// Freshness window for a signed Path B (relay-signaled WebRTC) message. The
 /// signature binds the device, session, timestamp, and payload hash; bounding
 /// the timestamp stops a captured offer from being replayed later.
@@ -827,7 +833,19 @@ impl SyncClient {
                                     })?,
                                 )
                                 .await?;
-                                Self::send_binary(&mut write, bytes).await?;
+                                // Stream the shard as chunks then a done marker,
+                                // so the Relay can forward each frame to the
+                                // browser as it arrives rather than buffering the
+                                // whole object before the first byte.
+                                for chunk in bytes.chunks(SHARD_STREAM_CHUNK_BYTES) {
+                                    Self::send_binary(&mut write, chunk.to_vec()).await?;
+                                }
+                                Self::send_envelope(
+                                    &mut write,
+                                    "shard_fetch_done",
+                                    &serde_json::json!({ "request_id": req.request_id }),
+                                )
+                                .await?;
                             }
                             Err(_) => {
                                 Self::send_envelope(
