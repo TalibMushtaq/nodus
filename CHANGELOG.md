@@ -1,5 +1,15 @@
 # Changelog
 
+## [2026-09-21] - Keep the web push registration fresh
+
+**What changed:** `providers/notification-provider.tsx` now owns push-registration reconciliation: on mount, whenever the category preferences change, and on a `PUSH_SUBSCRIPTION_EVENT`, it confirms the subscription and re-POSTs it to `/api/push/subscribe` with the current opt-outs. `public/sw.js` handles `pushsubscriptionchange` by messaging open tabs, which triggers the same reconcile (the worker holds no VAPID key). `components/browser-notifications.tsx` no longer posts on its own — enable/disable now only subscribe/unsubscribe and announce, leaving registration to the provider.
+
+**Why:** Web registered a subscription only when the user clicked Enable, so a browser-rotated endpoint (which silently breaks delivery) or a category change made on another tab/device went stale. Mobile already refreshes its token on every session/pref change (`syncPushRegistration`); this brings the web to parity.
+
+**Impact:** `apps/web/providers/notification-provider.tsx`, `apps/web/components/browser-notifications.tsx`, `apps/web/public/sw.js`, `docs/push-notifications.md`. No relay change. Verified: web `check-types` + `lint` clean, web tests 243 passed.
+
+**Follow-ups:** Registration is a best-effort upsert and may POST twice when a toggle lands at the same moment as a subscription change; harmless, but a debounce would remove the redundancy.
+
 ## [2026-09-21] - Local backup-complete notifications
 
 **What changed:** The web client now alerts when a file finishes backing up even without a Web Push subscription. `providers/notification-provider.tsx` derives the event from the cached catalog: on the relay's `CATALOG_CHANGED` signal it refreshes once and, alongside the conflict diff, reports files whose latest version's storage rollup is `stored` (every shard `NODE_STORED`). Alerts are keyed by `file_id:version` in `nodus.notifiedBackups`, the first pass only seeds, and the earlier `alertNewConflicts` logic was folded into the same pass so a single change fetches once.

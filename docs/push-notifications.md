@@ -99,6 +99,11 @@ permission-based **local** channel still works while the tab is open:
   downloads" category still alerts.
 - Tapping a notification focuses an open tab and routes it to the alert's page
   (`/downloads`, `/conflicts`, `/devices`, or `/files`).
+- The subscription is refreshed whenever the session loads or a category
+  toggle changes, mirroring mobile's `syncPushRegistration`. If the browser
+  rotates the subscription (`pushsubscriptionchange`), the worker pings an open
+  tab, which re-subscribes and re-registers — otherwise the relay would keep
+  sending to the dead endpoint.
 - The subscription is removed on sign-out, before the session is invalidated, so
   a shared browser stops receiving the previous account's alerts.
 
