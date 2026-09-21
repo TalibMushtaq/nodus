@@ -2,131 +2,258 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { Button } from "@repo/ui/primitives/button";
+import { SettingRow } from "@repo/ui/primitives/setting-row";
+import { Toggle } from "@repo/ui/primitives/toggle";
 
-// Browser push opt-in. Subscribes this browser to Web Push and registers the
-// subscription with the Relay through /api/push/*; the relay then delivers the
-// same account notifications it sends to mobile.
+import {
+  announcePushSubscriptionChange,
+  localNotificationsSupported,
+  notificationPermission,
+  requestNotificationPermission,
+} from "../lib/local-notifications";
+import { usePreferences, type NotificationPreferences } from "../lib/preferences";
+import {
+  browserPushSupported,
+  getPushSubscription,
+  registerPushSubscription,
+  removePushSubscriptionQuietly,
+  subscribeBrowserPush,
+  vapidPublicKey,
+} from "../lib/web-push";
 
-/** Convert the VAPID public key (base64url) into the bytes PushManager wants.
- *  Backed by a plain ArrayBuffer so it satisfies `applicationServerKey`'s
- *  `BufferSource` type (a bare Uint8Array widens to ArrayBufferLike). */
-function urlBase64ToUint8Array(base64: string): Uint8Array<ArrayBuffer> {
-  const padded = base64.padEnd(base64.length + ((4 - (base64.length % 4)) % 4), "=");
-  const normalised = padded.replace(/-/g, "+").replace(/_/g, "/");
-  const raw = atob(normalised);
-  const bytes = new Uint8Array(new ArrayBuffer(raw.length));
-  for (let i = 0; i < raw.length; i += 1) bytes[i] = raw.charCodeAt(i);
-  return bytes;
+// Browser notification opt-in. Enabling requests the Notification permission
+// (so in-tab alerts can show) and, when the deployment has VAPID keys, also
+// subscribes this browser to Web Push so the Relay can reach it with the tab
+// closed. Each category toggles independently; the three server categories are
+// mirrored to the Relay as push opt-outs.
+
+interface CategoryRow {
+  key: keyof NotificationPreferences;
+  label: string;
+  detail: string;
 }
 
+const CATEGORY_ROWS: CategoryRow[] = [
+  {
+    key: "notifyTransfers",
+    label: "Uploads & downloads",
+    detail: "When a transfer finishes or fails, in this browser",
+  },
+  {
+    key: "notifyConflicts",
+    label: "File conflicts",
+    detail: "When a file has a conflicting copy",
+  },
+  {
+    key: "notifyNodeOffline",
+    label: "Storage node offline",
+    detail: "When a paired storage node stops responding",
+  },
+  {
+    key: "notifySyncComplete",
+    label: "Backup complete",
+    detail: "When a file finishes syncing to a storage node",
+  },
+];
+
+const ALL_OFF: NotificationPreferences = {
+  notifyTransfers: false,
+  notifyConflicts: false,
+  notifyNodeOffline: false,
+  notifySyncComplete: false,
+};
+
+const ALL_ON: NotificationPreferences = {
+  notifyTransfers: true,
+  notifyConflicts: true,
+  notifyNodeOffline: true,
+  notifySyncComplete: true,
+};
+
 export function BrowserNotifications() {
+  const { preferences, update } = usePreferences();
   const [supported, setSupported] = useState(false);
-  const [enabled, setEnabled] = useState(false);
+  const [pushCapable, setPushCapable] = useState(false);
+  const [permission, setPermission] = useState<NotificationPermission | "unsupported">(
+    "unsupported",
+  );
+  const [pushSubscribed, setPushSubscribed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  const pushConfigured = vapidPublicKey() !== null;
+  const granted = permission === "granted";
+  const anyOn = CATEGORY_ROWS.some((row) => preferences[row.key]);
+  const enabled = granted && anyOn;
 
   useEffect(() => {
-    const ok =
-      typeof navigator !== "undefined" &&
-      "serviceWorker" in navigator &&
-      "PushManager" in window;
+    const ok = localNotificationsSupported();
     // Deferred out of the effect body so checking support is not a synchronous
-    // setState (which can cascade a render on mount).
-    const initial = setTimeout(() => setSupported(ok), 0);
+    // setState (which can cascade a render on mount). `pushCapable` is detected
+    // here rather than at render so the server/client first pass agree.
+    const initial = setTimeout(() => {
+      setSupported(ok);
+      setPushCapable(browserPushSupported());
+      setPermission(notificationPermission());
+    }, 0);
     if (!ok) return () => clearTimeout(initial);
 
-    navigator.serviceWorker.register("/sw.js").catch(() => {
-      // Registration failures surface when the user tries to enable.
-    });
-    navigator.serviceWorker.ready
-      .then((registration) => registration.pushManager.getSubscription())
-      .then((subscription) => setEnabled(Boolean(subscription)))
-      .catch(() => setEnabled(false));
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.register("/sw.js").catch(() => {
+        // Registration failures surface when the user tries to enable.
+      });
+      navigator.serviceWorker.ready
+        .then((registration) => registration.pushManager.getSubscription())
+        .then((subscription) => setPushSubscribed(Boolean(subscription)))
+        .catch(() => setPushSubscribed(false));
+    }
     return () => clearTimeout(initial);
   }, []);
 
+  // Push opt-outs only need pushing to the Relay while a subscription exists;
+  // without one the toggles gate the local notifications alone.
+  const syncPushPrefs = useCallback(
+    async (next: NotificationPreferences) => {
+      if (!pushSubscribed) return;
+      const subscription = await getPushSubscription();
+      if (subscription) await registerPushSubscription(subscription, next);
+    },
+    [pushSubscribed],
+  );
+
+  const setCategory = useCallback(
+    async (key: keyof NotificationPreferences, value: boolean) => {
+      const next = { ...preferences, [key]: value };
+      update({ [key]: value } as Partial<NotificationPreferences>);
+      setError(null);
+      setNotice(null);
+      try {
+        await syncPushPrefs(next);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      }
+    },
+    [preferences, update, syncPushPrefs],
+  );
+
   const enable = useCallback(async () => {
-    const key = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY;
-    if (!key) {
-      setError("Browser notifications are not configured on this server.");
-      return;
-    }
     setBusy(true);
     setError(null);
+    setNotice(null);
     try {
-      const permission = await Notification.requestPermission();
-      if (permission !== "granted") {
-        setError("Notification permission was not granted.");
+      const result = await requestNotificationPermission();
+      setPermission(result);
+      if (result !== "granted") {
+        setError(
+          "Notification permission was not granted. Allow notifications for this site in your browser, then try again.",
+        );
         return;
       }
-      const registration = await navigator.serviceWorker.ready;
-      const subscription = await registration.pushManager.subscribe({
-        userVisibleOnly: true,
-        applicationServerKey: urlBase64ToUint8Array(key),
-      });
-      const res = await fetch("/api/push/subscribe", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(subscription.toJSON()),
-      });
-      if (!res.ok) throw new Error("Could not register this browser");
-      setEnabled(true);
+      // Turning notifications on restores every category.
+      update(ALL_ON);
+      // Local alerts work with permission alone; Web Push additionally needs an
+      // operator-provided VAPID key and PushManager support.
+      if (pushCapable && pushConfigured) {
+        const subscription = await subscribeBrowserPush(vapidPublicKey() as string);
+        await registerPushSubscription(subscription, ALL_ON);
+        setPushSubscribed(true);
+        announcePushSubscriptionChange();
+        setNotice(
+          "Notifications enabled, including alerts while this tab is closed.",
+        );
+      } else {
+        setNotice(
+          "In-browser notifications enabled. Alerts while the tab is closed need Web Push configured by the operator.",
+        );
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
     }
-  }, []);
+  }, [update, pushCapable, pushConfigured]);
 
   const disable = useCallback(async () => {
     setBusy(true);
     setError(null);
+    setNotice(null);
     try {
-      const registration = await navigator.serviceWorker.ready;
-      const subscription = await registration.pushManager.getSubscription();
-      if (subscription) {
-        await fetch("/api/push/unsubscribe", {
-          method: "DELETE",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ endpoint: subscription.endpoint }),
-        });
-        await subscription.unsubscribe();
-      }
-      setEnabled(false);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      await removePushSubscriptionQuietly();
+      setPushSubscribed(false);
+      announcePushSubscriptionChange();
+      update(ALL_OFF);
+      setNotice("Browser notifications turned off on this browser.");
     } finally {
       setBusy(false);
     }
-  }, []);
+  }, [update]);
 
   if (!supported) {
     return (
       <p className="text-xs text-muted-foreground px-1">
-        This browser does not support push notifications.
+        This browser does not support notifications.
       </p>
     );
   }
 
   return (
-    <div className="flex items-center justify-between gap-4 px-1">
-      <div>
-        <p className="text-sm text-foreground">Browser notifications</p>
-        <p className="text-[11px] text-muted-foreground mt-0.5">
-          {enabled
-            ? "This browser receives conflict, node-offline, and backup-complete alerts."
-            : "Get conflict, node-offline, and backup-complete alerts in this browser."}
-        </p>
-        {error && <p className="text-[11px] text-destructive mt-1" role="alert">{error}</p>}
+    <div>
+      <div className="flex items-center justify-between gap-4 py-1">
+        <div>
+          <p className="text-sm text-foreground">Browser notifications</p>
+          <p className="text-[11px] text-muted-foreground mt-0.5">
+            {enabled
+              ? pushSubscribed
+                ? "Alerts are shown in this browser, even when the tab is closed."
+                : "Alerts are shown while Nodus is open in this browser."
+              : "Get alerts for transfers, conflicts, node outages, and backups."}
+          </p>
+        </div>
+        <Button
+          variant={enabled ? "secondary" : "primary"}
+          size="sm"
+          onClick={enabled ? () => void disable() : () => void enable()}
+          disabled={busy}
+        >
+          {busy ? "Working…" : enabled ? "Disable" : "Enable"}
+        </Button>
       </div>
-      <Button
-        variant={enabled ? "secondary" : "primary"}
-        size="sm"
-        onClick={enabled ? () => void disable() : () => void enable()}
-        disabled={busy}
-      >
-        {busy ? "Working…" : enabled ? "Disable" : "Enable"}
-      </Button>
+
+      <div className="mt-1">
+        {CATEGORY_ROWS.map((row) => (
+          <SettingRow key={row.key} label={row.label} detail={row.detail}>
+            <Toggle
+              aria-label={row.label}
+              checked={preferences[row.key]}
+              disabled={!granted || busy}
+              onChange={(value) => void setCategory(row.key, value)}
+            />
+          </SettingRow>
+        ))}
+      </div>
+
+      {!pushCapable && (
+        <p className="text-[11px] text-muted-foreground mt-2">
+          This browser cannot receive alerts while closed; in-browser alerts still work.
+        </p>
+      )}
+      {pushCapable && !pushConfigured && (
+        <p className="text-[11px] text-muted-foreground mt-2">
+          Server-delivered alerts are unavailable because Web Push is not configured on this
+          deployment.
+        </p>
+      )}
+      {notice && (
+        <p className="text-[11px] text-muted-foreground mt-1" role="status">
+          {notice}
+        </p>
+      )}
+      {error && (
+        <p className="text-[11px] text-destructive mt-1" role="alert">
+          {error}
+        </p>
+      )}
     </div>
   );
 }
