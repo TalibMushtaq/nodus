@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { MessageTypes } from "@repo/protocol";
 
@@ -10,20 +10,21 @@ import { refreshCatalog } from "../lib/files";
 import {
   PUSH_SUBSCRIPTION_EVENT,
   configureLocalNotifications,
-  detectPushSubscribed,
   isLocalNotificationEnabled,
   notifyLocal,
 } from "../lib/local-notifications";
 import { usePreferences } from "../lib/preferences";
+import { getPushSubscription, registerPushSubscription } from "../lib/web-push";
 import { useAuth } from "./auth-provider";
 import { useWs } from "./ws-provider";
 
 // Keeps local browser notifications wired to real events for the whole signed-in
-// session. It mirrors the user's toggles into the notification module, registers
-// the service worker (the display surface), and watches the catalog globally —
-// the Conflicts page only polls while it is mounted, but an alert must fire
-// wherever the user happens to be. Two catalog-derived alerts are covered:
-// newly-flagged conflicts and files that finished backing up to a node.
+// session. It mirrors the user's toggles into the notification module, keeps the
+// Web Push registration fresh, registers the service worker (the display
+// surface), and watches the catalog globally — the Conflicts page only polls
+// while it is mounted, but an alert must fire wherever the user happens to be.
+// Two catalog-derived alerts are covered: newly-flagged conflicts and files that
+// finished backing up to a node.
 
 /** File ids already alerted for, so a re-poll does not re-notify. */
 const NOTIFIED_CONFLICTS_KEY = "nodus.notifiedConflicts";
@@ -50,7 +51,7 @@ function writeIdSet(key: string, ids: Set<string>): void {
 /**
  * Alert for conflicts not seen before. The first pass (`seedOnly`) only records
  * what already exists: a conflict that predates this tab must not alert on every
- * load. Returns the ids so the caller can persist the union in one write.
+ * load.
  */
 async function alertNewConflicts(rows: { fileId: string }[], seedOnly: boolean): Promise<void> {
   const ids = rows.map((row) => row.fileId);
@@ -91,6 +92,14 @@ export function NotificationProvider({ children }: { children: ReactNode }) {
   const { preferences } = usePreferences();
   const { device } = useAuth();
   const { on } = useWs();
+  const [pushSubscribed, setPushSubscribed] = useState(false);
+  // Latest preferences for `reconcilePush`, which is invoked from non-React
+  // callbacks (the push-change event / a worker message) and would otherwise
+  // close over a stale value.
+  const preferencesRef = useRef(preferences);
+  useEffect(() => {
+    preferencesRef.current = preferences;
+  }, [preferences]);
 
   // Mirror toggles into the module that non-React callers use.
   useEffect(() => {
@@ -106,22 +115,56 @@ export function NotificationProvider({ children }: { children: ReactNode }) {
     });
   }, []);
 
-  // Track the push subscription: while one is active the relay already delivers
-  // the server categories, so local delivery for those is suppressed to avoid
-  // doubles. Re-checked whenever the opt-in toggles it.
-  useEffect(() => {
-    let cancelled = false;
-    const sync = async () => {
-      const subscribed = await detectPushSubscribed();
-      if (!cancelled) configureLocalNotifications({ pushSubscribed: subscribed });
-    };
-    void sync();
-    window.addEventListener(PUSH_SUBSCRIPTION_EVENT, sync);
-    return () => {
-      cancelled = true;
-      window.removeEventListener(PUSH_SUBSCRIPTION_EVENT, sync);
-    };
+  // (Re)confirm the Web Push subscription and refresh its registration with the
+  // relay. Runs on mount, when the opt-in toggles it, and when the browser
+  // rotates the subscription (`pushsubscriptionchange` forwarded by the worker).
+  // Mobile refreshes its token on every session/pref change; this is the web
+  // counterpart, so a rotated endpoint or a changed opt-out does not go stale.
+  const reconcilePush = useCallback(async () => {
+    try {
+      const subscription = await getPushSubscription();
+      const subscribed = Boolean(subscription);
+      setPushSubscribed(subscribed);
+      configureLocalNotifications({ pushSubscribed: subscribed });
+      if (subscription) await registerPushSubscription(subscription, preferencesRef.current);
+    } catch {
+      // Best-effort: without a subscription the local channel still works.
+    }
   }, []);
+
+  useEffect(() => {
+    // Deferred out of the effect body: reconcilePush sets state once the
+    // subscription resolves, and a synchronous call here would cascade a render.
+    const initial = setTimeout(() => void reconcilePush(), 0);
+    window.addEventListener(PUSH_SUBSCRIPTION_EVENT, reconcilePush);
+    return () => {
+      clearTimeout(initial);
+      window.removeEventListener(PUSH_SUBSCRIPTION_EVENT, reconcilePush);
+    };
+  }, [reconcilePush]);
+
+  // Re-send the per-category opt-outs whenever a toggle changes on an active
+  // subscription, so the relay stops (or starts) delivering that category.
+  useEffect(() => {
+    if (!pushSubscribed) return;
+    void (async () => {
+      const subscription = await getPushSubscription();
+      if (subscription) await registerPushSubscription(subscription, preferences);
+    })();
+  }, [preferences, pushSubscribed]);
+
+  // A browser can rotate a subscription while the tab is open; the worker has no
+  // VAPID key, so it tells the app to re-subscribe + re-register.
+  useEffect(() => {
+    if (typeof navigator === "undefined" || !("serviceWorker" in navigator)) return;
+    const onMessage = (event: MessageEvent) => {
+      if ((event.data as { type?: string } | null)?.type === "pushsubscriptionchange") {
+        void reconcilePush();
+      }
+    };
+    navigator.serviceWorker.addEventListener("message", onMessage);
+    return () => navigator.serviceWorker.removeEventListener("message", onMessage);
+  }, [reconcilePush]);
 
   // Catalog watcher. `CATALOG_CHANGED` is the app's existing signal that the
   // Relay catalog moved; refresh once, then derive both alert classes from the

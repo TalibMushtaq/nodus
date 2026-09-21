@@ -36,6 +36,20 @@ self.addEventListener("push", (event) => {
   );
 });
 
+// The browser can rotate the push subscription on its own (e.g. a push-service
+// change). The worker holds no VAPID key, so it asks an open tab to re-subscribe
+// and re-register; otherwise the relay keeps sending to the dead endpoint. With
+// no open tab, the app reconciles on its next load instead.
+self.addEventListener("pushsubscriptionchange", (event) => {
+  event.waitUntil(
+    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((clients) => {
+      for (const client of clients) {
+        client.postMessage({ type: "pushsubscriptionchange" });
+      }
+    }),
+  );
+});
+
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
   const data = event.notification.data || {};

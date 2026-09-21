@@ -14,8 +14,6 @@ import {
 import { usePreferences, type NotificationPreferences } from "../lib/preferences";
 import {
   browserPushSupported,
-  getPushSubscription,
-  registerPushSubscription,
   removePushSubscriptionQuietly,
   subscribeBrowserPush,
   vapidPublicKey,
@@ -111,30 +109,16 @@ export function BrowserNotifications() {
     return () => clearTimeout(initial);
   }, []);
 
-  // Push opt-outs only need pushing to the Relay while a subscription exists;
-  // without one the toggles gate the local notifications alone.
-  const syncPushPrefs = useCallback(
-    async (next: NotificationPreferences) => {
-      if (!pushSubscribed) return;
-      const subscription = await getPushSubscription();
-      if (subscription) await registerPushSubscription(subscription, next);
-    },
-    [pushSubscribed],
-  );
-
+  // Push opt-outs are reconciled by NotificationProvider (which re-registers the
+  // subscription whenever the preferences change); toggling here only updates
+  // the stored preference.
   const setCategory = useCallback(
-    async (key: keyof NotificationPreferences, value: boolean) => {
-      const next = { ...preferences, [key]: value };
+    (key: keyof NotificationPreferences, value: boolean) => {
       update({ [key]: value } as Partial<NotificationPreferences>);
       setError(null);
       setNotice(null);
-      try {
-        await syncPushPrefs(next);
-      } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
-      }
     },
-    [preferences, update, syncPushPrefs],
+    [update],
   );
 
   const enable = useCallback(async () => {
@@ -155,8 +139,8 @@ export function BrowserNotifications() {
       // Local alerts work with permission alone; Web Push additionally needs an
       // operator-provided VAPID key and PushManager support.
       if (pushCapable && pushConfigured) {
-        const subscription = await subscribeBrowserPush(vapidPublicKey() as string);
-        await registerPushSubscription(subscription, ALL_ON);
+        await subscribeBrowserPush(vapidPublicKey() as string);
+        // NotificationProvider reconciles the registration and the push opt-outs.
         setPushSubscribed(true);
         announcePushSubscriptionChange();
         setNotice(
@@ -227,7 +211,7 @@ export function BrowserNotifications() {
               aria-label={row.label}
               checked={preferences[row.key]}
               disabled={!granted || busy}
-              onChange={(value) => void setCategory(row.key, value)}
+              onChange={(value) => setCategory(row.key, value)}
             />
           </SettingRow>
         ))}
