@@ -49,6 +49,23 @@ describe("parseMessage", () => {
     }
   });
 
+  it("validates a catalog_changed push from the Relay", () => {
+    const raw = envelopePayload(MessageTypes.CATALOG_CHANGED, {
+      event_ids: ["event-1"],
+      source: "device",
+    });
+
+    const result = parseMessage(raw);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.message.payload).toEqual({ event_ids: ["event-1"], source: "device" });
+    }
+    // A missing source is rejected: the field is required, not optional.
+    expect(
+      parseMessage(envelopePayload(MessageTypes.CATALOG_CHANGED, { event_ids: [] })).ok,
+    ).toBe(false);
+  });
+
   it("rejects a missing payload field for the message type", () => {
     const raw = envelopePayload(MessageTypes.SHARD_UPLOAD, {
       file_id: "file-42",

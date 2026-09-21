@@ -147,6 +147,8 @@ export {
   type EventBatchPayload,
   BatchAckPayloadSchema,
   type BatchAckPayload,
+  CatalogChangedPayloadSchema,
+  type CatalogChangedPayload,
   ReconcilePayloadSchema,
   type ReconcilePayload,
 } from "./messages/sync.js";

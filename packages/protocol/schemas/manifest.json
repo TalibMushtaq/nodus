@@ -24,6 +24,7 @@
     "sync_status": "sync_status.schema.json",
     "event_batch": "event_batch.schema.json",
     "batch_ack": "batch_ack.schema.json",
+    "catalog_changed": "catalog_changed.schema.json",
     "reconcile": "reconcile.schema.json",
     "snapshot_begin": "snapshot_begin.schema.json",
     "snapshot_chunk": "snapshot_chunk.schema.json",

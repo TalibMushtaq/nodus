@@ -242,6 +242,28 @@ func (h *Hub) SendToAccount(accountID string, msg []byte) {
 	}
 }
 
+// SendToDevices sends a message to every browser/device connection of the
+// account, skipping storage nodes. Nodes share the account registry but speak a
+// node-only message set, so a device-facing hint (e.g. catalog_changed) must
+// never reach them.
+func (h *Hub) SendToDevices(accountID string, msg []byte) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	if clients, ok := h.byAccount[accountID]; ok {
+		for _, c := range clients {
+			if c.NodeID != "" || c.DeviceID == "" {
+				continue
+			}
+			select {
+			case c.Send <- msg:
+			default:
+				log.Printf("[hub] warning: send buffer full for device=%s", c.DeviceID)
+			}
+		}
+	}
+}
+
 // SendToNode sends a message to a specific storage node if connected.
 func (h *Hub) SendToNode(nodeID string, msg []byte) bool {
 	h.mu.RLock()

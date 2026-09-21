@@ -30,6 +30,7 @@ import {
   EventBatchPayloadSchema,
   BatchAckPayloadSchema,
   ReconcilePayloadSchema,
+  CatalogChangedPayloadSchema,
 } from "./messages/sync.js";
 import {
   SnapshotBeginPayloadSchema,
@@ -77,6 +78,7 @@ export const MessageTypes = {
   SYNC_STATUS: "sync_status",
   EVENT_BATCH: "event_batch",
   BATCH_ACK: "batch_ack",
+  CATALOG_CHANGED: "catalog_changed",
   RECONCILE: "reconcile",
   SNAPSHOT_BEGIN: "snapshot_begin",
   SNAPSHOT_CHUNK: "snapshot_chunk",
@@ -146,6 +148,7 @@ export const MessagePayloadSchemas: Record<string, z.ZodType> = {
   [MessageTypes.SYNC_STATUS]: SyncStatusPayloadSchema,
   [MessageTypes.EVENT_BATCH]: EventBatchPayloadSchema,
   [MessageTypes.BATCH_ACK]: BatchAckPayloadSchema,
+  [MessageTypes.CATALOG_CHANGED]: CatalogChangedPayloadSchema,
   [MessageTypes.RECONCILE]: ReconcilePayloadSchema,
   [MessageTypes.SNAPSHOT_BEGIN]: SnapshotBeginPayloadSchema,
   [MessageTypes.SNAPSHOT_CHUNK]: SnapshotChunkPayloadSchema,

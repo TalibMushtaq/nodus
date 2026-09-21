@@ -1,5 +1,19 @@
 # Changelog
 
+## [2026-09-21] - Push catalog changes to browsers over the Relay WebSocket
+
+**What changed:** The Relay now tells an account's open browser sessions when the catalog may have changed, so the Files/Overview UI revalidates immediately instead of waiting for a poll.
+
+- Protocol (`packages/protocol`): new `catalog_changed` message type and `CatalogChangedPayloadSchema` (`event_ids: string[]`, `source: "device" | "node" | "system"`), registered in the envelope payload dispatch, exported, and emitted as `schemas/catalog_changed.schema.json` (manifest now 45 schemas).
+- Relay (`services/relay`): new `hub.SendToDevices(accountID, msg)` that fans out to browser/device connections only, skipping storage nodes (which share the account registry but speak a node-only message set). `HandleEventBatch` now broadcasts `catalog_changed` with the applied event ids after a device batch or a node batch commits at least one event.
+- Web (`apps/web/lib/use-files.ts`): subscribes to `catalog_changed` via `useWs` and silently revalidates (coalesced through a 150 ms timer). The fallback poll drops from 15 s to 60 s.
+
+**Why:** Catalog freshness relied on a 15 s poll on every open dashboard page; a change made on another device (or by the node after a buffer drain) could take up to 15 s to appear. The Relay already holds authenticated device sockets, so it can hint a revalidation directly. Only applied event ids are sent — never the encrypted payloads — because the Relay cannot project device-encrypted metadata; clients refetch `GET /files` / `GET /folders` over their session-authenticated HTTP path (design D).
+
+**Impact:** `packages/protocol` (message type + schema), `services/relay` (hub + sync handler), `apps/web` (`use-files.ts`). Additive: no existing message or endpoint changes, and a client that ignores `catalog_changed` still works via the poll. Nodes never receive the hint. Verified: protocol tests (64) + typecheck + lint, relay `go build`/`go vet`/`go test ./...`, web tests (226) + typecheck + lint.
+
+**Follow-ups:** The push is a coarse invalidation, not a diff, so two devices editing concurrently still take one refetch each. The node poll for `listNodes` in `files-client.tsx` (30 s) and the conflicts/devices/overview polls are untouched and could move to the same mechanism later. `SendToDevices` drops on a full send buffer (matching `SendToAccount`), so a wedged device falls back to the poll.
+
 ## [2026-09-21] - LAN shard downloads use an idle timeout instead of a 3-second deadline
 
 **What changed:** `NodeClient.fetchShard` no longer applies a fixed total timeout to a shard download. It now aborts only after `timeoutMs` of *no* progress, resetting the timer on each received chunk, and uses a dedicated `SHARD_IDLE_TIMEOUT_MS` (15 s) default rather than the 3 s probe budget.

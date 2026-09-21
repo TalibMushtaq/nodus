@@ -1,7 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { decryptName } from "@repo/core";
+import { MessageTypes } from "@repo/protocol";
 import type { DevicePublicIdentity } from "@repo/sdk";
 
 import { getCachedCatalog, getCachedFolders, type CatalogEntry, type FolderEntry } from "./catalog";
@@ -19,6 +20,7 @@ import {
 import { shortId } from "./format";
 import { isDownloadable, fileStorageState, latestSize, toSyncStatus, type FileEntryView } from "./file-view";
 import { useAuth } from "../providers/auth-provider";
+import { useWs } from "../providers/ws-provider";
 
 export type { FileEntryView } from "./file-view";
 
@@ -128,19 +130,24 @@ async function toFolderViews(entries: FolderEntry[], device: DevicePublicIdentit
  * revalidates against the Relay; on a failed refresh the cached copy is kept
  * and the error surfaced inline, matching the app's other data hooks.
  *
- * Revalidates on mount, manual refresh, and a silent background poll so that
- * node-driven changes appear without a reload: a file sitting in the Relay
- * buffer while the node is down flips to "stored on node" as soon as the node
- * reconnects and drains the buffer (the Relay promotes RELAY_BUFFERED →
- * NODE_STORED on the node's `verified` ack).
+ * Revalidates on mount, manual refresh, and the Relay's `catalog_changed` push
+ * (another device or the node applied a sync event), backed by a slow poll as a
+ * fallback for a dropped socket. A file sitting in the Relay buffer while the
+ * node is down flips to "stored on node" as soon as the node reconnects and
+ * drains the buffer (the Relay promotes RELAY_BUFFERED → NODE_STORED on the
+ * node's `verified` ack) and now announces that change over the socket.
  */
-export function useFiles(pollMs = 15_000) {
+export function useFiles(pollMs = 60_000) {
   const { device } = useAuth();
+  const { on } = useWs();
   const [files, setFiles] = useState<FileEntryView[]>([]);
   const [folders, setFolders] = useState<FolderView[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [reloadToken, setReloadToken] = useState(0);
+  // Debounce handle for pushed catalog invalidations (a burst of events
+  // coalesces into one refetch).
+  const pushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Pure refresh + view mapping. Returns the rendered rows plus whether the
   // Relay round-trip failed, and touches no state, so effects can consume it
@@ -208,6 +215,35 @@ export function useFiles(pollMs = 15_000) {
       clearInterval(timer);
     };
   }, [device, pollMs, load]);
+
+  // Relay push: the account's catalog may have changed (another device, or the
+  // node applying a sync event). Revalidate now instead of waiting for the
+  // fallback poll. Coalesced through a short timer so a burst of events causes
+  // one refetch, and silent so the cached list never flashes a spinner.
+  useEffect(() => {
+    if (!device) return;
+    let cancelled = false;
+    const off = on(MessageTypes.CATALOG_CHANGED, () => {
+      if (pushTimerRef.current !== null) return;
+      pushTimerRef.current = setTimeout(() => {
+        pushTimerRef.current = null;
+        void load().then(({ views, folderViews, error }) => {
+          if (cancelled) return;
+          if (!error) setError(null);
+          setFiles(views);
+          setFolders(folderViews);
+        });
+      }, 150);
+    });
+    return () => {
+      cancelled = true;
+      off();
+      if (pushTimerRef.current !== null) {
+        clearTimeout(pushTimerRef.current);
+        pushTimerRef.current = null;
+      }
+    };
+  }, [device, on, load]);
 
   const refresh = useCallback(() => {
     setLoading(true);

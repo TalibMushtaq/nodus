@@ -248,7 +248,7 @@ func handleIncomingEnvelope(
 		HandleSyncHello(ctx, c, env, pool, h)
 
 	case "event_batch":
-		HandleEventBatch(ctx, c, env, pool)
+		HandleEventBatch(ctx, c, env, pool, h)
 
 	case "snapshot_begin":
 		HandleSnapshotBegin(ctx, c, env, pool)

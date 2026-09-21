@@ -98,6 +98,15 @@ type BatchAckPayload struct {
 	LastOriginSequence *int64 `json:"last_origin_sequence,omitempty"`
 }
 
+// CatalogChangedPayload is the Relay → device catalog-change hint. It carries
+// only the applied event ids and their source; the Relay never projects the
+// (device-encrypted) event payloads, so the device revalidates `GET /files` /
+// `GET /folders` over its session-authenticated HTTP path instead.
+type CatalogChangedPayload struct {
+	EventIDs []string `json:"event_ids"`
+	Source   string   `json:"source"`
+}
+
 // deviceAllowedEventType is the Phase 14 device-emission whitelist. DEVICE_REVOKED
 // is server-only (revocation goes through DELETE /devices/{id}). FOLDER_* and
 // FOLDER_KEY_ENVELOPE_ADDED are admitted because both have projections in
@@ -531,12 +540,39 @@ func batchTouchesConflicts(events []SyncEventItem) bool {
 	return false
 }
 
+// broadcastCatalogChanged hints the account's browser devices that the catalog
+// may have changed, so they can revalidate `GET /files` / `GET /folders`
+// instead of polling. Only devices receive it: nodes share the account registry
+// but speak a node-only message set and pull changes via their own sync loop.
+// Fire-and-forget: a slow or full device buffer must never block the apply.
+func broadcastCatalogChanged(h *hub.Hub, accountID string, eventIDs []string, source string) {
+	if h == nil || accountID == "" || len(eventIDs) == 0 {
+		return
+	}
+	payload, err := json.Marshal(CatalogChangedPayload{EventIDs: eventIDs, Source: source})
+	if err != nil {
+		return
+	}
+	env, err := json.Marshal(ProtocolEnvelope{
+		Type:          "catalog_changed",
+		SchemaVersion: "1.0.0",
+		MessageID:     uuid.NewString(),
+		Timestamp:     time.Now().UTC().Format(time.RFC3339),
+		Payload:       payload,
+	})
+	if err != nil {
+		return
+	}
+	h.SendToDevices(accountID, env)
+}
+
 // HandleEventBatch applies an incoming batch of events idempotently with conflict detection.
 func HandleEventBatch(
 	ctx context.Context,
 	c *hub.Client,
 	env ProtocolEnvelope,
 	pool *db.Pool,
+	h *hub.Hub,
 ) {
 	if pool == nil || c.AccountID == "" {
 		return
@@ -564,7 +600,11 @@ func HandleEventBatch(
 	// advance its sequence past an unapplied event. Node batches keep the
 	// original per-event transaction path unchanged.
 	if c.NodeID == "" {
-		_ = sendEnvelope(c, "batch_ack", applyDeviceBatch(ctx, pool, c.AccountID, c.DeviceID, batch.Events))
+		ack := applyDeviceBatch(ctx, pool, c.AccountID, c.DeviceID, batch.Events)
+		_ = sendEnvelope(c, "batch_ack", ack)
+		// A device's own upload may have changed the catalog; the account's
+		// other open browsers should revalidate without waiting for a poll.
+		broadcastCatalogChanged(h, c.AccountID, ack.AppliedEventIDs, "device")
 		return
 	}
 
@@ -581,6 +621,9 @@ func HandleEventBatch(
 	_ = sendEnvelope(c, "batch_ack", BatchAckPayload{
 		AppliedEventIDs: appliedIDs,
 	})
+	// Node-originated changes (e.g. a shard reaching NODE_STORED and projecting
+	// a mutation) should also refresh any open browser catalogs.
+	broadcastCatalogChanged(h, c.AccountID, appliedIDs, "node")
 }
 
 // applyDeviceBatch applies a whole device-originated batch in one transaction

@@ -105,3 +105,22 @@ export const ReconcilePayloadSchema = z.object({
 });
 
 export type ReconcilePayload = z.infer<typeof ReconcilePayloadSchema>;
+
+// ── Catalog Changed ────────────────────────────────────────────────
+
+/**
+ * Relay → device push (design D): the account's catalog may have changed, so a
+ * client should refresh its locally cached catalog. Deliberately opaque — it
+ * carries only the applied sync event ids, never the catalog itself, because
+ * event payloads are device-encrypted metadata the Relay cannot project. The
+ * device responds by refetching `GET /files` / `GET /folders` over its normal
+ * session-authenticated HTTP path, so this is a hint to revalidate, not data.
+ */
+export const CatalogChangedPayloadSchema = z.object({
+  /** Sync event ids that were applied, when known. */
+  event_ids: z.array(z.string()),
+  /** Which side produced the change; observability only, not semantic. */
+  source: z.enum(["device", "node", "system"]),
+});
+
+export type CatalogChangedPayload = z.infer<typeof CatalogChangedPayloadSchema>;

@@ -53,6 +53,41 @@ func TestHubClientLifecycle(t *testing.T) {
 	}
 }
 
+// SendToDevices must reach browser/device connections but never storage nodes,
+// which share the same account registry but speak a node-only message set.
+func TestSendToDevicesSkipsNodes(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	h := hub.New(nil)
+	go h.Run(ctx)
+
+	device := &hub.Client{
+		Hub: h, ConnID: "dev-conn", AccountID: "acc-1", DeviceID: "dev-1",
+		Send: make(chan []byte, 4),
+	}
+	node := &hub.Client{
+		Hub: h, ConnID: "node-conn", AccountID: "acc-1", NodeID: "node-1",
+		Send: make(chan []byte, 4),
+	}
+	h.Register(device)
+	h.Register(node)
+	time.Sleep(20 * time.Millisecond)
+
+	h.SendToDevices("acc-1", []byte("catalog_changed"))
+
+	select {
+	case <-device.Send:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("device did not receive the device-only broadcast")
+	}
+	select {
+	case msg := <-node.Send:
+		t.Fatalf("node received a device-only broadcast: %s", msg)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
 func TestClientRateLimitAllowed(t *testing.T) {
 	c := &hub.Client{}
 	now := time.Now()

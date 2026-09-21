@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "event_ids": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "source": {
+      "type": "string",
+      "enum": [
+        "device",
+        "node",
+        "system"
+      ]
+    }
+  },
+  "required": [
+    "event_ids",
+    "source"
+  ],
+  "additionalProperties": false
+}
