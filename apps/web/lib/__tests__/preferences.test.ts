@@ -1,7 +1,8 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   DEFAULT_PREFERENCES,
+  PREFERENCES_EVENT,
   loadPreferences,
   normalizePreferences,
   savePreferences,
@@ -42,6 +43,24 @@ describe("normalizePreferences", () => {
     expect(normalized.filesView).toBe(DEFAULT_PREFERENCES.filesView);
     expect(normalized.filesIconSize).toBe(DEFAULT_PREFERENCES.filesIconSize);
   });
+
+  it("defaults notification toggles on for a legacy record", () => {
+    const normalized = normalizePreferences({ autoSync: true, maxNodes: 5 });
+    expect(normalized.notifyTransfers).toBe(true);
+    expect(normalized.notifyConflicts).toBe(true);
+    expect(normalized.notifyNodeOffline).toBe(true);
+    expect(normalized.notifySyncComplete).toBe(true);
+  });
+
+  it("preserves a stored opt-out instead of flipping it back on", () => {
+    const normalized = normalizePreferences({
+      autoSync: true,
+      maxNodes: 5,
+      notifyConflicts: false,
+    });
+    expect(normalized.notifyConflicts).toBe(false);
+    expect(normalized.notifyTransfers).toBe(true);
+  });
 });
 
 describe("loadPreferences/savePreferences", () => {
@@ -71,5 +90,14 @@ describe("loadPreferences/savePreferences", () => {
     const loaded = loadPreferences();
     expect(loaded.filesView).toBe(DEFAULT_PREFERENCES.filesView);
     expect(loaded.filesIconSize).toBe(DEFAULT_PREFERENCES.filesIconSize);
+    expect(loaded.notifyConflicts).toBe(true);
+  });
+
+  it("broadcasts a save so other usePreferences instances stay in sync", () => {
+    const listener = vi.fn();
+    window.addEventListener(PREFERENCES_EVENT, listener);
+    savePreferences({ ...DEFAULT_PREFERENCES, notifyTransfers: false });
+    window.removeEventListener(PREFERENCES_EVENT, listener);
+    expect(listener).toHaveBeenCalledTimes(1);
   });
 });

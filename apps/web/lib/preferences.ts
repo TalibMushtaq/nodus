@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { DEFAULT_SHARD_SIZE_BYTES, resolveShardSize } from "@repo/core";
 
 // Sync preferences for the web client. `autoSync`/`maxNodes` are cosmetic/UX
@@ -14,7 +14,19 @@ export type FilesView = "list" | "grid";
 /** Grid tile icon scale — small/medium/large. */
 export type FilesIconSize = "sm" | "md" | "lg";
 
-export interface SyncPreferences {
+/**
+ * Which alerts the browser is willing to show. `notifyTransfers` is local-only
+ * (upload/download outcomes); the other three mirror the Relay push categories
+ * and drive both the local fallback and the relay subscription's opt-outs.
+ */
+export interface NotificationPreferences {
+  notifyTransfers: boolean;
+  notifyConflicts: boolean;
+  notifyNodeOffline: boolean;
+  notifySyncComplete: boolean;
+}
+
+export interface SyncPreferences extends NotificationPreferences {
   autoSync: boolean;
   maxNodes: number;
   /** Plaintext bytes per shard; see @repo/core `resolveShardSize`. */
@@ -44,6 +56,11 @@ export const DEFAULT_PREFERENCES: SyncPreferences = {
   shardSizeBytes: configuredShardSize(),
   filesView: "list",
   filesIconSize: "md",
+  // Alerts default on; local delivery still requires the browser permission.
+  notifyTransfers: true,
+  notifyConflicts: true,
+  notifyNodeOffline: true,
+  notifySyncComplete: true,
 };
 
 const STORAGE_KEY = "nodus.preferences";
@@ -78,6 +95,12 @@ export function normalizePreferences(prefs: Partial<SyncPreferences>): SyncPrefe
     filesIconSize: isFilesIconSize(prefs.filesIconSize)
       ? prefs.filesIconSize
       : DEFAULT_PREFERENCES.filesIconSize,
+    // `?? ` (not `||`) so a stored `false` survives the migration: opting a
+    // category out must not be silently flipped back on by a reload.
+    notifyTransfers: prefs.notifyTransfers ?? DEFAULT_PREFERENCES.notifyTransfers,
+    notifyConflicts: prefs.notifyConflicts ?? DEFAULT_PREFERENCES.notifyConflicts,
+    notifyNodeOffline: prefs.notifyNodeOffline ?? DEFAULT_PREFERENCES.notifyNodeOffline,
+    notifySyncComplete: prefs.notifySyncComplete ?? DEFAULT_PREFERENCES.notifySyncComplete,
   };
 }
 
@@ -96,9 +119,16 @@ export function loadPreferences(): SyncPreferences {
   }
 }
 
+/** Fired after a save so every `usePreferences()` instance stays in sync. */
+export const PREFERENCES_EVENT = "nodus:preferences-changed";
+
 export function savePreferences(preferences: SyncPreferences): void {
   if (typeof window === "undefined") return;
   window.localStorage.setItem(STORAGE_KEY, JSON.stringify(preferences));
+  // React state is per-instance: Settings and NotificationProvider each hold
+  // their own copy. Broadcasting the record keeps an alert toggle changed in one
+  // place from going stale in the other until a remount.
+  window.dispatchEvent(new CustomEvent(PREFERENCES_EVENT, { detail: preferences }));
 }
 
 export function clearPreferences(): void {
@@ -112,18 +142,31 @@ export function clearPreferences(): void {
  */
 export function usePreferences() {
   const [preferences, setPreferences] = useState<SyncPreferences>(DEFAULT_PREFERENCES);
+  // Read-modify-write happens outside the state updater: persisting (and the
+  // change broadcast) is a side effect, and React may invoke an updater during
+  // render. The ref also keeps back-to-back updates from racing a re-render.
+  const preferencesRef = useRef(preferences);
 
   useEffect(() => {
+    const loaded = loadPreferences();
+    preferencesRef.current = loaded;
     // eslint-disable-next-line react-hooks/set-state-in-effect -- deliberate post-SSR bootstrap
-    setPreferences(loadPreferences());
+    setPreferences(loaded);
+    const sync = (event: Event) => {
+      const detail = (event as CustomEvent<SyncPreferences>).detail;
+      const next = detail ?? loadPreferences();
+      preferencesRef.current = next;
+      setPreferences(next);
+    };
+    window.addEventListener(PREFERENCES_EVENT, sync);
+    return () => window.removeEventListener(PREFERENCES_EVENT, sync);
   }, []);
 
   const update = useCallback((patch: Partial<SyncPreferences>) => {
-    setPreferences((previous) => {
-      const next = { ...previous, ...patch };
-      savePreferences(next);
-      return next;
-    });
+    const next = { ...preferencesRef.current, ...patch };
+    preferencesRef.current = next;
+    savePreferences(next);
+    setPreferences(next);
   }, []);
 
   return { preferences, update };
