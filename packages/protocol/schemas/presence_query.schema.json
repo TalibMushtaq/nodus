@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "request_id": {
+      "type": "string"
+    },
+    "peer_id": {
+      "type": "string"
+    },
+    "kind": {
+      "type": "string",
+      "enum": [
+        "node",
+        "device"
+      ]
+    }
+  },
+  "required": [
+    "request_id",
+    "peer_id",
+    "kind"
+  ],
+  "additionalProperties": false
+}

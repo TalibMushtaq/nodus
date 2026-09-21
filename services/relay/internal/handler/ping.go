@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"sync"
@@ -68,6 +69,132 @@ type PingResponse struct {
 	Reason string `json:"reason,omitempty"`
 }
 
+// peerOwned reports whether `peerID` is an ACTIVE node or device this account
+// owns. Shared by the HTTP probe and the WS presence query so both enforce the
+// same ownership rule.
+func peerOwned(ctx context.Context, pool *db.Pool, accountID, peerID, kind string) (bool, error) {
+	var owned bool
+	if kind == "node" {
+		return owned, pool.QueryRow(ctx,
+			`SELECT EXISTS(SELECT 1 FROM storage_nodes WHERE node_id=$1 AND account_id=$2 AND status='ACTIVE')`,
+			peerID, accountID).Scan(&owned)
+	}
+	return owned, pool.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM devices WHERE device_id=$1 AND account_id=$2 AND status='ACTIVE')`,
+		peerID, accountID).Scan(&owned)
+}
+
+// PresenceQueryPayload is the device → Relay WS reachability request.
+type PresenceQueryPayload struct {
+	RequestID string `json:"request_id"`
+	PeerID    string `json:"peer_id"`
+	Kind      string `json:"kind"`
+}
+
+// PresenceResultPayload is the Relay → device WS reachability answer.
+type PresenceResultPayload struct {
+	RequestID string `json:"request_id"`
+	PeerID    string `json:"peer_id"`
+	Kind      string `json:"kind"`
+	Online    bool   `json:"online"`
+	RTTMs     int64  `json:"rtt_ms,omitempty"`
+	Reason    string `json:"reason,omitempty"`
+}
+
+// HandlePresenceQuery answers a device's WS reachability probe by forwarding a
+// `ping` to the target over its socket and replying with presence_result. It is
+// the WebSocket counterpart of PingPeer, reusing the same ownership check and
+// PingTracker so both paths report the same verdict. Device-only: the caller
+// must be a session-authenticated browser/device, never a storage node.
+func HandlePresenceQuery(
+	ctx context.Context,
+	c *hub.Client,
+	env ProtocolEnvelope,
+	pool *db.Pool,
+	h *hub.Hub,
+	tracker *PingTracker,
+) {
+	if pool == nil || h == nil || tracker == nil || c == nil {
+		return
+	}
+	if c.NodeID != "" || c.DeviceID == "" || c.AccountID == "" {
+		return
+	}
+
+	var q PresenceQueryPayload
+	if err := json.Unmarshal(env.Payload, &q); err != nil || q.RequestID == "" || q.PeerID == "" {
+		return
+	}
+	if q.Kind != "node" && q.Kind != "device" {
+		return
+	}
+
+	// Reply on the requester's own socket. Never awaited by the read loop.
+	reply := func(rttMs int64, online bool, reason string) {
+		_ = sendEnvelope(c, "presence_result", PresenceResultPayload{
+			RequestID: q.RequestID,
+			PeerID:    q.PeerID,
+			Kind:      q.Kind,
+			Online:    online,
+			RTTMs:     rttMs,
+			Reason:    reason,
+		})
+	}
+
+	owned, err := peerOwned(ctx, pool, c.AccountID, q.PeerID, q.Kind)
+	if err != nil {
+		reply(0, false, "lookup_failed")
+		return
+	}
+	if !owned {
+		reply(0, false, "not_found")
+		return
+	}
+
+	correlationID := uuid.NewString()
+	ch, cancel := tracker.register(correlationID)
+	defer cancel()
+
+	payload, err := json.Marshal(map[string]string{"id": correlationID})
+	if err != nil {
+		reply(0, false, "encode_failed")
+		return
+	}
+	raw, err := json.Marshal(ProtocolEnvelope{
+		Type:          "ping",
+		SchemaVersion: "1.0.0",
+		MessageID:     uuid.NewString(),
+		Timestamp:     time.Now().UTC().Format(time.RFC3339),
+		Payload:       payload,
+	})
+	if err != nil {
+		reply(0, false, "encode_failed")
+		return
+	}
+
+	started := time.Now()
+	delivered := false
+	if q.Kind == "node" {
+		delivered = h.SendToNode(q.PeerID, raw)
+	} else {
+		delivered = h.SendToDevice(q.PeerID, raw)
+	}
+	if !delivered {
+		reply(0, false, "offline")
+		return
+	}
+
+	select {
+	case <-ch:
+		reply(time.Since(started).Milliseconds(), true, "")
+	case <-time.After(pingTimeout):
+		reply(0, false, "timeout")
+	case <-ctx.Done():
+		// Caller/relay shutting down; the deferred cleanup drops the waiter.
+		return
+	}
+}
+
 // HandlePong resolves an outstanding manual ping. Both storage nodes and
 // browser/mobile devices echo the ping, so this must accept either.
 func HandlePong(tracker *PingTracker, env ProtocolEnvelope) {
@@ -109,21 +236,10 @@ func PingPeer(pool *db.Pool, h *hub.Hub, tracker *PingTracker, kind string) http
 		}
 
 		// Only probe a peer this account actually owns and that is ACTIVE.
-		var owned bool
-		if kind == "node" {
-			if err := pool.QueryRow(r.Context(),
-				`SELECT EXISTS(SELECT 1 FROM storage_nodes WHERE node_id=$1 AND account_id=$2 AND status='ACTIVE')`,
-				peerID, accountID).Scan(&owned); err != nil {
-				respondError(w, http.StatusInternalServerError, "failed to look up node")
-				return
-			}
-		} else {
-			if err := pool.QueryRow(r.Context(),
-				`SELECT EXISTS(SELECT 1 FROM devices WHERE device_id=$1 AND account_id=$2 AND status='ACTIVE')`,
-				peerID, accountID).Scan(&owned); err != nil {
-				respondError(w, http.StatusInternalServerError, "failed to look up device")
-				return
-			}
+		owned, err := peerOwned(r.Context(), pool, accountID, peerID, kind)
+		if err != nil {
+			respondError(w, http.StatusInternalServerError, "failed to look up peer")
+			return
 		}
 		if !owned {
 			respondError(w, http.StatusNotFound, "peer not found")

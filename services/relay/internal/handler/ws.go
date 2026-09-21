@@ -233,6 +233,11 @@ func handleIncomingEnvelope(
 		// handler. Handled before the node-only guard because devices reply too.
 		HandlePong(pingTracker, env)
 
+	case "presence_query":
+		// Device-initiated reachability probe over the socket, the WS
+		// counterpart of the HTTP ping endpoints.
+		HandlePresenceQuery(ctx, c, env, pool, h, pingTracker)
+
 	case "shard_fetch_result":
 		// Design A: node's answer to a relay-mediated shard fetch. Resolved by
 		// the registry that correlated the request with the node's outbound WS.

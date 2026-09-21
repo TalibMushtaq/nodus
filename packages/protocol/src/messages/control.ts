@@ -81,6 +81,38 @@ export const PongPayloadSchema = z.object({
 
 export type PongPayload = z.infer<typeof PongPayloadSchema>;
 
+// ── Presence (WS reachability probe) ───────────────────────────────
+
+/**
+ * Device → Relay reachability probe: the WebSocket counterpart of the HTTP
+ * `POST /devices/{id}/ping` and `POST /nodes/{id}/ping` endpoints. The Relay
+ * forwards a `ping` to the target over its socket and reports the round trip
+ * back as a `presence_result` correlated by `request_id`. Keeping this on the
+ * device's existing socket removes an HTTP hop per probe.
+ */
+export const PresenceQueryPayloadSchema = z.object({
+  /** Correlation id echoed in the matching presence_result. */
+  request_id: z.string(),
+  /** The node or device to probe. */
+  peer_id: z.string(),
+  kind: z.enum(["node", "device"]),
+});
+
+export type PresenceQueryPayload = z.infer<typeof PresenceQueryPayloadSchema>;
+
+export const PresenceResultPayloadSchema = z.object({
+  request_id: z.string(),
+  peer_id: z.string(),
+  kind: z.enum(["node", "device"]),
+  online: z.boolean(),
+  /** Round-trip time in milliseconds; present only when online. */
+  rtt_ms: z.number().int().min(0).optional(),
+  /** Why the probe failed: "offline" (no live connection) or "timeout". */
+  reason: z.string().optional(),
+});
+
+export type PresenceResultPayload = z.infer<typeof PresenceResultPayloadSchema>;
+
 // ── Node Auth (Phase 8) ────────────────────────────────────────────
 
 /**

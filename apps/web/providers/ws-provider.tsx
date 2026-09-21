@@ -16,6 +16,7 @@ import type { ConnectionState, WsOutgoing } from "@repo/relay-client";
 import { MessageTypes } from "@repo/protocol";
 
 import { useAuth } from "./auth-provider";
+import { setPresenceBridge } from "../lib/presence-bridge";
 
 // WsProvider owns the app's single WebSocket connection to the Relay. The
 // RelayWsClient is constructed inside the effect (not memoized at render) so
@@ -117,6 +118,18 @@ export function WsProvider({ children }: { children: ReactNode }) {
       }
     });
   }, [on, send]);
+
+  // Expose this socket to non-hook callers (lib/ping.ts) so reachability probes
+  // travel over the existing WS instead of an HTTP hop per probe. `isConnected`
+  // reads the live status so a caller can prefer WS and fall back to HTTP.
+  useEffect(() => {
+    setPresenceBridge({
+      send: (message) => send({ type: message.type, payload: message.payload }),
+      subscribe: (type, handler) => on(type, handler),
+      isConnected: () => status === "connected",
+    });
+    return () => setPresenceBridge(null);
+  }, [send, on, status]);
 
   return <WsContext.Provider value={value}>{children}</WsContext.Provider>;
 }

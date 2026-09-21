@@ -1,5 +1,19 @@
 # Changelog
 
+## [2026-09-21] - Reachability probes over the Relay WebSocket
+
+**What changed:** The Devices page's manual Ping now travels over the browser's existing Relay socket instead of an HTTP round trip.
+
+- Protocol (`packages/protocol`): new `presence_query` (device → Relay) and `presence_result` (Relay → device) message types with payload schemas, registered in the envelope dispatch, exported, and emitted as JSON Schema (manifest now 47 schemas).
+- Relay (`services/relay/internal/handler/ping.go`): new `HandlePresenceQuery` validates the caller is a session-authenticated device, the target is an ACTIVE node/device the account owns, forwards the existing `ping` over the target's socket, and replies with `presence_result` (`online`, `rtt_ms`, `reason`). The ownership query is extracted into `peerOwned`, shared with the HTTP `PingPeer` so both paths agree. Dispatched from `ws.go` alongside `pong`.
+- Web: new `apps/web/lib/presence-bridge.ts` lets non-hook modules use the socket the `WsProvider` owns (registered while mounted, cleared on unmount). `lib/ping.ts` prefers the WS probe (4 s budget) and falls back to the HTTP `/api/{nodes,devices}/ping` path when the socket is unavailable or the probe goes unanswered.
+
+**Why:** Every Ping click cost a browser → Next BFF → Relay HTTP round trip even though both peers already hold Relay sockets. Running the probe on the caller's own socket removes that hop; keeping the HTTP endpoint as a fallback preserves non-browser callers and a dropped-socket path.
+
+**Impact:** `packages/protocol`, `services/relay`, `apps/web` (`lib/ping.ts`, `lib/presence-bridge.ts`, `providers/ws-provider.tsx`, tests). The existing Relay REST endpoints and BFF ping routes are unchanged and still work. No storage or node change. Verified: protocol tests (64) + typecheck + lint; relay `go build`/`go vet`/`go test ./...`; web tests (228) + typecheck + lint.
+
+**Follow-ups:** This replaces on-demand probes only. The periodic `GET /api/nodes` poll (30 s, `use-node-status.ts`) and the devices/nodes catalog polls still poll; a proactive `presence_changed` push emitted on socket register/unregister would remove those and is the natural next step now that the message channel exists.
+
 ## [2026-09-21] - Push catalog changes to browsers over the Relay WebSocket
 
 **What changed:** The Relay now tells an account's open browser sessions when the catalog may have changed, so the Files/Overview UI revalidates immediately instead of waiting for a poll.
