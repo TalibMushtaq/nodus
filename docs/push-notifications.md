@@ -1,16 +1,18 @@
 # Push Notifications
 
-Nodus delivers three account notifications — **conflict flagged**, **storage
-node offline**, and **backup complete** — over two channels:
+Nodus delivers four alerts — **transfer finished**, **conflict flagged**,
+**storage node offline**, and **backup complete** — through two channels:
 
 | Channel | Recipient store | Transport |
 | --- | --- | --- |
 | Mobile | `push_tokens` (Expo token per device) | Expo Push API |
-| Web | `web_push_subscriptions` (per browser endpoint) | Web Push (VAPID) |
+| Web (relay) | `web_push_subscriptions` (per browser endpoint) | Web Push (VAPID) |
+| Web (local) | none — shown by the tab itself | Notification API |
 
-Both channels honour the same per-category opt-outs, and every payload is
+Both relay channels honour the same per-category opt-outs, and every payload is
 generic — file names are encrypted (ADR-0001), so a notification never contains
-a decrypted name.
+a decrypted name. The local web channel covers the same browser while Nodus is
+open; it is the fallback when Web Push is not configured.
 
 The feature is entirely optional: with no tokens/subscriptions registered and no
 credentials configured, the relay logs nothing and sends nothing.
@@ -33,6 +35,10 @@ Generate a VAPID key pair:
 ```sh
 npx web-push generate-vapid-keys
 ```
+
+For local development this repo ships a throwaway pair: `services/relay/.env`
+holds the private key (sourced by the `relay` dev script) and
+`apps/web/.env.local` holds the matching `NEXT_PUBLIC_VAPID_PUBLIC_KEY`.
 
 ## Mobile (Expo)
 
@@ -69,13 +75,37 @@ Activity tab.
 1. Set `NEXT_PUBLIC_VAPID_PUBLIC_KEY` in the web app (same public key as the
    relay; see `apps/web/.env.example`).
 2. Users opt in from **Settings → Notifications → Enable**. The browser
-   registers `/sw.js`, subscribes via `PushManager`, and posts the subscription
-   to `/api/push/subscribe` (a session-cookie proxy to the relay).
+   registers `/sw.js`, requests the Notification permission, and — when VAPID is
+   configured — subscribes via `PushManager` and posts the subscription to
+   `/api/push/subscribe` (a session-cookie proxy to the relay). Each category
+   has its own toggle; the three server categories are sent to the relay as
+   opt-outs.
 3. Web Push requires a **secure context**: HTTPS in production, or `localhost`
    in development. A plain-HTTP LAN origin will not offer `PushManager`.
 
+When Web Push is not configured (or the browser lacks `PushManager`), the
+permission-based **local** channel still works while the tab is open:
+
+- `lib/local-notifications.ts` is a module singleton gated by the user's toggles
+  and the Notification permission. It draws through the service worker so the
+  `notificationclick` handler owns focus + routing, and falls back to a bare
+  `Notification` when no worker is registered.
+- Transfers alert from `lib/transfer-log.ts` (`finishTransfer`); conflicts are
+  watched globally by `providers/notification-provider.tsx` on the relay's
+  `CATALOG_CHANGED` signal; node outages are detected in `useNodeStatus` on the
+  online→offline edge (with a cooldown).
+- While a push subscription is active, the three server categories are left to
+  the relay so the same event is not shown twice; the local-only "Uploads &
+  downloads" category still alerts.
+- Tapping a notification focuses an open tab and routes it to the alert's page
+  (`/downloads`, `/conflicts`, `/devices`, or `/files`).
+- The subscription is removed on sign-out, before the session is invalidated, so
+  a shared browser stops receiving the previous account's alerts.
+
 ## Trigger behaviour
 
+- **Transfer finished** — local only. The web client alerts when a recorded
+  upload/download reaches a terminal outcome; mobile does not surface transfers.
 - **Conflict flagged** — after any event batch that can flag a version, the
   relay announces each newly-conflicted file once (`conflict_notices`); a
   resolution clears the notice so a later conflict re-alerts.

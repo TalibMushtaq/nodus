@@ -1,5 +1,27 @@
 # Changelog
 
+## [2026-09-21] - Browser notifications: local alerts, category toggles, push cleanup
+
+**What changed:** The web client now shows notifications for four alert classes and lets each be toggled independently, and the existing Web Push opt-in is fully wired.
+
+- New `apps/web/lib/local-notifications.ts`: a module singleton (same pattern as `presence-bridge`) that gates on the Notification permission + per-category preference and, when a Web Push subscription is active, defers the three server categories to the relay so events are not shown twice. Delivery uses `registration.showNotification` (reusing `public/sw.js`'s click handler) with a `new Notification` fallback.
+- New `apps/web/providers/notification-provider.tsx`, mounted in the dashboard layout: mirrors the user's toggles into the module, registers `/sw.js`, tracks the push-subscription state, and watches `CATALOG_CHANGED` to alert on new conflicts (first pass seeds without alerting).
+- New `apps/web/lib/web-push.ts`: PushManager + `/api/push/*` helpers (`subscribeBrowserPush`, `registerPushSubscription`, `unregisterPushSubscription`, `removePushSubscriptionQuietly`, `urlBase64ToUint8Array`, `pushPrefsBody`), extracted from the Settings component.
+- `apps/web/lib/preferences.ts`: `SyncPreferences` gains `notifyTransfers` / `notifyConflicts` / `notifyNodeOffline` / `notifySyncComplete` (default true, backfilled with `??` so a stored opt-out survives), and `savePreferences` now broadcasts `nodus:preferences-changed` so every `usePreferences()` instance stays in sync.
+- `apps/web/lib/transfer-log.ts`: `finishTransfer` emits a local notification for upload/download outcomes via `notifyTransferOutcome`.
+- `apps/web/lib/use-node-status.ts`: alerts on a node's online→offline edge with a 10-minute per-node cooldown; the first poll only seeds the baseline.
+- `apps/web/components/browser-notifications.tsx`: reworked into a master Enable/Disable (permission + push subscription) plus four category toggles; sends the relay's push opt-outs on change and explains when Web Push is unavailable while local alerts still work.
+- `apps/web/providers/auth-provider.tsx`: `handleLogout` removes the browser's push subscription before invalidating the session.
+- `apps/web/public/sw.js`: `notificationclick` routes to `data.url` (or a category map) instead of always `/activity`.
+- `services/relay/package.json` + `services/relay/.env`: the relay dev script sources a gitignored `.env`, which now carries a throwaway dev VAPID pair matching `NEXT_PUBLIC_VAPID_PUBLIC_KEY` in `apps/web/.env.local`.
+- Tests: new `local-notifications.test.ts` (gating, push dedupe, worker/fallback delivery) and `web-push.test.ts` (base64 decode, prefs mapping, sign-out cleanup); `preferences.test.ts` covers the new defaults/backfill and the change event.
+
+**Why:** Web Push existed but was unconfigured and had no per-category UI, so users saw no browser alerts; and in-app events (transfers, conflicts, node outages) produced none even while the tab was open.
+
+**Impact:** `apps/web` (providers, components, lib, env), `services/relay` (dev `package.json` + local `.env`), `docs/push-notifications.md`. No relay Go code changed. Local notifications are subject to the Notification permission and require a secure context (HTTPS or `localhost`). Verified: web `check-types` + `lint` clean, web tests 243 passed (21 new).
+
+**Follow-ups:** "Backup complete" has no local-only path — without a push subscription it is delivered by neither channel. The local conflict watcher calls `refreshCatalog()` on `CATALOG_CHANGED`, duplicating the Files page's refresh.
+
 ## [2026-09-21] - Stream relay-mediated shard downloads end to end
 
 **What changed:** A browser download served by the Relay now receives the shard in chunks as the node sends them, instead of the Relay buffering the whole shard before writing any byte.
