@@ -8,6 +8,7 @@ import {
   notificationPermission,
   notifyLocal,
   resetLocalNotifications,
+  showTestNotification,
 } from "../local-notifications";
 
 // jsdom has neither Notification nor service workers, so both are stubbed here.
@@ -136,5 +137,32 @@ describe("notifyLocal delivery", () => {
 
     expect(showNotification).not.toHaveBeenCalled();
     expect(MockNotification.instances).toHaveLength(0);
+  });
+});
+
+describe("showTestNotification", () => {
+  it("refuses without permission", async () => {
+    stubNotification("default");
+    expect(await showTestNotification()).toBe(false);
+  });
+
+  it("shows regardless of category toggles and reports success", async () => {
+    stubNotification("granted");
+    const showNotification = stubServiceWorker();
+    configureLocalNotifications({
+      preferences: {
+        notifyTransfers: false,
+        notifyConflicts: false,
+        notifyNodeOffline: false,
+        notifySyncComplete: false,
+      },
+    });
+
+    expect(await showTestNotification()).toBe(true);
+    const [, options] = showNotification.mock.calls[0] as unknown as [
+      string,
+      NotificationOptions,
+    ];
+    expect((options.data as { url: string }).url).toBe("/settings");
   });
 });

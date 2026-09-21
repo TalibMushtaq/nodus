@@ -10,6 +10,7 @@ import {
   localNotificationsSupported,
   notificationPermission,
   requestNotificationPermission,
+  showTestNotification,
 } from "../lib/local-notifications";
 import { usePreferences, type NotificationPreferences } from "../lib/preferences";
 import {
@@ -173,6 +174,13 @@ export function BrowserNotifications() {
     }
   }, [update]);
 
+  const sendTest = useCallback(async () => {
+    setError(null);
+    setNotice(null);
+    const shown = await showTestNotification();
+    setNotice(shown ? "Test notification sent." : "Could not show a notification.");
+  }, []);
+
   if (!supported) {
     return (
       <p className="text-xs text-muted-foreground px-1">
@@ -215,6 +223,16 @@ export function BrowserNotifications() {
             />
           </SettingRow>
         ))}
+        {granted && (
+          <SettingRow
+            label="Test notifications"
+            detail="Show one alert in this browser"
+          >
+            <Button variant="secondary" size="sm" onClick={() => void sendTest()}>
+              Send test
+            </Button>
+          </SettingRow>
+        )}
       </div>
 
       {!pushCapable && (

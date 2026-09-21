@@ -124,26 +124,49 @@ export function isLocalNotificationEnabled(category: LocalNotificationCategory):
 }
 
 /**
- * Show a local notification for `category`, if the permission and preference
- * allow it. Best-effort: a browser that refuses to display it (e.g. an insecure
- * context) must never break the action that triggered it.
- *
- * Delivery prefers the service worker's `showNotification` so the existing
- * `notificationclick` handler owns focus + routing; `new Notification` is the
- * fallback when no worker is registered.
+ * Show a notification, if the permission and preference allow it. Best-effort:
+ * a browser that refuses to display it (e.g. an insecure context) must never
+ * break the action that triggered it.
  */
 export async function notifyLocal(
   category: LocalNotificationCategory,
-  { title, body }: LocalNotificationInput,
+  input: LocalNotificationInput,
 ): Promise<void> {
   if (!isLocalNotificationEnabled(category)) return;
+  await displayNotification(category, CATEGORY_ROUTES[category], input);
+}
+
+/**
+ * Show a one-off test alert, bypassing the category toggles (but not the
+ * permission). Used by Settings so the user can confirm notifications actually
+ * surface on their machine.
+ */
+export async function showTestNotification(): Promise<boolean> {
+  if (!localNotificationsSupported() || Notification.permission !== "granted") return false;
+  await displayNotification("test", "/settings", {
+    title: "Nodus test alert",
+    body: "Notifications are working on this browser.",
+  });
+  return true;
+}
+
+/**
+ * Delivery prefers the service worker's `showNotification` so `sw.js`'s
+ * `notificationclick` handler owns focus + routing; `new Notification` is the
+ * fallback when no worker is registered.
+ */
+async function displayNotification(
+  tag: string,
+  url: string,
+  { title, body }: LocalNotificationInput,
+): Promise<void> {
   const options: NotificationOptions = {
     body,
     icon: "/favicon.png",
     badge: "/favicon.png",
     // Same tag replaces a prior notice in the same category instead of stacking.
-    tag: category,
-    data: { type: category, url: CATEGORY_ROUTES[category] },
+    tag,
+    data: { type: tag, url },
   };
   try {
     const registration = navigator.serviceWorker
