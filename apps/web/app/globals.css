@@ -144,13 +144,24 @@
   animation-fill-mode: forwards;
 }
 
+/* Indeterminate sweep shown while the first shard's route is negotiated, so a
+ * download that has not moved any bytes yet does not look frozen. */
+@keyframes shard-connecting {
+  from { transform: translateX(-120%); }
+  to { transform: translateX(360%); }
+}
+.shard-connecting {
+  animation: shard-connecting 1.1s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
 /* Respect the OS reduce-motion preference: content must still be fully
  * visible, so the animations are removed rather than shortened. */
 @media (prefers-reduced-motion: reduce) {
   .rise,
   .stagger > *,
   .shard-land,
-  .shard-fly-merge {
+  .shard-fly-merge,
+  .shard-connecting {
     animation: none;
   }
   .shard-fly-merge {

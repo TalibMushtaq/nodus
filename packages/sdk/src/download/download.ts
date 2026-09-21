@@ -112,10 +112,12 @@ export interface DownloadDeps {
 /**
  * What the download loop is doing right now. Fetched shards are handled
  * serially (fetch → verify → decrypt), so a UI can label the current stage
- * instead of showing an opaque bar.
+ * instead of showing an opaque bar. `connecting` spans the first shard's route
+ * negotiation, before any byte has been reported.
  */
 export type DownloadPhase =
   | "unlocking"
+  | "connecting"
   | "fetching"
   | "verifying"
   | "decrypting"
@@ -215,7 +217,13 @@ export async function downloadFile(options: DownloadFileOptions): Promise<Downlo
       throw new ShardUnavailableError(index, anyStatus);
     }
     // Network stage: bytes cross the wire here (LAN node, then Relay fallback).
-    emit("fetching", index, fetchedBytes, totalBytes);
+    // The first shard also covers path selection: the transport may negotiate
+    // WebRTC (offer/ICE/DTLS) or wait for a Relay pull-through before any byte
+    // arrives. Label that wait "connecting" so the UI does not sit on a frozen
+    // "Downloading 0 B"; the first streamed chunk flips it to "fetching" via the
+    // onProgress callback below, and a non-streaming transport flips it when the
+    // shard resolves.
+    emit(index === 0 ? "connecting" : "fetching", index, fetchedBytes, totalBytes);
     // Mid-shard progress is reported relative to this shard's start, so the
     // running total stays monotonic as chunks arrive. `emit` swallows callback
     // errors, so a misbehaving transport cannot abort the download.

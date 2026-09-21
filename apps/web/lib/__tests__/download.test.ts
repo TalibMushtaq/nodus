@@ -96,6 +96,27 @@ describe("downloadFile", () => {
     });
   });
 
+  it("labels the first shard's route negotiation as connecting before any bytes", async () => {
+    const fek = generateFileEncryptionKey();
+    const { packed, locations } = setup([new Uint8Array([1, 2, 3])], fek);
+
+    const phases: string[] = [];
+    await downloadFile({
+      fileId,
+      versionNumber: 1,
+      shardCount: 1,
+      deps: depsFor(fek, packed, locations),
+      onProgress: (event) => phases.push(event.phase),
+    });
+
+    // The wait for the first shard's transport must read as "connecting", not a
+    // frozen "fetching 0 B"; the shard then verifies/decrypts normally.
+    expect(phases[0]).toBe("unlocking");
+    expect(phases[1]).toBe("connecting");
+    expect(phases).toContain("verifying");
+    expect(phases[phases.length - 1]).toBe("done");
+  });
+
   it("throws MissingEnvelopeError when this device has no FEK", async () => {
     const fek = generateFileEncryptionKey();
     const { packed, locations } = setup([new Uint8Array([1])], fek);

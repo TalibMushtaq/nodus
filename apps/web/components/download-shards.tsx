@@ -20,10 +20,21 @@ interface DownloadShardsProps {
   completed: number;
   total: number;
   status: "active" | "done" | "error" | "cancelled";
+  /**
+   * Route negotiation before the first shard lands. A determinate bar would sit
+   * at 0% for the whole wait, so this switches to indeterminate motion.
+   */
+  connecting?: boolean;
   className?: string;
 }
 
-export function DownloadShards({ completed, total, status, className = "" }: DownloadShardsProps) {
+export function DownloadShards({
+  completed,
+  total,
+  status,
+  connecting = false,
+  className = "",
+}: DownloadShardsProps) {
   const slots = Math.min(total > 0 ? total : 0, MAX_SLOTS);
   const filled = total > 0 ? Math.round((completed / total) * slots) : 0;
   const pct = total > 0 ? Math.min(100, (completed / total) * 100) : 0;
@@ -59,6 +70,16 @@ export function DownloadShards({ completed, total, status, className = "" }: Dow
   // so the widget still shows motion before the first progress event lands.
   if (slots === 0) {
     return <Progress value={pct} className={className} />;
+  }
+
+  // Connecting to a node / choosing a transport with no shard landed yet: a
+  // determinate bar would read as a stalled 0%, so sweep a bar instead.
+  if (connecting && filled === 0) {
+    return (
+      <div className={`relative h-6 overflow-hidden rounded-md border border-border bg-background/60 ${className}`}>
+        <div className="shard-connecting absolute inset-y-0 w-1/3 rounded-sm accent-gradient" />
+      </div>
+    );
   }
 
   return (

@@ -1,5 +1,21 @@
 # Changelog
 
+## [2026-09-21] - Show a "Connecting" stage while a download negotiates its path
+
+**What changed:** A large download no longer sits silently on "Downloading · 0 B" while its transport is chosen. The SDK reports a new `connecting` download phase for the first shard, before any byte has arrived, and the web widget renders it as an indeterminate sweep.
+
+- SDK (`packages/sdk/src/download/download.ts`): added `"connecting"` to `DownloadPhase` and emit it instead of `"fetching"` for the first shard, whose fetch covers route selection (WebRTC offer/ICE/DTLS negotiation, or a Relay pull-through). The first streamed chunk flips the phase to `"fetching"` via the existing `onProgress` callback; a non-streaming transport flips it when the shard resolves.
+- Web (`apps/web/providers/download-provider.tsx`): `PHASE_LABEL` maps `connecting` → "Connecting", and `DownloadWidget` passes `connecting={task.phase === "connecting"}` to `DownloadShards`.
+- Web (`apps/web/components/download-shards.tsx`): new `connecting` prop; while set and no shard has landed, the bar renders an indeterminate sweep instead of a 0%-width merged block.
+- Web (`apps/web/app/globals.css`): new `shard-connecting` keyframe + class for the sweep, disabled under `prefers-reduced-motion` alongside the existing shard animations.
+- Test (`apps/web/lib/__tests__/download.test.ts`): asserts the first shard's initial phase is `"connecting"` and still ends in `"done"`.
+
+**Why:** A 843 MB download looked frozen for a long time at 0 bytes before any shard moved. The transfer was working, but the only visible state was "Downloading · 0 B", so the user could not tell the path was still being negotiated (and the shard animation had no landed shard to show). There was no indication that anything was happening.
+
+**Impact:** `packages/sdk`, `apps/web` (download provider, shard bar, globals.css), and the web download test. The mobile clients render `progress.phase` verbatim, so they show "connecting" with no code change. `DownloadPhase` gains a member; consumers that map it exhaustively (the web `PHASE_LABEL`) were updated. Advisory only — no protocol, storage, or transport change. Verified: SDK tests (41) + typecheck, web tests + typecheck + lint, mobile typecheck + lint.
+
+**Follow-ups:** The phase still cannot name the transport being attempted (the SDK does not know which route the deps will pick); per-attempt reporting could show "Trying local P2P…" before the first shard lands.
+
 ## [2026-09-21] - Dashboard pages use the full content width
 
 **What changed:** The dashboard no longer caps its content in a centered column; each page fills the available width, and the Files grid flows to as many columns as fit.

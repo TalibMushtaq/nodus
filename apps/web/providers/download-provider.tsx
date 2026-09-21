@@ -66,6 +66,9 @@ export { downloadMetrics } from "../lib/download-metrics";
  */
 export const PHASE_LABEL: Record<DownloadPhase, string> = {
   unlocking: "Unlocking key",
+  // Shard 0 is the route-negotiation wait; a plain "Downloading" there looked
+  // like a frozen 0 B download while WebRTC/relay chose a path.
+  connecting: "Connecting",
   fetching: "Downloading",
   verifying: "Verifying",
   decrypting: "Decrypting",
@@ -470,6 +473,9 @@ function DownloadWidget({
                     completed={task.completedShards}
                     total={task.totalShards}
                     status={task.status}
+                    // Route negotiation before the first byte: show motion so the
+                    // widget never reads as a stalled download.
+                    connecting={task.phase === "connecting"}
                   />
                 </div>
                 <div className="mt-1 flex items-center gap-2 text-[10px] font-mono text-muted-foreground">
