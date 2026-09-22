@@ -122,6 +122,25 @@ export type {
   DownloadTransport,
   RelayFileLocation,
 } from "./download/download.js";
+export { DownloadLimiter } from "./download/adaptive/pool.js";
+export { ThroughputSampler } from "./download/adaptive/sampler.js";
+export {
+  AdaptiveConcurrencyController,
+  PROBE_COMPLETIONS,
+  PROBE_INTERVAL_MS,
+  IMPROVE_RATIO,
+  DECREASE_RATIO,
+  COOLDOWN_MS,
+} from "./download/adaptive/controller.js";
+export {
+  DEFAULT_LIMITER_BOUNDS,
+  resolveLimiterBounds,
+  bytesPerSecondToMbps,
+} from "./download/adaptive/types.js";
+export type {
+  DownloadLimiterOptions,
+  ResolvedLimiterBounds,
+} from "./download/adaptive/types.js";
 export { PersistentWebRtcSession, WebRtcSessionCache } from "./transfer/webrtc-session.js";
 export type {
   PersistentSessionDeps,
