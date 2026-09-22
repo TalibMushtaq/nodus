@@ -371,6 +371,41 @@ const WS_WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 /// sees its first byte. 256 KiB stays well under the Relay's WS read limit.
 const SHARD_STREAM_CHUNK_BYTES: usize = 256 * 1024;
 
+/// Version byte of the tagged Design A shard stream frame, matching the Relay
+/// decoder and `packages/protocol` `SHARD_FRAME_VERSION`.
+const SHARD_FRAME_VERSION: u8 = 1;
+
+/// How many `shard_fetch_request`s a node serves concurrently. Each in-flight
+/// serve holds one whole object in memory (`ObjectStore::get` returns the bytes),
+/// so the cap also bounds node memory to roughly `MAX_CONCURRENT_SHARD_SERVES ×
+/// shard size`. Requests beyond the cap wait for a permit rather than failing;
+/// the Relay's idle timeout is the backstop if the wait exceeds it.
+const MAX_CONCURRENT_SHARD_SERVES: usize = 8;
+
+/// Encode one streamed shard chunk: `[u8 version][u16be id_len][request_id][payload]`.
+/// The request id tags the frame so frames from concurrent serves can interleave
+/// on the node's single Relay socket without being misrouted.
+fn encode_shard_frame(request_id: &str, payload: &[u8]) -> Vec<u8> {
+    let id = request_id.as_bytes();
+    let mut frame = Vec::with_capacity(3 + id.len() + payload.len());
+    frame.push(SHARD_FRAME_VERSION);
+    frame.extend_from_slice(&(id.len() as u16).to_be_bytes());
+    frame.extend_from_slice(id);
+    frame.extend_from_slice(payload);
+    frame
+}
+
+/// A frame a shard-serving task hands to the session read loop for writing to
+/// the Relay socket. The read loop owns the writer, so tasks never touch the
+/// sink directly; a bounded channel gives backpressure, keeping buffered bytes
+/// O(concurrency × chunk) even if the link is slow.
+enum ShardOutbound {
+    /// The `shard_fetch_result` / `shard_fetch_done` text envelopes.
+    Envelope(ProtocolEnvelope),
+    /// A tagged binary ciphertext chunk.
+    Chunk { request_id: String, bytes: Vec<u8> },
+}
+
 /// Freshness window for a signed Path B (relay-signaled WebRTC) message. The
 /// signature binds the device, session, timestamp, and payload hash; bounding
 /// the timestamp stops a captured offer from being replayed later.
@@ -632,6 +667,13 @@ impl SyncClient {
         let ice_forwarders: Arc<tokio::sync::Mutex<std::collections::HashSet<String>>> =
             Arc::new(tokio::sync::Mutex::new(std::collections::HashSet::new()));
 
+        // Design A: concurrent shard serving. Each `shard_fetch_request` spawns a
+        // task that reads the object and streams tagged frames through this
+        // bounded channel; the read loop below owns the socket writer and drains
+        // it. The semaphore caps how many objects are resident at once.
+        let (shard_tx, mut shard_rx) = mpsc::channel::<ShardOutbound>(64);
+        let shard_sem = Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_SHARD_SERVES));
+
         loop {
             tokio::select! {
                 maybe_msg = read.next() => {
@@ -810,57 +852,80 @@ impl SyncClient {
                         }
                     }
                     // Design A: the Relay needs an object we hold, to serve a
-                    // browser download that has no direct host. Read the bytes
-                    // off disk and answer with a text result followed by the raw
-                    // payload as one binary frame. "missing"/"error" resolve the
-                    // Relay's waiter so it can try another holder instead.
+                    // browser download that has no direct host. Spawn a task per
+                    // request so several fetches stream concurrently: disk reads
+                    // overlap and frames interleave, each tagged with its
+                    // request_id. A missing/error result still resolves the
+                    // Relay's waiter so it can try another holder.
                     "shard_fetch_request" => {
                         let req: ShardFetchRequestPayload = serde_json::from_value(env.payload)?;
-                        match self
-                            .object_store
-                            .get(&req.object_id)
-                            .await
-                        {
-                            Ok(bytes) => {
-                                Self::send_envelope(
-                                    &mut write,
-                                    "shard_fetch_result",
-                                    &serde_json::to_value(ShardFetchResultPayload {
+                        let store = Arc::clone(&self.object_store);
+                        let tx = shard_tx.clone();
+                        let sem = Arc::clone(&shard_sem);
+                        tokio::spawn(async move {
+                            // Wait for a serve slot; excess requests queue here
+                            // instead of loading another object into memory.
+                            let _permit = match sem.acquire_owned().await {
+                                Ok(permit) => permit,
+                                Err(_) => return, // semaphore closed: session ending
+                            };
+                            match store.get(&req.object_id).await {
+                                Ok(bytes) => {
+                                    let result = ShardFetchResultPayload {
                                         request_id: req.request_id.clone(),
                                         object_id: req.object_id.clone(),
                                         status: "ok".to_string(),
                                         error: None,
-                                    })?,
-                                )
-                                .await?;
-                                // Stream the shard as chunks then a done marker,
-                                // so the Relay can forward each frame to the
-                                // browser as it arrives rather than buffering the
-                                // whole object before the first byte.
-                                for chunk in bytes.chunks(SHARD_STREAM_CHUNK_BYTES) {
-                                    Self::send_binary(&mut write, chunk.to_vec()).await?;
+                                    };
+                                    let envelope = ProtocolEnvelope::new(
+                                        "shard_fetch_result",
+                                        serde_json::to_value(result)
+                                            .unwrap_or(serde_json::Value::Null),
+                                    );
+                                    if tx
+                                        .send(ShardOutbound::Envelope(envelope))
+                                        .await
+                                        .is_err()
+                                    {
+                                        return;
+                                    }
+                                    // Tagged chunks so the Relay can route each
+                                    // frame to the right download even while
+                                    // other serves interleave.
+                                    for chunk in bytes.chunks(SHARD_STREAM_CHUNK_BYTES) {
+                                        if tx
+                                            .send(ShardOutbound::Chunk {
+                                                request_id: req.request_id.clone(),
+                                                bytes: chunk.to_vec(),
+                                            })
+                                            .await
+                                            .is_err()
+                                        {
+                                            return;
+                                        }
+                                    }
+                                    let done = ProtocolEnvelope::new(
+                                        "shard_fetch_done",
+                                        serde_json::json!({ "request_id": req.request_id }),
+                                    );
+                                    let _ = tx.send(ShardOutbound::Envelope(done)).await;
                                 }
-                                Self::send_envelope(
-                                    &mut write,
-                                    "shard_fetch_done",
-                                    &serde_json::json!({ "request_id": req.request_id }),
-                                )
-                                .await?;
-                            }
-                            Err(_) => {
-                                Self::send_envelope(
-                                    &mut write,
-                                    "shard_fetch_result",
-                                    &serde_json::to_value(ShardFetchResultPayload {
+                                Err(_) => {
+                                    let result = ShardFetchResultPayload {
                                         request_id: req.request_id.clone(),
                                         object_id: req.object_id.clone(),
                                         status: "missing".to_string(),
                                         error: Some("object not found in store".to_string()),
-                                    })?,
-                                )
-                                .await?;
+                                    };
+                                    let envelope = ProtocolEnvelope::new(
+                                        "shard_fetch_result",
+                                        serde_json::to_value(result)
+                                            .unwrap_or(serde_json::Value::Null),
+                                    );
+                                    let _ = tx.send(ShardOutbound::Envelope(envelope)).await;
+                                }
                             }
-                        }
+                        });
                     }
                     // Path B (node repair): a peer we trust needs an object we
                     // hold. Start an outbound WebRTC transfer that offers the
@@ -932,6 +997,21 @@ impl SyncClient {
                 // Path B: an outbound repair task's offer/local-ICE envelope.
                 Some(env) = out_rx.recv() => {
                     Self::send_json(&mut write, &env).await?;
+                }
+                // Design A: a shard-serving task's result envelope or tagged
+                // binary chunk. The read loop is the sole writer, so each frame
+                // is written here in turn; chunks are tagged with their
+                // request_id for the Relay's per-request routing.
+                Some(frame) = shard_rx.recv() => {
+                    match frame {
+                        ShardOutbound::Envelope(env) => {
+                            Self::send_json(&mut write, &env).await?;
+                        }
+                        ShardOutbound::Chunk { request_id, bytes } => {
+                            Self::send_binary(&mut write, encode_shard_frame(&request_id, &bytes))
+                                .await?;
+                        }
+                    }
                 }
                 _ = heartbeat.tick() => {
                     // Liveness ping (§13): the Relay keys the node's
@@ -1298,9 +1378,9 @@ impl SyncClient {
     }
 
     /// Send a raw binary frame over the WebSocket writer under the same finite
-    /// deadline as the text path (Design A: a shard's bytes answer a
-    /// shard_fetch_request). `Message::Binary` is the one place outbound bytes
-    /// ever travel outside a text envelope.
+    /// deadline as the text path. Design A uses this for the tagged frames that
+    /// answer a `shard_fetch_request`; `Message::Binary` is the one place
+    /// outbound bytes ever travel outside a text envelope.
     async fn send_binary<W>(write: &mut W, bytes: Vec<u8>) -> anyhow::Result<()>
     where
         W: futures_util::Sink<Message> + Unpin,
@@ -2010,6 +2090,20 @@ mod tests {
         assert!(!schema_major_compatible("2.0.0"));
         assert!(!schema_major_compatible(""));
         assert!(!schema_major_compatible("not-a-version"));
+    }
+
+    #[test]
+    fn shard_frame_carries_version_length_id_and_payload() {
+        let frame = encode_shard_frame("req-123", b"ciphertext");
+        assert_eq!(frame[0], SHARD_FRAME_VERSION);
+        let id_len = u16::from_be_bytes([frame[1], frame[2]]) as usize;
+        assert_eq!(id_len, "req-123".len());
+        assert_eq!(&frame[3..3 + id_len], b"req-123");
+        assert_eq!(&frame[3 + id_len..], b"ciphertext");
+        // A long request id must still be framed without truncation.
+        let long = "x".repeat(300);
+        let frame = encode_shard_frame(&long, b"");
+        assert_eq!(u16::from_be_bytes([frame[1], frame[2]]) as usize, 300);
     }
 
     #[tokio::test]
