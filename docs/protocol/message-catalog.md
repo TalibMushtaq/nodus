@@ -222,6 +222,35 @@ Request to delete a shard (e.g. post-transfer cleanup, or GC per §29a).
 | `shard_index` | integer ≥ 0 | yes | 0-based shard position |
 | `reason` | string | no | Informational only; not parsed |
 
+### Design A shard stream (`shard_fetch_request` → binary frames)
+
+When the Relay must serve a browser download for a shard that lives on a
+Storage Node (no LAN host), it sends the node a `shard_fetch_request` envelope
+and the node answers with raw ciphertext **outside** the JSON envelope:
+
+```text
+Relay → Node   shard_fetch_request { request_id, object_id }
+Node  → Relay  shard_fetch_result  { request_id, object_id, status }
+Node  → Relay  <binary frame>      [u8 version=1][u16be id_len][request_id][payload]  (0..n)
+Node  → Relay  shard_fetch_done    { request_id }
+```
+
+A node may serve several requests concurrently over its single Relay socket, so
+binary frames from different fetches can interleave. Each binary frame therefore
+carries the routing `request_id` in a fixed header:
+
+| Field | Type | Notes |
+|---|---|---|
+| `version` | u8 | `1` — the framing version (`SHARD_FRAME_VERSION`) |
+| `id_len` | u16be | Length in bytes of `request_id` |
+| `request_id` | ASCII | The `shard_fetch_request.request_id` this chunk belongs to |
+| `payload` | bytes | Raw ciphertext slice (chunk size chosen by the node) |
+
+A frame whose version byte or length field is malformed, or whose `request_id`
+does not match a waiter assigned to the sending node, is dropped rather than
+misrouted. Relay and Storage Node must be upgraded together: the older
+per-connection framing is not supported (lockstep cutover).
+
 ---
 
 ## Sync Messages

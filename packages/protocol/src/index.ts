@@ -120,6 +120,12 @@ export {
   type ShardFetchPayload,
   ShardDeletePayloadSchema,
   type ShardDeletePayload,
+  // Design A shard stream framing (Relay ↔ Node binary frames)
+  SHARD_FRAME_VERSION,
+  SHARD_FRAME_HEADER_BYTES,
+  SHARD_FRAME_MAX_REQUEST_ID_BYTES,
+  encodeShardFrame,
+  decodeShardFrame,
 } from "./messages/transfer.js";
 
 // ── Tombstone control messages (WS: Relay ↔ Node) ───────────────────

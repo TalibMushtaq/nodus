@@ -104,6 +104,66 @@ export const ShardFetchPayloadSchema = z.object({
 
 export type ShardFetchPayload = z.infer<typeof ShardFetchPayloadSchema>;
 
+// ── Design A: shard stream framing ─────────────────────────────────
+
+/**
+ * Version byte of the Relay ↔ Node binary shard stream frame.
+ *
+ * Design A (a browser download the Relay serves by pulling the object from a
+ * Storage Node) carries raw ciphertext as WebSocket **binary** frames, outside
+ * the JSON envelope. Frames from several concurrent in-flight fetches can
+ * interleave on the node's single Relay socket, so each frame must name the
+ * request it belongs to. The previous scheme armed one request per *connection*,
+ * which made concurrent fetches overwrite each other and starve until timeout;
+ * tagging each frame by `request_id` is what makes concurrent serving safe.
+ */
+export const SHARD_FRAME_VERSION = 1;
+
+/** Bytes of fixed header: 1 version + 2 big-endian request-id length. */
+export const SHARD_FRAME_HEADER_BYTES = 3;
+
+/** Largest request-id length the framing can address (`u16` length). */
+export const SHARD_FRAME_MAX_REQUEST_ID_BYTES = 0xffff;
+
+/**
+ * Encode one streamed shard chunk: `[u8 version][u16be id_len][request_id][payload]`.
+ *
+ * `requestId` is ASCII (a UUID string in practice); the payload is the raw
+ * ciphertext slice. Throws when the id is empty or does not fit the length
+ * field, since a frame that cannot be routed would corrupt the stream.
+ */
+export function encodeShardFrame(requestId: string, payload: Uint8Array): Uint8Array {
+  const idBytes = new TextEncoder().encode(requestId);
+  if (idBytes.byteLength === 0 || idBytes.byteLength > SHARD_FRAME_MAX_REQUEST_ID_BYTES) {
+    throw new Error(`shard frame request id must be 1..${SHARD_FRAME_MAX_REQUEST_ID_BYTES} bytes`);
+  }
+  const out = new Uint8Array(SHARD_FRAME_HEADER_BYTES + idBytes.byteLength + payload.byteLength);
+  out[0] = SHARD_FRAME_VERSION;
+  out[1] = (idBytes.byteLength >> 8) & 0xff;
+  out[2] = idBytes.byteLength & 0xff;
+  out.set(idBytes, SHARD_FRAME_HEADER_BYTES);
+  out.set(payload, SHARD_FRAME_HEADER_BYTES + idBytes.byteLength);
+  return out;
+}
+
+/**
+ * Decode a streamed shard chunk. Returns `null` for a malformed frame (wrong
+ * version byte, truncated header, or a length that overruns the buffer) so the
+ * receiver can drop it rather than misroute bytes to a waiter.
+ */
+export function decodeShardFrame(
+  frame: Uint8Array,
+): { requestId: string; payload: Uint8Array } | null {
+  if (frame.byteLength < SHARD_FRAME_HEADER_BYTES) return null;
+  if (frame[0] !== SHARD_FRAME_VERSION) return null;
+  const idLen = (frame[1]! << 8) | frame[2]!;
+  const start = SHARD_FRAME_HEADER_BYTES;
+  const end = start + idLen;
+  if (idLen === 0 || end > frame.byteLength) return null;
+  const requestId = new TextDecoder().decode(frame.subarray(start, end));
+  return { requestId, payload: frame.subarray(end) };
+}
+
 // ── Shard Delete ───────────────────────────────────────────────────
 
 /**
