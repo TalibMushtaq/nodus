@@ -1,5 +1,23 @@
 # Changelog
 
+## [2026-09-22] - Adaptive parallel downloads + concurrent relay shard serving
+
+**What changed:**
+
+- **SDK adaptive pool** (`packages/sdk/src/download/adaptive/`): new `ThroughputSampler` (EWMA goodput over a 1 s window with a startup-coverage guard), `AdaptiveConcurrencyController` (AIMD: probe `+1` while goodput improves, halve on a >20 % drop or any error, clamp to bounds, 1 s cooldown), and `DownloadLimiter` (a global permit pool with an app-supplied `max`, abortable `acquire`, and live limit changes). Exported from `@repo/sdk`.
+- **`downloadFile` dynamic workers** (`packages/sdk/src/download/download.ts`): an optional `limiter` switches the serial shard loop for a worker pool that holds a network permit only while bytes are in flight (released before verify/decrypt), keeps progress monotonic via an in-flight byte map, restores order with the existing sort, and preserves first-failure-wins and abort semantics. Versions with ≤2 shards and the no-limiter path stay serial. `DownloadProgressEvent` gains `concurrency`/`throughputBps`.
+- **Relay per-request multiplexing** (`services/relay/internal/handler/shard_fetch.go`): removed the `armedBin` connection→request map and replaced it with request-id-tagged binary frames (`[u8 version][u16be id_len][request_id][payload]`, `decodeShardFrame`); `ResolveBinary`/`HandleDone` now route by tag and reject malformed or cross-node frames. A node can stream several concurrent fetches over its single Relay socket without the earlier overwrite-and-starve bug.
+- **Node concurrent serving** (`services/storage-node/src/sync/client.rs`): each `shard_fetch_request` now spawns a task behind an `Arc<Semaphore>` (8) instead of streaming inline; tagged frames flow through a bounded `ShardOutbound` channel drained by the read loop, which remains the sole socket writer (bounded memory, backpressure). Added `encode_shard_frame` + unit test.
+- **Web wiring**: `DownloadProvider` owns one `DownloadLimiter` (max from the new `downloadParallelMax` preference, default 16) exposed via `useDownloadLimiter`; the Files page and folder-zip pass it to `downloadFile`; the widget shows an `N× parallel` chip. Settings gained a Parallel downloads control.
+- **Mobile wiring**: new `download.parallel.max` preference (default 4, range 1–16 where 1 = Off/serial), a per-app limiter rebuilt on change, `downloadOne` passes it, and Settings gained a Downloads section with chips. Previews remain serial and separately capped.
+- **Protocol/docs**: `packages/protocol` exports the frame constants + `encodeShardFrame`/`decodeShardFrame` with tests; `docs/protocol/message-catalog.md` documents the Design A shard stream framing.
+
+**Why:** Downloads were serial (one 8 MB shard in flight), leaving fast LAN links mostly idle; the Relay path additionally mis-routed concurrent fetches because binary frames were armed per connection. Concurrency should track the link's real capacity rather than a fixed count, and the mobile client needs a resource guard.
+
+**Impact:** `packages/sdk`, `packages/protocol`, `apps/web` (provider/files/settings/preferences/folder-download), `apps/mobile` (runtime/settings), `services/relay/internal/handler`, `services/storage-node/src/sync`. **Breaking/operational:** the Relay and Storage Node must be upgraded **together** — the old per-connection framing is no longer decoded (lockstep cutover); a mixed new-relay + old-node deployment breaks Relay pull-through downloads (LAN-direct is unaffected). Verified: protocol 67, SDK 50, web 245, mobile 22 tests pass; `go test ./...` and `cargo test`/`cargo clippy` clean; web/mobile/SDK typecheck + lint clean.
+
+**Follow-ups:** The node↔Relay link is a single WebSocket, so Relay-path aggregate throughput plateaus regardless of client concurrency (the controller backs off accordingly); true parallel Relay bandwidth would need multiple node connections. Add a Rust end-to-end concurrent-serving integration test if a WS mock harness is introduced.
+
 ## [2026-09-21] - Send a test notification from Settings
 
 **What changed:** `lib/local-notifications.ts` gained `showTestNotification`, which draws through the shared delivery path (service worker, then `Notification` fallback) regardless of the category toggles but still gated on the Notification permission; the delivery code was factored into a private `displayNotification(tag, url, input)`. Settings shows a **Send test** row once permission is granted.
