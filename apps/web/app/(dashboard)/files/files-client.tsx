@@ -45,7 +45,7 @@ import {
   type UploadProgressEvent,
 } from "../../../lib/uploader";
 import { useUpload, type UploadTask } from "../../../providers/upload-provider";
-import { TRANSPORT_PATH, useDownloadActions } from "../../../providers/download-provider";
+import { TRANSPORT_PATH, useDownloadActions, useDownloadLimiter } from "../../../providers/download-provider";
 import { findIncompleteByHash, findStoredDuplicate, type FileStorageState } from "../../../lib/file-view";
 import { isImageFileName, useImagePreview } from "../../../lib/preview";
 
@@ -639,6 +639,9 @@ export function FilesClient() {
     finishDownload,
     registerDownloadRetry,
   } = useDownloadActions();
+  // Shared adaptive pool: parallel shards for files and folder archives draw
+  // from one budget so several concurrent downloads do not each ramp to max.
+  const downloadLimiter = useDownloadLimiter();
   const [actionError, setActionError] = useState<string | null>(null);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
   // Set when a download failed because no trusted node host was known, or when
@@ -1009,6 +1012,7 @@ export function FilesClient() {
             downloadShardViaWebRtc,
           ),
           onProgress: (event) => reportDownloadProgress(taskId, event),
+          limiter: downloadLimiter,
           signal,
         });
         // Save without an intermediate URL leak: revoke once the click is queued.
@@ -1048,6 +1052,7 @@ export function FilesClient() {
       reportDownloadTransport,
       finishDownload,
       downloadShardViaWebRtc,
+      downloadLimiter,
     ],
   );
 
@@ -1233,6 +1238,7 @@ export function FilesClient() {
           folders,
           files,
           deps: browserDownloadDeps(device, signer),
+          limiter: downloadLimiter,
           onProgress: (completed, total) => setFolderDownload({ name: folder.name, completed, total }),
         });
         if (archive.fileCount === 0) {
@@ -1263,7 +1269,7 @@ export function FilesClient() {
         setFolderDownloadId(null);
       }
     },
-    [device, signer, folders, files, folderDownloadId],
+    [device, signer, folders, files, folderDownloadId, downloadLimiter],
   );
 
   const resync = useCallback(

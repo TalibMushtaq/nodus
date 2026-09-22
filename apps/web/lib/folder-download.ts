@@ -8,6 +8,7 @@
 
 import type { FileEntryView } from "./file-view";
 import type { FolderView } from "./use-files";
+import type { DownloadLimiter } from "@repo/sdk";
 import {
   downloadFile,
   MissingEnvelopeError,
@@ -138,6 +139,8 @@ export async function buildFolderZip(options: {
   folders: FolderView[];
   files: FileEntryView[];
   deps: DownloadDeps;
+  /** Shared adaptive pool; each file's shards borrow from it. Omit for serial. */
+  limiter?: DownloadLimiter;
   onProgress?: (completed: number, total: number) => void;
 }): Promise<FolderArchive> {
   const collected = collectFolderFiles(options.folderId, options.folders, options.files);
@@ -171,6 +174,7 @@ export async function buildFolderZip(options: {
         encryptedName: file.encryptedName,
         expectedVersionHash: file.versionHash,
         deps: options.deps,
+        limiter: options.limiter,
       });
       entries.push({ path, data: result.data });
       bytes += result.data.length;

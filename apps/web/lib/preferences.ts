@@ -31,6 +31,11 @@ export interface SyncPreferences extends NotificationPreferences {
   maxNodes: number;
   /** Plaintext bytes per shard; see @repo/core `resolveShardSize`. */
   shardSizeBytes: number;
+  /**
+   * Ceiling on concurrent shard downloads (1–16). The adaptive limiter ramps
+   * toward this from 2 based on measured goodput; 1 forces serial downloads.
+   */
+  downloadParallelMax: number;
   /** Files section layout, persisted so it survives a reload. */
   filesView: FilesView;
   /** Grid tile icon scale, persisted alongside `filesView`. */
@@ -54,6 +59,7 @@ export const DEFAULT_PREFERENCES: SyncPreferences = {
   autoSync: true,
   maxNodes: 5,
   shardSizeBytes: configuredShardSize(),
+  downloadParallelMax: 16,
   filesView: "list",
   filesIconSize: "md",
   // Alerts default on; local delivery still requires the browser permission.
@@ -89,6 +95,12 @@ export function normalizePreferences(prefs: Partial<SyncPreferences>): SyncPrefe
     autoSync: prefs.autoSync ?? DEFAULT_PREFERENCES.autoSync,
     maxNodes: prefs.maxNodes ?? DEFAULT_PREFERENCES.maxNodes,
     shardSizeBytes: resolveShardSize(prefs.shardSizeBytes),
+    // Clamp so a hand-edited or older stored record cannot push the limiter out
+    // of its supported 1–16 range.
+    downloadParallelMax: Math.min(
+      16,
+      Math.max(1, Math.floor(prefs.downloadParallelMax ?? DEFAULT_PREFERENCES.downloadParallelMax)),
+    ),
     // Unknown/omitted view fields fall back rather than leaking a bad value
     // into the render, which would leave neither list nor grid active.
     filesView: isFilesView(prefs.filesView) ? prefs.filesView : DEFAULT_PREFERENCES.filesView,

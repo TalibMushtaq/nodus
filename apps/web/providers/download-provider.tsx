@@ -13,10 +13,12 @@ import {
 import { Icon } from "@repo/ui/primitives/icons";
 import { PathIndicator } from "@repo/ui/primitives/path-indicator";
 import type { TransferPath } from "@repo/ui/primitives/path-indicator";
+import { DownloadLimiter } from "@repo/sdk";
 import type { DownloadProgressEvent, DownloadPhase, DownloadTransport } from "@repo/sdk";
 
 import { DownloadShards } from "../components/download-shards";
 import { downloadMetrics } from "../lib/download-metrics";
+import { usePreferences } from "../lib/preferences";
 import { formatBytes, formatCountdown } from "../lib/format";
 
 // Download queue state lives here (not in FilesClient) so the floating widget
@@ -55,6 +57,10 @@ export interface DownloadTask {
   /** True once the caller registered a retry runner for this task. */
   retryable?: boolean;
   error?: string;
+  /** In-flight shard allowance the adaptive limiter is currently using. */
+  concurrency?: number;
+  /** Smoothed goodput (bytes/second) reported by the limiter. */
+  throughputBps?: number;
 }
 
 export { downloadMetrics } from "../lib/download-metrics";
@@ -119,9 +125,21 @@ interface DownloadContextValue extends DownloadActions {
 
 const DownloadActionsContext = createContext<DownloadActions | null>(null);
 const DownloadContext = createContext<DownloadContextValue | null>(null);
+// One adaptive limiter per provider so every concurrent download in the tab
+// shares a single in-flight shard budget (otherwise each file would ramp to max
+// independently and multiply the socket pressure the controller manages).
+const DownloadLimiterContext = createContext<DownloadLimiter | null>(null);
 
 export function DownloadProvider({ children }: { children: ReactNode }) {
   const [tasks, setTasks] = useState<DownloadTask[]>([]);
+  const { preferences } = usePreferences();
+  // Recreated only when the user changes the cap; a download already in flight
+  // keeps its old limiter (it holds permits from that instance) and the next
+  // download picks up the new one.
+  const limiter = useMemo(
+    () => new DownloadLimiter({ max: preferences.downloadParallelMax, start: 2 }),
+    [preferences.downloadParallelMax],
+  );
   // One abort controller per active task. Kept in a ref (not state) because
   // aborting must not trigger a render on its own — the task's status does.
   const controllersRef = useRef(new Map<string, AbortController>());
@@ -153,6 +171,9 @@ export function DownloadProvider({ children }: { children: ReactNode }) {
           completedBytes: event.completedBytes,
           totalBytes: event.totalBytes,
           status: event.phase === "done" ? "done" : "active",
+          // Carry the adaptive pool's live size/throughput for the widget.
+          concurrency: event.concurrency ?? task.concurrency,
+          throughputBps: event.throughputBps ?? task.throughputBps,
         };
       }),
     );
@@ -311,17 +332,19 @@ export function DownloadProvider({ children }: { children: ReactNode }) {
   );
 
   return (
-    <DownloadActionsContext.Provider value={actions}>
-      <DownloadContext.Provider value={value}>
-        {children}
-        <DownloadWidget
-          tasks={tasks}
-          onDismiss={dismiss}
-          onCancel={cancelDownload}
-          onRetry={retryDownload}
-        />
-      </DownloadContext.Provider>
-    </DownloadActionsContext.Provider>
+    <DownloadLimiterContext.Provider value={limiter}>
+      <DownloadActionsContext.Provider value={actions}>
+        <DownloadContext.Provider value={value}>
+          {children}
+          <DownloadWidget
+            tasks={tasks}
+            onDismiss={dismiss}
+            onCancel={cancelDownload}
+            onRetry={retryDownload}
+          />
+        </DownloadContext.Provider>
+      </DownloadActionsContext.Provider>
+    </DownloadLimiterContext.Provider>
   );
 }
 
@@ -340,6 +363,17 @@ export function useDownload(): DownloadContextValue {
 export function useDownloadActions(): DownloadActions {
   const ctx = useContext(DownloadActionsContext);
   if (!ctx) throw new Error("useDownloadActions must be used within a DownloadProvider");
+  return ctx;
+}
+
+/**
+ * The provider's shared adaptive download limiter. Pass it to `downloadFile` so
+ * all of the tab's downloads draw from one concurrency budget. Previews omit it
+ * on purpose (they stay serial and are separately capped).
+ */
+export function useDownloadLimiter(): DownloadLimiter {
+  const ctx = useContext(DownloadLimiterContext);
+  if (!ctx) throw new Error("useDownloadLimiter must be used within a DownloadProvider");
   return ctx;
 }
 
@@ -489,6 +523,9 @@ function DownloadWidget({
                   ) : null}
                   {task.status === "active" && etaSeconds != null ? (
                     <span>ETA {formatCountdown(etaSeconds)}</span>
+                  ) : null}
+                  {task.status === "active" && task.concurrency != null && task.concurrency > 1 ? (
+                    <span title="Parallel shards in flight">{task.concurrency}× parallel</span>
                   ) : null}
                   {task.transport && task.status !== "error" ? (
                     <span className="ml-auto">

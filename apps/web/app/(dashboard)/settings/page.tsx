@@ -163,6 +163,22 @@ export default function SettingsPage() {
               <option value={32 * 1024 * 1024}>32 MB</option>
             </Select>
           </SettingRow>
+          <SettingRow
+            label="Parallel downloads"
+            detail="Max shards fetched at once. The downloader ramps up from 2 only while the link keeps up; set 1 to stay serial."
+          >
+            <Select
+              aria-label="Parallel downloads"
+              value={String(preferences.downloadParallelMax)}
+              onChange={(e) => update({ downloadParallelMax: Number(e.target.value) })}
+            >
+              <option value="1">Off (serial)</option>
+              <option value="2">2</option>
+              <option value="4">4</option>
+              <option value="8">8</option>
+              <option value="16">16</option>
+            </Select>
+          </SettingRow>
         </div>
       </Section>
 
