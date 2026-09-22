@@ -26,6 +26,7 @@ import { SHARD_SIZE_BYTES } from "@repo/core";
 import type { ConnectionState } from "@repo/relay-client";
 import {
   downloadFile,
+  DownloadLimiter,
   encryptionPublicKeyBytes,
   listConflicts,
   toCatalogEntry,
@@ -149,6 +150,14 @@ const NOTIF_PREF_KEYS: Record<keyof NotificationPrefs, string> = {
   deviceOffline: "notif.deviceOffline",
   syncComplete: "notif.syncComplete",
 };
+
+/** Persisted key for the parallel-download cap preference. */
+const PARALLEL_MAX_PREF_KEY = "download.parallel.max";
+/** Mobile-safe default cap (≈32 MB peak at 8 MB shards); web defaults to 16. */
+const MOBILE_DEFAULT_PARALLEL_MAX = 4;
+/** Supported range for the cap; 1 means serial. */
+const PARALLEL_MAX_MIN = 1;
+const PARALLEL_MAX_MAX = 16;
 
 /**
  * Upload auto-retry budget, mirroring the web client. A transient transport
@@ -279,6 +288,24 @@ export function useNodusApp() {
 
   // ── Settings ──────────────────────────────────────────────────────────────
   const [shardSizeBytes, setShardSizeBytes] = React.useState<number>(SHARD_SIZE_BYTES);
+  /**
+   * Max concurrent shard downloads (1 = serial). Mobile defaults lower than web
+   * because each in-flight shard holds a whole object in memory; the user can
+   * raise it or drop to 1 (fully off) on the Settings screen.
+   */
+  const [downloadParallelMax, setDownloadParallelMax] = React.useState<number>(MOBILE_DEFAULT_PARALLEL_MAX);
+  // One adaptive limiter for the app so every download shares a shard budget.
+  // Rebuilt when the cap changes; an in-flight download keeps the old instance.
+  const downloadLimiterRef = React.useRef<DownloadLimiter | null>(null);
+  React.useEffect(() => {
+    downloadLimiterRef.current = new DownloadLimiter({ max: downloadParallelMax, start: 2 });
+  }, [downloadParallelMax]);
+  const getDownloadLimiter = React.useCallback((): DownloadLimiter => {
+    if (!downloadLimiterRef.current) {
+      downloadLimiterRef.current = new DownloadLimiter({ max: downloadParallelMax, start: 2 });
+    }
+    return downloadLimiterRef.current;
+  }, [downloadParallelMax]);
 
   // ── Activity log (device-local; the Relay has no account-wide feed) ───────
   const [activity, setActivity] = React.useState<TransferLogEntry[]>([]);
@@ -380,6 +407,14 @@ export function useNodusApp() {
       // Restore the shard-size preference (falls back to the 8 MiB default).
       const storedShardSize = await getPreference("shardSizeBytes");
       if (storedShardSize) setShardSizeBytes(Number(storedShardSize) || SHARD_SIZE_BYTES);
+      // Restore the parallel-download cap (defaults to the mobile-safe 4).
+      const storedParallelMax = await getPreference(PARALLEL_MAX_PREF_KEY);
+      if (storedParallelMax) {
+        const parsed = Math.floor(Number(storedParallelMax));
+        if (Number.isFinite(parsed)) {
+          setDownloadParallelMax(Math.min(PARALLEL_MAX_MAX, Math.max(PARALLEL_MAX_MIN, parsed)));
+        }
+      }
       // Notification toggles default on; only a stored "false" disables one.
       const notifEntries = await Promise.all(
         (Object.keys(NOTIF_PREF_KEYS) as (keyof NotificationPrefs)[]).map(
@@ -587,6 +622,13 @@ export function useNodusApp() {
     setShardSizeBytes(bytes);
     // Persist so the choice survives a restart; the uploader reads it per upload.
     void setPreference("shardSizeBytes", String(bytes));
+  }, []);
+
+  const chooseDownloadParallelMax = React.useCallback((max: number) => {
+    const clamped = Math.min(PARALLEL_MAX_MAX, Math.max(PARALLEL_MAX_MIN, Math.floor(max)));
+    setDownloadParallelMax(clamped);
+    // Persisted so the cap survives a restart; the limiter is rebuilt by effect.
+    void setPreference(PARALLEL_MAX_PREF_KEY, String(clamped));
   }, []);
 
   const setNotificationPref = React.useCallback(
@@ -1276,6 +1318,8 @@ export function useNodusApp() {
             // hydrated; until then (or if it throws) the deps fall back to HTTP.
             transferManager?.downloadShardViaWebRtc,
           ),
+          // Shared adaptive pool; max 1 (Off) keeps this a serial download.
+          limiter: getDownloadLimiter(),
           // Surface fetch/verify/decrypt stages so Activity can render progress.
           // Coalesced: store the newest event and flush on a short timer instead
           // of re-rendering the app on every network chunk. `startedAt` is
@@ -1351,7 +1395,7 @@ export function useNodusApp() {
         setBusy(null);
       }
     },
-    [device, fileNames, logActivity, transferManager, flushDownloadProgress],
+    [device, fileNames, logActivity, transferManager, flushDownloadProgress, getDownloadLimiter],
   );
 
   /** Cancel the active download; the transfer loop rejects and unwinds. */
@@ -2035,6 +2079,8 @@ export function useNodusApp() {
     // settings
     shardSizeBytes,
     chooseShardSize,
+    downloadParallelMax,
+    chooseDownloadParallelMax,
     notificationPrefs,
     setNotificationPref,
     // transient status

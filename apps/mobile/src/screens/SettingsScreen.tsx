@@ -27,6 +27,8 @@ type Nav = NativeStackNavigationProp<SettingsStackParamList, "Settings">;
 
 const SHARD_SIZES = [4, 8, 16];
 const THEME_MODES = ["light", "dark", "system"] as const;
+// 1 means serial ("Off"); the rest are the supported concurrency ceilings.
+const PARALLEL_MAX_CHOICES = [1, 2, 4, 8, 16];
 
 export function SettingsScreen() {
   const app = useApp();
@@ -89,6 +91,30 @@ export function SettingsScreen() {
                   />
                 ))}
               </View>
+            </View>
+          </Card>
+        </Section>
+
+        <Section title="Downloads">
+          <Card>
+            <View style={{ padding: theme.spacing.md, gap: theme.spacing.sm }}>
+              <ThemedText variant="caption" tone="muted">
+                Max shards fetched at once. The downloader ramps up from 2 only while the
+                link keeps up; choose Off to download one shard at a time.
+              </ThemedText>
+              <View style={{ flexDirection: "row", gap: theme.spacing.sm }}>
+                {PARALLEL_MAX_CHOICES.map((value) => (
+                  <Chip
+                    key={value}
+                    label={value === 1 ? "Off" : String(value)}
+                    active={app.downloadParallelMax === value}
+                    onPress={() => app.chooseDownloadParallelMax(value)}
+                  />
+                ))}
+              </View>
+              <ThemedText variant="caption" tone="muted">
+                {`≈ ${app.downloadParallelMax * 24} MB peak memory at 8 MB shards`}
+              </ThemedText>
             </View>
           </Card>
         </Section>
