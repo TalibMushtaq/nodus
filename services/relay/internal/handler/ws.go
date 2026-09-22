@@ -160,11 +160,11 @@ func WebSocket(h *hub.Hub, pool *db.Pool, rClient *rdb.Client, buf *buffer.Buffe
 		go client.WritePump()
 		go client.ReadPump(func(c *hub.Client, msgType int, payload []byte) {
 			// Design A: a storage node answers a shard_fetch_request with a text
-			// result envelope followed by a stream of binary frames carrying the
-			// raw shard bytes, ended by a text `shard_fetch_done`. Binary frames
-			// are never part of the text envelope protocol, so route them
-			// straight to the registry that correlated the fetch — anything
-			// unarmed is dropped there.
+			// result envelope followed by a stream of tagged binary frames
+			// carrying the raw shard bytes, ended by a text `shard_fetch_done`.
+			// Binary frames are never part of the text envelope protocol, so
+			// route them straight to the registry that correlated the fetch —
+			// frames that do not name a live waiter are dropped there.
 			if msgType == websocket.BinaryMessage {
 				if shards != nil && c.NodeID != "" {
 					shards.ResolveBinary(c, payload)

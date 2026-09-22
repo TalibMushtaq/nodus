@@ -59,27 +59,49 @@ type shardFetchWait struct {
 	fromNode string
 }
 
+// shardFrameVersion is the version byte of the binary shard stream frame.
+const shardFrameVersion = 1
+
+// shardFrameHeaderBytes is the fixed part of a frame: 1 version + 2 length.
+const shardFrameHeaderBytes = 3
+
+// decodeShardFrame parses `[u8 version][u16be id_len][request_id][payload]`.
+// It returns ok=false for a malformed frame (wrong version, truncated header,
+// or a length that overruns the buffer) so a corrupt frame is dropped rather
+// than misrouted to a waiter.
+func decodeShardFrame(frame []byte) (requestID string, payload []byte, ok bool) {
+	if len(frame) < shardFrameHeaderBytes || frame[0] != shardFrameVersion {
+		return "", nil, false
+	}
+	idLen := int(frame[1])<<8 | int(frame[2])
+	start := shardFrameHeaderBytes
+	end := start + idLen
+	if idLen == 0 || end > len(frame) {
+		return "", nil, false
+	}
+	return string(frame[start:end]), frame[end:], true
+}
+
 // ShardFetchRegistry correlates a relay→node shard fetch with the node's
 // answer, bridging the HTTP request that issues it and the WS read loop that
 // observes the result (mirrors PingTracker). Two extra duties beyond ping:
 //
 //   - each waiter records the node it was assigned to, so a result or binary
 //     frame from a *different* node can never resolve it, and
-//   - "ok" results arm the connection for the stream of binary frames that
-//     follows, keeping the raw shard bytes out of JSON entirely. The stream (and
-//     the armed flag) stays open until the node sends `shard_fetch_done`, so a
-//     multi-MiB shard can be forwarded to the browser as it arrives instead of
-//     being buffered whole.
+//   - raw shard bytes travel as tagged binary frames (never JSON). Each frame
+//     names its `request_id`, so a node can serve several fetches concurrently
+//     over its single Relay socket and their chunks may interleave. This
+//     replaces the earlier one-armed-request-per-connection scheme, under which
+//     a second concurrent fetch overwrote the first and starved it until the
+//     idle timeout.
 type ShardFetchRegistry struct {
-	mu       sync.Mutex
-	waiters  map[string]shardFetchWait
-	armedBin map[string]string // connID -> requestID currently streaming
+	mu      sync.Mutex
+	waiters map[string]shardFetchWait
 }
 
 func NewShardFetchRegistry() *ShardFetchRegistry {
 	return &ShardFetchRegistry{
-		waiters:  make(map[string]shardFetchWait),
-		armedBin: make(map[string]string),
+		waiters: make(map[string]shardFetchWait),
 	}
 }
 
@@ -96,20 +118,13 @@ func (r *ShardFetchRegistry) register(requestID, fromNode string) (<-chan shardF
 	return ch, func() {
 		r.mu.Lock()
 		delete(r.waiters, requestID)
-		// A cleanup before the node's done marker must also disarm the
-		// connection, or the next orphan binary frame would be misrouted.
-		for conn, req := range r.armedBin {
-			if req == requestID {
-				delete(r.armedBin, conn)
-			}
-		}
 		r.mu.Unlock()
 	}
 }
 
 // HandleResult processes a node's shard_fetch_result. A non-ok status ends the
-// waiter with an error so the HTTP handler can try the next holder; "ok" just
-// arms the connection for the stream of binary frames that follows.
+// waiter with an error so the HTTP handler can try the next holder; "ok" leaves
+// the waiter registered to receive the tagged binary frames that follow.
 func (r *ShardFetchRegistry) HandleResult(c *hub.Client, env ProtocolEnvelope) {
 	if r == nil || c == nil || c.NodeID == "" {
 		return
@@ -134,42 +149,38 @@ func (r *ShardFetchRegistry) HandleResult(c *hub.Client, env ProtocolEnvelope) {
 		wait.ch <- shardFetchChunk{err: message, done: true}
 		return
 	}
-	if ok {
-		r.armedBin[c.ConnID] = payload.RequestID
-	}
 	r.mu.Unlock()
 }
 
-// ResolveBinary forwards one streamed chunk of an armed shard fetch. Frames
-// without an armed request are dropped. The armed flag is kept until
-// `shard_fetch_done` (or cleanup), so every chunk of a multi-frame stream lands
-// on the right waiter.
-func (r *ShardFetchRegistry) ResolveBinary(c *hub.Client, binary []byte) {
+// ResolveBinary forwards one tagged chunk of a shard stream to its waiter. The
+// frame names its request_id, so chunks from several concurrent fetches on the
+// same node connection can interleave safely. A malformed frame, an unknown
+// request, or one assigned to a different node is dropped.
+func (r *ShardFetchRegistry) ResolveBinary(c *hub.Client, frame []byte) {
 	if r == nil || c == nil {
 		return
 	}
-	r.mu.Lock()
-	requestID, armed := r.armedBin[c.ConnID]
-	if !armed {
-		r.mu.Unlock()
+	requestID, payload, ok := decodeShardFrame(frame)
+	if !ok || requestID == "" || c.NodeID == "" {
 		return
 	}
-	wait, ok := r.waiters[requestID]
-	if ok && wait.fromNode != c.NodeID {
-		ok = false
+	r.mu.Lock()
+	wait, found := r.waiters[requestID]
+	if found && wait.fromNode != c.NodeID {
+		found = false
 	}
 	r.mu.Unlock()
-	if !ok {
+	if !found {
 		return
 	}
 	// Copy: the WS read buffer may be reused once the callback returns.
-	chunk := make([]byte, len(binary))
-	copy(chunk, binary)
+	chunk := make([]byte, len(payload))
+	copy(chunk, payload)
 	wait.ch <- shardFetchChunk{data: chunk}
 }
 
-// HandleDone ends an armed shard-fetch stream. It disarms the connection and
-// signals the waiter that the last chunk has been delivered.
+// HandleDone ends a shard-fetch stream. It deletes the waiter and signals that
+// the last chunk has been delivered.
 func (r *ShardFetchRegistry) HandleDone(c *hub.Client, env ProtocolEnvelope) {
 	if r == nil || c == nil {
 		return
@@ -182,7 +193,6 @@ func (r *ShardFetchRegistry) HandleDone(c *hub.Client, env ProtocolEnvelope) {
 	}
 
 	r.mu.Lock()
-	delete(r.armedBin, c.ConnID)
 	wait, ok := r.waiters[payload.RequestID]
 	if ok && wait.fromNode != c.NodeID {
 		ok = false

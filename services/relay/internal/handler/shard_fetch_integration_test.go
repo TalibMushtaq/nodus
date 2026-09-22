@@ -171,7 +171,7 @@ func TestFetchShardEndToEndViaVirtualNode(t *testing.T) {
 	// A real hub with a fake storage-node client registered under the node's
 	// id, so SendToNode delivers the fetch request into its Send channel. The
 	// "node" then answers through the registry the same way the Rust node does:
-	// arm the connection for the request id, then deliver one binary frame.
+	// send tagged binary frames, then the done marker.
 	runCtx, stop := context.WithCancel(ctx)
 	h := hub.New(nil)
 	go h.Run(runCtx)
@@ -200,12 +200,9 @@ func TestFetchShardEndToEndViaVirtualNode(t *testing.T) {
 			}
 			reg.mu.Unlock()
 			if requestID != "" {
-				reg.mu.Lock()
-				reg.armedBin[connID] = requestID
-				reg.mu.Unlock()
-				// Two chunks then the done marker: a streamed shard.
-				reg.ResolveBinary(nodeClient, []byte("virtual-"))
-				reg.ResolveBinary(nodeClient, []byte("shard-bytes"))
+				// Two tagged chunks then the done marker: a streamed shard.
+				reg.ResolveBinary(nodeClient, encodeFrame(requestID, []byte("virtual-")))
+				reg.ResolveBinary(nodeClient, encodeFrame(requestID, []byte("shard-bytes")))
 				reg.HandleDone(nodeClient, ProtocolEnvelope{
 					Payload: []byte(`{"request_id":"` + requestID + `"}`),
 				})
