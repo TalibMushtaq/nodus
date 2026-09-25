@@ -40,3 +40,36 @@ jobs:
 
       - run: cargo test
         working-directory: services/storage-node
+
+  # RustSec advisories for the storage-node dependency tree. Runs on every PR
+  # touching the crate: an advisory in an auth/crypto-adjacent crate is worth
+  # seeing before it ships, not after. Advisory data only — dependency upgrades
+  # are separate, individually reviewed changes.
+  #
+  # Ignored entries are reviewed exceptions, not "did not look" entries. Re-check
+  # each one when the crate that pulls it in is next upgraded.
+  audit:
+    name: rust / cargo-audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: rustsec/audit-check@v2.0.0
+        with:
+          path: services/storage-node
+          # Raises the advisory-DB fetch rate limit; public repos work without
+          # it, but CI runners share an IP.
+          token: ${{ secrets.GITHUB_TOKEN }}
+          ignore: |
+            # Marvin key-recovery timing attack. Transitive via `piper`'s
+            # optional rsa feature; the node does no RSA operations, and
+            # upstream has no fixed release yet (RUSTSEC-2023-0071).
+            RUSTSEC-2023-0071
+            # Unmaintained, all from `mdns 3.0.0` / `webrtc-dtls`, neither of
+            # which is being replaced for cleanup reasons. Revisit when mDNS or
+            # WebRTC is next upgraded (RUSTSEC-2025-0052, RUSTSEC-2025-0141,
+            # RUSTSEC-2020-0016, RUSTSEC-2024-0370).
+            RUSTSEC-2025-0052
+            RUSTSEC-2025-0141
+            RUSTSEC-2020-0016
+            RUSTSEC-2024-0370
