@@ -80,7 +80,7 @@ func TestFetchShardScopesToAccountsNodeStoredShards(t *testing.T) {
 		req.SetPathValue("object_id", hash)
 		req = req.WithContext(context.WithValue(req.Context(), auth.AccountIDKey, accountID))
 		rr := httptest.NewRecorder()
-		FetchShard(pool, h, NewShardFetchRegistry(), nil)(rr, req)
+		FetchShard(pool, h, NewShardFetchRegistry(), nil, testMaxShardBytes)(rr, req)
 		return rr
 	}
 
@@ -120,7 +120,7 @@ func TestFetchShardRejectsUnknownAndMalformed(t *testing.T) {
 	req.SetPathValue("object_id", unknown)
 	req = req.WithContext(context.WithValue(req.Context(), auth.AccountIDKey, acct))
 	rr := httptest.NewRecorder()
-	FetchShard(pool, h, NewShardFetchRegistry(), nil)(rr, req)
+	FetchShard(pool, h, NewShardFetchRegistry(), nil, testMaxShardBytes)(rr, req)
 	require.Equal(t, http.StatusNotFound, rr.Code)
 
 	// Malformed object id: 400 before any query runs.
@@ -128,14 +128,14 @@ func TestFetchShardRejectsUnknownAndMalformed(t *testing.T) {
 	req.SetPathValue("object_id", "not-a-hash")
 	req = req.WithContext(context.WithValue(req.Context(), auth.AccountIDKey, acct))
 	rr = httptest.NewRecorder()
-	FetchShard(pool, h, NewShardFetchRegistry(), nil)(rr, req)
+	FetchShard(pool, h, NewShardFetchRegistry(), nil, testMaxShardBytes)(rr, req)
 	require.Equal(t, http.StatusBadRequest, rr.Code)
 
 	// Unauthenticated: 401.
 	req = httptest.NewRequest(http.MethodGet, "/shards/"+unknown, nil)
 	req.SetPathValue("object_id", unknown)
 	rr = httptest.NewRecorder()
-	FetchShard(pool, h, NewShardFetchRegistry(), nil)(rr, req)
+	FetchShard(pool, h, NewShardFetchRegistry(), nil, testMaxShardBytes)(rr, req)
 	require.Equal(t, http.StatusUnauthorized, rr.Code)
 }
 
@@ -216,7 +216,7 @@ func TestFetchShardEndToEndViaVirtualNode(t *testing.T) {
 	req.SetPathValue("object_id", hash)
 	req = req.WithContext(context.WithValue(req.Context(), auth.AccountIDKey, acct))
 	rr := httptest.NewRecorder()
-	FetchShard(pool, h, reg, nil)(rr, req)
+	FetchShard(pool, h, reg, nil, testMaxShardBytes)(rr, req)
 
 	require.Equal(t, http.StatusOK, rr.Code)
 	require.Equal(t, "application/octet-stream", rr.Header().Get("Content-Type"))
@@ -269,7 +269,7 @@ func TestFetchShardServesRelayBufferedShard(t *testing.T) {
 	req.SetPathValue("object_id", hash)
 	req = req.WithContext(context.WithValue(req.Context(), auth.AccountIDKey, acct))
 	rr := httptest.NewRecorder()
-	FetchShard(pool, h, NewShardFetchRegistry(), buf)(rr, req)
+	FetchShard(pool, h, NewShardFetchRegistry(), buf, testMaxShardBytes)(rr, req)
 
 	require.Equal(t, http.StatusOK, rr.Code)
 	require.Equal(t, shardBytes, rr.Body.Bytes())
@@ -279,4 +279,110 @@ func TestFetchShardServesRelayBufferedShard(t *testing.T) {
 	require.NoError(t, pool.QueryRow(ctx,
 		`SELECT status FROM file_locations WHERE file_id = $1 AND shard_index = 0`, file).Scan(&status))
 	require.Equal(t, "RELAY_BUFFERED", status)
+}
+
+// TestFetchShardStopsAnOversizedNodeStream covers the relay's willingness to
+// proxy whatever a holder node sends. The response is streamed chunk by chunk as
+// the node produces it, with no declared length and no ceiling, so a node that
+// keeps sending is relayed byte for byte to the client — and the SDK assembles
+// the whole shard in memory before hashing it, so the client's allocation grows
+// with whatever the node chooses to send. `MaxShardBytes` is the size the relay
+// already enforces on the upload path and derives its WebSocket read limit from,
+// so no shard the relay accepts can legitimately exceed it.
+//
+// The response must stop at the cap instead of proxying the rest, and the client
+// must be able to tell the transfer was cut short rather than seeing a
+// short-but-plausible shard.
+func TestFetchShardStopsAnOversizedNodeStream(t *testing.T) {
+	url := os.Getenv("TEST_DATABASE_URL")
+	if url == "" {
+		t.Skip("TEST_DATABASE_URL not set; skipping integration test")
+	}
+	ctx := context.Background()
+	require.NoError(t, db.RunMigrations(url))
+	pool, err := db.Open(ctx, &config.Config{DatabaseURL: url})
+	require.NoError(t, err)
+	t.Cleanup(pool.Close)
+
+	suffix := fmt.Sprint(time.Now().UnixNano())
+	acct, node := "acct-oversize-"+suffix, "node-oversize-"+suffix
+	hash := fmt.Sprintf("%064x", suffix)
+	file := "file-oversize-" + suffix
+
+	_, err = pool.Exec(ctx, `INSERT INTO accounts (account_id, email, password_hash) VALUES ($1, $2, 'hash')`, acct, acct+"@test.local")
+	require.NoError(t, err)
+	_, err = pool.Exec(ctx, `INSERT INTO storage_nodes (node_id, account_id, public_key) VALUES ($1, $2, 'ab')`, node, acct)
+	require.NoError(t, err)
+	_, err = pool.Exec(ctx, `INSERT INTO files (file_id, account_id, encrypted_name) VALUES ($1, $2, 'v1.aa')`, file, acct)
+	require.NoError(t, err)
+	_, err = pool.Exec(ctx, `INSERT INTO file_versions (file_id, version_number, version_hash, shard_count) VALUES ($1, 1, 'vh', 1)`, file)
+	require.NoError(t, err)
+	// The holder declared a shard of testMaxShardBytes when it stored it.
+	_, err = pool.Exec(ctx,
+		`INSERT INTO file_locations (file_id, version_number, shard_index, node_id, hash, size_bytes, status)
+		 VALUES ($1, 1, 0, $2, $3, $4, 'NODE_STORED')`,
+		file, node, hash, testMaxShardBytes)
+	require.NoError(t, err)
+
+	runCtx, stop := context.WithCancel(ctx)
+	h := hub.New(nil)
+	go h.Run(runCtx)
+	t.Cleanup(stop)
+
+	reg := NewShardFetchRegistry()
+	nodeClient := &hub.Client{
+		Hub:    h,
+		ConnID: "virtual-oversize-" + suffix,
+		NodeID: node,
+		Send:   make(chan []byte, 8),
+	}
+	h.Register(nodeClient)
+
+	// A node that streams four times the cap, then claims it is done.
+	const chunkSize = 8 * 1024
+	oversized := 4 * testMaxShardBytes
+	go func() {
+		requestID := ""
+		for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); {
+			reg.mu.Lock()
+			for id, wait := range reg.waiters {
+				if wait.fromNode == node {
+					requestID = id
+				}
+			}
+			reg.mu.Unlock()
+			if requestID == "" {
+				time.Sleep(5 * time.Millisecond)
+				continue
+			}
+			sent := 0
+			for sent < oversized {
+				reg.ResolveBinary(nodeClient, encodeFrame(requestID, make([]byte, chunkSize)))
+				sent += chunkSize
+			}
+			reg.HandleDone(nodeClient, ProtocolEnvelope{
+				Payload: []byte(`{"request_id":"` + requestID + `"}`),
+			})
+			return
+		}
+	}()
+
+	req := httptest.NewRequest(http.MethodGet, "/shards/"+hash, nil)
+	req.SetPathValue("object_id", hash)
+	req = req.WithContext(context.WithValue(req.Context(), auth.AccountIDKey, acct))
+	rr := httptest.NewRecorder()
+	FetchShard(pool, h, reg, nil, testMaxShardBytes)(rr, req)
+
+	require.Equal(t, http.StatusOK, rr.Code)
+	body := rr.Body.Len()
+	require.LessOrEqual(t, int64(body), int64(testMaxShardBytes),
+		"the relay forwarded %d bytes of a %d byte shard", body, testMaxShardBytes)
+	require.Less(t, body, oversized,
+		"the relay proxied the node's entire oversized stream instead of stopping at the recorded size")
+
+	// The declared length is what makes the cut detectable: the client asked for
+	// testMaxShardBytes and will see a short read, rather than a body that ends
+	// wherever the node decided to stop.
+	require.Equal(t, fmt.Sprint(testMaxShardBytes), rr.Header().Get("Content-Length"),
+		"a known shard size must be declared so a truncated stream is visible")
 }

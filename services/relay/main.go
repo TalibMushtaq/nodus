@@ -342,13 +342,13 @@ func main() {
 		// Design A: relay-mediated shard download fallback. Session-authenticated;
 		// FetchShard resolves the account from the session and only serves shards
 		// whose file belongs to that account.
-		mux.Handle("GET /shards/{object_id}", auth.RequireAuth(sessionStore, cfg)(handler.FetchShard(pool, wsHub, shardRegistry, buf)))
+		mux.Handle("GET /shards/{object_id}", auth.RequireAuth(sessionStore, cfg)(handler.FetchShard(pool, wsHub, shardRegistry, buf, cfg.MaxShardBytes)))
 		// Node→relay shard fetch for peer repair (plan §21a Path C): a storage
 		// node repairs a DEGRADED object by fetching it from another holder
 		// through the Relay, reusing the same fetch proxy as browser downloads
 		// but authenticated by the node's stateless Ed25519 signature instead of
 		// a session. RequireNodeAuth sets the account context FetchShard reads.
-		mux.Handle("GET /node/shards/{object_id}", auth.RequireNodeAuth(nodeStore, 5*time.Minute)(handler.FetchShard(pool, wsHub, shardRegistry, buf)))
+		mux.Handle("GET /node/shards/{object_id}", auth.RequireNodeAuth(nodeStore, 5*time.Minute)(handler.FetchShard(pool, wsHub, shardRegistry, buf, cfg.MaxShardBytes)))
 		mux.HandleFunc("GET /buffer/fetch", handler.BufferFetch(pool, redisClient, buf))
 	}
 

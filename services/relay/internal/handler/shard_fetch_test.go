@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/TalibMushtaq/nodus/services/relay/internal/config"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/hub"
 	"github.com/stretchr/testify/require"
 )
@@ -25,11 +26,20 @@ func encodeFrame(requestID string, payload []byte) []byte {
 	return frame
 }
 
-func recvChunk(t *testing.T, ch <-chan shardFetchChunk) shardFetchChunk {
+// recvChunk mirrors what the HTTP handler sees: an ordered chunk, or the abort
+// reason surfaced as an error chunk, or nothing before the deadline.
+func recvChunk(t *testing.T, wait *shardFetchWait) shardFetchChunk {
 	t.Helper()
 	select {
-	case chunk := <-ch:
+	case err := <-wait.abort:
+		return shardFetchChunk{err: err.Error(), done: true}
+	default:
+	}
+	select {
+	case chunk := <-wait.ch:
 		return chunk
+	case err := <-wait.abort:
+		return shardFetchChunk{err: err.Error(), done: true}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for a shard chunk")
 		return shardFetchChunk{}
@@ -101,7 +111,7 @@ func TestShardFetchErrorResolvesWithoutBinary(t *testing.T) {
 
 func TestShardFetchIgnoresOtherNodeAndUnroutedBinary(t *testing.T) {
 	reg := NewShardFetchRegistry()
-	ch, cleanup := reg.register("req-3", "node-a")
+	wait, cleanup := reg.register("req-3", "node-a")
 	defer cleanup()
 
 	// A DIFFERENT node may not answer a request assigned to node-a.
@@ -111,7 +121,7 @@ func TestShardFetchIgnoresOtherNodeAndUnroutedBinary(t *testing.T) {
 	reg.ResolveBinary(shardClient("conn-b", "node-b"), encodeFrame("req-3", []byte("stray")))
 
 	select {
-	case chunk := <-ch:
+	case chunk := <-wait.ch:
 		t.Fatalf("a different node resolved the shard fetch: %+v", chunk)
 	case <-time.After(50 * time.Millisecond):
 	}
@@ -167,4 +177,101 @@ func TestShardFetchResultUsesSnakeCaseWireNames(t *testing.T) {
 	require.NoError(t, err)
 	require.Contains(t, string(raw), `"request_id":"r"`)
 	require.Contains(t, string(raw), `"object_id":"o"`)
+}
+
+// TestShardFetchSendsNeverBlockTheReadLoop covers the flow control between the
+// node's WebSocket read loop and the HTTP handler draining the response.
+//
+// Every registry callback is invoked *from* the read loop, so a send that blocks
+// is a blocked read loop, and one blocked read loop stalls every later message on
+// that node's connection — pings, batch acks, other concurrent fetches. The
+// channel is buffered to absorb a burst, but a buffer is a delay, not a bound: a
+// slow browser on a multi-MiB shard fills it, and the handler's cleanup used to
+// leave the send parked forever with no reader, wedging the connection for the
+// life of the process.
+func TestShardFetchSendsNeverBlockTheReadLoop(t *testing.T) {
+	reg := NewShardFetchRegistry()
+	client := &hub.Client{NodeID: "node-blocked"}
+
+	wait, cleanup := reg.register("req-blocked", "node-blocked")
+
+	// Fill the channel to capacity, standing in for a consumer that is not
+	// keeping up. The read loop copies each chunk before sending, so these are
+	// chunks it has already pulled off the socket.
+	for i := 0; i < cap(wait.ch); i++ {
+		wait.ch <- shardFetchChunk{data: []byte("chunk")}
+	}
+	require.Len(t, wait.ch, cap(wait.ch), "the channel should be full before the next send")
+
+	// This send has nowhere to go. It must return anyway: the fetch is failed
+	// rather than parked, because the caller is the read loop.
+	sent := make(chan struct{})
+	go func() {
+		defer close(sent)
+		reg.ResolveBinary(client, encodeFrame("req-blocked", []byte("one-chunk-too-many")))
+	}()
+	select {
+	case <-sent:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the send blocked with a full channel: this node's read loop is stalled")
+	}
+
+	// The consumer is told why, rather than being left waiting on a stream that
+	// has already lost a chunk, and it stops there instead of writing the chunks
+	// still queued behind the failure.
+	chunk := recvChunk(t, wait)
+	require.NotEmpty(t, chunk.err, "an overflowed fetch must report why it stopped")
+	require.True(t, chunk.done)
+
+	// Abandoning the fetch — client disconnect, or the idle timeout — must leave
+	// later sends harmless rather than wedged.
+	cleanup()
+	for i := range 3 {
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			reg.ResolveBinary(client, encodeFrame("req-blocked", []byte("late")))
+			reg.HandleResult(client, ProtocolEnvelope{
+				Payload: []byte(`{"request_id":"req-late-` + string(rune('0'+i)) + `","status":"ok"}`),
+			})
+		}()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatal("a send blocked after the fetch was abandoned")
+		}
+	}
+}
+
+// testMaxShardBytes is the cap the FetchShard tests exercise; the real value
+// comes from config.
+const testMaxShardBytes = 32 * 1024
+
+// TestShardStreamCeiling covers who gets to set the bound on a relayed shard.
+// The recorded size is the tightest available and is what makes a short read
+// visible to the client, but it is a claim by the same holder that is about to
+// send the bytes, so it can only ever lower the limit.
+func TestShardStreamCeiling(t *testing.T) {
+	const maxShard = 32 * 1024
+	hard := int64(maxShard) + shardStreamOverheadBytes
+
+	// A recorded size below the configured maximum is used as-is.
+	require.Equal(t, int64(4096), shardStreamCeiling(4096, maxShard))
+	require.Equal(t, int64(4096), shardStreamCeiling(4096, maxShard-1),
+		"a smaller configured maximum must win over the recorded size")
+
+	// A node that declares a shard larger than the relay accepts must not thereby
+	// raise its own limit.
+	require.Equal(t, hard, shardStreamCeiling(1<<50, maxShard))
+	require.Equal(t, hard, shardStreamCeiling(hard+1, maxShard))
+
+	// Rows written before size_bytes existed, and nonsense values, fall back to
+	// the configured ceiling rather than to zero.
+	require.Equal(t, hard, shardStreamCeiling(-1, maxShard))
+	require.Equal(t, hard, shardStreamCeiling(0, maxShard))
+	// A Config built without Load carries no shard size. The ceiling falls back to
+	// the default config.Load would apply, not to the framing overhead, which
+	// would refuse every shard over 1 MiB for reasons no operator could see.
+	require.Equal(t, config.DefaultMaxShardBytes+shardStreamOverheadBytes,
+		shardStreamCeiling(-1, 0))
 }

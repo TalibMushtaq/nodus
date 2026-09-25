@@ -251,6 +251,16 @@ does not match a waiter assigned to the sending node, is dropped rather than
 misrouted. Relay and Storage Node must be upgraded together: the older
 per-connection framing is not supported (lockstep cutover).
 
+A node must not send more bytes for one `request_id` than the shard it holds.
+The Relay records the encrypted shard's length in `file_locations.size_bytes` when
+the node reports the shard stored, uses it as the `Content-Length` of the browser
+download it is serving, and stops forwarding at it — so an oversized stream is cut
+short rather than proxied. The recorded length is a claim by the sending node, so
+it can only lower the Relay's limit; the ceiling is the configured
+`MAX_SHARD_BYTES_MB` plus per-shard encryption framing. The browser therefore sees
+a short read against a declared `Content-Length`, and its own shard-hash check
+rejects the result. A node that under-declares gets its own shard truncated.
+
 ---
 
 ## Sync Messages

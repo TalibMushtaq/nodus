@@ -1,5 +1,25 @@
 # Changelog
 
+## [2026-09-26] - Relay: a shard fetch can no longer wedge a node or proxy an unbounded stream
+
+**What changed:**
+
+- **Shard-fetch sends never block the node's read loop** (`services/relay/internal/handler/shard_fetch.go`): every `ShardFetchRegistry` callback runs *from* the WebSocket read loop, so a send that waits is a stalled connection. `deliver` and `fail` are now non-blocking, an overflowed channel fails that one fetch instead of parking, and each waiter carries a `stopped` channel its cleanup closes so a fetch abandoned mid-stream cannot leave a sender behind. The handler checks the abort before draining queued chunks, so a failed fetch stops immediately rather than writing more of a stream already known to be broken.
+- **The relayed response is bounded** (`FetchShard`): the recorded shard size (`file_locations.size_bytes`) is used as a `Content-Length` and as the ceiling on forwarded bytes, and it can only ever *lower* the limit — a node that declares a huge shard does not thereby raise its own. The hard ceiling is `config.DefaultMaxShardBytes` plus framing overhead, the same number the buffer upload cap and the WebSocket read limit already derive from. A fetch cut short is logged with what the node declared and what it sent.
+- `FetchShard` takes `maxShardBytes` (from `cfg.MaxShardBytes`) and `config.DefaultMaxShardBytes` is now exported so the three places that enforce a shard size share one number.
+
+**Why:** The mediated download is the one path where a holder node's bytes reach a client through the relay unexamined, and both of its resource bounds were missing.
+
+*A stalled connection.* `ResolveBinary` sent into a 32-slot channel unconditionally. The buffer absorbs a burst, but a buffer is a delay, not a bound: a slow browser on a multi-MiB shard fills it, and the handler's `cleanup` only deleted the waiter from the map — it never closed or signalled the channel. A send already parked on a full channel therefore had no reader *and* no way to learn it had lost one, so a client disconnect or an idle timeout mid-stream left the goroutine blocked forever. That goroutine is the node's read loop, so the whole connection was wedged for the life of the process: no pings, no batch acks, no other concurrent fetch. A client that opened a download and walked away was enough. The reproduction filled the channel, confirmed the send blocked, ran `cleanup`, and the send was still blocked two seconds later.
+
+*An unbounded stream.* The shard was forwarded chunk by chunk with no declared length and no ceiling, so a node that kept sending was relayed byte for byte. The SDK assembles a shard in memory before hashing it (`download.ts`, `hashShard(packed) !== location.hash`), so the node chose the client's allocation. That hash check is why this is a resource problem rather than a silent-corruption one — the client does reject wrong bytes — but the relay is what could have refused them, and `MaxShardBytes` already existed as the size it is willing to accept on the upload path.
+
+**Impact:** `services/relay` (`internal/handler/shard_fetch.go`, `shard_fetch_test.go`, `shard_fetch_integration_test.go`, `internal/config/config.go`, `main.go`). No protocol or schema change; the wire format and `size_bytes` semantics are untouched. `FetchShard` gained a parameter, so an out-of-tree caller needs updating — `main.go` is the only one in-tree. A correct node is unaffected: it streams exactly `size_bytes`, which is the ceiling.
+
+**Verification:** 2 new tests. `TestShardFetchSendsNeverBlockTheReadLoop` fails against the pre-fix code with "cleanup left the read loop blocked on a send with no reader". `TestFetchShardStopsAnOversizedNodeStream` fails against the pre-fix code having forwarded all four times the recorded size and still answered 200. `TestShardStreamCeiling` covers the trust decision, including that a node cannot raise its own limit and that a `Config` built without `Load` falls back to the documented default rather than refusing every shard over 1 MiB. `go vet` and `gofmt -l` clean, full `scripts/test-integration.sh` green, and `-race` through the script (a bare `go test -race` skips the database-backed tests) clean.
+
+**Follow-ups:** The registry has no cap on *concurrent* in-flight fetches, so one authenticated session can still open unbounded downloads, each holding a goroutine and a 32-slot buffer; the per-fetch cost is now bounded, but the count is not. And a node's declared `size_bytes` is trusted as the response's `Content-Length`, so a holder that under-declares gets its own legitimate shard cut short — bounded-fail rather than unbounded, and its own doing, but worth knowing when reading a truncated download in a bug report.
+
 ## [2026-09-25] - Relay: a snapshot can no longer be replayed backwards, and a rebuild is single-flight again
 
 **What changed:**

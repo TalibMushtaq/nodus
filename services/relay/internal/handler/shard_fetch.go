@@ -16,6 +16,7 @@ import (
 
 	"github.com/TalibMushtaq/nodus/services/relay/internal/auth"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/buffer"
+	"github.com/TalibMushtaq/nodus/services/relay/internal/config"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/db"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/hub"
 	"github.com/google/uuid"
@@ -54,9 +55,63 @@ type shardFetchChunk struct {
 	done bool
 }
 
+// shardFetchWait is one in-flight fetch. It carries two signals the sender side
+// needs and the map alone cannot give it:
+//
+//   - abort, so a consumer that is being sent to can be told *why* without
+//     queueing behind the chunks it is already behind, and
+//   - stopped, closed by the HTTP handler's cleanup, so a waiter that nobody is
+//     reading any more is recognisable.
+//
+// Every method here is called from the node's WebSocket read loop, so none of
+// them may block. A blocked send is a stalled connection.
 type shardFetchWait struct {
 	ch       chan shardFetchChunk
 	fromNode string
+	// abort is buffered so failing a fetch never waits on the consumer.
+	abort chan error
+	// stopped is closed exactly once, by the cleanup the handler runs when it
+	// finishes with the fetch.
+	stopped  chan struct{}
+	stopOnce sync.Once
+}
+
+// deliver hands one chunk to the consumer. It never blocks: a full channel means
+// the consumer is not keeping up, and the fetch is failed instead, because the
+// alternative is stalling every other message on this node's connection.
+func (w *shardFetchWait) deliver(chunk shardFetchChunk) {
+	select {
+	case w.ch <- chunk:
+		return
+	case <-w.stopped:
+		return
+	default:
+	}
+	w.fail(errors.New("shard stream outran the relay: the consumer could not keep up"))
+}
+
+// fail reports a fetch as over, with a reason the handler can log or show. It is
+// safe to call more than once; the first reason wins.
+func (w *shardFetchWait) fail(err error) {
+	if err == nil {
+		err = errors.New("shard fetch failed")
+	}
+	select {
+	case <-w.stopped:
+		return
+	default:
+	}
+	select {
+	case w.abort <- err:
+	default: // a reason is already queued
+	}
+}
+
+// stop releases anything still waiting on this fetch. The handler runs it on
+// every exit path — success, timeout, client disconnect — so a fetch that was
+// abandoned mid-stream cannot leave a sender behind.
+func (w *shardFetchWait) stop() {
+	w.stopOnce.Do(func() { close(w.stopped) })
 }
 
 // shardFrameVersion is the version byte of the binary shard stream frame.
@@ -96,29 +151,38 @@ func decodeShardFrame(frame []byte) (requestID string, payload []byte, ok bool) 
 //     idle timeout.
 type ShardFetchRegistry struct {
 	mu      sync.Mutex
-	waiters map[string]shardFetchWait
+	waiters map[string]*shardFetchWait
 }
 
 func NewShardFetchRegistry() *ShardFetchRegistry {
 	return &ShardFetchRegistry{
-		waiters: make(map[string]shardFetchWait),
+		waiters: make(map[string]*shardFetchWait),
 	}
 }
 
 // register publishes a waiter for requestID assigned to fromNode. The returned
 // cleanup must be called once the HTTP handler finishes (success, timeout, or
 // client disconnect); it is idempotent with any resolve.
-func (r *ShardFetchRegistry) register(requestID, fromNode string) (<-chan shardFetchChunk, func()) {
+func (r *ShardFetchRegistry) register(requestID, fromNode string) (*shardFetchWait, func()) {
 	// Buffered so a burst of chunks from a fast node does not hand backpressure
 	// to the relay's WS read loop before the HTTP writer drains them.
 	ch := make(chan shardFetchChunk, 32)
+	wait := &shardFetchWait{
+		ch:       ch,
+		fromNode: fromNode,
+		abort:    make(chan error, 1),
+		stopped:  make(chan struct{}),
+	}
 	r.mu.Lock()
-	r.waiters[requestID] = shardFetchWait{ch: ch, fromNode: fromNode}
+	r.waiters[requestID] = wait
 	r.mu.Unlock()
-	return ch, func() {
+	return wait, func() {
 		r.mu.Lock()
 		delete(r.waiters, requestID)
 		r.mu.Unlock()
+		// Stop after unpublishing, so a sender that already resolved this waiter
+		// is released even if it has not reached its send yet.
+		wait.stop()
 	}
 }
 
@@ -146,7 +210,7 @@ func (r *ShardFetchRegistry) HandleResult(c *hub.Client, env ProtocolEnvelope) {
 		}
 		delete(r.waiters, payload.RequestID)
 		r.mu.Unlock()
-		wait.ch <- shardFetchChunk{err: message, done: true}
+		wait.fail(errors.New(message))
 		return
 	}
 	r.mu.Unlock()
@@ -176,7 +240,7 @@ func (r *ShardFetchRegistry) ResolveBinary(c *hub.Client, frame []byte) {
 	// Copy: the WS read buffer may be reused once the callback returns.
 	chunk := make([]byte, len(payload))
 	copy(chunk, payload)
-	wait.ch <- shardFetchChunk{data: chunk}
+	wait.deliver(shardFetchChunk{data: chunk})
 }
 
 // HandleDone ends a shard-fetch stream. It deletes the waiter and signals that
@@ -202,7 +266,7 @@ func (r *ShardFetchRegistry) HandleDone(c *hub.Client, env ProtocolEnvelope) {
 	}
 	r.mu.Unlock()
 	if ok {
-		wait.ch <- shardFetchChunk{done: true}
+		wait.deliver(shardFetchChunk{done: true})
 	}
 }
 
@@ -210,20 +274,60 @@ func (r *ShardFetchRegistry) HandleDone(c *hub.Client, env ProtocolEnvelope) {
 // cancellation, or the idle timeout. A closed channel reports false.
 func waitForShardChunk(
 	ctx context.Context,
-	ch <-chan shardFetchChunk,
+	wait *shardFetchWait,
 	d time.Duration,
 ) (shardFetchChunk, bool) {
+	// A failed fetch stops immediately rather than writing more of a stream that
+	// is already known to be broken, so the abort is checked before the queue.
 	select {
-	case chunk, ok := <-ch:
+	case err := <-wait.abort:
+		return shardFetchChunk{err: err.Error(), done: true}, true
+	default:
+	}
+	select {
+	case chunk, ok := <-wait.ch:
 		if !ok {
 			return shardFetchChunk{}, false
 		}
 		return chunk, true
+	case err := <-wait.abort:
+		// Reported as an ordinary error chunk so the handler's existing
+		// "this node could not serve it, try the next one" path is unchanged.
+		return shardFetchChunk{err: err.Error(), done: true}, true
 	case <-time.After(d):
 		return shardFetchChunk{}, false
 	case <-ctx.Done():
 		return shardFetchChunk{}, false
 	}
+}
+
+// shardStreamOverheadBytes is the slack allowed on top of MaxShardBytes for
+// per-shard encryption framing. It matches the headroom main.go adds to the
+// WebSocket read limit for the same reason.
+const shardStreamOverheadBytes = 1 << 20
+
+// shardStreamCeiling is the most the relay will forward for one shard.
+//
+// The declared size is what the holder reported when it stored the shard
+// (file_locations.size_bytes), so it is the tightest bound available and lets the
+// response carry a Content-Length. It is not trusted on its own: a node that
+// declares a huge shard must not thereby raise its own limit, so the configured
+// MaxShardBytes — already enforced on the upload path and the source of the
+// WebSocket read limit — is the hard ceiling. A missing or absent size (rows
+// written before the column existed) falls back to that ceiling alone.
+func shardStreamCeiling(declared, maxShardBytes int64) int64 {
+	if maxShardBytes <= 0 {
+		// A Config built without Load has no shard size. Fall back to the same
+		// default config.Load would have applied rather than collapsing the
+		// ceiling to the framing overhead, which would refuse every shard over
+		// 1 MiB for no reason the operator could see.
+		maxShardBytes = config.DefaultMaxShardBytes
+	}
+	hard := maxShardBytes + shardStreamOverheadBytes
+	if declared > 0 && declared < hard {
+		return declared
+	}
+	return hard
 }
 
 // validShardObjectID matches the node's own object-id validation (layout.rs):
@@ -249,7 +353,13 @@ func validShardObjectID(id string) bool {
 // Ownership is enforced on the relay side: only file_locations rows whose file
 // belongs to the requesting account are considered, so a client can never use
 // this endpoint to pull another tenant's shard bytes.
-func FetchShard(pool *db.Pool, h *hub.Hub, shards *ShardFetchRegistry, buf *buffer.Buffer) http.HandlerFunc {
+func FetchShard(
+	pool *db.Pool,
+	h *hub.Hub,
+	shards *ShardFetchRegistry,
+	buf *buffer.Buffer,
+	maxShardBytes int64,
+) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		accountID, ok := auth.GetAccountID(r.Context())
 		if !ok {
@@ -268,7 +378,7 @@ func FetchShard(pool *db.Pool, h *hub.Hub, shards *ShardFetchRegistry, buf *buff
 		}
 
 		rows, err := pool.Query(r.Context(), `
-			SELECT DISTINCT fl.node_id
+			SELECT DISTINCT fl.node_id, fl.size_bytes
 			FROM file_locations fl
 			JOIN file_versions fv ON fv.file_id = fl.file_id AND fv.version_number = fl.version_number
 			JOIN files f ON f.file_id = fv.file_id
@@ -281,10 +391,22 @@ func FetchShard(pool *db.Pool, h *hub.Hub, shards *ShardFetchRegistry, buf *buff
 		defer rows.Close()
 
 		var nodeIDs []string
+		// Holders may disagree about the size; the smallest claim is the one that
+		// can bound the response, so a node cannot raise the limit by storing
+		// under a second, larger location row.
+		var declaredSize int64 = -1
 		for rows.Next() {
-			var nodeID string
-			if err := rows.Scan(&nodeID); err == nil {
-				nodeIDs = append(nodeIDs, nodeID)
+			var (
+				nodeID    string
+				sizeBytes *int64
+			)
+			if err := rows.Scan(&nodeID, &sizeBytes); err != nil {
+				continue
+			}
+			nodeIDs = append(nodeIDs, nodeID)
+			if sizeBytes != nil && *sizeBytes > 0 &&
+				(declaredSize < 0 || *sizeBytes < declaredSize) {
+				declaredSize = *sizeBytes
 			}
 		}
 		if len(nodeIDs) == 0 {
@@ -303,7 +425,7 @@ func FetchShard(pool *db.Pool, h *hub.Hub, shards *ShardFetchRegistry, buf *buff
 
 		for _, nodeID := range nodeIDs {
 			requestID := uuid.NewString()
-			ch, cleanup := shards.register(requestID, nodeID)
+			wait, cleanup := shards.register(requestID, nodeID)
 
 			payload, err := json.Marshal(shardFetchRequestPayload{
 				RequestID: requestID,
@@ -328,7 +450,7 @@ func FetchShard(pool *db.Pool, h *hub.Hub, shards *ShardFetchRegistry, buf *buff
 
 			// Wait for the first chunk. Until the first byte we can still send a
 			// clean 404 and try the next holder; "ok" is followed by data chunks.
-			first, ok := waitForShardChunk(r.Context(), ch, shardFetchTimeout)
+			first, ok := waitForShardChunk(r.Context(), wait, shardFetchTimeout)
 			if !ok {
 				cleanup()
 				log.Printf("[shard-fetch] node %s did not answer for %s within %s", nodeID, objectID, shardFetchTimeout)
@@ -344,22 +466,44 @@ func FetchShard(pool *db.Pool, h *hub.Hub, shards *ShardFetchRegistry, buf *buff
 			// WriteTimeout (set for small requests) would truncate a large shard,
 			// so clear it for this response, and flush per chunk so the client
 			// sees progress instead of waiting for the whole transfer.
+			//
+			// The response is bounded by the ceiling above. Without it the relay
+			// proxies whatever the holder sends, and the SDK assembles the whole
+			// shard in memory before hashing it, so a node choosing its own
+			// length chooses the client's allocation. When the size is known the
+			// Content-Length is declared, so a client sees a short read for what
+			// it is rather than a body that ends when the node stops talking.
+			ceiling := shardStreamCeiling(declaredSize, maxShardBytes)
 			rc := http.NewResponseController(w)
 			if derr := rc.SetWriteDeadline(time.Time{}); derr != nil {
 				log.Printf("[shard-fetch] could not clear write deadline for %s: %v", objectID, derr)
 			}
 			w.Header().Set("Content-Type", "application/octet-stream")
+			if declaredSize > 0 && declaredSize <= ceiling {
+				w.Header().Set("Content-Length", strconv.FormatInt(declaredSize, 10))
+			}
 			w.WriteHeader(http.StatusOK)
 			flusher, _ := w.(http.Flusher)
+
+			var forwarded int64
+			// oversized records that a node tried to make the response larger than
+			// the recorded shard, so the log distinguishes a lying holder from a
+			// transfer that merely failed.
+			oversized := false
 
 			writeChunk := func(data []byte) bool {
 				if len(data) == 0 {
 					return true
 				}
+				if int64(len(data)) > ceiling-forwarded {
+					oversized = true
+					return false
+				}
 				if _, werr := w.Write(data); werr != nil {
 					log.Printf("[shard-fetch] write error for %s: %v", objectID, werr)
 					return false
 				}
+				forwarded += int64(len(data))
 				if flusher != nil {
 					flusher.Flush()
 				}
@@ -368,11 +512,15 @@ func FetchShard(pool *db.Pool, h *hub.Hub, shards *ShardFetchRegistry, buf *buff
 
 			if !writeChunk(first.data) {
 				cleanup()
+				if oversized {
+					log.Printf("[shard-fetch] node %s sent more than the %d byte limit for %s; "+
+						"the download was cut short", nodeID, ceiling, objectID)
+				}
 				return
 			}
 			done := first.done
 			for !done {
-				next, ok := waitForShardChunk(r.Context(), ch, shardFetchTimeout)
+				next, ok := waitForShardChunk(r.Context(), wait, shardFetchTimeout)
 				if !ok {
 					log.Printf("[shard-fetch] stream for %s from %s stalled", objectID, nodeID)
 					cleanup()
@@ -385,11 +533,22 @@ func FetchShard(pool *db.Pool, h *hub.Hub, shards *ShardFetchRegistry, buf *buff
 				}
 				if !writeChunk(next.data) {
 					cleanup()
+					if oversized {
+						log.Printf("[shard-fetch] node %s sent more than the %d byte limit for %s; "+
+							"the download was cut short", nodeID, ceiling, objectID)
+					}
 					return
 				}
 				done = next.done
 			}
 			cleanup()
+			if forwarded != declaredSize && declaredSize > 0 {
+				// The declared length was not met, so the client will see a short
+				// read. Say so here, because otherwise this is indistinguishable
+				// from a node that simply ended the stream early.
+				log.Printf("[shard-fetch] node %s sent %d bytes of the %d it declared for %s",
+					nodeID, forwarded, declaredSize, objectID)
+			}
 			return
 		}
 

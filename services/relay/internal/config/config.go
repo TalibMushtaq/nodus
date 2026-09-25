@@ -56,6 +56,12 @@ type Config struct {
 	VAPIDSubject    string
 }
 
+// DefaultMaxShardBytes is the shard size the Relay assumes when none is
+// configured, matching @repo/core's MAX_SHARD_SIZE_BYTES. It is exported so the
+// paths that enforce a shard size (the buffer upload cap, the WebSocket read
+// limit, the shard fetch ceiling) share one number rather than restating it.
+const DefaultMaxShardBytes int64 = 32 * 1024 * 1024
+
 // Load populates Config from environment variables with sensible defaults.
 func Load() (*Config, error) {
 	listenAddr := getEnv("PORT", "8080")
@@ -95,7 +101,7 @@ func Load() (*Config, error) {
 	// as unset and falls back to that same default.
 	maxShardMB, _ := strconv.Atoi(getEnv("MAX_SHARD_BYTES_MB", "32"))
 	if maxShardMB < 1 {
-		maxShardMB = 32
+		maxShardMB = int(DefaultMaxShardBytes / (1024 * 1024))
 	}
 	maxShardBytes := int64(maxShardMB) * 1024 * 1024
 
