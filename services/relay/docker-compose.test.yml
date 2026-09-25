@@ -1,0 +1,51 @@
+# Disposable Postgres + Redis for the Relay's integration tests.
+#
+# Deliberately separate from docker-compose.yml: that file holds the dev stack's
+# long-lived data volumes, and integration tests truncate tables. Pointing
+# TEST_DATABASE_URL at the dev stack would destroy the developer's working data.
+#
+# Credentials here are throwaway and generated per bring-up by `make relay-test-up`;
+# the checked-in values below are only a fallback for `docker compose up` runs that
+# skip the wrapper.
+#
+# Ports 5433/6380 avoid the dev stack's 5432/6379.
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: nodus-relay-test-postgres
+    restart: "no"
+    environment:
+      POSTGRES_USER: nodus_test
+      POSTGRES_PASSWORD: ${RELAY_TEST_PG_PASSWORD:?set RELAY_TEST_PG_PASSWORD}
+      POSTGRES_DB: nodus_relay_test
+    ports:
+      - "127.0.0.1:5433:5432"
+    tmpfs:
+      # tmpfs, not a named volume: these fixtures are meant to be disposable.
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nodus_test -d nodus_relay_test"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+  redis:
+    image: redis:7-alpine
+    container_name: nodus-relay-test-redis
+    restart: "no"
+    # requirepass is set so the integration tests exercise the same authenticated
+    # path production will use. An unauthenticated Redis silently accepts an
+    # AUTH-less client, which would hide a missing-password bug.
+    command:
+      - redis-server
+      - --requirepass
+      - ${RELAY_TEST_REDIS_PASSWORD:?set RELAY_TEST_REDIS_PASSWORD}
+    ports:
+      - "127.0.0.1:6380:6379"
+    tmpfs:
+      - /data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${RELAY_TEST_REDIS_PASSWORD}", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 15

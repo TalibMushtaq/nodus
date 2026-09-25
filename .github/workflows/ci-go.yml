@@ -44,3 +44,43 @@ jobs:
 
       - run: go test ./...
         working-directory: services/relay
+
+  vuln-scan:
+    name: go / vuln-scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27.0"
+
+      # Pins the scanner itself so a new govulncheck release cannot turn CI
+      # red on its own, separate from a dependency change under review.
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
+
+      # Scans the call graph, not just go.sum: a vulnerable module we never
+      # actually call is noise, and a vulnerable module we do call is the
+      # signal. This is why the Relay's pgx SQL-injection advisory
+      # (GO-2026-5004) was caught despite no direct pgx API misuse.
+      - name: govulncheck
+        run: govulncheck ./...
+        working-directory: services/relay
+
+  integration-test:
+    name: go / integration-test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27.0"
+
+      # The suite's integration tests self-skip unless TEST_DATABASE_URL is
+      # set, so a plain `go test` in lint-build-test silently never exercises
+      # the database or Redis paths. This job runs them for real against
+      # disposable fixtures on non-conflicting ports.
+      - run: ./scripts/test-integration.sh -count=1
+        working-directory: services/relay
