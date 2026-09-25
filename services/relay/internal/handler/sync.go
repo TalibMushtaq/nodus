@@ -123,6 +123,24 @@ func deviceAllowedEventType(t string) bool {
 	}
 }
 
+// nodeAllowedEventType is the node-emission whitelist: the device whitelist plus
+// FILE_SHARD_STORED, which is the one type a Storage Node originates on its own
+// (it reports a shard it has durably stored).
+//
+// The set is exactly the event types that have an arm in applySingleEventTx. That
+// matters because the switch has no default: an unrecognized type is still
+// journaled into sync_events and still advances the origin cursor, then returns
+// true. A node could therefore inject arbitrary event types into the account's
+// log, from which every device receives them during catch-up sync — the shape of
+// a broadcast, carrying whatever the node chose to write. Types with no
+// projection are pure noise at best.
+func nodeAllowedEventType(t string) bool {
+	if t == "FILE_SHARD_STORED" {
+		return true
+	}
+	return deviceAllowedEventType(t)
+}
+
 type FileVersionEventData struct {
 	FileID          string  `json:"file_id"`
 	VersionNumber   int     `json:"version_number"`
@@ -595,10 +613,10 @@ func HandleEventBatch(
 		}()
 	}
 
-	// Phase 14 (Path C): a device-originated batch takes the locked,
-	// all-or-nothing path so a concurrent batch from the same device cannot
-	// advance its sequence past an unapplied event. Node batches keep the
-	// original per-event transaction path unchanged.
+	// A device-originated batch and a node-originated batch both take the locked,
+	// all-or-nothing validation path, so a peer cannot advance its sequence past
+	// an event the Relay refused. They differ only in how an individual
+	// unprojectable event is handled — see applyDeviceBatch and applyNodeBatch.
 	if c.NodeID == "" {
 		ack := applyDeviceBatch(ctx, pool, c.AccountID, c.DeviceID, batch.Events)
 		_ = sendEnvelope(c, "batch_ack", ack)
@@ -609,21 +627,138 @@ func HandleEventBatch(
 	}
 
 	appliedIDs := make([]string, 0, len(batch.Events))
-
-	for _, item := range batch.Events {
-		applied := applySingleEvent(ctx, pool, c.AccountID, item)
-		if applied {
-			appliedIDs = append(appliedIDs, item.EventID)
-		}
-	}
+	ack := applyNodeBatch(ctx, pool, c.AccountID, c.NodeID, batch.Events)
+	appliedIDs = append(appliedIDs, ack.AppliedEventIDs...)
 
 	// Always send BATCH_ACK with all successfully processed/already-applied events
-	_ = sendEnvelope(c, "batch_ack", BatchAckPayload{
-		AppliedEventIDs: appliedIDs,
-	})
+	_ = sendEnvelope(c, "batch_ack", ack)
 	// Node-originated changes (e.g. a shard reaching NODE_STORED and projecting
 	// a mutation) should also refresh any open browser catalogs.
 	broadcastCatalogChanged(h, c.AccountID, appliedIDs, "node")
+}
+
+// applyNodeBatch applies a node-originated batch under the same three invariants
+// the device path enforces, so a Storage Node is not a privileged peer that can
+// bypass them: every event's origin_id must equal the node's own id, its type
+// must be in the node whitelist, and its origin_sequence must be strictly greater
+// than the node's locked per-origin cursor.
+//
+// The baseline is the same `sync_cursors` row the device path locks. Every
+// applied event advances that row for its own origin_id (the GREATEST upsert at
+// the end of applySingleEventTx), and promote.go reseeds the row from the
+// snapshot's cursor map after a rebuild, so it always means "the highest
+// origin_sequence this Relay has accepted from this origin".
+//
+// A policy violation rejects the whole batch and applies nothing, because these
+// are peer-misbehaviour checks: an event from the wrong origin, an unknown type,
+// or a regressing sequence says something is wrong with the sender, and letting
+// the rest of the batch through would half-apply a batch that should not exist.
+//
+// Per-event projection failures are *not* fatal to the batch, unlike the device
+// path. A node's outbox is a durable queue drained in order, and some events are
+// legitimately unprojectable (an event for a file another account owns, an event
+// for a tombstoned entity). Rejecting the whole batch there would wedge the node
+// behind one permanently-invalid row and stall every later event with it, so
+// those are skipped and logged. Each event runs in a savepoint so a hard error
+// rolls back only that event rather than poisoning the batch's transaction.
+func applyNodeBatch(
+	ctx context.Context,
+	pool *db.Pool,
+	accountID string,
+	nodeID string,
+	events []SyncEventItem,
+) BatchAckPayload {
+	failure := func(reason string, last int64) BatchAckPayload {
+		ok := false
+		return BatchAckPayload{OK: &ok, Reason: reason, LastOriginSequence: &last, AppliedEventIDs: []string{}}
+	}
+
+	if nodeID == "" {
+		return failure("no_node_identity", 0)
+	}
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		log.Printf("[sync] begin node batch transaction: %v", err)
+		return failure("internal_error", 0)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+
+	// Ensure a cursor row exists before locking it, or a node that has never had
+	// an event accepted would lock nothing and two concurrent batches could both
+	// pass validation.
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO sync_cursors (account_id, peer_id, last_sequence, updated_at)
+		VALUES ($1, $2, 0, NOW())
+		ON CONFLICT (account_id, peer_id) DO NOTHING
+	`, accountID, nodeID); err != nil {
+		log.Printf("[sync] ensure node cursor: %v", err)
+		return failure("internal_error", 0)
+	}
+
+	var lastSeq int64
+	if err := tx.QueryRow(ctx, `
+		SELECT last_sequence FROM sync_cursors
+		WHERE account_id = $1 AND peer_id = $2
+		FOR UPDATE
+	`, accountID, nodeID).Scan(&lastSeq); err != nil {
+		log.Printf("[sync] lock node cursor: %v", err)
+		return failure("internal_error", 0)
+	}
+
+	// Pre-validate the whole batch before touching any projection.
+	prev := lastSeq
+	for _, item := range events {
+		switch {
+		case item.OriginID != nodeID:
+			log.Printf("[sync] rejecting node batch from %s: event %s claims origin %s", nodeID, item.EventID, item.OriginID)
+			return failure("origin_mismatch", lastSeq)
+		case !nodeAllowedEventType(item.Type):
+			log.Printf("[sync] rejecting node batch from %s: event %s has unprojectable type %s", nodeID, item.EventID, item.Type)
+			return failure("event_type_not_allowed", lastSeq)
+		case item.OriginSequence <= prev:
+			log.Printf("[sync] rejecting node batch from %s: event %s has sequence %d at or below %d",
+				nodeID, item.EventID, item.OriginSequence, prev)
+			return failure("sequence_regression", lastSeq)
+		}
+		prev = item.OriginSequence
+	}
+
+	appliedIDs := make([]string, 0, len(events))
+	for _, item := range events {
+		// A savepoint per event: a hard error (constraint violation, bad payload)
+		// marks the enclosing transaction aborted in Postgres, which would take
+		// every later event in the batch down with it. Rolling back to the
+		// savepoint confines the damage to the one event that caused it.
+		eventTx, err := tx.Begin(ctx)
+		if err != nil {
+			log.Printf("[sync] begin event savepoint %s: %v", item.EventID, err)
+			return failure("internal_error", lastSeq)
+		}
+		if applySingleEventTx(ctx, eventTx, accountID, item) {
+			if err := eventTx.Commit(ctx); err != nil {
+				log.Printf("[sync] commit event savepoint %s: %v", item.EventID, err)
+				_ = eventTx.Rollback(ctx)
+				return failure("internal_error", lastSeq)
+			}
+			appliedIDs = append(appliedIDs, item.EventID)
+			continue
+		}
+		log.Printf("[sync] skipping unprojectable node event %s (%s) from %s", item.EventID, item.Type, nodeID)
+		if err := eventTx.Rollback(ctx); err != nil {
+			log.Printf("[sync] roll back event savepoint %s: %v", item.EventID, err)
+			return failure("internal_error", lastSeq)
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		log.Printf("[sync] commit node batch: %v", err)
+		return failure("internal_error", lastSeq)
+	}
+
+	ok := true
+	finalSeq := prev
+	return BatchAckPayload{OK: &ok, LastOriginSequence: &finalSeq, AppliedEventIDs: appliedIDs}
 }
 
 // applyDeviceBatch applies a whole device-originated batch in one transaction
@@ -712,6 +847,10 @@ func applyDeviceBatch(
 	return BatchAckPayload{OK: &ok, LastOriginSequence: &finalSeq, AppliedEventIDs: appliedIDs}
 }
 
+// applySingleEvent applies one event in its own transaction. It is the seam the
+// projection tests use to set up state with a synthetic origin_id; production
+// batches go through applyDeviceBatch or applyNodeBatch, which validate the
+// origin, type, and sequence before anything is projected.
 func applySingleEvent(
 	ctx context.Context,
 	pool *db.Pool,

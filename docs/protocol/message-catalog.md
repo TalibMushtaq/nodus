@@ -286,10 +286,23 @@ is finalized.
 | `events` | array of events | yes | Events ordered by `origin_sequence` within each origin |
 
 Both Storage Nodes and (Phase 14) authenticated **devices** may send `event_batch`.
-A device-originated batch is validated server-side: every event's `origin_id` must
-equal the session `device_id`, its type must be in the device whitelist, and its
-`origin_sequence` must be strictly greater than the locked per-origin cursor. The
-whole batch applies in one transaction or not at all.
+Both are validated server-side on the same three rules: every event's `origin_id`
+must equal the session peer id (the `device_id` or the `node_id`), its type must
+be in that peer's whitelist, and its `origin_sequence` must be strictly greater
+than the locked per-origin cursor. A batch that violates any of them is rejected
+whole and applies nothing.
+
+The two whitelists differ in one type. A device may not claim `FILE_SHARD_STORED`
+— only a node reports that it has durably stored a shard. Everything else is
+shared: the set of types that has a projection in the Relay.
+
+The per-event handling differs. A device batch is all-or-nothing down to the
+projection, because a device is interactive and can re-derive its state from the
+`last_origin_sequence` in the rejection. A node batch skips an individual
+unprojectable event and applies the rest, because a node's outbox is a durable
+ordered queue: one permanently-invalid row at the head would otherwise stall
+every later event behind it forever. Each node event runs in a savepoint, so a
+hard error in one event rolls back only that event.
 
 ### `batch_ack`
 
