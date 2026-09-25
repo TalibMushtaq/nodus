@@ -342,7 +342,7 @@ against the trusted node public key before accepting chunks.
 |---|---|---|---|
 | `snapshot_id` | string | yes | Snapshot identifier |
 | `node_id` | string | yes | Source node |
-| `sequence` | integer ≥ 0 | yes | Sequence/checkpoint this snapshot represents |
+| `snapshot_sequence` | integer ≥ 1 | yes | The node's own monotonic counter for this snapshot. Must be strictly greater than the newest sequence the relay has promoted for this node, or the snapshot is refused as `stale_snapshot` — promoting an older one would roll the account back over newer state. Signature verification cannot catch a replayed snapshot, because an old one is signed by the same key over its own content hash. The relay records the promoted value in the same transaction that swaps the account's state, so a duplicated `snapshot_end` cannot move it backwards. |
 | `total_chunks` | integer ≥ 1 | yes | Number of chunks before `snapshot_end` |
 | `content_hash` | string | yes | BLAKE3 of the full snapshot payload |
 | `signature` | string | yes | Ed25519 over `content_hash` |
@@ -408,6 +408,22 @@ error carrier.
 
 `validation_error`, `unknown_message_type`, `incompatible_version`,
 `auth_failure`, `not_found`, `rate_limited`, `internal_error`.
+
+The snapshot path additionally uses these, all of them a `retryable: false`
+rejection of `snapshot_begin`:
+
+| Code | Sent when |
+|---|---|
+| `stale_snapshot` | `snapshot_sequence` is not newer than the newest already promoted for this node. Replaying an old snapshot is refused because promoting it would roll the account back over newer state. |
+| `invalid_snapshot_sequence` | `snapshot_sequence` is not a positive integer. A node's counter starts at 1. |
+| `invalid_cursor_map` | The snapshot's cursor map is not consistent with the relay's event log (see `snapshot_begin`). |
+| `rebuild_in_progress` | Another rebuild is already streaming for this account. Retryable. |
+
+Note for implementers: the four snapshot codes are not yet in the `ErrorCode`
+enum in `packages/protocol/src/errors.ts`, and neither is `auth_failed`, which
+the relay already emits in place of the documented `auth_failure`. A client that
+strictly validates `ErrorPayloadSchema` will reject all of them. The storage node
+does not parse `error` envelopes, so it is unaffected.
 
 ---
 

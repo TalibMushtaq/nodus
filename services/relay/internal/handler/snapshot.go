@@ -172,12 +172,6 @@ func getRebuildSession(snapshotID string) (*rebuildSession, bool) {
 	return s, ok
 }
 
-func putRebuildSession(s *rebuildSession) {
-	rebuildSessionsMu.Lock()
-	defer rebuildSessionsMu.Unlock()
-	rebuildSessions[s.snapshotID] = s
-}
-
 func removeRebuildSession(snapshotID string) {
 	rebuildSessionsMu.Lock()
 	defer rebuildSessionsMu.Unlock()

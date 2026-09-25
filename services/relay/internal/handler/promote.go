@@ -33,13 +33,16 @@ func promoteRebuild(ctx context.Context, pool *db.Pool, sess *rebuildSession) er
 
 	acct := sess.accountID
 
-	// 0. Refuse to roll the account back. Signature verification cannot catch a
+	//    0. Refuse to roll the account back. Signature verification cannot catch a
 	//    replayed snapshot: an old one is signed by the same key over its own
 	//    content hash, so it verifies perfectly. `snapshot_sequence` is the only
-	//    thing that distinguishes it, and promotion has to compare it against the
-	//    node's promoted watermark itself rather than trust the BEGIN-time check
-	//    to still hold — two transfers can both pass BEGIN and then promote in
-	//    turn. FOR UPDATE serializes concurrent promotes of the same node.
+	//    thing that distinguishes it, and promotion has to compare it against
+	//    the node's promoted watermark itself rather than trust the BEGIN-time
+	//    check to still hold. FOR UPDATE serializes concurrent promotes of the
+	//    same node — a duplicate SNAPSHOT_END, for instance, resolves the same
+	//    live session twice — and step 7 writes the new watermark before the
+	//    commit releases it, so the value read here is always the last one
+	//    durably promoted for this node.
 	var promoted int64
 	if err := tx.QueryRow(ctx,
 		`SELECT last_promoted_snapshot_sequence FROM storage_nodes WHERE node_id = $1 FOR UPDATE`,
@@ -296,23 +299,32 @@ func promoteRebuild(ctx context.Context, pool *db.Pool, sess *rebuildSession) er
 		return fmt.Errorf("restore folder_key_envelopes FK: %w", err)
 	}
 
+	// 7. Record the watermark inside this transaction, before the commit.
+	//
+	//    The row locked in step 0 is this same node row, so writing the watermark
+	//    here is what makes the check-then-write atomic: a second promote of the
+	//    same node blocks on the lock until this transaction commits, and then
+	//    reads the watermark this one wrote. Writing it after the commit — which
+	//    is what this did originally — released the lock first, leaving a window
+	//    where a concurrent promote read a stale watermark and an older snapshot
+	//    was accepted; worse, if the older promote's write landed last it moved
+	//    the watermark backwards, re-opening the window for the snapshot that had
+	//    already been promoted.
+	//
+	//    Failing the watermark therefore aborts the promotion. That is the right
+	//    direction to fail: a swapped-in account with no replay guard is worse
+	//    than a snapshot that is retried.
+	if _, err := tx.Exec(ctx,
+		`UPDATE storage_nodes SET last_promoted_snapshot_sequence = $1 WHERE node_id = $2`,
+		sess.snapshotSequence, sess.nodeID); err != nil {
+		return fmt.Errorf("record promoted snapshot watermark: %w", err)
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit promotion tx: %w", err)
 	}
 
-	// 7. Record the watermark only after the promotion is durable. It lives on the
-	//    same node row the promote transaction locked, so a concurrent promote of
-	//    this node cannot interleave between the check and this write.
-	if _, err := pool.Exec(ctx,
-		`UPDATE storage_nodes SET last_promoted_snapshot_sequence = $1 WHERE node_id = $2`,
-		sess.snapshotSequence, sess.nodeID); err != nil {
-		// The state is already promoted and correct; only the replay guard is
-		// missing, so report it loudly rather than unwinding a committed swap.
-		log.Printf("[snapshot] promoted account=%s snapshot=%s seq=%d but could not record the watermark: %v",
-			acct, sess.snapshotID, sess.snapshotSequence, err)
-	}
-
-	// 7. Clear this account's staged rows now that they've been promoted.
+	// 8. Clear this account's staged rows now that they've been promoted.
 	cleanupStagedData(ctx, pool, acct)
 
 	log.Printf("[snapshot] promoted rebuild for account=%s: files=%d folders=%d envelopes=%d folder_envelopes=%d versions=%d tombstones=%d activities=%d cursors=%d",

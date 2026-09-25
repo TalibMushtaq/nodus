@@ -169,3 +169,85 @@ func TestConcurrentSnapshotBeginIsSingleFlight(t *testing.T) {
 			burst, goroutines, active)
 	}
 }
+
+// TestPromotedWatermarkIsAtomicWithConcurrentPromotes covers the promoted
+// watermark write. The row lock taken at the top of promoteRebuild is only
+// load-bearing if the new watermark is written before that lock is released.
+// Writing it after the commit left a window in which a second promote read a
+// stale watermark, and — when the older promote's write happened to land last —
+// moved the watermark backwards, re-opening the window for a snapshot that had
+// already been promoted.
+//
+// Concurrent entry into promoteRebuild is not hypothetical: HandleSnapshotEnd
+// resolves the session by snapshot id and only removes it afterwards, so a
+// duplicated snapshot_end frame promotes the same session twice at once.
+//
+// The assertion is order-independent. Whichever of the two promotes takes the
+// lock first, the final watermark must be the higher sequence; the older
+// snapshot may either be refused outright or promote first and be superseded,
+// but it must never be the value left behind.
+func TestPromotedWatermarkIsAtomicWithConcurrentPromotes(t *testing.T) {
+	h := setupE2E(t)
+	clearRebuildSessions(t)
+
+	// Staged rows the promotes will install. Both sessions promote the same
+	// account, so the staging is shared; only the sequence under test differs.
+	mustExec(t, h.pool,
+		`INSERT INTO rebuild_files (file_id, account_id, encrypted_name) VALUES ('wm-file', $1, 'n')`,
+		h.accountID)
+
+	newer := &rebuildSession{
+		snapshotID:        "wm-newer",
+		nodeID:            h.client.NodeID,
+		accountID:         h.accountID,
+		snapshotSequence:  7,
+		dataSchemaVersion: dataSchemaVersion,
+	}
+	older := &rebuildSession{
+		snapshotID:        "wm-older",
+		nodeID:            h.client.NodeID,
+		accountID:         h.accountID,
+		snapshotSequence:  4,
+		dataSchemaVersion: dataSchemaVersion,
+	}
+
+	for attempt := range 12 {
+		// Re-stage: a successful promote clears the account's staged rows.
+		mustExec(t, h.pool,
+			`INSERT INTO rebuild_files (file_id, account_id, encrypted_name)
+			 VALUES ('wm-file', $1, 'n') ON CONFLICT DO NOTHING`, h.accountID)
+
+		var gate chan struct{} = make(chan struct{})
+		var wg sync.WaitGroup
+		wg.Add(2)
+		for _, sess := range []*rebuildSession{newer, older} {
+			go func(s *rebuildSession) {
+				defer wg.Done()
+				<-gate
+				// Either outcome is legitimate for the older snapshot; what must
+				// not happen is its write winning after the newer one.
+				_ = promoteRebuild(h.ctx, h.pool, s)
+			}(sess)
+		}
+		close(gate)
+		wg.Wait()
+
+		var watermark int64
+		require.NoError(t, h.pool.QueryRow(h.ctx,
+			`SELECT last_promoted_snapshot_sequence FROM storage_nodes WHERE node_id = $1`,
+			h.client.NodeID).Scan(&watermark))
+		require.Equal(t, int64(7), watermark,
+			"attempt %d: a concurrent older promote moved the watermark backwards", attempt)
+	}
+}
+
+// clearRebuildSessions resets the process-wide session map so a test that calls
+// promoteRebuild directly cannot leave a session behind to block the next one.
+func clearRebuildSessions(t *testing.T) {
+	t.Helper()
+	t.Cleanup(func() {
+		rebuildSessionsMu.Lock()
+		rebuildSessions = make(map[string]*rebuildSession)
+		rebuildSessionsMu.Unlock()
+	})
+}
