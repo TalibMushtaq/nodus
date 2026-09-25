@@ -275,6 +275,22 @@ This drops and recreates the database schema (rebuilt from migrations on the
 next start), flushes the Relay's Redis database, and clears the shard buffer.
 Every account, device, and Storage Node must register and pair again.
 
+The prompt prints the exact targets it is about to destroy — Postgres host and
+database, Redis host and index, and the buffer path — with credentials removed,
+so a `DATABASE_URL` or `REDIS_URL` pointed at the wrong place is visible before
+anything is deleted. Two guards also apply:
+
+- The reset refuses to run while another client is still connected to the
+  database, because dropping the schema under a live server leaves it erroring
+  against missing tables. If the only remaining connection is yours (a `psql`
+  session, say), pass `--factory-reset-force`.
+- `BUFFER_DIR` is validated before anything is deleted. A relative path, the
+  filesystem root, a system directory (`/etc`, `/usr`, `/tmp`, …), your home
+  directory, the working directory, or a path that resolves through a symlink
+  into a system tree is refused outright — `os.RemoveAll` is recursive, so those
+  are the values that would delete far more than the shard buffer. Use a
+  dedicated subdirectory such as `/var/lib/nodus/buffer`.
+
 ### Tests
 
 ```bash

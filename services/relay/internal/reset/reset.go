@@ -21,6 +21,14 @@ import (
 // Matched case-sensitively so a reflex "yes"/empty line cannot wipe the Relay.
 const ConfirmPhrase = "purge everything"
 
+// Options carries the escape hatches for the two guardrails an operator may have
+// a genuine reason to bypass. Everything else is a hard refusal.
+type Options struct {
+	// Force skips the live-connection check for the operator who knows the
+	// remaining connection is their own client and the Relay really is stopped.
+	Force bool
+}
+
 // Run erases all Relay state:
 //
 //   - Postgres: drop and recreate the `public` schema. This removes every table,
@@ -31,14 +39,25 @@ const ConfirmPhrase = "purge everything"
 //   - Buffer dir: remove and recreate the on-disk shard buffer.
 //
 // The caller is responsible for confirming the reset with the operator and for
-// stopping the running Relay first: dropping the schema under a live server
-// would leave it erroring against missing tables.
-func Run(ctx context.Context, cfg *config.Config) error {
+// stopping the running Relay first. Both are enforced here rather than trusted:
+// the buffer directory is validated before os.RemoveAll is pointed at it, and the
+// schema drop refuses while another connection is still attached.
+func Run(ctx context.Context, cfg *config.Config, opts Options) error {
+	// Check the destructive path target first, so a bad BUFFER_DIR aborts with
+	// the database and Redis untouched rather than after the schema is gone.
+	if err := validateBufferDir(cfg.BufferDir); err != nil {
+		return err
+	}
+
 	conn, err := pgx.Connect(ctx, cfg.DatabaseURL)
 	if err != nil {
 		return fmt.Errorf("connecting to postgres: %w", err)
 	}
 	defer conn.Close(ctx) //nolint:errcheck
+
+	if err := checkNoLiveConnections(ctx, conn, opts.Force); err != nil {
+		return err
+	}
 
 	if _, err := conn.Exec(ctx, "DROP SCHEMA IF EXISTS public CASCADE"); err != nil {
 		return fmt.Errorf("dropping schema: %w", err)

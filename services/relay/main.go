@@ -95,11 +95,17 @@ func openDatabaseWithRetry(ctx context.Context, cfg *config.Config) *db.Pool {
 // to type the exact phrase on stdin. Non-interactive callers can still confirm
 // by piping the phrase, which keeps the reset scriptable without letting an
 // empty or accidental stdin authorize it.
-func confirmFactoryReset() bool {
+//
+// The prompt names the concrete targets (host, database, Redis index, buffer
+// path) because all three come from the environment: an operator who has
+// DATABASE_URL or REDIS_URL pointed at the wrong place should see that before
+// anything is deleted. Credentials are never printed.
+func confirmFactoryReset(cfg *config.Config) bool {
 	log.Println("[relay] FACTORY RESET will permanently delete:")
 	log.Println("[relay]   - every account, device, and storage node")
 	log.Println("[relay]   - the file catalog, versions, locations, and key envelopes")
 	log.Println("[relay]   - sessions, tombstones, Redis state, and the shard buffer")
+	log.Print(reset.DescribeTarget(cfg))
 	log.Println("[relay] Every client and node must be re-registered and re-paired.")
 	fmt.Printf("[relay] Type %q to confirm: ", reset.ConfirmPhrase)
 	scanner := bufio.NewScanner(os.Stdin)
@@ -114,6 +120,8 @@ func main() {
 	// run with the server stopped, then exit without registering routes.
 	factoryReset := flag.Bool("factory-reset", false,
 		"erase ALL Relay state (accounts, devices, nodes, files, Redis, buffer) and exit")
+	factoryResetForce := flag.Bool("factory-reset-force", false,
+		"proceed with -factory-reset even when another client is still connected to the database")
 	flag.Parse()
 
 	log.Println("[relay] starting Nodus Relay control-plane server...")
@@ -128,11 +136,11 @@ func main() {
 	defer cancel()
 
 	if *factoryReset {
-		if !confirmFactoryReset() {
+		if !confirmFactoryReset(cfg) {
 			log.Println("[relay] factory reset aborted — nothing was deleted")
 			return
 		}
-		if err := reset.Run(ctx, cfg); err != nil {
+		if err := reset.Run(ctx, cfg, reset.Options{Force: *factoryResetForce}); err != nil {
 			log.Fatalf("[relay] factory reset failed: %v", err)
 		}
 		log.Println("[relay] factory reset complete — the schema will be rebuilt on next start")
