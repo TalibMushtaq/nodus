@@ -25,8 +25,17 @@ const recoveryChallengeTTL = 5 * time.Minute
 // UpdateRecoveryKeyRequest enrolls or rotates the account's recovery identity.
 // The key is public (the matching phrase stays client-side), so this is an
 // authenticated write rather than a secret handover.
+//
+// CurrentPassword is required. Rotating the recovery key destroys the previous
+// key's envelope coverage, so a request authenticated only by a live session
+// would let anyone holding a stolen session permanently brick the owner's
+// ability to recover: set an attacker key, let the deletes land, and the
+// owner's phrase no longer opens anything. Requiring the account password makes
+// the destructive step a deliberate act by someone who can also reset the
+// credential, rather than a consequence of session theft alone.
 type UpdateRecoveryKeyRequest struct {
 	RecoveryPublicKey string `json:"recovery_public_key"`
+	CurrentPassword   string `json:"current_password"`
 }
 
 // UpdateRecoveryKey sets the account recovery public key and drops any recovery
@@ -55,6 +64,24 @@ func UpdateRecoveryKey(pool *db.Pool) http.HandlerFunc {
 		pubKey, err := base64.StdEncoding.DecodeString(req.RecoveryPublicKey)
 		if err != nil || len(pubKey) != ed25519.PublicKeySize {
 			respondError(w, http.StatusBadRequest, "recovery_public_key must be a 32-byte base64 Ed25519 public key")
+			return
+		}
+		if req.CurrentPassword == "" {
+			respondError(w, http.StatusBadRequest, "current_password is required")
+			return
+		}
+
+		// Re-verify the password before opening the transaction. A wrong or
+		// missing password must not reach the envelope deletes below.
+		var passwordHash string
+		if err := pool.QueryRow(r.Context(),
+			"SELECT password_hash FROM accounts WHERE account_id = $1", accountID,
+		).Scan(&passwordHash); err != nil {
+			respondError(w, http.StatusInternalServerError, "database error")
+			return
+		}
+		if ok, err := auth.VerifyPassword(passwordHash, req.CurrentPassword); err != nil || !ok {
+			respondError(w, http.StatusUnauthorized, "current password is incorrect")
 			return
 		}
 
@@ -324,6 +351,16 @@ func Recover(pool *db.Pool, store auth.SessionStore, cfg *config.Config) http.Ha
 
 		if err := tx.Commit(r.Context()); err != nil {
 			respondError(w, http.StatusInternalServerError, "failed to commit recovery")
+			return
+		}
+
+		// Recovery is the credential-reset path: it exists for a user who has
+		// lost access, which implies the sessions that existed before it cannot
+		// be trusted. Revoke them all before minting the recovering device's
+		// session, so a session captured before the recovery is dead afterwards
+		// rather than remaining a second way in.
+		if err := store.RevokeAllForAccount(r.Context(), accountID); err != nil {
+			respondError(w, http.StatusInternalServerError, "failed to revoke prior sessions")
 			return
 		}
 

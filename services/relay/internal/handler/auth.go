@@ -280,9 +280,16 @@ func writeSession(w http.ResponseWriter, r *http.Request, cfg *config.Config, ra
 }
 
 // ChangePassword re-verifies the caller's current password, replaces the stored
-// Argon2id hash, and rotates the session (new row, old revoked) in the same
-// request. Rotation is the session-fixation defense from plan §13: a credential
-// change must not leave the pre-change session identifier valid.
+// Argon2id hash, and revokes every other session for the account before issuing
+// the caller a fresh one.
+//
+// Revoking all sessions — not just rotating the caller's — is the session-fixation
+// defense from plan §13. Rotating only the caller's own token left every other
+// device's session valid, so a session stolen before the change (XSS, device
+// theft, a leaked cookie) stayed usable afterwards, which is precisely the
+// situation in which a user changes their password. The caller's session is
+// re-issued rather than left revoked so the acting device is not signed out of
+// the request it is currently making.
 func ChangePassword(pool *db.Pool, store auth.SessionStore, cfg *config.Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
@@ -335,11 +342,18 @@ func ChangePassword(pool *db.Pool, store auth.SessionStore, cfg *config.Config) 
 			return
 		}
 
-		// Rotate last: the old cookie is invalidated and a fresh one issued. If
-		// the caller's session vanished concurrently, the password change still
-		// stands and we force a re-login rather than failing the request.
-		raw := rawSessionToken(r, cfg)
-		newRaw, err := store.RotateSession(r.Context(), raw, accountID, deviceID)
+		// Revoke every session for the account, then re-issue the caller's. The
+		// order matters: revoking first means there is no window in which both
+		// the caller's pre-change cookie and a stolen one are live. A failure
+		// here still leaves the new password in place, so the request reports
+		// the session expiry rather than pretending the password did not change.
+		if err := store.RevokeAllForAccount(r.Context(), accountID); err != nil {
+			clearSessionCookie(w, cfg)
+			respondError(w, http.StatusUnauthorized, "session expired; sign in again")
+			return
+		}
+
+		newRaw, err := store.CreateSession(r.Context(), accountID, deviceID)
 		if err != nil {
 			clearSessionCookie(w, cfg)
 			respondError(w, http.StatusUnauthorized, "session expired; sign in again")

@@ -32,13 +32,24 @@ type authHarness struct {
 
 // authResponse mirrors the locked §2 session body plus decode of error responses.
 type authResponse struct {
-	AccountID        string    `json:"account_id"`
-	DeviceID         string    `json:"device_id"`
-	SessionExpiresAt time.Time `json:"session_expires_at"`
-	Error            string    `json:"error"`
+	AccountID         string    `json:"account_id"`
+	DeviceID          string    `json:"device_id"`
+	SessionExpiresAt  time.Time `json:"session_expires_at"`
+	RecoveryPublicKey string    `json:"recovery_public_key"`
+	Nonce             string    `json:"nonce"`
+	Error             string    `json:"error"`
 }
 
 func setupAuthHarness(t *testing.T) *authHarness {
+	t.Helper()
+	return setupAuthHarnessWithRoutes(t, nil)
+}
+
+// setupAuthHarnessWithRoutes builds the standard auth harness and lets a caller
+// mount extra routes on the same mux, so tests that need the recovery or
+// account endpoints can share the pool, session store, and cookie plumbing
+// rather than standing up a second server.
+func setupAuthHarnessWithRoutes(t *testing.T, extra func(mux *http.ServeMux, pool *db.Pool, store auth.SessionStore, cfg *config.Config)) *authHarness {
 	t.Helper()
 	url := os.Getenv("TEST_DATABASE_URL")
 	if url == "" {
@@ -69,6 +80,9 @@ func setupAuthHarness(t *testing.T) *authHarness {
 	mux.Handle("POST /auth/password", auth.RequireAuth(store, cfg)(ChangePassword(pool, store, cfg)))
 	mux.Handle("POST /auth/logout-all", auth.RequireAuth(store, cfg)(LogoutAll(pool, store, cfg)))
 	mux.Handle("DELETE /devices/{id}", auth.RequireAuth(store, cfg)(RevokeDevice(pool, store)))
+	if extra != nil {
+		extra(mux, pool, store, cfg)
+	}
 
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
