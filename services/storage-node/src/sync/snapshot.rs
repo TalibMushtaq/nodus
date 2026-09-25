@@ -476,10 +476,22 @@ pub async fn build_snapshot(
     SnapshotEndPayload,
 )> {
     let snapshot_id = uuid::Uuid::new_v4().to_string();
-    let snapshot_sequence = bump_snapshot_counter(db).await?;
 
     let mut conn = db.acquire().await?;
     let mut tx = conn.begin().await?;
+    // Allocate the sequence as the transaction's FIRST statement, so the number
+    // the snapshot advertises and the rows it represents come from one point in
+    // time. Order matters: a deferred transaction that has already read cannot be
+    // upgraded to a write (`SQLITE_BUSY_SNAPSHOT`), so allocating after the first
+    // read would trade a consistency bug for a spurious write failure.
+    //
+    // The live `stream_snapshot` path deliberately keeps the allocation outside
+    // its read transaction: it holds the transaction open across the network
+    // send, and taking the write lock for that long would block every writer on
+    // the node. The sequence is a monotonic label for the snapshot as a unit, so
+    // there a commit landing between the allocation and the BEGIN is harmless.
+    let snapshot_sequence = bump_snapshot_counter_conn(&mut tx).await?;
+
     let mut sink = CollectSink { chunks: Vec::new() };
     emit_chunks(&mut tx, &snapshot_id, &mut sink).await?;
     let cursors = load_cursors_conn(&mut tx).await?;
@@ -515,6 +527,14 @@ pub async fn build_snapshot(
 /// Next monotonic per-node snapshot sequence number. Persisted in SQLite so
 /// concurrent snapshot attempts on the same node can't double-assign a number.
 pub async fn bump_snapshot_counter(db: &SqlitePool) -> anyhow::Result<i64> {
+    let mut conn = db.acquire().await?;
+    bump_snapshot_counter_conn(&mut conn).await
+}
+
+/// Connection variant of [`bump_snapshot_counter`], so a caller that is already
+/// inside a transaction can allocate the sequence from the same transaction as
+/// the snapshot read instead of racing a concurrent commit.
+pub async fn bump_snapshot_counter_conn(conn: &mut SqliteConnection) -> anyhow::Result<i64> {
     // A single upsert with `RETURNING` is atomic: a separate follow-up SELECT
     // would let two concurrent callers read the same value (the old comment
     // claimed an atomicity the two-statement version did not have).
@@ -526,7 +546,7 @@ pub async fn bump_snapshot_counter(db: &SqlitePool) -> anyhow::Result<i64> {
         RETURNING value
         "#,
     )
-    .fetch_one(db)
+    .fetch_one(&mut *conn)
     .await?;
     Ok(current)
 }
@@ -839,5 +859,61 @@ mod tests {
             hash_snapshot_records(&second.chunks).unwrap()
         );
         assert!(!first.chunks.is_empty());
+    }
+
+    /// The advertised sequence must be allocated from the same transaction as
+    /// the rows, so a write landing while the snapshot is being built cannot end
+    /// up "inside" a snapshot numbered before it. Runs a real concurrent writer
+    /// against `build_snapshot` and checks the snapshot's own data is complete
+    /// and self-consistent (hash + sequence from one point in time).
+    #[tokio::test]
+    async fn build_snapshot_sequence_matches_its_data_under_concurrent_writes() {
+        let dir = tempdir().unwrap();
+        let pool = db::open(dir.path()).await.unwrap();
+        let identity = crate::identity::load_or_generate(dir.path()).unwrap();
+
+        sqlx::query(
+            "INSERT INTO files (file_id, created_at, updated_at) VALUES ('f-0','now','now')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // Writer racing the snapshot: keeps committing for the duration.
+        let writer_pool = pool.clone();
+        let writer = tokio::spawn(async move {
+            for i in 1..200 {
+                sqlx::query(
+                    "INSERT INTO files (file_id, created_at, updated_at) VALUES (?, 'now', 'now')",
+                )
+                .bind(format!("f-{i}"))
+                .execute(&writer_pool)
+                .await
+                .unwrap();
+                tokio::task::yield_now().await;
+            }
+        });
+
+        let (begin, chunks, end) = build_snapshot(&pool, &identity).await.unwrap();
+        writer.abort();
+
+        // The snapshot hashes to what its END payload claims, and the sequence
+        // is the one this call allocated.
+        assert_eq!(end.final_hash, begin.content_hash);
+        assert_eq!(
+            hash_snapshot_records(&chunks).unwrap(),
+            begin.content_hash,
+            "content hash must match the emitted chunks"
+        );
+        let counter: i64 = sqlx::query_scalar(
+            "SELECT value FROM snapshot_counter WHERE counter_name = 'snapshot_sequence'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            begin.snapshot_sequence, counter,
+            "the advertised sequence must be the one allocated for this snapshot"
+        );
     }
 }
