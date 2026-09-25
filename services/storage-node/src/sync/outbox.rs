@@ -63,23 +63,31 @@ pub async fn drain_unsynced_events(db: &SqlitePool, limit: i64) -> anyhow::Resul
 }
 
 /// Mark a batch of events as acknowledged/synced by the Relay.
+///
+/// One transaction, one statement: the previous per-row loop could commit some
+/// of a batch and then fail, leaving a partially acknowledged batch. That is
+/// not event loss (the un-acked remainder is simply redelivered) but it does
+/// mean the local record of "what the relay has seen" depends on where the
+/// crash landed, which the relay's idempotency then has to absorb. All-or-
+/// nothing keeps that state derivable from the batch itself.
 pub async fn mark_events_synced(db: &SqlitePool, event_ids: &[String]) -> anyhow::Result<()> {
     if event_ids.is_empty() {
         return Ok(());
     }
 
-    for event_id in event_ids {
-        sqlx::query(
-            r#"
-            UPDATE sync_outbox
-            SET synced = 1
-            WHERE event_id = ?
-            "#,
-        )
-        .bind(event_id)
-        .execute(db)
-        .await?;
+    let mut tx = db.begin().await?;
+    let mut qb = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
+        "UPDATE sync_outbox SET synced = 1 WHERE event_id IN (",
+    );
+    {
+        let mut separated = qb.separated(", ");
+        for event_id in event_ids {
+            separated.push_bind(event_id);
+        }
     }
+    qb.push(")");
+    qb.build().execute(&mut *tx).await?;
+    tx.commit().await?;
 
     Ok(())
 }
@@ -210,6 +218,144 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(remaining_ids, vec!["evt-fresh-acked", "evt-old-unsynced"]);
+    }
+
+    #[tokio::test]
+    async fn mark_events_synced_is_all_or_nothing() {
+        let dir = tempdir().unwrap();
+        let pool = db::open(dir.path()).await.unwrap();
+
+        let mut ids = Vec::new();
+        for i in 1..=5 {
+            let event = SyncEvent {
+                event_id: format!("evt-atomic-{i}"),
+                origin_id: "node-1".to_string(),
+                origin_sequence: i,
+                event_type: "FILE_CREATED".to_string(),
+                payload: serde_json::json!({ "file_id": format!("f{i}") }),
+                timestamp: chrono::Utc::now().to_rfc3339(),
+            };
+            insert_outbox_event(&pool, &event).await.unwrap();
+            ids.push(event.event_id);
+        }
+
+        // A crash mid-ack (here: a rolled-back transaction) must leave the batch
+        // fully unacknowledged, not partially acknowledged.
+        let mut tx = pool.begin().await.unwrap();
+        sqlx::query("UPDATE sync_outbox SET synced = 1 WHERE event_id = ?")
+            .bind(&ids[0])
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        tx.rollback().await.unwrap();
+        let still_pending = drain_unsynced_events(&pool, 500).await.unwrap();
+        assert_eq!(
+            still_pending.len(),
+            ids.len(),
+            "a rolled-back ack must not leave a partial batch behind"
+        );
+
+        // The real ack is atomic, and duplicate ids are harmless.
+        mark_events_synced(&pool, &[ids[0].clone(), ids[0].clone()])
+            .await
+            .unwrap();
+        mark_events_synced(&pool, &ids[1..]).await.unwrap();
+        let remaining = drain_unsynced_events(&pool, 500).await.unwrap();
+        assert!(remaining.is_empty(), "every event in the batch is acked");
+
+        // Empty acknowledgement is a no-op.
+        mark_events_synced(&pool, &[]).await.unwrap();
+    }
+
+    /// Phase 4 x Phase 5: a batch that contains a post-purge envelope event is
+    /// skipped by the projection, so a lost acknowledgement (crash) means the
+    /// relay redelivers it. The redelivery must land on the same end state —
+    /// atomic acks must not depend on the skip being exactly-once.
+    #[tokio::test]
+    async fn post_purge_event_redelivery_after_lost_ack_is_stable() {
+        let dir = tempdir().unwrap();
+        let pool = db::open(dir.path()).await.unwrap();
+        let store = crate::store::ObjectStore::new(dir.path().to_path_buf(), pool.clone())
+            .await
+            .unwrap();
+
+        // A live file whose envelope is projected, then deleted + purged.
+        let created = SyncEvent {
+            event_id: "evt-created".to_string(),
+            origin_id: "relay-1".to_string(),
+            origin_sequence: 1,
+            event_type: "FILE_CREATED".to_string(),
+            payload: serde_json::json!({ "file_id": "file-c" }),
+            timestamp: "2026-09-14T00:00:00Z".to_string(),
+        };
+        let envelope = SyncEvent {
+            event_id: "evt-env".to_string(),
+            origin_id: "relay-1".to_string(),
+            origin_sequence: 2,
+            event_type: "KEY_ENVELOPE_ADDED".to_string(),
+            payload: serde_json::json!({
+                "file_id": "file-c",
+                "recipient_id": "dev-1",
+                "recipient_kind": "device",
+                "encrypted_key": "sealed"
+            }),
+            timestamp: "2026-09-14T00:00:01Z".to_string(),
+        };
+        let deleted = SyncEvent {
+            event_id: "evt-deleted".to_string(),
+            origin_id: "relay-1".to_string(),
+            origin_sequence: 3,
+            event_type: "FILE_DELETED".to_string(),
+            payload: serde_json::json!({ "entity_type": "file", "entity_id": "file-c" }),
+            timestamp: "2026-09-14T00:00:02Z".to_string(),
+        };
+        for event in [&created, &envelope, &deleted] {
+            crate::sync::engine::apply_remote_event(&pool, event, "node-test")
+                .await
+                .unwrap();
+        }
+        crate::store::gc::purge_file(&store, "file-c")
+            .await
+            .unwrap();
+
+        // The relay replays the whole batch (its ack was lost in a crash). The
+        // envelope is skipped; the created/deleted arms are idempotent.
+        let stale = crate::sync::engine::apply_incoming_batch(
+            &pool,
+            &crate::sync::types::EventBatchPayload {
+                events: vec![envelope.clone()],
+            },
+            "node-test",
+        )
+        .await
+        .unwrap();
+        assert_eq!(stale.applied_event_ids, vec!["evt-env".to_string()]);
+
+        // Acks land atomically; then the very same event is redelivered again
+        // (a second lost ack). State must be byte-for-byte the same outcome.
+        insert_outbox_event(&pool, &envelope).await.unwrap();
+        mark_events_synced(&pool, &["evt-env".to_string()])
+            .await
+            .unwrap();
+        let again = crate::sync::engine::apply_incoming_batch(
+            &pool,
+            &crate::sync::types::EventBatchPayload {
+                events: vec![envelope.clone()],
+            },
+            "node-test",
+        )
+        .await
+        .unwrap();
+        assert_eq!(again.applied_event_ids, vec!["evt-env".to_string()]);
+
+        let envelopes: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM key_envelopes")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            envelopes, 0,
+            "no redelivery of a post-purge envelope may recreate the row"
+        );
     }
 
     #[tokio::test]
