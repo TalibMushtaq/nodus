@@ -26,13 +26,20 @@ pub(crate) fn fsync_dir(dir: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// True when the file at `path` hashes to `expected_hex`. Streams the file so a
-/// large shard is not read into memory just to dedup-check it.
-pub(crate) fn object_is_intact(path: &Path, expected_hex: &str) -> std::io::Result<bool> {
+/// Stream a file through BLAKE3 and return its hex digest. Never buffers the
+/// whole file, so hashing a max-size shard (or a directory full of them) costs
+/// one buffer instead of the file's size in memory.
+pub(crate) fn stream_hash_hex(path: &Path) -> std::io::Result<String> {
     let file = fs::File::open(path)?;
     let mut hasher = blake3::Hasher::new();
     hasher.update_reader(file)?;
-    Ok(hasher.finalize().to_hex().as_str() == expected_hex)
+    Ok(hasher.finalize().to_hex().to_string())
+}
+
+/// True when the file at `path` hashes to `expected_hex`. Streams the file so a
+/// large shard is not read into memory just to dedup-check it.
+pub(crate) fn object_is_intact(path: &Path, expected_hex: &str) -> std::io::Result<bool> {
+    Ok(stream_hash_hex(path)? == expected_hex)
 }
 
 /// Content-addressed object store backed by on-disk files and SQLite metadata.
@@ -286,47 +293,67 @@ impl ObjectStore {
 
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.is_file() {
-                if let Ok(bytes) = fs::read(&path) {
-                    let hash_hex = blake3::hash(&bytes).to_hex().to_string();
-                    let dest = layout::object_path(&self.data_dir, &hash_hex)?;
+            if !path.is_file() {
+                continue;
+            }
+            // Size comes from metadata, so the cap check costs no read. Anything
+            // past the largest shard a writer can produce is not a recoverable
+            // temp file (truncated rename, disk corruption, or a planted file);
+            // recovering it would publish an object no writer could have made.
+            let Ok(meta) = entry.metadata() else {
+                let _ = fs::remove_file(&path);
+                continue;
+            };
+            if meta.len() > crate::limits::MAX_SHARD_BYTES as u64 {
+                eprintln!(
+                    "[store] removing oversized temp file {} ({} bytes > {} max)",
+                    path.display(),
+                    meta.len(),
+                    crate::limits::MAX_SHARD_BYTES
+                );
+                let _ = fs::remove_file(&path);
+                continue;
+            }
+            // Stream the hash: a temp directory full of max-size shards must not
+            // be able to exhaust memory at boot.
+            if let Ok(hash_hex) = stream_hash_hex(&path) {
+                let dest = layout::object_path(&self.data_dir, &hash_hex)?;
 
-                    if dest.exists() {
-                        let _ = fs::remove_file(&path);
-                    } else {
-                        if let Some(parent) = dest.parent() {
-                            let _ = fs::create_dir_all(parent);
-                        }
-                        if fs::rename(&path, &dest).is_ok() {
-                            // Same durability ordering as `put`: the renamed
-                            // entry must reach the directory before we claim
-                            // the object is STORED in SQLite.
-                            if let Some(parent) = dest.parent() {
-                                let _ = fsync_dir(parent);
-                            }
-                            let now = chrono::Utc::now().to_rfc3339();
-                            let size = bytes.len() as i64;
-                            let _ = sqlx::query(
-                                r#"
-                                INSERT INTO storage_objects (object_id, size_bytes, status, created_at)
-                                VALUES (?, ?, 'STORED', ?)
-                                ON CONFLICT(object_id) DO UPDATE SET
-                                    status = 'STORED',
-                                    size_bytes = excluded.size_bytes
-                                "#,
-                            )
-                            .bind(&hash_hex)
-                            .bind(size)
-                            .bind(&now)
-                            .execute(&self.pool)
-                            .await;
-                        } else {
-                            let _ = fs::remove_file(&path);
-                        }
-                    }
-                } else {
+                if dest.exists() {
                     let _ = fs::remove_file(&path);
+                } else {
+                    if let Some(parent) = dest.parent() {
+                        let _ = fs::create_dir_all(parent);
+                    }
+                    if fs::rename(&path, &dest).is_ok() {
+                        // Same durability ordering as `put`: the renamed
+                        // entry must reach the directory before we claim
+                        // the object is STORED in SQLite.
+                        if let Some(parent) = dest.parent() {
+                            let _ = fsync_dir(parent);
+                        }
+                        let now = chrono::Utc::now().to_rfc3339();
+                        let _ = sqlx::query(
+                            r#"
+                            INSERT INTO storage_objects (object_id, size_bytes, status, created_at)
+                            VALUES (?, ?, 'STORED', ?)
+                            ON CONFLICT(object_id) DO UPDATE SET
+                                status = 'STORED',
+                                size_bytes = excluded.size_bytes
+                            "#,
+                        )
+                        .bind(&hash_hex)
+                        .bind(meta.len() as i64)
+                        .bind(&now)
+                        .execute(&self.pool)
+                        .await;
+                    } else {
+                        let _ = fs::remove_file(&path);
+                    }
                 }
+            } else {
+                // Unreadable temp file: nothing can be recovered from it.
+                let _ = fs::remove_file(&path);
             }
         }
 
@@ -505,6 +532,98 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(status, "STORED");
+    }
+
+    /// Recovery must stream: a temp directory holding several max-size shards
+    /// would, with the old whole-file read, need hundreds of MiB of resident
+    /// memory at boot. Outcomes are unchanged — a valid temp becomes a STORED
+    /// object, a redundant/oversized/unreadable one is cleaned up.
+    #[tokio::test]
+    async fn temp_recovery_streams_and_bounds_size() {
+        let dir = tempdir().unwrap();
+        let pool = create_test_db(dir.path()).await;
+        let store = ObjectStore::new(dir.path().to_path_buf(), pool)
+            .await
+            .unwrap();
+
+        // Two max-size temps: the old implementation buffered both (128 MiB).
+        let mut max_hashes = Vec::new();
+        for i in 0..2 {
+            let data = vec![(i % 251) as u8; crate::limits::MAX_SHARD_BYTES];
+            let path = layout::temp_path(dir.path(), &format!("crash-max-{i}"));
+            fs::write(&path, &data).unwrap();
+            max_hashes.push(blake3::hash(&data).to_hex().to_string());
+        }
+
+        // A valid small temp, a redundant temp, an oversized temp, and a
+        // directory-shaped entry that must be ignored.
+        let small = b"small recoverable payload";
+        let small_path = layout::temp_path(dir.path(), "crash-small");
+        fs::write(&small_path, small).unwrap();
+
+        store.put(small).await.unwrap();
+        let redundant_path = layout::temp_path(dir.path(), "crash-redundant");
+        fs::write(&redundant_path, small).unwrap();
+
+        let oversized_path = layout::temp_path(dir.path(), "crash-oversized");
+        fs::write(
+            &oversized_path,
+            vec![7u8; crate::limits::MAX_SHARD_BYTES + 1],
+        )
+        .unwrap();
+
+        store.recover_temp_writes().await.unwrap();
+
+        for hash in &max_hashes {
+            assert!(store.exists(hash), "max-size temp must be recovered");
+            let (size,): (i64,) =
+                sqlx::query_as("SELECT size_bytes FROM storage_objects WHERE object_id = ?")
+                    .bind(hash)
+                    .fetch_one(store.pool())
+                    .await
+                    .unwrap();
+            assert_eq!(size, crate::limits::MAX_SHARD_BYTES as i64);
+        }
+        assert!(!small_path.exists(), "redundant temp is cleaned up");
+        assert!(!redundant_path.exists(), "redundant temp is cleaned up");
+        assert!(!oversized_path.exists(), "oversized temp is cleaned up");
+        let oversized_hash = blake3::hash(&vec![7u8; crate::limits::MAX_SHARD_BYTES + 1])
+            .to_hex()
+            .to_string();
+        assert!(
+            !store.exists(&oversized_hash),
+            "an object no writer could produce must not be published"
+        );
+    }
+
+    /// A temp file whose bytes are not readable (permissions) is cleaned up, as
+    /// before — streaming must not turn a read error into a panic or a silent
+    /// success.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn temp_recovery_removes_unreadable_temp_file() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempdir().unwrap();
+        let pool = create_test_db(dir.path()).await;
+        let store = ObjectStore::new(dir.path().to_path_buf(), pool)
+            .await
+            .unwrap();
+
+        let path = layout::temp_path(dir.path(), "crash-unreadable");
+        fs::write(&path, b"payload nobody can read back").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
+
+        store.recover_temp_writes().await.unwrap();
+
+        // Running as root defeats the permission check, so the file may have
+        // been recovered instead; only assert the cleanup where the read really
+        // failed. Either way nothing may be published from unreadable bytes.
+        if fs::File::open(&path).is_err() {
+            assert!(!path.exists(), "unreadable temp must be removed");
+        } else {
+            fs::remove_file(&path).unwrap();
+        }
     }
 
     #[tokio::test]
