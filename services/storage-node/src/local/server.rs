@@ -378,9 +378,11 @@ async fn auth(
     State(state): State<LocalState>,
     Json(req): Json<AuthRequest>,
 ) -> Result<Json<AuthResult>, LocalError> {
-    // Single-use: an attempted auth with an unissued/non-recent nonce fails
-    // closed, even if the signature were valid.
-    if !state.nonces.consume(&req.nonce).await {
+    // Peek rather than consume: a nonce observed on the wire (or simply guessed
+    // by a LAN client) must not be burnable with a garbage signature, which
+    // would let an attacker lock the legitimate device out of its own node.
+    // Single-use is still enforced by the consume once the signature verifies.
+    if !state.nonces.peek(&req.nonce).await {
         return Err(LocalError {
             error: "invalid_nonce".into(),
             message: "challenge nonce was not issued, is expired, or already used".into(),
@@ -419,6 +421,16 @@ async fn auth(
         return Err(LocalError {
             error: "bad_signature".into(),
             message: format!("signature verification failed: {e}"),
+        });
+    }
+
+    // Only now claim the nonce. A false here means a concurrent auth with the
+    // same nonce won the race, so this (valid) attempt must not mint a second
+    // successful session.
+    if !state.nonces.consume(&req.nonce).await {
+        return Err(LocalError {
+            error: "invalid_nonce".into(),
+            message: "challenge nonce was not issued, is expired, or already used".into(),
         });
     }
 
@@ -1648,6 +1660,139 @@ mod tests {
         let bytes = resp.into_body().collect().await.unwrap().to_bytes();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(json["error"], "invalid_nonce");
+    }
+
+    /// A garbage signature must not burn the nonce: an attacker who observes a
+    /// challenge on the LAN must not be able to lock the paired device out.
+    #[tokio::test]
+    async fn test_auth_bad_signature_does_not_burn_nonce() {
+        let (app, db, _id, _dir) = setup_test_server().await;
+        let client_addr: SocketAddr = "127.0.0.1:50001".parse().unwrap();
+
+        let device_key = SigningKey::from_bytes(&[42u8; 32]);
+        let device_id = "device-nonce-burn";
+        sqlx::query(
+            "INSERT INTO devices (device_id, public_key_bytes, status, created_at, paired_at)
+             VALUES (?, ?, 'ACTIVE', 'now', 'now')",
+        )
+        .bind(device_id)
+        .bind(device_key.verifying_key().to_bytes().to_vec())
+        .execute(&db)
+        .await
+        .unwrap();
+
+        let mut req = Request::builder()
+            .uri("/nodus/challenge")
+            .method("POST")
+            .body(Body::empty())
+            .unwrap();
+        req.extensions_mut().insert(ConnectInfo(client_addr));
+        let resp = app.clone().oneshot(req).await.unwrap();
+        let json: serde_json::Value =
+            serde_json::from_slice(&resp.into_body().collect().await.unwrap().to_bytes()).unwrap();
+        let nonce = json["nonce"].as_str().unwrap().to_string();
+
+        let auth = |nonce: String, sig_hex: String| {
+            let body = serde_json::json!({
+                "device_id": device_id,
+                "nonce": nonce,
+                "signature": sig_hex,
+            });
+            Request::builder()
+                .uri("/nodus/auth")
+                .method("POST")
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap()
+        };
+
+        // 1. Wrong key signs the nonce: rejected.
+        let attacker = SigningKey::from_bytes(&[7u8; 32]);
+        let req = auth(
+            nonce.clone(),
+            hex::encode(attacker.sign(nonce.as_bytes()).to_bytes()),
+        );
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let json: serde_json::Value =
+            serde_json::from_slice(&resp.into_body().collect().await.unwrap().to_bytes()).unwrap();
+        assert_eq!(json["error"], "bad_signature");
+
+        // 2. The real device can still use the nonce it never lost.
+        let req = auth(
+            nonce.clone(),
+            hex::encode(device_key.sign(nonce.as_bytes()).to_bytes()),
+        );
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // 3. And it is still strictly single-use afterwards.
+        let req = auth(
+            nonce.clone(),
+            hex::encode(device_key.sign(nonce.as_bytes()).to_bytes()),
+        );
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let json: serde_json::Value =
+            serde_json::from_slice(&resp.into_body().collect().await.unwrap().to_bytes()).unwrap();
+        assert_eq!(json["error"], "invalid_nonce");
+    }
+
+    /// Two concurrent auths carrying the same valid nonce: the nonce may only be
+    /// consumed once, so exactly one may succeed even though both signatures
+    /// verify (peek-then-consume must not admit two winners).
+    #[tokio::test]
+    async fn test_auth_concurrent_nonce_consume_admits_one_winner() {
+        let (app, db, _id, _dir) = setup_test_server().await;
+        let client_addr: SocketAddr = "127.0.0.1:50002".parse().unwrap();
+
+        let device_key = SigningKey::from_bytes(&[11u8; 32]);
+        let device_id = "device-concurrent";
+        sqlx::query(
+            "INSERT INTO devices (device_id, public_key_bytes, status, created_at, paired_at)
+             VALUES (?, ?, 'ACTIVE', 'now', 'now')",
+        )
+        .bind(device_id)
+        .bind(device_key.verifying_key().to_bytes().to_vec())
+        .execute(&db)
+        .await
+        .unwrap();
+
+        let mut req = Request::builder()
+            .uri("/nodus/challenge")
+            .method("POST")
+            .body(Body::empty())
+            .unwrap();
+        req.extensions_mut().insert(ConnectInfo(client_addr));
+        let resp = app.clone().oneshot(req).await.unwrap();
+        let json: serde_json::Value =
+            serde_json::from_slice(&resp.into_body().collect().await.unwrap().to_bytes()).unwrap();
+        let nonce = json["nonce"].as_str().unwrap().to_string();
+        let sig = hex::encode(device_key.sign(nonce.as_bytes()).to_bytes());
+
+        let body = serde_json::json!({
+            "device_id": device_id,
+            "nonce": nonce,
+            "signature": sig,
+        })
+        .to_string();
+        let build = || {
+            let app = app.clone();
+            let body = body.clone();
+            async move {
+                let req = Request::builder()
+                    .uri("/nodus/auth")
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body))
+                    .unwrap();
+                app.oneshot(req).await.unwrap().status()
+            }
+        };
+
+        let (a, b) = tokio::join!(build(), build());
+        let winners = [a, b].iter().filter(|s| **s == StatusCode::OK).count();
+        assert_eq!(winners, 1, "exactly one concurrent auth may win the nonce");
     }
 
     #[tokio::test]
