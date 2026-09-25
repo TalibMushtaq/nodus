@@ -287,6 +287,22 @@ func HandleSnapshotBegin(ctx context.Context, c *hub.Client, env ProtocolEnvelop
 		return
 	}
 
+	// Screen the cursor map before the node spends a whole transfer on a
+	// snapshot this Relay would refuse to promote. Promotion re-checks it
+	// inside its transaction (that check is the authoritative one); this copy
+	// exists only to fail fast. The two cannot disagree: sync_events only ever
+	// grows between here and promotion, so a bound that holds now still holds.
+	if _, err := validateSnapshotCursors(ctx, pool, c.AccountID, begin.Cursors); err != nil {
+		log.Printf("[snapshot] rejecting snapshot %s: %v", begin.SnapshotID, err)
+		_ = sendEnvelope(c, "error", map[string]any{
+			"correlation_id": env.MessageID,
+			"error_code":     "invalid_cursor_map",
+			"error_message":  "snapshot cursor map is not consistent with the relay's event log",
+			"retryable":      false,
+		})
+		return
+	}
+
 	// Drop any stale session for the same snapshot id (e.g. re-sent BEGIN),
 	// but refuse a second concurrent rebuild for the same account. Single-flight
 	// per account keeps an aborted session's partial staging from ever being

@@ -347,6 +347,17 @@ against the trusted node public key before accepting chunks.
 | `content_hash` | string | yes | BLAKE3 of the full snapshot payload |
 | `signature` | string | yes | Ed25519 over `content_hash` |
 | `data_schema_version` | string | yes | Version of the data *inside* the snapshot |
+| `cursors` | array of cursors | yes | Per-origin `{ origin_id, sequence }` adopted as the account's `sync_cursors` on promotion |
+
+`cursors` is a sibling of the field that is signed and is therefore **not** covered
+by the signature. The Relay validates the map itself and refuses the snapshot — at
+`snapshot_begin`, and again before any of it is written — if an entry has an empty
+`origin_id`, a negative `sequence`, a duplicated `origin_id`, or a `sequence` above
+the highest `origin_sequence` the Relay has itself accepted from that origin.
+Origins the Relay holds no events for are not bounded: after a factory reset the
+event log is empty and the node is the only remaining authority for its own state.
+A rejected map aborts the whole promotion rather than clamping, because the cursors
+decide which events replay.
 
 ### `snapshot_chunk`
 

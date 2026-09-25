@@ -208,7 +208,13 @@ func promoteRebuild(ctx context.Context, pool *db.Pool, sess *rebuildSession) er
 
 	// 4. Repopulate per-origin sync_cursors from the snapshot's cursor map so
 	//    Phase 8 incremental sync resumes from the snapshot's checkpoint.
-	for _, cur := range sess.cursors {
+	//    The map is untrusted input — see validateSnapshotCursors — so it is
+	//    checked before any of it is written, not as it is inserted.
+	cursors, err := validateSnapshotCursors(ctx, tx, acct, sess.cursors)
+	if err != nil {
+		return err
+	}
+	for _, cur := range cursors {
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO sync_cursors (account_id, peer_id, last_sequence, updated_at)
 			VALUES ($1, $2, $3, NOW())
@@ -279,8 +285,79 @@ func promoteRebuild(ctx context.Context, pool *db.Pool, sess *rebuildSession) er
 	cleanupStagedData(ctx, pool, acct)
 
 	log.Printf("[snapshot] promoted rebuild for account=%s: files=%d folders=%d envelopes=%d folder_envelopes=%d versions=%d tombstones=%d activities=%d cursors=%d",
-		acct, stagedFiles, stagedFolders, stagedEnvelopes, stagedFolderEnvelopes, stagedVersions, stagedTombstones, stagedActivities, len(sess.cursors))
+		acct, stagedFiles, stagedFolders, stagedEnvelopes, stagedFolderEnvelopes, stagedVersions, stagedTombstones, stagedActivities, len(cursors))
 	return nil
+}
+
+// validateSnapshotCursors screens the cursor map a snapshot asks the Relay to
+// adopt, which promotion then writes over the account's live sync_cursors.
+//
+// The map is not covered by the node's signature. HandleSnapshotBegin verifies
+// an Ed25519 signature over the *content hash* only (snapshot.go), and
+// `cursors` is a sibling field of that same BEGIN payload, so its origin ids and
+// sequences are attacker-controlled by anything holding the primary node's
+// socket. Promotion used to insert them verbatim with DO UPDATE SET, so a
+// compromised or malicious primary could set any origin's cursor to any value.
+//
+// A cursor is a claim about what has already been applied, so a false claim is
+// not self-correcting:
+//
+//   - Too high wedges the origin permanently. The Phase 14 sequence check
+//     rejects the peer's next real event as `sequence_regression`, and no API
+//     lowers a cursor, so that peer can never sync again without a factory
+//     reset.
+//   - Too high also silently discards undelivered work: catch-up sync serves
+//     events after the cursor, so every event between the real high-water mark
+//     and the forged one is never sent to any peer.
+//   - Negative rewinds the origin, letting a peer re-apply already-applied
+//     events.
+//
+// The bound enforced here is therefore: a cursor may not claim a sequence above
+// the highest the Relay has actually accepted from that origin. That is safe for
+// an honest node, whose local cursor is only advanced when it applies an event
+// the Relay sent it (services/storage-node/src/sync/engine.rs, apply_event), so
+// the Relay necessarily logged that event first.
+//
+// Origins the Relay has no events for are deliberately NOT bounded. After a
+// factory reset the whole schema, including sync_events, is gone while the node
+// still holds its cursors; rejecting those would break the rebuild the snapshot
+// exists to perform. The node is then the only authority for its own state.
+//
+// A rejected map aborts the whole promotion rather than clamping: the cursors
+// decide which events replay, so a snapshot whose cursor map is not trustworthy
+// cannot be partially believed.
+func validateSnapshotCursors(ctx context.Context, q dbQuerier, accountID string, cursors []SnapshotCursor) ([]SnapshotCursor, error) {
+	seen := make(map[string]struct{}, len(cursors))
+	out := make([]SnapshotCursor, 0, len(cursors))
+	for _, cur := range cursors {
+		switch {
+		case cur.OriginID == "":
+			return nil, fmt.Errorf("snapshot cursor has an empty origin_id")
+		case cur.Sequence < 0:
+			return nil, fmt.Errorf("snapshot cursor for %s has negative sequence %d", cur.OriginID, cur.Sequence)
+		}
+		if _, dup := seen[cur.OriginID]; dup {
+			return nil, fmt.Errorf("snapshot cursor map lists origin %s twice", cur.OriginID)
+		}
+		seen[cur.OriginID] = struct{}{}
+
+		var logMax *int64
+		if err := q.QueryRow(ctx, `
+			SELECT MAX(origin_sequence) FROM sync_events
+			WHERE account_id = $1 AND origin_id = $2
+		`, accountID, cur.OriginID).Scan(&logMax); err != nil {
+			return nil, fmt.Errorf("read sync_events high-water mark for %s: %w", cur.OriginID, err)
+		}
+		// NULL means the Relay holds no events from this origin at all, which is
+		// the post-reset rebuild case: nothing to check the claim against.
+		if logMax != nil && cur.Sequence > *logMax {
+			return nil, fmt.Errorf(
+				"snapshot cursor for %s claims sequence %d but the Relay's highest accepted event from that origin is %d",
+				cur.OriginID, cur.Sequence, *logMax)
+		}
+		out = append(out, cur)
+	}
+	return out, nil
 }
 
 // cleanupStagedData removes an account's rows from all rebuild_* staging
