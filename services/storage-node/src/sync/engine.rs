@@ -115,6 +115,14 @@ async fn apply_shard_manifest_conn(
 
     // The manifest must come from a paired, active device; the Relay cannot
     // forge a device signature.
+    // Anti-resurrection parity with the other projections: a manifest
+    // redelivered after its file was purged must not recreate the per-shard hash
+    // rows. Checked before the origin lookup so a stale manifest is dropped
+    // without further work; the event is still acked and the cursor advances.
+    if has_tombstone_conn(conn, "file", &file_id).await? {
+        return Ok(());
+    }
+
     let pubkey: Option<Vec<u8>> = sqlx::query_scalar(
         "SELECT public_key_bytes FROM devices WHERE device_id = ? AND status = 'ACTIVE'",
     )
@@ -561,7 +569,14 @@ pub(crate) async fn apply_remote_event_conn(
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
 
+            // Anti-resurrection parity with the file/version arms: a redelivered
+            // envelope for a purged file must not recreate the row the purge
+            // removed. The event is still acked and the cursor still advances
+            // (the guard only skips the projection), and the outcome is
+            // identical on every redelivery — which is what makes the outbox's
+            // atomic acknowledgement safe after a mid-batch crash.
             if !file_id.is_empty()
+                && !has_tombstone_conn(&mut tx, "file", file_id).await?
                 && !recipient_id.is_empty()
                 && !encrypted_key.is_empty()
                 && (recipient_kind == "device"
@@ -611,7 +626,11 @@ pub(crate) async fn apply_remote_event_conn(
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
 
+            // Anti-resurrection parity: a folder-key envelope redelivered after
+            // the folder was purged must not recreate an orphan row. Skipped
+            // projections still ack and advance the cursor.
             if !folder_id.is_empty()
+                && !has_tombstone_conn(&mut tx, "folder", folder_id).await?
                 && !recipient_id.is_empty()
                 && !encrypted_key.is_empty()
                 && (recipient_kind == "device"
@@ -1733,5 +1752,254 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(shards, 1);
+    }
+
+    /// Post-purge redelivery must be a no-op for the key/folder-key envelope
+    /// arms, and it must be *idempotent*: the same stale event redelivered N
+    /// times leaves the same state every time (that property is what the
+    /// outbox's atomic acknowledgement relies on). Live files must still re-seal
+    /// normally, otherwise the fix would break normal operation.
+    #[tokio::test]
+    async fn envelope_events_for_tombstoned_file_are_not_reprojected() {
+        let dir = tempdir().unwrap();
+        let pool = db::open(dir.path()).await.unwrap();
+        let store = crate::store::ObjectStore::new(dir.path().to_path_buf(), pool.clone())
+            .await
+            .unwrap();
+
+        let seq = 100;
+        let next = |n: i64| seq + n;
+        let apply = |origin: &str, s: i64, event_type: &str, payload: serde_json::Value| {
+            let pool = pool.clone();
+            let event = SyncEvent {
+                event_id: format!("evt-{origin}-{s}"),
+                origin_id: origin.to_string(),
+                origin_sequence: s,
+                event_type: event_type.to_string(),
+                payload,
+                timestamp: "2026-09-14T00:00:00Z".to_string(),
+            };
+            async move {
+                apply_remote_event(&pool, &event, "node-test")
+                    .await
+                    .unwrap()
+            }
+        };
+
+        // 1. A live file, a live folder, and their envelopes project normally.
+        assert_eq!(
+            apply(
+                "origin-1",
+                next(0),
+                "FILE_CREATED",
+                serde_json::json!({ "file_id": "file-x" })
+            )
+            .await,
+            ApplyOutcome::Applied
+        );
+        assert_eq!(
+            apply(
+                "origin-1",
+                next(1),
+                "FOLDER_CREATED",
+                serde_json::json!({ "folder_id": "folder-x" })
+            )
+            .await,
+            ApplyOutcome::Applied
+        );
+        apply(
+            "origin-1",
+            next(2),
+            "KEY_ENVELOPE_ADDED",
+            serde_json::json!({
+                "file_id": "file-x",
+                "recipient_id": "dev-1",
+                "recipient_kind": "device",
+                "encrypted_key": "sealed"
+            }),
+        )
+        .await;
+        apply(
+            "origin-1",
+            next(3),
+            "FOLDER_KEY_ENVELOPE_ADDED",
+            serde_json::json!({
+                "folder_id": "folder-x",
+                "recipient_id": "dev-1",
+                "recipient_kind": "device",
+                "encrypted_key": "sealed"
+            }),
+        )
+        .await;
+        let live: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM key_envelopes")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(live, 1, "live file re-seal must still create the envelope");
+
+        // 2. Both are deleted and purged (retention GC removes the rows).
+        for (entity_type, entity_id) in [("file", "file-x"), ("folder", "folder-x")] {
+            apply(
+                "origin-1",
+                next(4 + entity_id.len() as i64),
+                "FILE_DELETED",
+                serde_json::json!({ "entity_type": entity_type, "entity_id": entity_id }),
+            )
+            .await;
+        }
+        crate::store::gc::purge_file(&store, "file-x")
+            .await
+            .unwrap();
+        crate::store::gc::purge_folder(&store, "folder-x")
+            .await
+            .unwrap();
+        let after_purge: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM key_envelopes")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(after_purge, 0, "purge must clear the envelope");
+
+        // 3. Redeliver the stale events (a later push from another origin, as
+        //    happens after a crash mid-batch). Three times: no orphan row, but
+        //    the event is acked and the cursor advances every time.
+        for round in 0..3 {
+            apply(
+                "origin-2",
+                next(10 + round),
+                "KEY_ENVELOPE_ADDED",
+                serde_json::json!({
+                    "file_id": "file-x",
+                    "recipient_id": "dev-1",
+                    "recipient_kind": "device",
+                    "encrypted_key": "sealed"
+                }),
+            )
+            .await;
+            apply(
+                "origin-2",
+                next(20 + round),
+                "FOLDER_KEY_ENVELOPE_ADDED",
+                serde_json::json!({
+                    "folder_id": "folder-x",
+                    "recipient_id": "dev-1",
+                    "recipient_kind": "device",
+                    "encrypted_key": "sealed"
+                }),
+            )
+            .await;
+            let orphan: i64 =
+                sqlx::query_scalar("SELECT COUNT(*) FROM key_envelopes WHERE file_id = 'file-x'")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(orphan, 0, "stale envelope must not resurrect a purged row");
+            let orphan_folder: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM folder_key_envelopes WHERE folder_id = 'folder-x'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(orphan_folder, 0, "stale folder envelope must not resurrect");
+        }
+
+        // The cursor advanced past the skipped events (nothing is left pending).
+        let seen: i64 = sqlx::query_scalar(
+            "SELECT last_sequence_seen FROM sync_cursors WHERE peer_id = 'origin-2'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(seen, 122, "skipped events must still advance the cursor");
+    }
+
+    /// Same anti-resurrection contract for `FILE_SHARD_MANIFEST`: the per-shard
+    /// hash rows are not FK-covered by the purge, so a stale manifest would
+    /// otherwise leave orphans pointing at deleted shards.
+    #[tokio::test]
+    async fn shard_manifest_for_tombstoned_file_is_not_reprojected() {
+        let dir = tempdir().unwrap();
+        let pool = db::open(dir.path()).await.unwrap();
+        let store = crate::store::ObjectStore::new(dir.path().to_path_buf(), pool.clone())
+            .await
+            .unwrap();
+
+        let device = ed25519_dalek::SigningKey::from_bytes(&[21u8; 32]);
+        let device_id = "device-signing";
+        sqlx::query(
+            "INSERT INTO devices (device_id, public_key_bytes, status, created_at, paired_at)
+             VALUES (?, ?, 'ACTIVE', 'now', 'now')",
+        )
+        .bind(device_id)
+        .bind(device.verifying_key().to_bytes().to_vec())
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let hash = blake3::hash(b"shard-bytes").to_hex().to_string();
+        let manifest =
+            signed_manifest(&device, device_id, "file-m", 1, std::slice::from_ref(&hash));
+        let mut manifest = manifest;
+        manifest.origin_id = device_id.to_string();
+        manifest.origin_sequence = 1;
+        manifest.event_id = "evt-manifest-1".to_string();
+        assert_eq!(
+            apply_remote_event(&pool, &manifest, "node-test")
+                .await
+                .unwrap(),
+            ApplyOutcome::Applied
+        );
+        let stored: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM file_version_shard_hashes")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(stored, 1, "a live manifest must still project");
+
+        sqlx::query(
+            "INSERT INTO files (file_id, created_at, updated_at) VALUES ('file-m', 'now', 'now')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO file_versions (file_id, version_number, version_hash, shard_count, created_at)
+             VALUES ('file-m', 1, 'vh', 1, 'now')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let del = SyncEvent {
+            event_id: "evt-del-m".to_string(),
+            origin_id: "relay-1".to_string(),
+            origin_sequence: 1,
+            event_type: "FILE_DELETED".to_string(),
+            payload: serde_json::json!({ "entity_type": "file", "entity_id": "file-m" }),
+            timestamp: "2026-09-14T00:00:00Z".to_string(),
+        };
+        apply_remote_event(&pool, &del, "node-test").await.unwrap();
+        crate::store::gc::purge_file(&store, "file-m")
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM file_version_shard_hashes")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        // Redeliver the same stale manifest three times.
+        for round in 0..3 {
+            let mut stale = manifest.clone();
+            stale.origin_sequence = 2 + round;
+            stale.event_id = format!("evt-manifest-redeliver-{round}");
+            assert_eq!(
+                apply_remote_event(&pool, &stale, "node-test")
+                    .await
+                    .unwrap(),
+                ApplyOutcome::Applied
+            );
+            let orphans: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM file_version_shard_hashes")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            assert_eq!(orphans, 0, "stale manifest must not resurrect shard hashes");
+        }
     }
 }
