@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/hex"
 	"errors"
 	"io"
@@ -80,6 +81,29 @@ func errInvalidUploadMeta(msg string) error {
 	return errors.New(msg)
 }
 
+// discardUploadReservation releases the `UPLOADING` placeholder this request
+// reserved for a shard after an upload failed part-way.
+//
+// The `status = 'UPLOADING' AND buffer_id IS NULL` predicate is load-bearing.
+// Two clients can upload the same (file, version, shard, node) concurrently;
+// the loser's failure path must not delete the winner's row. A bare
+// (file_id, version_number, shard_index, node_id) delete also removed rows that
+// had already advanced to RELAY_BUFFERED or NODE_STORED, which silently erased
+// a shard the node had been told to expect.
+//
+// The account guard is redundant with the versionExists check above (a
+// `file_locations` row necessarily belongs to the account owning its
+// `file_versions` row), but it keeps the delete correct on its own terms if that
+// upstream gate is ever relaxed.
+func discardUploadReservation(ctx context.Context, pool *db.Pool, accountID string, md uploadMetadata) {
+	_, _ = pool.Exec(ctx, `
+		DELETE FROM file_locations
+		WHERE file_id = $1 AND version_number = $2 AND shard_index = $3 AND node_id = $4
+		  AND status = 'UPLOADING' AND buffer_id IS NULL
+		  AND EXISTS (SELECT 1 FROM files f WHERE f.file_id = $1 AND f.account_id = $5)
+	`, md.FileID, md.VersionNumber, md.ShardIndex, md.TargetNode, accountID)
+}
+
 // BufferUpload handles POST /buffer/upload — a client pushing an encrypted
 // shard into the Relay's temporary buffer when the target Storage Node is
 // offline (Path C, §13). Metadata travels in X-Nodus headers; the body is
@@ -141,11 +165,17 @@ func BufferUpload(pool *db.Pool, rClient *rdb.Client, buf *buffer.Buffer, h *hub
 		}
 
 		// Drop any buffer file from a previous upload of this shard before we
-		// re-arm the row, so retries don't leak orphaned files.
+		// re-arm the row, so retries don't leak orphaned files. Account-scoped
+		// for the same reason as the failure paths below: this lookup unlinks a
+		// file from disk, and must never be steerable by a foreign `file_id`.
 		var staleBufferID *string
 		_ = pool.QueryRow(r.Context(),
-			`SELECT buffer_id FROM file_locations WHERE file_id=$1 AND version_number=$2 AND shard_index=$3 AND node_id=$4`,
-			md.FileID, md.VersionNumber, md.ShardIndex, md.TargetNode).Scan(&staleBufferID)
+			`SELECT fl.buffer_id
+			 FROM file_locations fl
+			 JOIN files f ON f.file_id = fl.file_id
+			 WHERE fl.file_id=$1 AND fl.version_number=$2 AND fl.shard_index=$3 AND fl.node_id=$4
+			   AND f.account_id=$5`,
+			md.FileID, md.VersionNumber, md.ShardIndex, md.TargetNode, accountID).Scan(&staleBufferID)
 		if staleBufferID != nil && *staleBufferID != "" {
 			if err := buf.Delete(*staleBufferID); err != nil {
 				log.Printf("[buffer-upload] warn: failed to delete stale buffer %s (will be swept later): %v", *staleBufferID, err)
@@ -179,16 +209,12 @@ func BufferUpload(pool *db.Pool, rClient *rdb.Client, buf *buffer.Buffer, h *hub
 		r.Body = http.MaxBytesReader(w, r.Body, limit+1)
 		body, err := io.ReadAll(r.Body)
 		if len(body) != int(md.Size) {
-			_, _ = pool.Exec(r.Context(),
-				`DELETE FROM file_locations WHERE file_id=$1 AND version_number=$2 AND shard_index=$3 AND node_id=$4`,
-				md.FileID, md.VersionNumber, md.ShardIndex, md.TargetNode)
+			discardUploadReservation(r.Context(), pool, accountID, md)
 			respondError(w, http.StatusBadRequest, "body length does not match declared size")
 			return
 		}
 		if err != nil {
-			_, _ = pool.Exec(r.Context(),
-				`DELETE FROM file_locations WHERE file_id=$1 AND version_number=$2 AND shard_index=$3 AND node_id=$4`,
-				md.FileID, md.VersionNumber, md.ShardIndex, md.TargetNode)
+			discardUploadReservation(r.Context(), pool, accountID, md)
 			respondError(w, http.StatusBadRequest, "failed to read request body")
 			return
 		}
@@ -199,18 +225,14 @@ func BufferUpload(pool *db.Pool, rClient *rdb.Client, buf *buffer.Buffer, h *hub
 		_, _ = hasher.Write(body)
 		actualHash := hex.EncodeToString(hasher.Sum(nil))
 		if actualHash != md.Hash {
-			_, _ = pool.Exec(r.Context(),
-				`DELETE FROM file_locations WHERE file_id=$1 AND version_number=$2 AND shard_index=$3 AND node_id=$4`,
-				md.FileID, md.VersionNumber, md.ShardIndex, md.TargetNode)
+			discardUploadReservation(r.Context(), pool, accountID, md)
 			respondError(w, http.StatusBadRequest, "hash mismatch: received "+actualHash)
 			return
 		}
 
 		bufferID := uuid.NewString()
 		if err := buf.Store(bufferID, body); err != nil {
-			_, _ = pool.Exec(r.Context(),
-				`DELETE FROM file_locations WHERE file_id=$1 AND version_number=$2 AND shard_index=$3 AND node_id=$4`,
-				md.FileID, md.VersionNumber, md.ShardIndex, md.TargetNode)
+			discardUploadReservation(r.Context(), pool, accountID, md)
 			respondError(w, http.StatusInternalServerError, "failed to store shard in buffer")
 			return
 		}

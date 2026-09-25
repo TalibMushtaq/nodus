@@ -49,8 +49,8 @@ func ListTombstones(pool *db.Pool) http.HandlerFunc {
 			SELECT t.entity_type, t.entity_id, t.deleted_at, t.purge_after, t.purge_requested_at,
 			       COALESCE(f.encrypted_name, fo.encrypted_name) AS encrypted_name
 			FROM tombstones t
-			LEFT JOIN files f ON t.entity_type = 'file' AND f.file_id = t.entity_id
-			LEFT JOIN folders fo ON t.entity_type = 'folder' AND fo.folder_id = t.entity_id
+			LEFT JOIN files f ON t.entity_type = 'file' AND f.file_id = t.entity_id AND f.account_id = t.account_id
+			LEFT JOIN folders fo ON t.entity_type = 'folder' AND fo.folder_id = t.entity_id AND fo.account_id = t.account_id
 			WHERE t.account_id = $1
 			ORDER BY t.deleted_at DESC
 		`, accountID)
@@ -93,7 +93,12 @@ func tombstoneNodeStatuses(ctx context.Context, pool *db.Pool, accountID, entity
 	statuses := map[string]TombstoneNodeStatus{}
 
 	if entityType == "file" {
-		nodeRows, err := pool.Query(ctx, `SELECT DISTINCT node_id FROM file_locations WHERE file_id = $1`, entityID)
+		nodeRows, err := pool.Query(ctx, `
+			SELECT DISTINCT fl.node_id
+			FROM file_locations fl
+			JOIN files f ON f.file_id = fl.file_id
+			WHERE fl.file_id = $1 AND f.account_id = $2
+		`, entityID, accountID)
 		if err != nil {
 			return nil, err
 		}
@@ -319,27 +324,36 @@ func maybeFinalizePurge(ctx context.Context, pool *db.Pool, buf *buffer.Buffer, 
 // `file_locations` rows that carry these ids, after which the TTL sweep — which
 // only scans existing rows — can never see the files again. Without unlinking
 // them here, every shard still buffered at purge time leaks on disk forever.
-func collectFileBufferIDs(ctx context.Context, pool *db.Pool, entityType, entityID string) ([]string, error) {
+//
+// Every branch is account-scoped: an attacker who tombstones another account's
+// `file_id` under their own (legitimately account-scoped) tombstone row would
+// otherwise harvest that account's buffer ids and have the purge unlink its
+// shards from disk.
+func collectFileBufferIDs(ctx context.Context, pool *db.Pool, accountID, entityType, entityID string) ([]string, error) {
 	var query string
 	if entityType == "file" {
 		query = `SELECT DISTINCT buffer_id FROM file_locations
-		         WHERE file_id = $1 AND buffer_id IS NOT NULL`
+		         WHERE file_id = $1 AND buffer_id IS NOT NULL
+		           AND file_id IN (SELECT file_id FROM files WHERE account_id = $2)`
 	} else {
 		// Recursive folder walk: child folders plus the files directly under the
 		// folder or any descendant.
 		query = `WITH RECURSIVE sub AS (
-		             SELECT folder_id FROM folders WHERE folder_id = $1
+		             SELECT folder_id FROM folders WHERE folder_id = $1 AND account_id = $2
 		             UNION ALL
-		             SELECT f.folder_id FROM folders f JOIN sub ON f.parent_folder_id = sub.folder_id
+		             SELECT f.folder_id FROM folders f
+		             JOIN sub ON f.parent_folder_id = sub.folder_id
+		             WHERE f.account_id = $2
 		         )
 		         SELECT DISTINCT fl.buffer_id
 		         FROM file_locations fl
 		         JOIN files fi ON fi.file_id = fl.file_id
 		         WHERE fl.buffer_id IS NOT NULL
+		           AND fi.account_id = $2
 		           AND (fi.file_id = $1 OR fi.parent_folder_id IN (SELECT folder_id FROM sub))`
 	}
 
-	rows, err := pool.Query(ctx, query, entityID)
+	rows, err := pool.Query(ctx, query, entityID, accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -359,7 +373,7 @@ func collectFileBufferIDs(ctx context.Context, pool *db.Pool, entityType, entity
 // finalizeTombstonePurge deletes the entity's Relay-side data and the tombstone.
 func finalizeTombstonePurge(ctx context.Context, pool *db.Pool, buf *buffer.Buffer, accountID, entityType, entityID string) error {
 	// Resolve the buffer files before the rows that reference them disappear.
-	bufferIDs, err := collectFileBufferIDs(ctx, pool, entityType, entityID)
+	bufferIDs, err := collectFileBufferIDs(ctx, pool, accountID, entityType, entityID)
 	if err != nil {
 		return err
 	}
@@ -370,14 +384,33 @@ func finalizeTombstonePurge(ctx context.Context, pool *db.Pool, buf *buffer.Buff
 	}
 	defer tx.Rollback(ctx) // nolint:errcheck
 
+	// `file_locations`, `file_versions`, and `key_envelopes` carry no
+	// `account_id` of their own; they inherit ownership through `files`. The
+	// `files` row itself was already account-scoped, but its dependents were not:
+	// a purge of another account's `file_id` removed their locations, versions,
+	// and key envelopes while leaving the (scoped) `files` row behind. Scope
+	// every dependent delete to this account so the purge is a no-op for an
+	// entity this account does not own.
 	if entityType == "file" {
-		if _, err := tx.Exec(ctx, `DELETE FROM file_locations WHERE file_id=$1`, entityID); err != nil {
+		if _, err := tx.Exec(ctx, `
+			DELETE FROM file_locations
+			WHERE file_id = $1
+			  AND file_id IN (SELECT file_id FROM files WHERE account_id = $2)
+		`, entityID, accountID); err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx, `DELETE FROM file_versions WHERE file_id=$1`, entityID); err != nil {
+		if _, err := tx.Exec(ctx, `
+			DELETE FROM file_versions
+			WHERE file_id = $1
+			  AND file_id IN (SELECT file_id FROM files WHERE account_id = $2)
+		`, entityID, accountID); err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx, `DELETE FROM key_envelopes WHERE file_id=$1`, entityID); err != nil {
+		if _, err := tx.Exec(ctx, `
+			DELETE FROM key_envelopes
+			WHERE file_id = $1
+			  AND file_id IN (SELECT file_id FROM files WHERE account_id = $2)
+		`, entityID, accountID); err != nil {
 			return err
 		}
 		if _, err := tx.Exec(ctx, `DELETE FROM files WHERE file_id=$1 AND account_id=$2`, entityID, accountID); err != nil {
@@ -420,7 +453,12 @@ func finalizeTombstonePurge(ctx context.Context, pool *db.Pool, buf *buffer.Buff
 // node's folder row).
 func owningNodes(ctx context.Context, pool *db.Pool, accountID, entityType, entityID string) ([]string, error) {
 	if entityType == "file" {
-		rows, err := pool.Query(ctx, `SELECT DISTINCT node_id FROM file_locations WHERE file_id=$1`, entityID)
+		rows, err := pool.Query(ctx, `
+			SELECT DISTINCT fl.node_id
+			FROM file_locations fl
+			JOIN files f ON f.file_id = fl.file_id
+			WHERE fl.file_id = $1 AND f.account_id = $2
+		`, entityID, accountID)
 		if err != nil {
 			return nil, err
 		}
@@ -521,6 +559,7 @@ func pendingPurgesForNode(ctx context.Context, pool *db.Pool, accountID, nodeID 
 		SELECT DISTINCT t.entity_type, t.entity_id
 		FROM tombstones t
 		JOIN file_locations fl ON fl.file_id = t.entity_id AND fl.node_id = $2
+		JOIN files f ON f.file_id = t.entity_id AND f.account_id = t.account_id
 		WHERE t.account_id = $1
 		  AND t.entity_type = 'file'
 		  AND t.purge_requested_at IS NOT NULL

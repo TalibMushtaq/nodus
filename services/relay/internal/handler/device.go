@@ -347,8 +347,24 @@ func RevokeDevice(pool *db.Pool, store auth.SessionStore) http.HandlerFunc {
 		// Also delete any key envelopes associated with this device (ADR-0001).
 		// Folder-key envelopes must go too, or a revoked device keeps a usable
 		// folder-name key.
-		_, _ = pool.Exec(r.Context(), "DELETE FROM key_envelopes WHERE recipient_id = $1", deviceID)
-		_, _ = pool.Exec(r.Context(), "DELETE FROM folder_key_envelopes WHERE recipient_id = $1", deviceID)
+		//
+		// `recipient_id` is drawn from globally-unique namespaces (devices and
+		// storage_nodes are both primary keys), so the bare `recipient_id = $1`
+		// predicate cannot reach another tenant's rows today. The EXISTS guard
+		// re-asserts account ownership locally so that invariant no longer has to
+		// hold across three tables for this delete to be safe — and it keeps
+		// `recipient_id` as the leading predicate, preserving migration 017's
+		// idx_folder_key_envelopes_recipient.
+		_, _ = pool.Exec(r.Context(), `
+			DELETE FROM key_envelopes
+			WHERE recipient_id = $1
+			  AND EXISTS (SELECT 1 FROM devices d WHERE d.device_id = $1 AND d.account_id = $2)
+		`, deviceID, accountID)
+		_, _ = pool.Exec(r.Context(), `
+			DELETE FROM folder_key_envelopes
+			WHERE recipient_id = $1
+			  AND EXISTS (SELECT 1 FROM devices d WHERE d.device_id = $1 AND d.account_id = $2)
+		`, deviceID, accountID)
 
 		// Revoke all sessions bound to the revoked device.
 		if err := store.RevokeAllForDevice(r.Context(), deviceID); err != nil {
