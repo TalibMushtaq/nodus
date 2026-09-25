@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Section } from "@repo/ui/primitives/section";
 import { Button } from "@repo/ui/primitives/button";
+import { Input } from "@repo/ui/primitives/input";
 import { Modal, ModalHeader } from "@repo/ui/primitives/overlay";
 import { shortId } from "../../../lib/format";
 import { useAuth } from "../../../providers/auth-provider";
@@ -19,6 +20,11 @@ import {
 // locally, so this card can reveal and copy it later; only the derived public
 // key is enrolled on the Relay. Enrolling or regenerating re-seals every key
 // this device can open to the new recovery identity.
+//
+// Enrollment asks for the account password because the Relay drops the previous
+// recovery key's envelope coverage on every rotation. Requiring the password
+// means a stolen session alone cannot be used to destroy the owner's ability to
+// recover their account.
 
 interface PendingPhrase {
   mode: "setup" | "regenerate";
@@ -38,6 +44,9 @@ export function RecoveryCard() {
   const [revealed, setRevealed] = useState(false);
   const [pending, setPending] = useState<PendingPhrase | null>(null);
   const [savedConfirmed, setSavedConfirmed] = useState(false);
+  // Held only for the duration of the enroll modal and cleared on close; the
+  // Relay needs it to authorize the destructive envelope cleanup.
+  const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -69,13 +78,23 @@ export function RecoveryCard() {
     setError(null);
     setNotice(null);
     setSavedConfirmed(false);
+    setPassword("");
     setPending({ mode, phrase: createRecoveryPhrase() });
+  }, []);
+
+  const closePending = useCallback(() => {
+    setPending(null);
+    setPassword("");
   }, []);
 
   const confirmEnroll = useCallback(async () => {
     if (!pending || !accountId) return;
     if (!savedConfirmed) {
       setError("Confirm you have saved your recovery phrase");
+      return;
+    }
+    if (!password) {
+      setError("Enter your account password to confirm");
       return;
     }
     setBusy(true);
@@ -86,9 +105,10 @@ export function RecoveryCard() {
       // previous key's envelopes on enroll, so the fresh coverage survives. If
       // the re-seal fails, the account is untouched and the user can retry.
       const result = await reseal(publicKey);
-      await enrollRecoveryKey(publicKey);
+      await enrollRecoveryKey(publicKey, password);
       await saveRecoveryPhrase(accountId, pending.phrase);
       setPhrase(pending.phrase);
+      setPassword("");
       setPending(null);
       setRevealed(true);
       setNotice(
@@ -102,7 +122,7 @@ export function RecoveryCard() {
     } finally {
       setBusy(false);
     }
-  }, [pending, accountId, savedConfirmed, reseal, refresh]);
+  }, [pending, accountId, savedConfirmed, password, reseal, refresh]);
 
   const copy = useCallback(async () => {
     if (!phrase) return;
@@ -182,10 +202,10 @@ export function RecoveryCard() {
       </div>
 
       {pending && (
-        <Modal className="w-[440px] max-w-full" onClose={busy ? () => undefined : () => setPending(null)}>
+        <Modal className="w-[440px] max-w-full" onClose={busy ? () => undefined : closePending}>
           <ModalHeader
             title={pending.mode === "setup" ? "Set up recovery key" : "Regenerate recovery key"}
-            onClose={busy ? () => undefined : () => setPending(null)}
+            onClose={busy ? () => undefined : closePending}
           />
           <div className="p-5 space-y-4">
             <p className="text-xs text-muted-foreground">
@@ -209,16 +229,24 @@ export function RecoveryCard() {
               />
               I have saved my recovery phrase somewhere safe.
             </label>
+            <Input
+              label="Account password"
+              hint="Required to confirm. Replacing the recovery key removes the previous key's access to your files."
+              type="password"
+              autoComplete="current-password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+            />
             {error && <p className="text-xs text-destructive" role="alert">{error}</p>}
             <div className="flex justify-end gap-2">
-              <Button variant="ghost" size="sm" onClick={() => setPending(null)} disabled={busy || resealing}>
+              <Button variant="ghost" size="sm" onClick={closePending} disabled={busy || resealing}>
                 Cancel
               </Button>
               <Button
                 variant="primary"
                 size="sm"
                 onClick={() => void confirmEnroll()}
-                disabled={busy || resealing || !savedConfirmed}
+                disabled={busy || resealing || !savedConfirmed || !password}
               >
                 {busy || resealing ? "Enrolling…" : "Enroll recovery key"}
               </Button>
