@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/require"
@@ -39,8 +40,16 @@ func TestCheckNoLiveConnectionsNeedsForce(t *testing.T) {
 	var otherPID int32
 	require.NoError(t, other.QueryRow(ctx, "SELECT pg_backend_pid()").Scan(&otherPID))
 
+	// pg_stat_activity is updated asynchronously, so poll for the probe instead
+	// of asserting on the first read. Without this the test flakes whenever the
+	// handler package's parallel test process churns connections at the same time.
+	require.Eventually(t, func() bool {
+		err := checkNoLiveConnections(ctx, conn, false)
+		return err != nil && strings.Contains(err.Error(), "reset-guard-probe")
+	}, 5*time.Second, 20*time.Millisecond,
+		"an attached connection must block the reset and be named in the report")
+
 	blocked := checkNoLiveConnections(ctx, conn, false)
-	require.Error(t, blocked, "an attached connection must block the reset")
 	require.Contains(t, blocked.Error(), "refusing to reset")
 	require.Contains(t, blocked.Error(), "reset-guard-probe",
 		"the error must identify the attached client so the operator can find it")
@@ -53,11 +62,11 @@ func TestCheckNoLiveConnectionsNeedsForce(t *testing.T) {
 	// Once our probe disconnects it must stop being reported, which proves the
 	// guard reads live connection state rather than always refusing.
 	require.NoError(t, other.Close(ctx))
-	after := checkNoLiveConnections(ctx, conn, false)
-	if after != nil {
-		require.NotContains(t, after.Error(), "reset-guard-probe",
-			"a closed connection must not keep blocking the reset")
-	}
+	require.Eventually(t, func() bool {
+		err := checkNoLiveConnections(ctx, conn, false)
+		return err == nil || !strings.Contains(err.Error(), "reset-guard-probe")
+	}, 5*time.Second, 20*time.Millisecond,
+		"a closed connection must not keep blocking the reset")
 }
 
 // appendApplicationName tags a connection so the guard's report names it.

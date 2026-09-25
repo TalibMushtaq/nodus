@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -146,8 +147,12 @@ type rebuildSession struct {
 	expectedHash      string
 	dataSchemaVersion string
 	cursors           []SnapshotCursor
-	totalChunks       int64
-	receivedChunks    int64
+	// snapshotSequence is the node's own counter for this transfer, checked
+	// against the node's promoted watermark so an older snapshot cannot roll the
+	// account back over newer promoted state.
+	snapshotSequence int64
+	totalChunks      int64
+	receivedChunks   int64
 	// raw records JSON per chunk, in chunk order, for end-to-end hash check
 	chunkRecords [][]byte
 	// whether the session is still valid (a failed session rejects further chunks)
@@ -179,18 +184,33 @@ func removeRebuildSession(snapshotID string) {
 	delete(rebuildSessions, snapshotID)
 }
 
-// hasActiveSessionForAccount reports whether the account already has a live
-// (non-failed) rebuild session. Must hold rebuildSessionsMu while reading the
-// shared map, since other goroutines mutate it under the same lock.
-func hasActiveSessionForAccount(accountID string) bool {
+// errRebuildInFlight is returned by openRebuildSession when the account already
+// has a live rebuild session.
+var errRebuildInFlight = errors.New("a rebuild is already in progress for this account")
+
+// openRebuildSession registers s unless the account already has a live session,
+// and reports whether it did.
+//
+// The check and the insert happen under a single lock acquisition. Doing them
+// separately let two concurrent snapshot_begin calls both observe an idle account
+// and both open a session: each would then stage into the same rebuild_* tables,
+// each would accept its own chunk ordering, and END verifies the content hash
+// against a session's *own* received chunk bytes — so a mixture of two different
+// snapshots passes every check and gets promoted. The loser's abort then wipes
+// the staging tables out from under the winner.
+func openRebuildSession(s *rebuildSession) error {
 	rebuildSessionsMu.Lock()
 	defer rebuildSessionsMu.Unlock()
 	for _, existing := range rebuildSessions {
-		if existing.accountID == accountID && !existing.failed {
-			return true
+		if existing.accountID == s.accountID && !existing.failed {
+			return errRebuildInFlight
 		}
 	}
-	return false
+	// Drop any stale session carrying the same id (a re-sent BEGIN); the caller
+	// has already proved the new transfer supersedes it.
+	delete(rebuildSessions, s.snapshotID)
+	rebuildSessions[s.snapshotID] = s
+	return nil
 }
 
 // ── Snapshot verification helpers ──────────────────────────────────
@@ -303,23 +323,41 @@ func HandleSnapshotBegin(ctx context.Context, c *hub.Client, env ProtocolEnvelop
 		return
 	}
 
-	// Drop any stale session for the same snapshot id (e.g. re-sent BEGIN),
-	// but refuse a second concurrent rebuild for the same account. Single-flight
-	// per account keeps an aborted session's partial staging from ever being
-	// promoted by a later, unrelated session: abort clears the account's
-	// rebuild_* tables, so another in-flight session would lose its data.
-	if hasActiveSessionForAccount(c.AccountID) {
-		log.Printf("[snapshot] rejecting snapshot %s: rebuild already in flight for account %s",
-			begin.SnapshotID, c.AccountID)
+	// The node's counter starts at 1 and only ever increases, so 0 (or a
+	// negative value) is malformed rather than merely stale. Catching it here
+	// keeps a nonsense sequence out of the promoted watermark.
+	if begin.SnapshotSequence < 1 {
+		log.Printf("[snapshot] rejecting snapshot %s: invalid snapshot_sequence %d",
+			begin.SnapshotID, begin.SnapshotSequence)
 		_ = sendEnvelope(c, "error", map[string]any{
 			"correlation_id": env.MessageID,
-			"error_code":     "rebuild_in_progress",
-			"error_message":  "a rebuild is already in progress for this account",
-			"retryable":      true,
+			"error_code":     "invalid_snapshot_sequence",
+			"error_message":  "snapshot_sequence must be a positive integer",
+			"retryable":      false,
 		})
 		return
 	}
-	removeRebuildSession(begin.SnapshotID)
+
+	// Refuse a second concurrent rebuild for the same account. Single-flight
+	// keeps one aborted session's partial staging from ever being promoted by
+	// another: abort clears the account's rebuild_* tables, so two in-flight
+	// sessions would destroy each other's data.
+	promoted, err := promotedSnapshotSequence(ctx, pool, begin.NodeID)
+	if err != nil {
+		log.Printf("[snapshot] cannot read promoted snapshot watermark for node %s: %v", begin.NodeID, err)
+		return
+	}
+	if begin.SnapshotSequence <= promoted {
+		log.Printf("[snapshot] rejecting snapshot %s: sequence %d is not newer than the promoted watermark %d",
+			begin.SnapshotID, begin.SnapshotSequence, promoted)
+		_ = sendEnvelope(c, "error", map[string]any{
+			"correlation_id": env.MessageID,
+			"error_code":     "stale_snapshot",
+			"error_message":  "snapshot sequence is not newer than the last one promoted",
+			"retryable":      false,
+		})
+		return
+	}
 
 	sess := &rebuildSession{
 		snapshotID:        begin.SnapshotID,
@@ -329,11 +367,30 @@ func HandleSnapshotBegin(ctx context.Context, c *hub.Client, env ProtocolEnvelop
 		dataSchemaVersion: begin.DataSchemaVersion,
 		cursors:           begin.Cursors,
 		totalChunks:       begin.TotalChunks,
+		snapshotSequence:  begin.SnapshotSequence,
 	}
-	putRebuildSession(sess)
+	if err := openRebuildSession(sess); err != nil {
+		log.Printf("[snapshot] rejecting snapshot %s: %v", begin.SnapshotID, err)
+		_ = sendEnvelope(c, "error", map[string]any{
+			"correlation_id": env.MessageID,
+			"error_code":     "rebuild_in_progress",
+			"error_message":  "a rebuild is already in progress for this account",
+			"retryable":      true,
+		})
+		return
+	}
 
 	log.Printf("[snapshot] session opened: snapshot=%s node=%s chunks=%d seq=%d",
 		begin.SnapshotID, begin.NodeID, begin.TotalChunks, begin.SnapshotSequence)
+}
+
+// promotedSnapshotSequence reads the newest snapshot sequence already promoted
+// for a node. Zero means the node has never had a snapshot promoted.
+func promotedSnapshotSequence(ctx context.Context, q dbQuerier, nodeID string) (int64, error) {
+	var seq int64
+	err := q.QueryRow(ctx,
+		`SELECT last_promoted_snapshot_sequence FROM storage_nodes WHERE node_id = $1`, nodeID).Scan(&seq)
+	return seq, err
 }
 
 // ── SNAPSHOT_CHUNK: validate ordering/idempotency, stage rows, accumulate hash ──

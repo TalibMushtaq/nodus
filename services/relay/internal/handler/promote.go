@@ -33,6 +33,25 @@ func promoteRebuild(ctx context.Context, pool *db.Pool, sess *rebuildSession) er
 
 	acct := sess.accountID
 
+	// 0. Refuse to roll the account back. Signature verification cannot catch a
+	//    replayed snapshot: an old one is signed by the same key over its own
+	//    content hash, so it verifies perfectly. `snapshot_sequence` is the only
+	//    thing that distinguishes it, and promotion has to compare it against the
+	//    node's promoted watermark itself rather than trust the BEGIN-time check
+	//    to still hold — two transfers can both pass BEGIN and then promote in
+	//    turn. FOR UPDATE serializes concurrent promotes of the same node.
+	var promoted int64
+	if err := tx.QueryRow(ctx,
+		`SELECT last_promoted_snapshot_sequence FROM storage_nodes WHERE node_id = $1 FOR UPDATE`,
+		sess.nodeID).Scan(&promoted); err != nil {
+		return fmt.Errorf("read promoted snapshot watermark: %w", err)
+	}
+	if sess.snapshotSequence <= promoted {
+		return fmt.Errorf(
+			"refusing to promote snapshot %s: sequence %d is not newer than the promoted watermark %d",
+			sess.snapshotID, sess.snapshotSequence, promoted)
+	}
+
 	// 1. Drop the cascading FKs so the account-row DELETEs below cannot cascade
 	//    into file_locations (buffer entries, §22) or key_envelopes.
 	if err := dropFkViaRel(ctx, tx, "file_locations", "file_versions"); err != nil {
@@ -279,6 +298,18 @@ func promoteRebuild(ctx context.Context, pool *db.Pool, sess *rebuildSession) er
 
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit promotion tx: %w", err)
+	}
+
+	// 7. Record the watermark only after the promotion is durable. It lives on the
+	//    same node row the promote transaction locked, so a concurrent promote of
+	//    this node cannot interleave between the check and this write.
+	if _, err := pool.Exec(ctx,
+		`UPDATE storage_nodes SET last_promoted_snapshot_sequence = $1 WHERE node_id = $2`,
+		sess.snapshotSequence, sess.nodeID); err != nil {
+		// The state is already promoted and correct; only the replay guard is
+		// missing, so report it loudly rather than unwinding a committed swap.
+		log.Printf("[snapshot] promoted account=%s snapshot=%s seq=%d but could not record the watermark: %v",
+			acct, sess.snapshotID, sess.snapshotSequence, err)
 	}
 
 	// 7. Clear this account's staged rows now that they've been promoted.

@@ -78,7 +78,7 @@ func TestSnapshotCursorAboveRelayLogIsRejected(t *testing.T) {
 	ctx, pool, account, node := cursorFixture(t, "device-honest", 7)
 
 	sess := &rebuildSession{
-		snapshotID: "snap-forged", nodeID: node, accountID: account,
+		snapshotID: "snap-forged", nodeID: node, accountID: account, snapshotSequence: 1,
 		cursors: []SnapshotCursor{{OriginID: "device-honest", Sequence: 9_999_999}},
 	}
 	err := promoteRebuild(ctx, pool, sess)
@@ -101,7 +101,7 @@ func TestSnapshotCursorAtRelayLogMaxIsAccepted(t *testing.T) {
 	ctx, pool, account, node := cursorFixture(t, "device-honest", 7)
 
 	sess := &rebuildSession{
-		snapshotID: "snap-exact", nodeID: node, accountID: account,
+		snapshotID: "snap-exact", nodeID: node, accountID: account, snapshotSequence: 1,
 		cursors: []SnapshotCursor{{OriginID: "device-honest", Sequence: 7}},
 	}
 	require.NoError(t, promoteRebuild(ctx, pool, sess))
@@ -118,7 +118,7 @@ func TestSnapshotCursorBehindRelayLogIsAccepted(t *testing.T) {
 	ctx, pool, account, node := cursorFixture(t, "device-honest", 7)
 
 	sess := &rebuildSession{
-		snapshotID: "snap-behind", nodeID: node, accountID: account,
+		snapshotID: "snap-behind", nodeID: node, accountID: account, snapshotSequence: 1,
 		cursors: []SnapshotCursor{{OriginID: "device-honest", Sequence: 2}},
 	}
 	require.NoError(t, promoteRebuild(ctx, pool, sess))
@@ -136,7 +136,7 @@ func TestSnapshotCursorForOriginWithNoLogIsAccepted(t *testing.T) {
 	ctx, pool, account, node := cursorFixture(t, "", 0)
 
 	sess := &rebuildSession{
-		snapshotID: "snap-postreset", nodeID: node, accountID: account,
+		snapshotID: "snap-postreset", nodeID: node, accountID: account, snapshotSequence: 1,
 		cursors: []SnapshotCursor{
 			{OriginID: "device-1", Sequence: 512},
 			{OriginID: "device-2", Sequence: 1},
@@ -167,7 +167,8 @@ func TestSnapshotCursorMapShapeIsValidated(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx, pool, account, node := cursorFixture(t, "d1", 5)
 			sess := &rebuildSession{
-				snapshotID: "snap-shape", nodeID: node, accountID: account, cursors: tc.cursors,
+				snapshotID: "snap-shape", nodeID: node, accountID: account,
+				snapshotSequence: 1, cursors: tc.cursors,
 			}
 			err := promoteRebuild(ctx, pool, sess)
 			require.Error(t, err)
@@ -201,7 +202,7 @@ func TestSnapshotCursorValidationIsAccountScoped(t *testing.T) {
 	// This account's own log for d1 stops at 2, so a claim of 40 is forged even
 	// though some account has seen 50 events from a peer also called "d1".
 	sess := &rebuildSession{
-		snapshotID: "snap-scoped", nodeID: node, accountID: account,
+		snapshotID: "snap-scoped", nodeID: node, accountID: account, snapshotSequence: 1,
 		cursors: []SnapshotCursor{{OriginID: "d1", Sequence: 40}},
 	}
 	err := promoteRebuild(ctx, pool, sess)

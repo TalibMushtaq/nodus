@@ -120,9 +120,10 @@ func TestPromoteRebuildIntegration(t *testing.T) {
 		`, accountID, fileB)
 
 		sess := &rebuildSession{
-			snapshotID: "snap-integration",
-			nodeID:     nodeID,
-			accountID:  accountID,
+			snapshotID:       "snap-integration",
+			nodeID:           nodeID,
+			accountID:        accountID,
+			snapshotSequence: 1,
 			cursors: []SnapshotCursor{
 				{OriginID: "origin-b", Sequence: 42},
 			},
