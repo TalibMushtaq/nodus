@@ -66,8 +66,15 @@ export interface RecoveryClient {
   ): Promise<RecoveryLoginResult>;
   /** Unlock this device's local key stores from recovery-sealed envelopes. */
   materialize(phrase: string): Promise<{ files: number; folders: number }>;
-  /** Enroll or rotate the account recovery public key on the Relay. */
-  enroll(publicKey: string): Promise<void>;
+  /**
+   * Enroll or rotate the account recovery public key on the Relay.
+   *
+   * `currentPassword` is required by the Relay: rotating the key drops the
+   * previous key's envelope coverage, so the Relay re-verifies the account
+   * password before performing that destructive step. A caller holding only a
+   * (possibly stolen) session cannot silently brick the account's recovery.
+   */
+  enroll(publicKey: string, currentPassword: string): Promise<void>;
 }
 
 export function createRecoveryClient(deps: RecoveryDeps): RecoveryClient {
@@ -151,10 +158,10 @@ export function createRecoveryClient(deps: RecoveryDeps): RecoveryClient {
       return { files, folders };
     },
 
-    async enroll(publicKeyValue) {
+    async enroll(publicKeyValue, currentPassword) {
       const res = await deps.http.request("/account/recovery", {
         method: "PUT",
-        body: { recovery_public_key: publicKeyValue },
+        body: { recovery_public_key: publicKeyValue, current_password: currentPassword },
       });
       if (!res.ok) {
         throw new Error(res.error ?? `recovery enrollment failed: ${res.status}`);

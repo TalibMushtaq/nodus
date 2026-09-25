@@ -128,4 +128,43 @@ describe("recovery client", () => {
     expect(unlocked.files).toBe(1);
     expect(keys.get("file-1")).toEqual(fek);
   });
+
+  it("sends the account password with the recovery key so the Relay can re-authorize", async () => {
+    const { store } = memoryStore();
+    let body: { recovery_public_key?: string; current_password?: string } | undefined;
+    const client = createRecoveryClient({
+      http: fakeHttp((path, init) => {
+        if (path === "/account/recovery") {
+          body = init?.body as typeof body;
+          return { status: 200, ok: true, json: {} };
+        }
+        return { status: 404, ok: false };
+      }),
+      store,
+      putFileKey: async () => undefined,
+      putFolderKey: async () => undefined,
+    });
+
+    const phrase = client.createPhrase();
+    // The Relay drops the previous key's envelope coverage on every rotation, so
+    // the password must travel with the request or the Relay rejects the rotation.
+    await client.enroll(client.publicKey(phrase), "hunter2-correct");
+
+    expect(body?.current_password).toBe("hunter2-correct");
+    expect(body?.recovery_public_key).toBe(client.publicKey(phrase));
+  });
+
+  it("surfaces the Relay's error when enrollment is rejected", async () => {
+    const { store } = memoryStore();
+    const client = createRecoveryClient({
+      http: fakeHttp(() => ({ status: 401, ok: false, error: "current password is incorrect" })),
+      store,
+      putFileKey: async () => undefined,
+      putFolderKey: async () => undefined,
+    });
+
+    await expect(client.enroll(client.publicKey(client.createPhrase()), "wrong")).rejects.toThrow(
+      /current password is incorrect/i,
+    );
+  });
 });
