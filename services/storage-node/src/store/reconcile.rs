@@ -47,22 +47,40 @@ pub async fn run_reconciliation(store: &ObjectStore) -> anyhow::Result<Reconcile
     // Page the scan so a large catalogue does not materialize every object id
     // in memory at once, and hash by streaming (`object_is_intact`) rather than
     // `fs::read`, so a single 8 MiB shard is never fully buffered.
+    //
+    // Keyset pagination, not OFFSET: this loop mutates the rows it scans
+    // (STORED -> DEGRADED), so with OFFSET every removal shifts the remaining
+    // rows left and the next page silently skips up to PAGE-1 objects — the
+    // scan would report a clean pass over a catalogue it never looked at.
+    // `object_id` is the primary key, so `> last` on an ordered scan is stable
+    // against concurrent mutation.
     const PAGE: i64 = 1000;
-    let mut offset: i64 = 0;
+    let mut after_id: Option<String> = None;
     loop {
-        let rows: Vec<(String,)> = sqlx::query_as(
-            "SELECT object_id FROM storage_objects WHERE status = 'STORED' \
-             ORDER BY object_id LIMIT ? OFFSET ?",
-        )
-        .bind(PAGE)
-        .bind(offset)
-        .fetch_all(pool)
-        .await
-        .context("fetching storage_objects for reconciliation")?;
+        let rows: Vec<(String,)> = if let Some(last) = &after_id {
+            sqlx::query_as(
+                "SELECT object_id FROM storage_objects WHERE status = 'STORED' \
+                 AND object_id > ? ORDER BY object_id LIMIT ?",
+            )
+            .bind(last)
+            .bind(PAGE)
+            .fetch_all(pool)
+            .await
+            .context("fetching storage_objects for reconciliation")?
+        } else {
+            sqlx::query_as(
+                "SELECT object_id FROM storage_objects WHERE status = 'STORED' \
+                 ORDER BY object_id LIMIT ?",
+            )
+            .bind(PAGE)
+            .fetch_all(pool)
+            .await
+            .context("fetching storage_objects for reconciliation")?
+        };
         if rows.is_empty() {
             break;
         }
-        offset += rows.len() as i64;
+        after_id = rows.last().map(|(id,)| id.clone());
 
         for (object_id,) in rows {
             let path = layout::object_path(data_dir, &object_id)?;
@@ -560,6 +578,51 @@ mod tests {
         let report = run_reconciliation(&store).await.unwrap();
         assert!(report.orphans_deleted.contains(&hash));
         assert!(!dest.exists());
+    }
+
+    /// A mutating scan must page with keyset, not OFFSET. Every row here is
+    /// broken (STORED in SQLite, absent on disk), so a pass that skips a page
+    /// boundary shows up as an under-count: with `LIMIT/OFFSET` the rows flipped
+    /// to DEGRADED shrink the result set under the next offset and ~1000 objects
+    /// are never examined. 2500 rows over 1000-row pages guarantees 2 boundaries.
+    #[tokio::test]
+    async fn single_pass_evaluates_every_object_across_pages() {
+        let dir = tempdir().unwrap();
+        let pool = create_test_db(dir.path()).await;
+        let store = ObjectStore::new(dir.path().to_path_buf(), pool.clone())
+            .await
+            .unwrap();
+
+        let total = 2500;
+        let now = chrono::Utc::now().to_rfc3339();
+        for i in 0..total {
+            // Zero-padded so the id order matches insertion order and the
+            // planted boundaries are deterministic.
+            let object_id = format!("{i:064x}");
+            sqlx::query(
+                "INSERT INTO storage_objects (object_id, size_bytes, status, created_at) \
+                 VALUES (?, 10, 'STORED', ?)",
+            )
+            .bind(&object_id)
+            .bind(&now)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        let report = run_reconciliation(&store).await.unwrap();
+        assert_eq!(
+            report.missing.len(),
+            total,
+            "one pass must evaluate every STORED row, including across page boundaries"
+        );
+
+        let still_stored: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM storage_objects WHERE status = 'STORED'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(still_stored, 0, "no STORED row may survive the scan");
     }
 
     // ── §21a re-fetch-from-peer: DEGRADED shard → trusted-peer repair ──
