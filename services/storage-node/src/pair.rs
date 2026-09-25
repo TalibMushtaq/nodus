@@ -107,7 +107,11 @@ impl std::fmt::Display for PairError {
                 "no relay configured; pass --relay, set NODUS_RELAY_URL, \
                  or configure relay_url"
             ),
-            PairError::NoCode => write!(f, "no pairing code provided; pass --code"),
+            PairError::NoCode => write!(
+                f,
+                "no pairing code provided; pass --code, set {PAIRING_CODE_ENV}, \
+                 or run interactively to be prompted"
+            ),
             PairError::BadResponse(e) => write!(f, "unexpected relay response: {e}"),
             PairError::InsecureRelay(host) => write!(
                 f,
@@ -173,12 +177,51 @@ impl Prompter for DialoguerPrompt {
     }
 
     fn code(&mut self) -> anyhow::Result<String> {
-        let value: String = dialoguer::Input::new()
+        // Password-style: the code is a one-shot bootstrap credential, so it must
+        // not sit on the terminal in cleartext (shoulder-surfing, screen
+        // recording, terminal scrollback). `--code` and `NODUS_PAIRING_CODE`
+        // remain for automation.
+        let value: String = dialoguer::Password::new()
             .with_prompt("Pairing code")
-            .interact_text()
+            .interact()
             .map_err(|e| anyhow::anyhow!(e.to_string()))?;
         Ok(value.trim().to_string())
     }
+}
+
+/// Environment variable carrying the pairing code, for hosts that cannot pass
+/// `--code` (argv is readable by any local process via `ps` and lands in shell
+/// history).
+pub const PAIRING_CODE_ENV: &str = "NODUS_PAIRING_CODE";
+
+/// The code the process was given through the environment, if any. Kept separate
+/// from [`resolve_code`] so tests can exercise precedence without mutating
+/// process-wide env state.
+fn code_from_env() -> Option<String> {
+    std::env::var(PAIRING_CODE_ENV).ok()
+}
+
+/// Resolve the pairing code. Precedence: `--code` (explicit CLI) >
+/// `NODUS_PAIRING_CODE` (automation without argv exposure) > interactive prompt.
+/// The code is never logged, persisted, or echoed back on success.
+fn resolve_code(
+    cli_code: Option<String>,
+    env_code: Option<String>,
+    interactive: bool,
+    prompter: &mut dyn Prompter,
+) -> Result<String, PairError> {
+    if let Some(c) = cli_code.filter(|c| !c.trim().is_empty()) {
+        return Ok(c.trim().to_string());
+    }
+    if let Some(c) = env_code.filter(|c| !c.trim().is_empty()) {
+        return Ok(c.trim().to_string());
+    }
+    if interactive {
+        return prompter
+            .code()
+            .map_err(|e| PairError::Internal(e.to_string()));
+    }
+    Err(PairError::NoCode)
 }
 
 /// Result of a successful redeem, returned to the caller so it can boot the
@@ -259,6 +302,30 @@ pub async fn run(
     prompter: &mut dyn Prompter,
     http: &reqwest::Client,
 ) -> Result<PairOutcome, PairError> {
+    run_with_env_code(
+        cfg,
+        cli_relay,
+        cli_code,
+        code_from_env(),
+        interactive,
+        prompter,
+        http,
+    )
+    .await
+}
+
+/// Body of [`run`], with the environment-provided code passed in explicitly so
+/// tests can exercise the `NODUS_PAIRING_CODE` path without mutating
+/// process-wide env state (which would race every other pairing test).
+pub(crate) async fn run_with_env_code(
+    cfg: &Config,
+    cli_relay: Option<String>,
+    cli_code: Option<String>,
+    env_code: Option<String>,
+    interactive: bool,
+    prompter: &mut dyn Prompter,
+    http: &reqwest::Client,
+) -> Result<PairOutcome, PairError> {
     // Relay: CLI `--relay` wins; otherwise prompt (interactive) with the
     // already-configured/env URL as default; otherwise use the configured value.
     let relay_raw = match cli_relay.filter(|r| !r.trim().is_empty()) {
@@ -273,13 +340,7 @@ pub async fn run(
     // network in cleartext to a non-loopback host.
     ensure_secure_transport(&relay_base)?;
 
-    let code = match cli_code.filter(|c| !c.trim().is_empty()) {
-        Some(c) => c.trim().to_string(),
-        None if interactive => prompter
-            .code()
-            .map_err(|e| PairError::Internal(e.to_string()))?,
-        None => return Err(PairError::NoCode),
-    };
+    let code = resolve_code(cli_code, env_code, interactive, prompter)?;
 
     // Reuse the persistent identity — never regenerate per attempt (§7b).
     let identity = identity::load_or_generate(&cfg.nodus_dir)
@@ -683,5 +744,80 @@ mod tests {
         .await
         .unwrap_err();
         assert_eq!(no_code, PairError::NoCode);
+    }
+
+    /// Code-source precedence: explicit `--code` wins, then the environment
+    /// variable (automation without argv exposure), then the hidden prompt. All
+    /// three remain supported; none may fall through to a different one.
+    #[test]
+    fn code_sources_resolve_in_precedence_order() {
+        let mut prompt = FakePrompter {
+            code: Some("NODUS-PROMPT-1".into()),
+            ..Default::default()
+        };
+
+        let from_cli = resolve_code(
+            Some("NODUS-CLI-1".into()),
+            Some("NODUS-ENV-1".into()),
+            true,
+            &mut prompt,
+        )
+        .unwrap();
+        assert_eq!(from_cli, "NODUS-CLI-1", "--code must win");
+
+        let from_env = resolve_code(None, Some("NODUS-ENV-1".into()), true, &mut prompt).unwrap();
+        assert_eq!(from_env, "NODUS-ENV-1", "env var is used when no --code");
+
+        // Whitespace-only values are treated as absent, not as a real code.
+        let blank = resolve_code(Some("  ".into()), Some("  ".into()), true, &mut prompt).unwrap();
+        assert_eq!(
+            blank, "NODUS-PROMPT-1",
+            "blank values fall through to the prompt"
+        );
+
+        let prompted = resolve_code(None, None, true, &mut prompt).unwrap();
+        assert_eq!(prompted, "NODUS-PROMPT-1");
+
+        assert!(matches!(
+            resolve_code(None, None, false, &mut prompt),
+            Err(PairError::NoCode)
+        ));
+    }
+
+    /// The code is a credential: it must reach the relay and nothing else. A
+    /// successful pairing persists only the relay URL, so the code can never be
+    /// recovered from disk.
+    #[tokio::test]
+    async fn pairing_code_is_never_persisted() {
+        let base = spawn_mock_relay(
+            200,
+            r#"{"status":"ok","account_id":"acct-secret","is_primary":true}"#,
+        )
+        .await;
+        let dir = tempdir().unwrap();
+        let cfg = test_config(dir.path(), Some(&base));
+        let code = "NODUS-SECRET-7777";
+
+        // Env-var path (no argv, no prompt) against the mock relay.
+        let mut prompt = FakePrompter::default();
+        let outcome = run_with_env_code(
+            &cfg,
+            None,
+            None,
+            Some(code.to_string()),
+            false,
+            &mut prompt,
+            &reqwest::Client::new(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome.account_id, "acct-secret");
+
+        let persisted =
+            fs::read_to_string(dir.path().join(".nodus").join(config::CONFIG_FILE)).unwrap();
+        assert!(
+            !persisted.contains(code),
+            "the pairing code must not be written to config"
+        );
     }
 }
