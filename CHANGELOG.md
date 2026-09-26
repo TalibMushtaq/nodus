@@ -1,5 +1,27 @@
 # Changelog
 
+## [2026-09-26] - Relay: the tombstone prune follows the row's own deadline and works in batches
+
+**What changed:**
+
+- `pruneExpiredTombstones` picks up tombstones with `purge_after <= NOW()` instead of recomputing the window from `deleted_at`, and `RunTombstonePrune` lost its `retention` argument. The window now lives in exactly one place: the row.
+- The sweep claims at most 500 tombstones per transaction with `FOR UPDATE SKIP LOCKED`, deletes each batch, commits it, and takes the next. A 30-second budget per sweep bounds how long one pass stays in the database; a larger backlog is finished by the next one.
+- Every entity delete is filtered to ids the claiming accounts actually own, resolved against `files`/`folders` before the child tables are touched. `file_versions`, `key_envelopes` and `file_locations` have no `account_id` of their own, so filtering them by the claimed id alone is not enough to keep an account's purge inside its own data.
+
+**Why:** two defects in one function.
+
+The predicate was the quieter one. The delete path sets `purge_after` on insert and deliberately preserves the original on a re-delete, so "a restore+delete cycle cannot extend [the window]" — and the prune ignored that column, keying off `deleted_at` instead. A row re-deleted yesterday whose original deadline closed a week ago had therefore served its full 90 days and was never purged; the two only agreed as long as nothing ever disagreed with them. The client is shown `purge_after` in the trash listing, so this also meant the relay and the UI disagreed about what was recoverable.
+
+The single transaction was the loud one. It wrapped the whole backlog, so any row another transaction happened to hold blocked every other purge behind it and nothing committed at all, and two relay instances sweeping at once blocked each other. It also held locks on `files`, `file_versions` and `key_envelopes` — all of which the live sync path writes — for as long as the backlog took, which is the wrong trade for rows that are already 90 days old.
+
+The ownership check is new, and it is there because a tombstone's `entity_id` is not bound to an entity its account owns: `sync.go` takes the id from the client's delete event and files it under the authenticated account, so a client can tombstone any id it can name and have the purge delete it 90 days later. It has to happen before the child tables, since those can only be filtered by `file_id` — protecting the `files` row alone still takes the other account's versions and envelopes with it.
+
+Skipping locked rows costs nothing. The only ordering requirement is that a tombstone outlive the data it hides, which deleting the tombstone last in the same transaction already guarantees, and a row that was skipped is simply claimed by a later sweep.
+
+**Impact:** `services/relay` only, and the internal `RunTombstonePrune` signature changed with the now-meaningless retention argument. No schema or wire change. The 90-day window is unchanged in practice: both the insert and the new predicate are 90 days, so what changes is that a restore+delete cycle can no longer push a deadline out, and a backlog large enough to matter no longer serialises the sync path behind it.
+
+**Verification:** `TestPruneHonoursPurgeAfterNotDeletedAt` covers a row whose `purge_after` closed a week ago and whose `deleted_at` is yesterday, alongside one unambiguously expired and one still-restorable row. `TestPruneSkipsRowsAnotherTransactionHolds` holds a row lock from a second connection and asserts the sweep still finishes and purges the other 19; with `SKIP LOCKED` removed it hangs, and the test fails on a 10-second timeout. `TestPruneWorksThroughABacklogLargerThanOneBatch` runs 537 tombstones through the 500-row batch. `TestPruneDoesNotFollowATombstoneIntoAnotherAccountsData` has one account tombstone an id owned by another, and fails with the ownership check removed *and* with the check moved after the child deletes. `TestPruneKeepsUnownedTombstonesFromBlockingTheRest` covers a tombstone whose entity no longer exists. `TestPruneDeletesTheEntityToo` pins that the entity is removed along with the tombstone, since `GET /files` hides an entity by looking for a tombstone and deleting only the tombstone would make a long-deleted file reappear. Full `scripts/test-integration.sh` and the database-backed `-race` run both green.
+
 ## [2026-09-26] - Relay: concurrent shard fetches are capped per account and overall
 
 **What changed:**

@@ -194,11 +194,13 @@ func main() {
 		log.Println("[relay] buffer ttl sweeper: running")
 	}
 
-	// Phase 9: Start tombstone retention prune worker (90-day window,
-	// per ADR-0005). Sweeps hourly.
-	const tombstoneRetention = 90 * 24 * time.Hour
+	// Tombstone retention prune worker. The window is not configured here: it
+	// lives on each row as `purge_after`, set when the entity was deleted
+	// (ADR-0005) and preserved across a re-delete, so the prune follows the row
+	// rather than a constant that could disagree with it. Sweeps hourly, in
+	// bounded batches.
 	if pool != nil {
-		go tombstone.RunTombstonePrune(ctx, pool, tombstoneRetention, time.Hour)
+		go tombstone.RunTombstonePrune(ctx, pool, time.Hour)
 		log.Println("[relay] tombstone retention pruner: running")
 	}
 
