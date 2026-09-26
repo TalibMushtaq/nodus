@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -109,7 +110,7 @@ func (h *pairingHarness) verifySession(t *testing.T, token string) *httptest.Res
 	require.NoError(t, err)
 	req := httptest.NewRequest("POST", "/pairing/sessions/verify", bytes.NewReader(body))
 	rr := httptest.NewRecorder()
-	VerifyPairingSession(h.pool)(rr, req)
+	VerifyPairingSession(h.pool, &config.Config{})(rr, req)
 	return rr
 }
 
@@ -245,4 +246,48 @@ func TestVerifyPairingSessionRejectsUnknownToken(t *testing.T) {
 	}
 	require.NoError(t, json.NewDecoder(rr.Body).Decode(&resp))
 	require.False(t, resp.Valid)
+}
+
+// Every other unauthenticated endpoint that takes a guessable secret is rate
+// limited: pairing code redeem, and the two recovery endpoints. These two were
+// not, and both are open to anyone.
+//
+// Neither secret is brute-forceable — a pairing token is a UUIDv4 and a node id
+// is a UUID — so this is not about guessing. It is that each request reaches
+// Postgres. /pairing/sessions/verify runs an UPDATE ... WHERE token = $1 on
+// every call, so an unauthenticated caller drives write queries at a rate the
+// relay never bounded, and /nodes/verify is an unauthenticated existence oracle
+// over storage_nodes that answers for any id presented.
+func TestOpenPairingEndpointsAreRateLimited(t *testing.T) {
+	pool, accountID := createPairingCodeHarness(t)
+	cfg := &config.Config{}
+
+	t.Run("pairing session verify", func(t *testing.T) {
+		const burst = 10
+		for i := range burst + 4 {
+			req := httptest.NewRequest("POST", "/pairing/sessions/verify",
+				strings.NewReader(`{"token":"11111111-2222-3333-4444-555555555555"}`))
+			req.RemoteAddr = testRemoteAddr(accountID + "-verify")
+			rr := httptest.NewRecorder()
+			VerifyPairingSession(pool, cfg)(rr, req)
+			if i >= burst {
+				require.Equal(t, http.StatusTooManyRequests, rr.Code,
+					"request %d should have been rate limited", i)
+			}
+		}
+	})
+
+	t.Run("node url verify", func(t *testing.T) {
+		const burst = 20
+		for i := range burst + 4 {
+			req := httptest.NewRequest("GET", "/nodes/verify?node_id=n-1", nil)
+			req.RemoteAddr = testRemoteAddr(accountID + "-nodeurl")
+			rr := httptest.NewRecorder()
+			VerifyNodeURL(pool, cfg)(rr, req)
+			if i >= burst {
+				require.Equal(t, http.StatusTooManyRequests, rr.Code,
+					"request %d should have been rate limited", i)
+			}
+		}
+	})
 }

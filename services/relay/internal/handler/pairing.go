@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/TalibMushtaq/nodus/services/relay/internal/auth"
+	"github.com/TalibMushtaq/nodus/services/relay/internal/config"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/db"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/hub"
 )
@@ -151,8 +152,13 @@ func CreatePairingSession(pool *db.Pool, wsHub *hub.Hub) http.HandlerFunc {
 // the token was not pushed locally (node offline at issuance). Like
 // /buffer/fetch, it is deliberately NOT JWT-protected — the token itself is
 // the credential, and the node has no JWT.
-func VerifyPairingSession(pool *db.Pool) http.HandlerFunc {
+func VerifyPairingSession(pool *db.Pool, cfg *config.Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if !pairingVerifyLimiter.Allow(clientIP(r, cfg)) {
+			respondError(w, http.StatusTooManyRequests, "rate_limit_exceeded")
+			return
+		}
+
 		var body struct {
 			Token string `json:"token"`
 		}
@@ -204,8 +210,13 @@ func VerifyPairingSession(pool *db.Pool) http.HandlerFunc {
 // VerifyNodeURL lets a client pre-flight a discovery result against the
 // Relay before showing it as pair-able: is this a real, active node for the
 // account? Open endpoint; the information it returns is low-sensitivity.
-func VerifyNodeURL(pool *db.Pool) http.HandlerFunc {
+func VerifyNodeURL(pool *db.Pool, cfg *config.Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if !nodeVerifyLimiter.Allow(clientIP(r, cfg)) {
+			respondError(w, http.StatusTooManyRequests, "rate_limit_exceeded")
+			return
+		}
+
 		nodeID := r.URL.Query().Get("node_id")
 		if nodeID == "" {
 			respondError(w, http.StatusBadRequest, "node_id query parameter is required")

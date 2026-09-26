@@ -1,5 +1,19 @@
 # Changelog
 
+## [2026-09-26] - Relay: the two remaining open endpoints are rate limited
+
+**What changed:**
+
+- `POST /pairing/sessions/verify` is throttled per IP (`pairingVerifyLimiter`, 10 burst / 2 per second) and `GET /nodes/verify` likewise (`nodeVerifyLimiter`, 20 burst / 5 per second), reusing the existing `ipRateLimiter`. Both handlers now take `cfg` for `clientIP`, matching the pairing-redeem and recovery endpoints. `VerifyPairingSession` and `VerifyNodeURL` gained a `*config.Config` parameter, so out-of-tree callers need updating; `main.go` is the only one in-tree.
+
+**Why:** Every other unauthenticated endpoint taking a guessable secret was already limited — pairing code redeem, and the two recovery endpoints — and these two were not. Neither secret is brute-forceable (a pairing token is a UUIDv4 and single-use, a node id is a UUID), so this is not about guessing them. It is that both reach Postgres on every unauthenticated call: `/pairing/sessions/verify` runs `UPDATE pairing_sessions SET consumed_at = NOW() WHERE token = $1 …`, so anyone could drive that write rate without a ceiling, and `/nodes/verify` is an existence oracle over `storage_nodes` that answers for any id presented. The limits exist to bound database work, the same reason `recoveryLimiter` exists despite recovery phrases being unguessable.
+
+**Impact:** `services/relay` (`internal/handler/pairing.go`, `ratelimit.go`, `pairing_test.go`, `main.go`). No protocol, schema, or wire change. A client pre-flighting many discovered nodes still fits well inside the node-verify burst, and a node redeeming one token is unaffected.
+
+**Verification:** `TestOpenPairingEndpointsAreRateLimited` covers both. Removing the two limiter calls turns requests 10 and 20 from 429 into 200. `go vet` and `gofmt -l` clean, full `scripts/test-integration.sh` green.
+
+**Follow-ups:** The limiters are in-process, so a deployment running several relay replicas allows each its own budget. Making them shared means Redis, which raises the question of what a limiter should do when Redis is unreachable — fail closed and an outage turns into a total outage, fail open and the protection is silently absent exactly when the instance is least healthy.
+
 ## [2026-09-26] - Relay: a shard fetch can no longer wedge a node or proxy an unbounded stream
 
 **What changed:**

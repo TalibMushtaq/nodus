@@ -141,6 +141,20 @@ func trustedForwardedIP(xff string) string {
 
 var redeemLimiter = newIPRateLimiter(10, 2)
 
+// pairingVerifyLimiter throttles POST /pairing/sessions/verify per IP. The token
+// is a UUIDv4 and single-use, so this is not about guessing it — it is that the
+// handler runs an UPDATE against Postgres on every unauthenticated call, and
+// without a ceiling anyone can drive that write rate. 10 burst / 2 per second
+// leaves a real node's single redeem attempt far inside the window.
+var pairingVerifyLimiter = newIPRateLimiter(10, 2)
+
+// nodeVerifyLimiter throttles GET /nodes/verify per IP. A client pre-flights
+// each discovered node before offering it for pairing, so the honest rate is a
+// handful per session; the endpoint answers for any node id presented, and every
+// call is a database read. 20 burst / 5 per second is loose enough for a client
+// scanning a home network's node list in one go.
+var nodeVerifyLimiter = newIPRateLimiter(20, 5)
+
 // recoveryLimiter throttles the two unauthenticated recovery endpoints
 // (challenge + recover) per IP. The phrase is the credential and is effectively
 // unguessable, so the limit exists to bound nonce-row creation (DB write

@@ -325,8 +325,8 @@ func main() {
 		// Phase 11: pairing session issuance (device-bound tokens pushed to the
 		// node over WS) plus the node's + client's open verification endpoints.
 		mux.Handle("POST /pairing/sessions", auth.RequireAuth(sessionStore, cfg)(handler.CreatePairingSession(pool, wsHub)))
-		mux.HandleFunc("POST /pairing/sessions/verify", handler.VerifyPairingSession(pool))
-		mux.HandleFunc("GET /nodes/verify", handler.VerifyNodeURL(pool))
+		mux.HandleFunc("POST /pairing/sessions/verify", handler.VerifyPairingSession(pool, cfg))
+		mux.HandleFunc("GET /nodes/verify", handler.VerifyNodeURL(pool, cfg))
 
 		// Phase 7b: self-hosted node bootstrap pairing codes
 		mux.Handle("POST /pairing/codes", auth.RequireAuth(sessionStore, cfg)(handler.CreatePairingCode(pool)))
