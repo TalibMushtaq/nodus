@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { AppShell } from "../../components/app-shell";
+import { EnvelopeBackfill } from "../../components/envelope-backfill";
 import { TransferProvider } from "../../providers/transfer-provider";
 import { UploadProvider } from "../../providers/upload-provider";
 import { DownloadProvider } from "../../providers/download-provider";
@@ -15,6 +16,9 @@ export default async function DashboardLayout({ children }: { children: ReactNod
   await requireAuth();
   return (
     <TransferProvider>
+      {/* EnvelopeBackfill re-seals this device's keys to newly registered
+          devices so they can read pre-existing files without the phrase. */}
+      <EnvelopeBackfill />
       {/* NotificationProvider mirrors the user's alert toggles, registers the
           notification service worker, and watches for new conflicts across every
           page. Outermost so its conflict watcher and module state are live for

@@ -1,5 +1,17 @@
 # Changelog
 
+## [2026-09-26] - Web: re-seal keys to devices that register after upload
+
+**What changed:**
+
+- New `apps/web/lib/envelope-backfill.ts` (`backfillMissingEnvelopes`) and `apps/web/components/envelope-backfill.tsx`, the latter mounted once in the dashboard layout. Targeting is covered by `apps/web/lib/__tests__/envelope-backfill.test.ts`.
+
+**Why:** an upload seals a file's FEK to the devices that are ACTIVE at upload time, so a device that registers later receives no envelope and can only read pre-existing files by recovering with the account phrase. The backfill closes that gap from any device that still holds the keys: it re-seals each key it can open to every ACTIVE device whose envelope coverage is short of the catalog. Revoked devices are never targeted, so revocation still cuts access off. It is idempotent by coverage, so a completed run does not re-emit events on the next session, and it is best-effort, so a failure never surfaces or delays the UI.
+
+**Impact:** web only. Uploads are unchanged; this only adds the envelopes an upload would have added had the device existed.
+
+**Verification:** `envelope-backfill.test.ts` covers re-sealing to an under-covered active device, skipping a device that already holds full coverage, and never targeting a revoked device. `pnpm --filter web run check-types`, `lint` and the full 248-test suite pass.
+
 ## [2026-09-26] - Deploy: the proxy routes the whole Relay API, by content negotiation
 
 **What changed:**
