@@ -1,16 +1,16 @@
 # Changelog
 
-## [2026-09-26] - CI: the RustSec ignore list was aborting cargo-audit
+## [2026-09-26] - CI: the storage-node audit job never ran as intended
 
 **What changed:**
 
-- `.github/workflows/ci-rust.yml`'s `ignore:` input now holds only bare advisory IDs; the explanatory lines moved into YAML comments above it. The workflow also gains `workflow_dispatch` so it can be run on demand.
+- `.github/workflows/ci-rust.yml`: the audit step passes `working-directory: services/storage-node` (it was passing `path`, which the action silently ignores) and `ignore` as a single comma-separated line of bare IDs. `workflow_dispatch` is added so the job can be run on demand.
 
-**Why:** `ignore` is a YAML block scalar, so the `#` lines inside it were sent to cargo-audit as data, not treated as comments. One of them spelled an ID with trailing punctuation — `…(RUSTSEC-2024-0370).` — which cargo-audit parsed as the advisory ID `RUSTSEC-2024-0370)` and rejected with "malformed advisory ID", aborting the run before any crate was examined. The audit job has failed on every run since it was added, so the red badge said nothing about the dependencies it exists to check.
+**Why:** the job has failed on every run since it was added, for two reasons that hid each other. The action's `ignore` input is split on commas and nothing else, so the explanatory `#` lines inside the block scalar were passed to cargo-audit as advisory IDs — one spelled an id with trailing punctuation, `…(RUSTSEC-2024-0370).`, which cargo-audit rejected with "malformed advisory ID" before it examined a single crate. And the step passed `path: services/storage-node`, which is not an input the action accepts, so `working-directory` stayed at `.` and the scan would have run at the repo root, where there is no `Cargo.lock`, once the ignore list stopped aborting it.
 
-**Impact:** `.github/workflows/ci-rust.yml` only.
+**Impact:** `.github/workflows/ci-rust.yml` only. The exceptions themselves are unchanged.
 
-**Verification:** the exact error reproduces locally with `cargo audit --ignore "RUSTSEC-2024-0370)."`. The corrected bare-ID list exits 0 against the storage node's lockfile with the same five exceptions, and `yaml.safe_load` parses the workflow.
+**Verification:** both failure modes reproduce locally — `cargo audit --ignore "RUSTSEC-2024-0370)."` and a newline-joined ignore value each abort with "malformed advisory ID", and `--file ./Cargo.lock` at the repo root fails. The corrected invocation, five `--ignore` flags with `--file services/storage-node/Cargo.lock`, exits 0 with valid JSON (0 vulnerabilities, no warnings), and `yaml.safe_load` parses the workflow.
 
 ## [2026-09-26] - Relay: the WebPush host test no longer assumes a resolver
 

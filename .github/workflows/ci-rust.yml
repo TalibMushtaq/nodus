@@ -57,16 +57,19 @@ jobs:
 
       - uses: rustsec/audit-check@v2.0.0
         with:
-          path: services/storage-node
+          # The action's `ignore` and `working-directory` inputs; `path` is not
+          # one of them and was silently ignored, which ran the scan from the
+          # repo root where there is no Cargo.lock.
+          working-directory: services/storage-node
           # Raises the advisory-DB fetch rate limit; public repos work without
           # it, but CI runners share an IP.
           token: ${{ secrets.GITHUB_TOKEN }}
-          # The value below is a YAML block scalar, so a `#` line inside it is
-          # sent to cargo-audit as data rather than treated as a comment. An ID
-          # written with trailing punctuation in such a line — "(RUSTSEC-2024-0370)."
-          # — parses as a malformed advisory ID and aborts the whole run before
-          # any crate is examined. Keep the block to bare IDs and put the
-          # reasoning here instead.
+          # The `ignore` input is split on commas and nothing else — not on
+          # newlines. A `#` "comment" line is therefore data, and an id written
+          # with trailing punctuation — "…(RUSTSEC-2024-0370)." — becomes a
+          # malformed advisory id that aborts the run before any crate is
+          # examined. Keep this a single comma-separated line of bare ids; the
+          # reasoning lives here instead.
           #
           # RUSTSEC-2023-0071: Marvin key-recovery timing attack. Transitive via
           # `piper`'s optional rsa feature; the node does no RSA operations, and
@@ -75,9 +78,4 @@ jobs:
           # RUSTSEC-2024-0370: unmaintained, all pulled in by `mdns 3.0.0` /
           # `webrtc-dtls`, neither of which is being replaced for cleanup
           # reasons. Revisit when mDNS or WebRTC is next upgraded.
-          ignore: |
-            RUSTSEC-2023-0071
-            RUSTSEC-2025-0052
-            RUSTSEC-2025-0141
-            RUSTSEC-2020-0016
-            RUSTSEC-2024-0370
+          ignore: RUSTSEC-2023-0071,RUSTSEC-2025-0052,RUSTSEC-2025-0141,RUSTSEC-2020-0016,RUSTSEC-2024-0370
