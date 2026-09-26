@@ -52,7 +52,12 @@ nodus node pair --relay http://localhost --code NODUS-XXXX-XXXX
    ALLOWED_ORIGINS=https://nodus.example.com
    SESSION_COOKIE_SECURE=true
    POSTGRES_PASSWORD=<strong-secret>
+   REDIS_PASSWORD=<strong-secret>
    ```
+   Both are required: `docker compose up` refuses to start without them rather
+   than falling back to a default. They must be URL-safe (no `@`, `:`, `/`, `#`
+   or whitespace) because compose interpolates them into `DATABASE_URL` and
+   `REDIS_URL` without encoding.
 3. `docker compose -f deploy/docker-compose.yml --env-file deploy/.env up --build -d`
 
 Caddy obtains/renews the certificate automatically. The Relay's `ALLOWED_ORIGINS`

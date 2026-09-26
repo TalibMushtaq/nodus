@@ -15,7 +15,12 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-nodus}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-nodus_password}
+      # Required, with no fallback. This used to default to "nodus_password",
+      # which meant a deployment that copied .env.example and pointed
+      # SITE_ADDRESS at a public domain came up on a guessable database
+      # password — silently, because the default was doing what it was told.
+      # Failing at `docker compose up` is the better outcome.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deploy/.env (see deploy/.env.example)}
       POSTGRES_DB: ${POSTGRES_DB:-nodus_relay}
     volumes:
       - postgres_data:/var/lib/postgresql/data
@@ -30,6 +35,15 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
+    # Redis holds more than cache: fetch_token:<token> *is* the credential for
+    # the deliberately unauthenticated GET /buffer/fetch, and auth:nonce:<id>
+    # carries node and device auth challenges. Every service here shares the
+    # default network — the web app included — so an unauthenticated Redis hands
+    # those to anything that can reach the port. Require a password.
+    command:
+      - redis-server
+      - --requirepass
+      - ${REDIS_PASSWORD:?set REDIS_PASSWORD in deploy/.env (see deploy/.env.example)}
     volumes:
       - redis_data:/data
     healthcheck:
@@ -50,8 +64,10 @@ services:
         condition: service_healthy
     environment:
       PORT: "8080"
-      DATABASE_URL: postgres://${POSTGRES_USER:-nodus}:${POSTGRES_PASSWORD:-nodus_password}@postgres:5432/${POSTGRES_DB:-nodus_relay}?sslmode=disable
-      REDIS_URL: redis://redis:6379/0
+      # Both passwords are interpolated into a URL, so they must be URL-safe:
+      # no "@", ":", "/", "#" or whitespace. Compose does not encode them.
+      DATABASE_URL: postgres://${POSTGRES_USER:-nodus}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deploy/.env}@postgres:5432/${POSTGRES_DB:-nodus_relay}?sslmode=disable
+      REDIS_URL: redis://:${REDIS_PASSWORD:?set REDIS_PASSWORD in deploy/.env}@redis:6379/0
       # Browser WS origin(s) allowed to authenticate; must equal the public
       # origin. Defaults to both local spellings so the quickstart works whether
       # it is opened at localhost or 127.0.0.1.

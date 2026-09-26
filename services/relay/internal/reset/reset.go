@@ -78,7 +78,9 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 	if err := os.RemoveAll(cfg.BufferDir); err != nil {
 		return fmt.Errorf("clearing buffer directory: %w", err)
 	}
-	if err := os.MkdirAll(cfg.BufferDir, 0o755); err != nil {
+	// 0700 to match buffer.New: this re-creates the buffer root after a wipe, and
+	// a laxer mode here would undo the restriction on every factory reset.
+	if err := os.MkdirAll(cfg.BufferDir, 0o700); err != nil {
 		return fmt.Errorf("recreating buffer directory: %w", err)
 	}
 	return nil

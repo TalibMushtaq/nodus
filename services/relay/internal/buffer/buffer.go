@@ -18,10 +18,28 @@ type Buffer struct {
 	dir string
 }
 
+// Buffer file modes. The buffer holds end-to-end encrypted shard bytes, so
+// this is not the difference between ciphertext and plaintext — the Relay
+// cannot read a shard it is holding. It is that buffered shards are still one
+// account's data, readable by anything else that reaches the volume (a sidecar
+// container, a process sharing the host, a support shell), and 0644 in an 0755
+// directory hands them to every local user for no reason.
+const (
+	dirMode  os.FileMode = 0700
+	fileMode os.FileMode = 0600
+)
+
 // New creates a new Buffer manager and ensures the root buffer directory exists.
 func New(dir string) (*Buffer, error) {
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, dirMode); err != nil {
 		return nil, fmt.Errorf("creating buffer directory %s: %w", dir, err)
+	}
+	// MkdirAll applies dirMode only to directories it actually creates, so a
+	// deployment that predates this would keep a world-readable buffer
+	// directory forever. Tighten it explicitly; the Relay owns this path, so a
+	// failure here is a real misconfiguration rather than a lost race.
+	if err := os.Chmod(dir, dirMode); err != nil {
+		return nil, fmt.Errorf("restricting buffer directory %s: %w", dir, err)
 	}
 	return &Buffer{dir: dir}, nil
 }
@@ -37,14 +55,14 @@ func (b *Buffer) Store(bufferID string, data []byte) error {
 	// operator clearing a volume, a dev `rm -rf`). Re-create it here rather than
 	// relying only on New()'s eager MkdirAll, so a deleted directory surfaces as
 	// a single write error instead of a 500 on every shard upload.
-	if err := os.MkdirAll(b.dir, 0755); err != nil {
+	if err := os.MkdirAll(b.dir, dirMode); err != nil {
 		return fmt.Errorf("ensuring buffer directory %s: %w", b.dir, err)
 	}
 
 	destPath := filepath.Join(b.dir, bufferID)
 	tempPath := filepath.Join(b.dir, fmt.Sprintf(".tmp-%s-%s", bufferID, uuid.NewString()))
 
-	f, err := os.OpenFile(tempPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+	f, err := os.OpenFile(tempPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, fileMode)
 	if err != nil {
 		return fmt.Errorf("creating temp buffer file: %w", err)
 	}

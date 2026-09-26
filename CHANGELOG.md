@@ -1,5 +1,29 @@
 # Changelog
 
+## [2026-09-26] - Deploy: Redis and Postgres require credentials, buffered shards are not world-readable
+
+**What changed:**
+
+- `deploy/docker-compose.yml` starts Redis with `--requirepass ${REDIS_PASSWORD:?...}` and the Relay connects with `redis://:${REDIS_PASSWORD}@redis:6379/0`. `POSTGRES_PASSWORD` is now `${POSTGRES_PASSWORD:?...}` in both the Postgres environment and the Relay's `DATABASE_URL`; the `nodus_password` fallback is gone.
+- `internal/buffer`: the buffer root is created `0700` and shards are written `0600` (they were `0755`/`0644`). `New` now `chmod`s the directory it finds rather than only applying the mode to one it creates, and `internal/reset` re-creates the root at `0700` instead of `0755`.
+- `deploy/.env.example` gains `REDIS_PASSWORD`, marks both passwords as required, and documents why `TRUST_PROXY` is deliberately absent from it. `deploy/README.md`'s production step lists `REDIS_PASSWORD`.
+
+**Operator action required:** an existing deployment will not start until `REDIS_PASSWORD` is added to `deploy/.env`. Both passwords are interpolated into a connection URL without encoding, so they must be URL-safe — no `@`, `:`, `/`, `#` or whitespace — and a value containing one produces a connection error that reads like a network fault rather than a config mistake. `POSTGRES_PASSWORD` must also be set explicitly now; a deployment that was relying on the default was running on a guessable database password.
+
+**Why:** Redis in this deployment is not a cache, which is what made the missing password the substantive finding rather than a hardening nit. `fetch_token:<token>` *is* the credential for `GET /buffer/fetch?token=...`, which is deliberately unauthenticated because the token is the auth, and `auth:nonce:<id>` carries node and device auth challenges. All six services share the compose default network — the Next.js web app included, and it proxies to the Relay — so an unauthenticated Redis on `redis:6379` hands those to anything that can reach the port.
+
+`POSTGRES_PASSWORD` defaulted to `nodus_password` in three places at once (`.env.example`, the Postgres service, `DATABASE_URL`), so a deployment that copied the example and pointed `SITE_ADDRESS` at a public domain came up on a known database password without a warning. Failing at `docker compose up`, naming the file to edit, is the better outcome than a default nobody notices.
+
+The buffer modes are defense-in-depth rather than plaintext exposure: the buffer holds end-to-end encrypted shard bytes and the Relay cannot read a shard it is holding. It is that a shard is still one account's data, and `0644` in an `0755` directory hands it to every local user and every other process on the volume for no reason. The `chmod` in `New` matters because `os.MkdirAll` applies a mode only to directories it actually creates, so without it a deployment that predates the change would keep a world-readable buffer directory indefinitely.
+
+`TRUST_PROXY` is a security knob that was absent from the example file. It stays out on purpose — compose pins it to `true` because Caddy is the Relay's immediate peer, and the rate limiter may only trust `X-Forwarded-For` when a proxy is what set it — but the reasoning is now written down next to the variable, including the consequence of enabling it with the Relay directly reachable.
+
+**Impact:** `deploy/` and `services/relay` (`internal/buffer/buffer.go`, `internal/reset/reset.go`, `internal/rdb/redis_test.go`). No schema, protocol or wire change, and no change to the Relay's Redis client: `rdb.Open` already used `redis.ParseURL`, which reads the password out of the URL. `docker compose config` is valid against the example file, so the local quickstart is unaffected.
+
+Also checked and already sound, recorded so the next pass does not redo it: `deploy/.env` is untracked, ignored, and has never been committed; `.dockerignore` excludes `.env` from the build context that `Dockerfile.web`'s `COPY . .` uses; the storage node writes its Ed25519 private key `0600` with a startup check that rejects looser modes; and no tracked file contains a hardcoded secret.
+
+**Verification:** against a real `redis-server --requirepass`, an unauthenticated `PING` returns `NOAUTH Authentication required.`, `rdb.Open` with the correct password round-trips `SetPresence`/`IsPresent`, and a wrong password fails with `WRONGPASS` rather than falling back to an unauthenticated connection — the last being the case that would have made `requirepass` decorative. Both are committed as `TestPasswordedRedisURL` and `TestRedisURLCarriesNoPassword`, gated on `TEST_REDIS_AUTH_URL` so they skip in CI, which runs an unauthenticated Redis. `docker compose config` was checked three ways: valid against `.env.example`, and failing with `required variable ... is missing a value: set ... in deploy/.env (see deploy/.env.example)` when `POSTGRES_PASSWORD` or `REDIS_PASSWORD` is removed. `TestBufferedShardsAreNotWorldReadable` and `TestNewTightensAnExistingLooseBufferDir` were each confirmed to fail against the pre-fix code — the first by restoring `0644`/`0755`, the second by deleting the `chmod`. Full `scripts/test-integration.sh` and the database-backed `-race` run both green.
+
 ## [2026-09-26] - Relay: the tombstone prune follows the row's own deadline and works in batches
 
 **What changed:**
