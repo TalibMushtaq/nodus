@@ -20,14 +20,6 @@ import (
 	"github.com/TalibMushtaq/nodus/services/relay/internal/db"
 )
 
-// resetRecoveryLimiter clears the process-global recovery rate limiter so each
-// integration test starts with a full burst regardless of test order.
-func resetRecoveryLimiter() {
-	recoveryLimiter.mu.Lock()
-	recoveryLimiter.buckets = make(map[string]*ipBucket)
-	recoveryLimiter.mu.Unlock()
-}
-
 func testRecoveryConfig() *config.Config {
 	return &config.Config{
 		SessionCookieName:    "nodus_session",
@@ -55,7 +47,6 @@ func enrollRecoveryTestKey(t *testing.T, pool *db.Pool, accountID string) ([]byt
 // Online recovery (ADR-0002) must accept a signature from the enrolled recovery
 // key, mint a session, and refuse replay of a consumed nonce.
 func TestRecoverWithSignedChallenge(t *testing.T) {
-	resetRecoveryLimiter()
 	pool, accountID := createPairingCodeHarness(t)
 
 	_, priv, encodedKey := enrollRecoveryTestKey(t, pool, accountID)
@@ -66,7 +57,7 @@ func TestRecoverWithSignedChallenge(t *testing.T) {
 
 	challengeBody, _ := json.Marshal(RecoveryChallengeRequest{Email: email})
 	chRR := httptest.NewRecorder()
-	RecoveryChallenge(pool, cfg)(chRR, httptest.NewRequest("POST", "/auth/recovery/challenge", bytes.NewReader(challengeBody)))
+	RecoveryChallenge(pool, cfg, nil)(chRR, httptest.NewRequest("POST", "/auth/recovery/challenge", bytes.NewReader(challengeBody)))
 	require.Equal(t, http.StatusOK, chRR.Code)
 
 	var challenge RecoveryChallengeResponse
@@ -82,20 +73,19 @@ func TestRecoverWithSignedChallenge(t *testing.T) {
 		DevicePublicKey: encodedKey,
 	})
 	rr := httptest.NewRecorder()
-	Recover(pool, store, cfg)(rr, httptest.NewRequest("POST", "/auth/recovery", bytes.NewReader(recoverBody)))
+	Recover(pool, store, cfg, nil)(rr, httptest.NewRequest("POST", "/auth/recovery", bytes.NewReader(recoverBody)))
 	require.Equal(t, http.StatusOK, rr.Code)
 
 	// The nonce is single-use: replaying it (even with the same valid signature)
 	// must fail after the first attempt consumed it.
 	replayRR := httptest.NewRecorder()
-	Recover(pool, store, cfg)(replayRR, httptest.NewRequest("POST", "/auth/recovery", bytes.NewReader(recoverBody)))
+	Recover(pool, store, cfg, nil)(replayRR, httptest.NewRequest("POST", "/auth/recovery", bytes.NewReader(recoverBody)))
 	require.Equal(t, http.StatusUnauthorized, replayRR.Code)
 }
 
 // A wrong signature must be rejected AND leave the nonce usable: the claim is
 // atomic, so a client typo cannot burn its own challenge.
 func TestRecoverKeepsNonceAfterRejectedAttempt(t *testing.T) {
-	resetRecoveryLimiter()
 	pool, accountID := createPairingCodeHarness(t)
 
 	_, priv, encodedKey := enrollRecoveryTestKey(t, pool, accountID)
@@ -106,7 +96,7 @@ func TestRecoverKeepsNonceAfterRejectedAttempt(t *testing.T) {
 
 	challengeBody, _ := json.Marshal(RecoveryChallengeRequest{Email: email})
 	chRR := httptest.NewRecorder()
-	RecoveryChallenge(pool, cfg)(chRR, httptest.NewRequest("POST", "/auth/recovery/challenge", bytes.NewReader(challengeBody)))
+	RecoveryChallenge(pool, cfg, nil)(chRR, httptest.NewRequest("POST", "/auth/recovery/challenge", bytes.NewReader(challengeBody)))
 	require.Equal(t, http.StatusOK, chRR.Code)
 	var challenge RecoveryChallengeResponse
 	require.NoError(t, json.Unmarshal(chRR.Body.Bytes(), &challenge))
@@ -123,7 +113,7 @@ func TestRecoverKeepsNonceAfterRejectedAttempt(t *testing.T) {
 			DevicePublicKey: encodedKey,
 		})
 		rr := httptest.NewRecorder()
-		Recover(pool, store, cfg)(rr, httptest.NewRequest("POST", "/auth/recovery", bytes.NewReader(body)))
+		Recover(pool, store, cfg, nil)(rr, httptest.NewRequest("POST", "/auth/recovery", bytes.NewReader(body)))
 		return rr
 	}
 

@@ -14,6 +14,7 @@ import (
 	"github.com/TalibMushtaq/nodus/services/relay/internal/config"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/db"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/hub"
+	"github.com/TalibMushtaq/nodus/services/relay/internal/rdb"
 )
 
 // ProtocolEnvelope is the canonical wire format declared in ws.go.
@@ -152,10 +153,14 @@ func CreatePairingSession(pool *db.Pool, wsHub *hub.Hub) http.HandlerFunc {
 // the token was not pushed locally (node offline at issuance). Like
 // /buffer/fetch, it is deliberately NOT JWT-protected — the token itself is
 // the credential, and the node has no JWT.
-func VerifyPairingSession(pool *db.Pool, cfg *config.Config) http.HandlerFunc {
+func VerifyPairingSession(pool *db.Pool, cfg *config.Config, rClient *rdb.Client) http.HandlerFunc {
+	// 10 burst / 2 per second. The token is a UUIDv4 and single-use, so this is
+	// not about guessing it — it is that the handler runs an UPDATE against
+	// Postgres on every unauthenticated call, and without a ceiling anyone can
+	// drive that write rate.
+	pairingVerifyLimiter := newRateLimiter(rClient, "pairing_verify", 10, 2)
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !pairingVerifyLimiter.Allow(clientIP(r, cfg)) {
-			respondError(w, http.StatusTooManyRequests, "rate_limit_exceeded")
+		if !allowRequest(w, r, cfg, pairingVerifyLimiter) {
 			return
 		}
 
@@ -210,10 +215,14 @@ func VerifyPairingSession(pool *db.Pool, cfg *config.Config) http.HandlerFunc {
 // VerifyNodeURL lets a client pre-flight a discovery result against the
 // Relay before showing it as pair-able: is this a real, active node for the
 // account? Open endpoint; the information it returns is low-sensitivity.
-func VerifyNodeURL(pool *db.Pool, cfg *config.Config) http.HandlerFunc {
+func VerifyNodeURL(pool *db.Pool, cfg *config.Config, rClient *rdb.Client) http.HandlerFunc {
+	// 20 burst / 5 per second. A client pre-flights each discovered node before
+	// offering it for pairing, so the honest rate is a handful per session; the
+	// endpoint answers for any node id presented, and every call is a database
+	// read, so the limit is on that read rate.
+	nodeVerifyLimiter := newRateLimiter(rClient, "node_verify", 20, 5)
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !nodeVerifyLimiter.Allow(clientIP(r, cfg)) {
-			respondError(w, http.StatusTooManyRequests, "rate_limit_exceeded")
+		if !allowRequest(w, r, cfg, nodeVerifyLimiter) {
 			return
 		}
 

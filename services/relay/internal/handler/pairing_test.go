@@ -110,7 +110,7 @@ func (h *pairingHarness) verifySession(t *testing.T, token string) *httptest.Res
 	require.NoError(t, err)
 	req := httptest.NewRequest("POST", "/pairing/sessions/verify", bytes.NewReader(body))
 	rr := httptest.NewRecorder()
-	VerifyPairingSession(h.pool, &config.Config{})(rr, req)
+	VerifyPairingSession(h.pool, &config.Config{}, nil)(rr, req)
 	return rr
 }
 
@@ -262,14 +262,18 @@ func TestOpenPairingEndpointsAreRateLimited(t *testing.T) {
 	pool, accountID := createPairingCodeHarness(t)
 	cfg := &config.Config{}
 
+	// Each handler is built once, as main does: the limiter lives in the
+	// handler, so rebuilding it per request would hand out a fresh burst each
+	// time and nothing would ever be limited.
 	t.Run("pairing session verify", func(t *testing.T) {
 		const burst = 10
+		verify := VerifyPairingSession(pool, cfg, nil)
 		for i := range burst + 4 {
 			req := httptest.NewRequest("POST", "/pairing/sessions/verify",
 				strings.NewReader(`{"token":"11111111-2222-3333-4444-555555555555"}`))
 			req.RemoteAddr = testRemoteAddr(accountID + "-verify")
 			rr := httptest.NewRecorder()
-			VerifyPairingSession(pool, cfg)(rr, req)
+			verify(rr, req)
 			if i >= burst {
 				require.Equal(t, http.StatusTooManyRequests, rr.Code,
 					"request %d should have been rate limited", i)
@@ -279,11 +283,12 @@ func TestOpenPairingEndpointsAreRateLimited(t *testing.T) {
 
 	t.Run("node url verify", func(t *testing.T) {
 		const burst = 20
+		verifyNode := VerifyNodeURL(pool, cfg, nil)
 		for i := range burst + 4 {
 			req := httptest.NewRequest("GET", "/nodes/verify?node_id=n-1", nil)
 			req.RemoteAddr = testRemoteAddr(accountID + "-nodeurl")
 			rr := httptest.NewRecorder()
-			VerifyNodeURL(pool, cfg)(rr, req)
+			verifyNode(rr, req)
 			if i >= burst {
 				require.Equal(t, http.StatusTooManyRequests, rr.Code,
 					"request %d should have been rate limited", i)

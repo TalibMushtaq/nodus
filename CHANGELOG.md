@@ -1,5 +1,23 @@
 # Changelog
 
+## [2026-09-26] - Relay: the per-IP rate limits are shared across replicas
+
+**What changed:**
+
+- New `rateLimiter` in `services/relay/internal/handler/ratelimit.go`: a token bucket held in Redis and executed by a Lua script, so one budget covers the whole deployment. `redeemLimiter`, `pairingVerifyLimiter`, `nodeVerifyLimiter` and `recoveryLimiter` stop being package globals and are now built per endpoint from the `*rdb.Client` that `main` already threads through the constructors.
+- The four open endpoints (`POST /pairing/codes/redeem`, `POST /pairing/sessions/verify`, `GET /nodes/verify`, and the two recovery endpoints) share one `allowRequest` helper. A limiter that cannot be reached answers **503**, not 429.
+- The in-process `ipRateLimiter` is kept and is now the fallback used when Redis was never configured.
+
+**Why:** a per-process bucket gives a caller the whole allowance again for every replica. That is not a theoretical multiplier: a load balancer spreads requests across instances on its own, so a limit meant to be 10 becomes 10 per replica, and an attacker whose requests reach N instances gets N times the intended rate. The throwaway proof that started this: one bucket drained on instance A while instance B went on to grant 3 more of 10.
+
+The Redis bucket reads the server's clock with `TIME` inside the script rather than trusting the caller's, because a bucket is compared against a stored timestamp — two instances with skewed clocks would each measure a different interval for the same key, so one could hand out tokens the other believes do not exist yet, or hold a bucket drained for twice the intended window. Every key is created with a `PEXPIRE` sized to the time it takes to refill, so an idle key deletes itself and the key space is bounded without the sweeper the in-process version needed.
+
+Failing **closed on a broken backend** is deliberate, and it is a real trade: during a Redis blip these endpoints stop serving rather than serving unthrottled, and unbounded requests to Postgres are precisely what the limits exist to prevent. What is *not* acceptable is reporting a quiet "allowed" on error, so a backend outage can never become unlimited traffic. 503 rather than 429 because the caller did not exceed anything; a 429 would tell a retrying client to back off for misbehaviour it did not commit and would disguise the fault from an operator. Redis stays optional at boot, matching `main.go` and the memory fallback in the auth nonce path: a deployment that never ran Redis keeps working, just with a per-process limit.
+
+**Impact:** `services/relay` only. No schema, no wire and no config change; the burst and refill values are unchanged. Constructor signatures for those five handlers gain a trailing `*rdb.Client`, which is the injection pattern the Redis-backed handlers already used. Limits are now shared, so a single IP's allowance is a deployment-wide number rather than a per-replica one.
+
+**Verification:** 7 new tests. `TestRedisLimiterSharesBucketsAcrossInstances` is the regression test: mutating `Allow` back to the in-process path makes it fail with `instance two granted request 0 after instance one drained the bucket`. Also covered: refill over time, per-IP and per-endpoint key separation, the Redis-less fallback still bounding, a backend error surfacing as an error and as 503 for all five endpoints. Two existing rate-limit tests had to be corrected rather than just re-run — they built the handler inside the request loop, and since the limiter is now owned by the handler that silently gave each request a fresh bucket. They now build it once, as `main` does. Full `scripts/test-integration.sh` and the database-backed `-race` run both green.
+
 ## [2026-09-26] - Relay: a refused snapshot fails the rebuild request that provoked it
 
 **What changed:**

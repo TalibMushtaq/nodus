@@ -1,6 +1,8 @@
 package handler
 
 import (
+	"context"
+	"log"
 	"net"
 	"net/http"
 	"strings"
@@ -8,6 +10,8 @@ import (
 	"time"
 
 	"github.com/TalibMushtaq/nodus/services/relay/internal/config"
+	"github.com/TalibMushtaq/nodus/services/relay/internal/rdb"
+	"github.com/redis/go-redis/v9"
 )
 
 // Bounds for the in-process bucket map. The map is keyed by client IP, and
@@ -139,25 +143,111 @@ func trustedForwardedIP(xff string) string {
 	return ""
 }
 
-var redeemLimiter = newIPRateLimiter(10, 2)
+// allowTokenBucket is a token bucket that lives entirely inside Redis, so one
+// limit applies to the whole deployment instead of resetting per process.
+//
+// The clock is Redis's own TIME rather than the caller's. A bucket is compared
+// against a stored timestamp, so two instances with skewed clocks would each
+// measure a different interval for the same key: one can hand out tokens the
+// other believes do not exist yet, or hold a bucket drained for twice the
+// intended window. Reading the server clock makes every instance measure the
+// same elapsed time.
+var allowTokenBucket = redis.NewScript(`
+local t = redis.call('TIME')
+local now = tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000)
 
-// pairingVerifyLimiter throttles POST /pairing/sessions/verify per IP. The token
-// is a UUIDv4 and single-use, so this is not about guessing it — it is that the
-// handler runs an UPDATE against Postgres on every unauthenticated call, and
-// without a ceiling anyone can drive that write rate. 10 burst / 2 per second
-// leaves a real node's single redeem attempt far inside the window.
-var pairingVerifyLimiter = newIPRateLimiter(10, 2)
+local key = KEYS[1]
+local burst = tonumber(ARGV[1])
+local refill = tonumber(ARGV[2])
 
-// nodeVerifyLimiter throttles GET /nodes/verify per IP. A client pre-flights
-// each discovered node before offering it for pairing, so the honest rate is a
-// handful per session; the endpoint answers for any node id presented, and every
-// call is a database read. 20 burst / 5 per second is loose enough for a client
-// scanning a home network's node list in one go.
-var nodeVerifyLimiter = newIPRateLimiter(20, 5)
+local state = redis.call('HMGET', key, 'tokens', 'ts')
+local tokens = tonumber(state[1])
+local ts = tonumber(state[2])
+if tokens == nil or ts == nil then
+	tokens = burst
+	ts = now
+end
 
-// recoveryLimiter throttles the two unauthenticated recovery endpoints
-// (challenge + recover) per IP. The phrase is the credential and is effectively
-// unguessable, so the limit exists to bound nonce-row creation (DB write
-// amplification / storage) rather than to stop brute force. 5 burst / 1 per
-// second keeps a legit recovery flow (2 requests) well within a burst window.
-var recoveryLimiter = newIPRateLimiter(5, 1)
+-- Only a positive elapsed time adds tokens. A timestamp from the future (a
+-- replica restoring a clock, an operator editing the key) must not mint them.
+local elapsed = now - ts
+if elapsed > 0 then
+	tokens = math.min(burst, tokens + (elapsed / 1000) * refill)
+end
+
+local allowed = 0
+if tokens >= 1 then
+	tokens = tokens - 1
+	allowed = 1
+end
+
+redis.call('HSET', key, 'tokens', tokens, 'ts', now)
+-- Expire the key once the bucket would be full again, so an idle key deletes
+-- itself. This is what bounds the key space without a sweeper: every key is
+-- created by a request and gets a deadline in the same breath, so a caller
+-- rotating source addresses cannot accumulate them.
+redis.call('PEXPIRE', key, math.ceil((burst / refill) * 1000) + 1000)
+return allowed
+`)
+
+// rateLimiter is the per-IP limiter the HTTP handlers use. With Redis reachable
+// the bucket is shared by every relay instance; without it the limiter degrades
+// to the in-process one, which still bounds the rate for a single instance.
+type rateLimiter struct {
+	name   string
+	burst  float64
+	refill float64
+	rdb    *rdb.Client
+	// local backs the limiter when Redis was never configured. The relay treats
+	// Redis as optional — it starts, logs a warning and disables the features
+	// that need it — so an endpoint behind this limiter cannot require it.
+	local *ipRateLimiter
+}
+
+func newRateLimiter(rClient *rdb.Client, name string, burst, refill float64) *rateLimiter {
+	return &rateLimiter{
+		name:   name,
+		burst:  burst,
+		refill: refill,
+		rdb:    rClient,
+		local:  newIPRateLimiter(burst, refill),
+	}
+}
+
+// Allow consumes one token for ip. A non-nil error means Redis was configured
+// but could not be reached, which callers must not read as "allowed": the whole
+// point of the shared bucket is that an instance cannot be used to get around a
+// limit, and a broken backend is exactly when that pressure would show up.
+func (rl *rateLimiter) Allow(ctx context.Context, ip string) (bool, error) {
+	if rl.rdb == nil {
+		return rl.local.Allow(ip), nil
+	}
+	key := "ratelimit:" + rl.name + ":" + ip
+	allowed, err := allowTokenBucket.Run(ctx, rl.rdb.Client, []string{key}, rl.burst, rl.refill).Int64()
+	if err != nil {
+		return false, err
+	}
+	return allowed == 1, nil
+}
+
+// allowRequest applies rl to the request's client address, writing the response
+// and returning false when the request should not proceed.
+//
+// A limiter that cannot be reached answers 503, not 429. The request was not
+// over its limit, and telling a retrying client to back off for something it did
+// not do would both stall it for no reason and disguise an infrastructure fault
+// as client misbehaviour.
+func allowRequest(w http.ResponseWriter, r *http.Request, cfg *config.Config, rl *rateLimiter) bool {
+	ip := clientIP(r, cfg)
+	allowed, err := rl.Allow(r.Context(), ip)
+	if err != nil {
+		log.Printf("[ratelimit] %s: backend unavailable for %s: %v", rl.name, ip, err)
+		respondError(w, http.StatusServiceUnavailable, "rate_limit_unavailable")
+		return false
+	}
+	if !allowed {
+		respondError(w, http.StatusTooManyRequests, "rate_limit_exceeded")
+		return false
+	}
+	return true
+}

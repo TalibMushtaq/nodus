@@ -14,6 +14,7 @@ import (
 	"github.com/TalibMushtaq/nodus/services/relay/internal/auth"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/config"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/db"
+	"github.com/TalibMushtaq/nodus/services/relay/internal/rdb"
 )
 
 const pairingCodeTTL = 15 * time.Minute
@@ -97,10 +98,12 @@ func validNodeID(id string) bool {
 // RedeemPairingCode atomically consumes a pairing code and registers the
 // requesting node under the code's issuing account. Open endpoint — the code
 // is the auth.
-func RedeemPairingCode(pool *db.Pool, cfg *config.Config) http.HandlerFunc {
+func RedeemPairingCode(pool *db.Pool, cfg *config.Config, rClient *rdb.Client) http.HandlerFunc {
+	// 10 burst / 2 per second. The code is the credential, so this bounds how
+	// fast an unauthenticated caller can drive a hash comparison per attempt.
+	redeemLimiter := newRateLimiter(rClient, "pairing_redeem", 10, 2)
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !redeemLimiter.Allow(clientIP(r, cfg)) {
-			respondError(w, http.StatusTooManyRequests, "rate_limit_exceeded")
+		if !allowRequest(w, r, cfg, redeemLimiter) {
 			return
 		}
 

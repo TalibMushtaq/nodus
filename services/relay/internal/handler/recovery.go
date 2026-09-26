@@ -16,6 +16,7 @@ import (
 	"github.com/TalibMushtaq/nodus/services/relay/internal/auth"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/config"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/db"
+	"github.com/TalibMushtaq/nodus/services/relay/internal/rdb"
 )
 
 // recoveryChallengeTTL bounds how long an issued nonce can be signed. Short
@@ -158,12 +159,14 @@ type RecoveryChallengeResponse struct {
 // client can confirm the phrase matches before signing. Returns 401 (same as
 // Recover, so the two open endpoints do not disagree about failure semantics)
 // when the account does not exist or has no recovery key enrolled.
-func RecoveryChallenge(pool *db.Pool, cfg *config.Config) http.HandlerFunc {
+func RecoveryChallenge(pool *db.Pool, cfg *config.Config, rClient *rdb.Client) http.HandlerFunc {
+	// Open endpoint (the phrase is the credential): throttle by IP so a caller
+	// cannot mint an unbounded number of nonce rows. 5 burst / 1 per second
+	// keeps a legit recovery flow (2 requests) well within a burst window. The
+	// two recovery endpoints share one limiter so they cannot disagree.
+	recoveryLimiter := newRateLimiter(rClient, "recovery", 5, 1)
 	return func(w http.ResponseWriter, r *http.Request) {
-		// Open endpoint (the phrase is the credential): throttle by IP so a
-		// caller cannot mint an unbounded number of nonce rows.
-		if !recoveryLimiter.Allow(clientIP(r, cfg)) {
-			respondError(w, http.StatusTooManyRequests, "rate_limit_exceeded")
+		if !allowRequest(w, r, cfg, recoveryLimiter) {
 			return
 		}
 
@@ -248,10 +251,13 @@ type RecoverRequest struct {
 // request read used_at = NULL and mint a second session). A rejected attempt —
 // wrong signature or a device owned by another account — rolls the transaction
 // back and leaves the nonce usable, so a client typo does not burn it.
-func Recover(pool *db.Pool, store auth.SessionStore, cfg *config.Config) http.HandlerFunc {
+func Recover(pool *db.Pool, store auth.SessionStore, cfg *config.Config, rClient *rdb.Client) http.HandlerFunc {
+	// Shared with the challenge endpoint on purpose: the two are steps of one
+	// flow, and one rate limiter is the only way a client cannot get twice the
+	// intended rate by alternating between them.
+	recoveryLimiter := newRateLimiter(rClient, "recovery", 5, 1)
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !recoveryLimiter.Allow(clientIP(r, cfg)) {
-			respondError(w, http.StatusTooManyRequests, "rate_limit_exceeded")
+		if !allowRequest(w, r, cfg, recoveryLimiter) {
 			return
 		}
 

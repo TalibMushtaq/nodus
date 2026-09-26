@@ -268,8 +268,8 @@ func main() {
 		mux.Handle("POST /auth/logout-all", auth.RequireAuth(sessionStore, cfg)(handler.LogoutAll(pool, sessionStore, cfg)))
 		// ADR-0002 online recovery: unauthenticated by design — the signed
 		// challenge is the credential, so a lost-password user can still recover.
-		mux.HandleFunc("POST /auth/recovery/challenge", handler.RecoveryChallenge(pool, cfg))
-		mux.HandleFunc("POST /auth/recovery", handler.Recover(pool, sessionStore, cfg))
+		mux.HandleFunc("POST /auth/recovery/challenge", handler.RecoveryChallenge(pool, cfg, redisClient))
+		mux.HandleFunc("POST /auth/recovery", handler.Recover(pool, sessionStore, cfg, redisClient))
 
 		// Device & Node Management (Authenticated)
 		mux.Handle("POST /devices/register", auth.RequireAuth(sessionStore, cfg)(handler.RegisterDevice(pool)))
@@ -325,12 +325,12 @@ func main() {
 		// Phase 11: pairing session issuance (device-bound tokens pushed to the
 		// node over WS) plus the node's + client's open verification endpoints.
 		mux.Handle("POST /pairing/sessions", auth.RequireAuth(sessionStore, cfg)(handler.CreatePairingSession(pool, wsHub)))
-		mux.HandleFunc("POST /pairing/sessions/verify", handler.VerifyPairingSession(pool, cfg))
-		mux.HandleFunc("GET /nodes/verify", handler.VerifyNodeURL(pool, cfg))
+		mux.HandleFunc("POST /pairing/sessions/verify", handler.VerifyPairingSession(pool, cfg, redisClient))
+		mux.HandleFunc("GET /nodes/verify", handler.VerifyNodeURL(pool, cfg, redisClient))
 
 		// Phase 7b: self-hosted node bootstrap pairing codes
 		mux.Handle("POST /pairing/codes", auth.RequireAuth(sessionStore, cfg)(handler.CreatePairingCode(pool)))
-		mux.HandleFunc("POST /pairing/codes/redeem", handler.RedeemPairingCode(pool, cfg))
+		mux.HandleFunc("POST /pairing/codes/redeem", handler.RedeemPairingCode(pool, cfg, redisClient))
 
 		// Phase 9: trigger a full snapshot / Relay rebuild from the primary node
 		mux.Handle("POST /rebuild", auth.RequireAuth(sessionStore, cfg)(handler.RequestRebuild(pool, wsHub)))

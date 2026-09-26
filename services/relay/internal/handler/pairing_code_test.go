@@ -100,7 +100,6 @@ func createPairingCodeHarness(t *testing.T) (*db.Pool, string) {
 	// The redeem rate limiter is a process-global (no Redis). Reset it so a
 	// draining test (TestRedeemPairingCodeRateLimit) or an IP-seed collision
 	// cannot leak a depleted bucket into an unrelated test.
-	resetRedeemLimiter()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	require.NoError(t, db.RunMigrations(url), "run migrations")
@@ -209,15 +208,6 @@ func testRemoteAddr(seed string) string {
 	return fmt.Sprintf("192.0.2.%d:12345", h.Sum32()%250+2)
 }
 
-// resetRedeemLimiter clears the process-global redeem rate limiter's buckets so
-// each integration test starts with a full burst. Belt-and-braces with
-// testRemoteAddr's per-account seeding, since that helper only spans 250 IPs.
-func resetRedeemLimiter() {
-	redeemLimiter.mu.Lock()
-	redeemLimiter.buckets = make(map[string]*ipBucket)
-	redeemLimiter.mu.Unlock()
-}
-
 func TestRedeemPairingCodeSuccess(t *testing.T) {
 	pool, accountID := createPairingCodeHarness(t)
 	code := mintCodeHelper(t, pool, accountID)
@@ -227,7 +217,7 @@ func TestRedeemPairingCodeSuccess(t *testing.T) {
 	req := httptest.NewRequest("POST", "/pairing/codes/redeem", redeemBody(code, nodeID, pubKey))
 	req.RemoteAddr = testRemoteAddr(accountID)
 	rr := httptest.NewRecorder()
-	RedeemPairingCode(pool, &config.Config{})(rr, req)
+	RedeemPairingCode(pool, &config.Config{}, nil)(rr, req)
 
 	require.Equal(t, http.StatusOK, rr.Code)
 	var resp struct {
@@ -264,7 +254,7 @@ func TestRedeemPairingCodeFirstNodeIsPrimary(t *testing.T) {
 	req := httptest.NewRequest("POST", "/pairing/codes/redeem", redeemBody(code, nodeID, pubKey))
 	req.RemoteAddr = testRemoteAddr(accountID)
 	rr := httptest.NewRecorder()
-	RedeemPairingCode(pool, &config.Config{})(rr, req)
+	RedeemPairingCode(pool, &config.Config{}, nil)(rr, req)
 	require.Equal(t, http.StatusOK, rr.Code)
 
 	var isPrimary bool
@@ -286,7 +276,7 @@ func TestRedeemPairingCodeSecondNodeNotPrimary(t *testing.T) {
 	req1 := httptest.NewRequest("POST", "/pairing/codes/redeem", redeemBody(code1, node1, pubKey))
 	req1.RemoteAddr = testRemoteAddr(accountID)
 	rr1 := httptest.NewRecorder()
-	RedeemPairingCode(pool, &config.Config{})(rr1, req1)
+	RedeemPairingCode(pool, &config.Config{}, nil)(rr1, req1)
 	require.Equal(t, http.StatusOK, rr1.Code)
 
 	// Second node.
@@ -294,7 +284,7 @@ func TestRedeemPairingCodeSecondNodeNotPrimary(t *testing.T) {
 	req2 := httptest.NewRequest("POST", "/pairing/codes/redeem", redeemBody(code2, node2, pubKey))
 	req2.RemoteAddr = testRemoteAddr(accountID)
 	rr2 := httptest.NewRecorder()
-	RedeemPairingCode(pool, &config.Config{})(rr2, req2)
+	RedeemPairingCode(pool, &config.Config{}, nil)(rr2, req2)
 	require.Equal(t, http.StatusOK, rr2.Code)
 
 	var isPrimary bool
@@ -321,7 +311,7 @@ func TestRedeemPairingCodeExpired(t *testing.T) {
 	req := httptest.NewRequest("POST", "/pairing/codes/redeem", redeemBody(code, "node-exp", pubKey))
 	req.RemoteAddr = testRemoteAddr(accountID)
 	rr := httptest.NewRecorder()
-	RedeemPairingCode(pool, &config.Config{})(rr, req)
+	RedeemPairingCode(pool, &config.Config{}, nil)(rr, req)
 	require.Equal(t, http.StatusGone, rr.Code)
 
 	var errResp struct {
@@ -342,14 +332,14 @@ func TestRedeemPairingCodeConsumed(t *testing.T) {
 	req1 := httptest.NewRequest("POST", "/pairing/codes/redeem", redeemBody(code, nodeID, pubKey))
 	req1.RemoteAddr = testRemoteAddr(accountID)
 	rr1 := httptest.NewRecorder()
-	RedeemPairingCode(pool, &config.Config{})(rr1, req1)
+	RedeemPairingCode(pool, &config.Config{}, nil)(rr1, req1)
 	require.Equal(t, http.StatusOK, rr1.Code)
 
 	// Second redeem — consumed.
 	req2 := httptest.NewRequest("POST", "/pairing/codes/redeem", redeemBody(code, nodeID, pubKey))
 	req2.RemoteAddr = testRemoteAddr(accountID)
 	rr2 := httptest.NewRecorder()
-	RedeemPairingCode(pool, &config.Config{})(rr2, req2)
+	RedeemPairingCode(pool, &config.Config{}, nil)(rr2, req2)
 	require.Equal(t, http.StatusConflict, rr2.Code)
 
 	var errResp struct {
@@ -367,7 +357,7 @@ func TestRedeemPairingCodeUnknown(t *testing.T) {
 		redeemBody("NODUS-XXXX-XXXX", "node-unk", pubKey))
 	req.RemoteAddr = testRemoteAddr(accountID)
 	rr := httptest.NewRecorder()
-	RedeemPairingCode(pool, &config.Config{})(rr, req)
+	RedeemPairingCode(pool, &config.Config{}, nil)(rr, req)
 	require.Equal(t, http.StatusNotFound, rr.Code)
 
 	var errResp struct {
@@ -398,7 +388,7 @@ func TestRedeemPairingCodeNodeOwnedElsewhere(t *testing.T) {
 		redeemBody(code, "node-owned", pubKey))
 	req.RemoteAddr = testRemoteAddr(accountID)
 	rr := httptest.NewRecorder()
-	RedeemPairingCode(pool, &config.Config{})(rr, req)
+	RedeemPairingCode(pool, &config.Config{}, nil)(rr, req)
 	require.Equal(t, http.StatusConflict, rr.Code)
 
 	var errResp struct {
@@ -417,7 +407,7 @@ func TestRedeemPairingCodeInvalidPublicKey(t *testing.T) {
 		redeemBody(code, "node-bad", "aabb"))
 	req.RemoteAddr = testRemoteAddr(accountID)
 	rr := httptest.NewRecorder()
-	RedeemPairingCode(pool, &config.Config{})(rr, req)
+	RedeemPairingCode(pool, &config.Config{}, nil)(rr, req)
 	require.Equal(t, http.StatusBadRequest, rr.Code)
 
 	var errResp struct {
@@ -430,14 +420,17 @@ func TestRedeemPairingCodeInvalidPublicKey(t *testing.T) {
 func TestRedeemPairingCodeRateLimit(t *testing.T) {
 	pool, accountID := createPairingCodeHarness(t)
 
-	// Drain the limiter by firing from the same IP with unknown codes.
+	// Drain the limiter by firing from the same IP with unknown codes. The
+	// handler is built once, as main does, because the limiter it holds is the
+	// state under test: a fresh handler per request would mean a fresh bucket.
+	redeem := RedeemPairingCode(pool, &config.Config{}, nil)
 	pubKey := "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899"
 	for i := 0; i < 12; i++ {
 		req := httptest.NewRequest("POST", "/pairing/codes/redeem",
 			redeemBody("NODUS-XXXX-XXXX", "node-rl", pubKey))
 		req.RemoteAddr = testRemoteAddr(accountID)
 		rr := httptest.NewRecorder()
-		RedeemPairingCode(pool, &config.Config{})(rr, req)
+		redeem(rr, req)
 		// After burst (10) is exhausted, expect 429.
 		if i >= 10 {
 			require.Equal(t, http.StatusTooManyRequests, rr.Code)
@@ -460,7 +453,7 @@ func TestRedeemConcurrentDoubleRedeem(t *testing.T) {
 			req := httptest.NewRequest("POST", "/pairing/codes/redeem", body)
 			req.RemoteAddr = testRemoteAddr(accountID)
 			rr := httptest.NewRecorder()
-			RedeemPairingCode(pool, &config.Config{})(rr, req)
+			RedeemPairingCode(pool, &config.Config{}, nil)(rr, req)
 			results <- rr.Code
 		}(i)
 	}
@@ -518,7 +511,7 @@ func TestRedeemPairingCodeOwnedElsewhereDoesNotBurnCode(t *testing.T) {
 		redeemBody(code, "node-owned-nb", pubKey))
 	req.RemoteAddr = testRemoteAddr(accountID)
 	rr := httptest.NewRecorder()
-	RedeemPairingCode(pool, &config.Config{})(rr, req)
+	RedeemPairingCode(pool, &config.Config{}, nil)(rr, req)
 	require.Equal(t, http.StatusConflict, rr.Code)
 	require.Equal(t, "PENDING", codeStatus(t, pool, code), "rejected registration must not burn the code")
 
@@ -528,7 +521,7 @@ func TestRedeemPairingCodeOwnedElsewhereDoesNotBurnCode(t *testing.T) {
 		redeemBody(code, free, pubKey))
 	req2.RemoteAddr = testRemoteAddr(accountID)
 	rr2 := httptest.NewRecorder()
-	RedeemPairingCode(pool, &config.Config{})(rr2, req2)
+	RedeemPairingCode(pool, &config.Config{}, nil)(rr2, req2)
 	require.Equal(t, http.StatusOK, rr2.Code)
 	require.Equal(t, "CONSUMED", codeStatus(t, pool, code))
 }
@@ -548,7 +541,7 @@ func TestRedeemPairingCodeRevoked(t *testing.T) {
 		redeemBody(code, "node-rev", pubKey))
 	req.RemoteAddr = testRemoteAddr(accountID)
 	rr := httptest.NewRecorder()
-	RedeemPairingCode(pool, &config.Config{})(rr, req)
+	RedeemPairingCode(pool, &config.Config{}, nil)(rr, req)
 	require.Equal(t, http.StatusGone, rr.Code)
 
 	var errResp struct {
@@ -573,7 +566,7 @@ func TestRedeemPairingCodeInvalidNodeID(t *testing.T) {
 				redeemBody(code, nodeID, pubKey))
 			req.RemoteAddr = testRemoteAddr(accountID)
 			rr := httptest.NewRecorder()
-			RedeemPairingCode(pool, &config.Config{})(rr, req)
+			RedeemPairingCode(pool, &config.Config{}, nil)(rr, req)
 			require.Equal(t, http.StatusBadRequest, rr.Code)
 		})
 	}
@@ -588,7 +581,6 @@ func TestRedeemPairingCodeInvalidNodeID(t *testing.T) {
 // decoding unbounded input. This runs without a DB because the limit is
 // enforced before any database access.
 func TestRedeemPairingCodeOversizedBody(t *testing.T) {
-	resetRedeemLimiter()
 
 	// A JSON object whose `code` field alone exceeds the 16 KiB cap.
 	body := fmt.Sprintf(`{"code":%q,"node_id":"n","public_key":%q}`,
@@ -597,7 +589,7 @@ func TestRedeemPairingCodeOversizedBody(t *testing.T) {
 	req.RemoteAddr = "192.0.2.201:12345"
 	rr := httptest.NewRecorder()
 
-	RedeemPairingCode(nil, &config.Config{})(rr, req)
+	RedeemPairingCode(nil, &config.Config{}, nil)(rr, req)
 
 	require.Equal(t, http.StatusBadRequest, rr.Code,
 		"an oversized body must be rejected safely")
@@ -614,7 +606,7 @@ func TestRedeemPairingCodePersistsNodeID(t *testing.T) {
 		redeemBody(code, nodeID, pubKey))
 	req.RemoteAddr = testRemoteAddr(accountID)
 	rr := httptest.NewRecorder()
-	RedeemPairingCode(pool, &config.Config{})(rr, req)
+	RedeemPairingCode(pool, &config.Config{}, nil)(rr, req)
 	require.Equal(t, http.StatusOK, rr.Code)
 
 	var storedNodeID *string
@@ -640,7 +632,7 @@ func TestRedeemPairingCodeKeyMismatch(t *testing.T) {
 	req1 := httptest.NewRequest("POST", "/pairing/codes/redeem", redeemBody(code1, nodeID, key1))
 	req1.RemoteAddr = testRemoteAddr(accountID)
 	rr1 := httptest.NewRecorder()
-	RedeemPairingCode(pool, &config.Config{})(rr1, req1)
+	RedeemPairingCode(pool, &config.Config{}, nil)(rr1, req1)
 	require.Equal(t, http.StatusOK, rr1.Code)
 
 	// Second redemption with a different key must be rejected.
@@ -648,7 +640,7 @@ func TestRedeemPairingCodeKeyMismatch(t *testing.T) {
 	req2 := httptest.NewRequest("POST", "/pairing/codes/redeem", redeemBody(code2, nodeID, key2))
 	req2.RemoteAddr = testRemoteAddr(accountID)
 	rr2 := httptest.NewRecorder()
-	RedeemPairingCode(pool, &config.Config{})(rr2, req2)
+	RedeemPairingCode(pool, &config.Config{}, nil)(rr2, req2)
 	require.Equal(t, http.StatusConflict, rr2.Code)
 
 	var errResp struct {
@@ -677,7 +669,7 @@ func TestRedeemPairingCodeSameKeyIdempotentPreservesState(t *testing.T) {
 	req1 := httptest.NewRequest("POST", "/pairing/codes/redeem", redeemBody(code1, nodeID, pubKey))
 	req1.RemoteAddr = testRemoteAddr(accountID)
 	rr1 := httptest.NewRecorder()
-	RedeemPairingCode(pool, &config.Config{})(rr1, req1)
+	RedeemPairingCode(pool, &config.Config{}, nil)(rr1, req1)
 	require.Equal(t, http.StatusOK, rr1.Code)
 
 	// Simulate a revoked (non-ACTIVE) node.
@@ -690,7 +682,7 @@ func TestRedeemPairingCodeSameKeyIdempotentPreservesState(t *testing.T) {
 	req2 := httptest.NewRequest("POST", "/pairing/codes/redeem", redeemBody(code2, nodeID, pubKey))
 	req2.RemoteAddr = testRemoteAddr(accountID)
 	rr2 := httptest.NewRecorder()
-	RedeemPairingCode(pool, &config.Config{})(rr2, req2)
+	RedeemPairingCode(pool, &config.Config{}, nil)(rr2, req2)
 	require.Equal(t, http.StatusOK, rr2.Code)
 
 	var status string
@@ -718,7 +710,7 @@ func TestRedeemConcurrentFirstNodeSinglePrimary(t *testing.T) {
 			req := httptest.NewRequest("POST", "/pairing/codes/redeem", redeemBody(code, node, pubKey))
 			req.RemoteAddr = testRemoteAddr(accountID)
 			rr := httptest.NewRecorder()
-			RedeemPairingCode(pool, &config.Config{})(rr, req)
+			RedeemPairingCode(pool, &config.Config{}, nil)(rr, req)
 			statuses <- rr.Code
 		}(pair.code, pair.node)
 	}
