@@ -1,5 +1,21 @@
 # Changelog
 
+## [2026-09-26] - Protocol: the ErrorCode enum lists every code the relay emits
+
+**What changed:**
+
+- `packages/protocol/src/errors.ts`: `ErrorCodes` and the closed `ErrorCodeSchema` gain `invalid_cursor_map`, `invalid_snapshot_sequence`, `stale_snapshot` and `rebuild_in_progress`, and `AUTH_FAILURE` now carries the relay's wire value `auth_failed` instead of `auth_failure`. The key keeps the readable category name, so `ErrorCodes.AUTH_FAILURE` still reads as the auth category in code while the value matches what is actually sent.
+- New drift guard `TestErrorCodesEmittedByRelayAreAllDocumented` (`services/relay/internal/handler/error_codes_test.go`) reads the relay's `error_code` literals out of the Go source with the AST and requires each one to appear in both `errors.ts` and the message catalog. New `packages/protocol/tests/errors.test.ts` pins the relay's seven codes against the schema from the TypeScript side.
+- `docs/protocol/message-catalog.md` documents the wire spelling and drops the note telling implementers the codes were missing.
+
+**Why:** `ErrorCodeSchema` is a closed zod enum, so a code it omits makes `ErrorPayloadSchema` reject an envelope the client should have been able to read — and the failure surfaces as a complaint about the shape of a message rather than about the thing that went wrong. Five codes the relay sends were in that position: the four snapshot codes added over the last few phases, and `auth_failed`, which the relay has always sent while the docs said `auth_failure`. Nothing caught it because the Go compiler cannot see the TypeScript list and the TypeScript compiler cannot see what the relay sends; the guard is the join, and it is deliberately AST-based so reformatting or moving a handler is not mistaken for a change.
+
+The direction of the auth fix is deliberate: the enum and docs move to the relay's spelling rather than the relay moving to the docs'. The relay is deployed, the node does not parse `error` envelopes at all, and the `auth_failure` value was never in the schema, so no consumer could have been relying on it.
+
+**Impact:** `packages/protocol`, `services/relay` (test only), `docs`. No wire change — the relay's output is identical, so nothing that already works is affected. Consumers who hardcoded the string `auth_failure` against this enum would have been rejecting a value the relay never sent, so there is nothing to migrate. `validation_error`, `unknown_message_type`, `not_found` and `rate_limited` stay in the enum as generic vocabulary other peers may send; the relay does not currently emit them.
+
+**Verification:** 13 new TypeScript tests, full `packages/protocol` suite green (80 tests) and `tsc --noEmit` clean. Injecting `error_code: "a_code_nobody_listed"` into the relay makes the guard fail naming the code and the file to update, then passing once reverted. Full `scripts/test-integration.sh` green.
+
 ## [2026-09-26] - Relay: the two remaining open endpoints are rate limited
 
 **What changed:**

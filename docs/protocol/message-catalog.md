@@ -417,7 +417,12 @@ error carrier.
 ### Error codes
 
 `validation_error`, `unknown_message_type`, `incompatible_version`,
-`auth_failure`, `not_found`, `rate_limited`, `internal_error`.
+`not_found`, `rate_limited`, `internal_error`, `auth_failed`.
+
+Note the spelling of the last one: the wire value is `auth_failed`, not
+`auth_failure`. The relay has always sent `auth_failed`; `auth_failure` was a
+documentation error, and the `ErrorCode` enum now carries the relay's value under
+the `AUTH_FAILURE` key so the category still reads the same in code.
 
 The snapshot path additionally uses these, all of them a `retryable: false`
 rejection of `snapshot_begin`:
@@ -429,11 +434,12 @@ rejection of `snapshot_begin`:
 | `invalid_cursor_map` | The snapshot's cursor map is not consistent with the relay's event log (see `snapshot_begin`). |
 | `rebuild_in_progress` | Another rebuild is already streaming for this account. Retryable. |
 
-Note for implementers: the four snapshot codes are not yet in the `ErrorCode`
-enum in `packages/protocol/src/errors.ts`, and neither is `auth_failed`, which
-the relay already emits in place of the documented `auth_failure`. A client that
-strictly validates `ErrorPayloadSchema` will reject all of them. The storage node
-does not parse `error` envelopes, so it is unaffected.
+All of the above are in the `ErrorCode` enum in `packages/protocol/src/errors.ts`,
+which is closed, so a code missing from it makes a client that strictly validates
+`ErrorPayloadSchema` reject an envelope it should have understood. A relay test
+(`errorCodesEmittedByRelay` in `services/relay/internal/handler`) fails if the
+relay emits a code that enum does not list, so the two cannot drift apart. The
+storage node does not parse `error` envelopes, so it is unaffected either way.
 
 ---
 

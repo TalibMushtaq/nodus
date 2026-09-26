@@ -6,25 +6,48 @@ import { z } from "zod";
  * Machine-readable error codes for the generic `error` message envelope.
  * Each code maps to a distinct failure category so consumers can route
  * retry/fallback logic without parsing free-text messages.
+ *
+ * The set is the union of the generic envelope vocabulary and every code the
+ * Relay actually emits. It has to be that union: `ErrorCodeSchema` is closed, so
+ * a code the Relay sends but this list omits makes a client that validates
+ * `ErrorPayloadSchema` reject an envelope it should have understood.
+ *
+ * `AUTH_FAILURE` keeps this category's name but carries the Relay's wire value,
+ * `auth_failed`. The Relay has always sent that spelling; only the docs said
+ * `auth_failure`, and no client could have been depending on it because the value
+ * was not in this schema to begin with. See `errorCodesEmittedByRelay` in
+ * `services/relay/internal/handler/error_codes_test.go`, which fails if the Relay
+ * emits a code that is not listed here.
  */
 export const ErrorCodes = {
+  // Generic envelope vocabulary.
   VALIDATION_ERROR: "validation_error",
   UNKNOWN_MESSAGE_TYPE: "unknown_message_type",
   INCOMPATIBLE_VERSION: "incompatible_version",
-  AUTH_FAILURE: "auth_failure",
   NOT_FOUND: "not_found",
   RATE_LIMITED: "rate_limited",
   INTERNAL_ERROR: "internal_error",
+  // Emitted by the Relay. AUTH_FAILURE's value is the Relay's, not the docs'.
+  AUTH_FAILURE: "auth_failed",
+  // Snapshot transfer and rebuild.
+  INVALID_CURSOR_MAP: "invalid_cursor_map",
+  INVALID_SNAPSHOT_SEQUENCE: "invalid_snapshot_sequence",
+  STALE_SNAPSHOT: "stale_snapshot",
+  REBUILD_IN_PROGRESS: "rebuild_in_progress",
 } as const;
 
 export const ErrorCodeSchema = z.enum([
   ErrorCodes.VALIDATION_ERROR,
   ErrorCodes.UNKNOWN_MESSAGE_TYPE,
   ErrorCodes.INCOMPATIBLE_VERSION,
-  ErrorCodes.AUTH_FAILURE,
   ErrorCodes.NOT_FOUND,
   ErrorCodes.RATE_LIMITED,
   ErrorCodes.INTERNAL_ERROR,
+  ErrorCodes.AUTH_FAILURE,
+  ErrorCodes.INVALID_CURSOR_MAP,
+  ErrorCodes.INVALID_SNAPSHOT_SEQUENCE,
+  ErrorCodes.STALE_SNAPSHOT,
+  ErrorCodes.REBUILD_IN_PROGRESS,
 ]);
 
 export type ErrorCode = z.infer<typeof ErrorCodeSchema>;
