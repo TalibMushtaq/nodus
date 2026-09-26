@@ -1,5 +1,25 @@
 # Changelog
 
+## [2026-09-26] - Relay: a web push endpoint can no longer point back into the network
+
+**What changed:**
+
+- New `internal/push/webpush_endpoint.go`: `ValidateWebPushEndpoint` for the registration path, and a `newWebPushClient` HTTP client for the delivery path whose transport dials only public addresses.
+- `VapidWebSender.SendWeb` passes that client to the push library, so every delivery connection goes through the check. `POST /push/web` rejects a non-public endpoint with a 400 naming the reason.
+- Refused ranges: loopback, RFC 1918 private, RFC 4193 unique-local, link-local unicast and multicast (which covers `169.254.169.254`), `0.0.0.0/8`, unspecified, multicast, and the CGNAT range `100.64.0.0/10`. IPv4-mapped IPv6 addresses are unmapped first, so `::ffff:127.0.0.1` cannot slip past the IPv4 checks. Redirects are not followed.
+
+**Why:** a web push endpoint is chosen by the browser, handed to the relay, and then fetched by the relay from the server side. That is a client-supplied URL the relay connects to, and the reachable set is everything the relay can see. The proof: a subscription whose endpoint was a loopback listener received the relay's POST and `SendWeb` reported success. Nothing stopped a caller from registering `https://169.254.169.254/latest/meta-data/`, or an internal admin or database port, and then provoking an event — a conflict alert, a sync completion — to make the relay call it.
+
+The check is on the **resolved address at connect time**, not on the hostname in the URL, and that is the part that matters. The hostname is a claim; the address the socket reaches is the fact, and validating the claim is exactly what a DNS-rebinding attack is written against — resolve now, resolve differently at connect, and the guard that read the first answer never sees the second. The transport resolves and then dials the address it just checked, so there is no second answer to consult. It also cannot be worked around with an address written in a form no URL parser recognises: the system resolver reads `https://2130706433/` and `https://0x7f000001/` as `127.0.0.1`, and a validator looking only at the URL text sees an ordinary hostname. Being in the dialer rather than in a URL matcher also covers redirects for free, since every hop is dialled.
+
+Registration is checked too, but only for feedback: rejecting the endpoint at the door answers the caller immediately, whereas accepting it and failing at delivery means finding out minutes later from a notification that never arrived, with no way to tell which subscription was at fault. The registration check is not the enforcement and is written as such — a name is allowed through precisely so it is judged where it resolves.
+
+Existing rows are not migrated. They are simply inert now, because the dial-time check covers whatever is already in the table, and a sweep to delete endpoints registered before this change would be a bigger risk than leaving them to fail closed.
+
+**Impact:** `services/relay` only. No schema and no config change. Web push delivery to a legitimate push service is unaffected: the accepted cases are tested, not assumed, since a filter that quietly refused ordinary subscriptions would be worse than no filter.
+
+**Verification:** Before the fix, `SendWeb` delivered to a loopback listener and returned `nil`. After it, `TestWebPushDeliveryRefusesInternalEndpoint` covers the same address spelled three ways — `127.0.0.1`, `0.0.0.0` and the hostname `localhost` — and each is refused with `not a public address` and no request arriving. `TestBlockedIPTable` spells out every range and its reason, including the boundaries just outside each one (`172.32.0.1`, `100.128.0.1`) so the filter cannot quietly swallow public space. `TestWebPushClientRefusesHostThatResolvesInternal` covers the resolver's integer and hex spellings of `127.0.0.1`; `TestWebPushDeliveryRefusesRedirectToInternal` covers the redirect hop. `TestRegisterWebPushRejectsInternalEndpoint` asserts a rejected endpoint is not merely refused but absent from the table, and that a real push service is still accepted — that test fails if the handler check is removed. Full `scripts/test-integration.sh` and the database-backed `-race` run both green.
+
 ## [2026-09-26] - Relay: the per-IP rate limits are shared across replicas
 
 **What changed:**

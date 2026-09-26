@@ -243,3 +243,77 @@ func TestSyncCompleteAlertFiresOnceWhenAllShardsStored(t *testing.T) {
 	svc.AlertSyncComplete(ctx, account, file, 1)
 	require.Len(t, sender.messages, 1)
 }
+
+// TestRegisterWebPushRejectsInternalEndpoint covers the registration half of the
+// SSRF guard. The dial-time check in internal/push is the enforcement, but
+// accepting the endpoint and only failing at delivery time means the caller
+// finds out minutes later, from a notification that never arrived, with no way
+// to tell which of their endpoints was the problem. Rejecting it at the door
+// answers immediately.
+//
+// The accepted case matters as much as the rejected ones: this endpoint is the
+// one a browser really hands over, so a filter that quietly refused ordinary
+// subscriptions would be worse than no filter at all.
+func TestRegisterWebPushRejectsInternalEndpoint(t *testing.T) {
+	url := os.Getenv("TEST_DATABASE_URL")
+	if url == "" {
+		t.Skip("TEST_DATABASE_URL not set; skipping integration test")
+	}
+	ctx := context.Background()
+	if err := db.RunMigrations(url); err != nil {
+		t.Fatalf("run migrations: %v", err)
+	}
+	pool, err := db.Open(ctx, &config.Config{DatabaseURL: url})
+	require.NoError(t, err)
+	t.Cleanup(pool.Close)
+
+	account := "acct-webpush-ssrf-" + fmt.Sprint(time.Now().UnixNano())
+	_, err = pool.Exec(ctx, `INSERT INTO accounts (account_id, email, password_hash) VALUES ($1, $2, 'hash')`,
+		account, account+"@test.local")
+	require.NoError(t, err)
+
+	body := func(endpoint string) *strings.Reader {
+		return strings.NewReader(fmt.Sprintf(
+			`{"endpoint":%q,"keys":{"p256dh":"p256","auth":"auth"}}`, endpoint))
+	}
+
+	for name, endpoint := range map[string]string{
+		"cloud metadata": "https://169.254.169.254/latest/meta-data/iam/security-credentials/",
+		"loopback":       "https://127.0.0.1:8443/push",
+		"private":        "https://10.1.2.3/push",
+		"localhost name": "https://localhost/push",
+		"plaintext":      "http://127.0.0.1:8080/",
+		"ipv6 loopback":  "https://[::1]/push",
+		"cgnat":          "https://100.70.0.1/push",
+	} {
+		t.Run("rejects "+name, func(t *testing.T) {
+			req := httptest.NewRequest("POST", "/push/web", body(endpoint)).
+				WithContext(authContext(account, "dev-1"))
+			rr := httptest.NewRecorder()
+			RegisterWebPush(pool)(rr, req)
+			require.Equal(t, http.StatusBadRequest, rr.Code,
+				"%s must not be storable as a push endpoint", endpoint)
+
+			var count int
+			require.NoError(t, pool.QueryRow(ctx,
+				`SELECT COUNT(*) FROM web_push_subscriptions WHERE endpoint = $1`, endpoint).
+				Scan(&count))
+			require.Zero(t, count, "a rejected endpoint must not reach the table")
+		})
+	}
+
+	t.Run("accepts a real push service", func(t *testing.T) {
+		endpoint := "https://fcm.googleapis.com/fcm/send/abc-" + account
+		req := httptest.NewRequest("POST", "/push/web", body(endpoint)).
+			WithContext(authContext(account, "dev-1"))
+		rr := httptest.NewRecorder()
+		RegisterWebPush(pool)(rr, req)
+		require.Equal(t, http.StatusOK, rr.Code, "body: %s", rr.Body.String())
+
+		var stored int
+		require.NoError(t, pool.QueryRow(ctx,
+			`SELECT COUNT(*) FROM web_push_subscriptions WHERE endpoint = $1`, endpoint).
+			Scan(&stored))
+		require.Equal(t, 1, stored)
+	})
+}

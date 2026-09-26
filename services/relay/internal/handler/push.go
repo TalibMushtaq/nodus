@@ -6,6 +6,7 @@ import (
 
 	"github.com/TalibMushtaq/nodus/services/relay/internal/auth"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/db"
+	"github.com/TalibMushtaq/nodus/services/relay/internal/push"
 )
 
 // pushPrefsRequest mirrors the client's notification toggles. Every field is a
@@ -138,6 +139,15 @@ func RegisterWebPush(pool *db.Pool) http.HandlerFunc {
 		}
 		if req.Endpoint == "" || req.Keys == nil || req.Keys.P256dh == "" || req.Keys.Auth == "" {
 			respondError(w, http.StatusBadRequest, "missing endpoint or keys")
+			return
+		}
+		// The relay fetches this endpoint from the server side, so it is a URL
+		// the client chose and the relay will connect to. Reject the obviously
+		// internal ones here so the caller learns why immediately; the delivery
+		// path re-checks the resolved address, which is the part that actually
+		// holds.
+		if err := push.ValidateWebPushEndpoint(req.Endpoint); err != nil {
+			respondError(w, http.StatusBadRequest, "invalid push endpoint: "+err.Error())
 			return
 		}
 

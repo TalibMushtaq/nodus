@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"time"
 
 	webpush "github.com/SherClockHolmes/webpush-go"
 )
@@ -19,6 +20,11 @@ type WebSubscription struct {
 type WebSender interface {
 	SendWeb(ctx context.Context, subs []WebSubscription, title, body string, data map[string]string) error
 }
+
+// webPushDeliveryTimeout caps one subscription's delivery. It is per attempt, so
+// a batch of subscriptions cannot spend the caller's whole context on the first
+// one that hangs.
+const webPushDeliveryTimeout = 10 * time.Second
 
 // VapidWebSender signs Web Push requests with the operator's VAPID key pair.
 type VapidWebSender struct {
@@ -57,6 +63,12 @@ func (s *VapidWebSender) SendWeb(
 			VAPIDPublicKey:  s.publicKey,
 			VAPIDPrivateKey: s.privateKey,
 			TTL:             60,
+			// The endpoint came from a browser, so the relay is about to connect
+			// to a client-chosen address. The client is what makes the dial safe,
+			// not just the URL: it re-checks the resolved address on every
+			// connection, which also covers the endpoints already in the table
+			// from before this check existed.
+			HTTPClient: newWebPushClient(webPushDeliveryTimeout),
 		})
 		if err != nil {
 			if firstErr == nil {
