@@ -1,5 +1,17 @@
 # Changelog
 
+## [2026-09-26] - Mobile: regenerating the recovery key requires the account password
+
+**What changed:**
+
+- `rotateRecoveryKey` (`apps/mobile/src/recovery/rotate.ts`) takes `currentPassword` and passes it to `enroll`. `rotateRecovery` in `useNodusApp` is now async and takes the password, and the Security screen collects it in a sheet before calling rather than behind a confirm Alert.
+
+**Why:** the Relay re-verifies the account password before it drops the previous recovery key's envelope coverage, so a stolen session alone cannot be used to brick the account's recovery. The SDK's `enroll` has required that password since it was added, and the mobile caller was still passing only the public key — an argument-count mismatch that does not typecheck, so the rotate flow was broken rather than merely missing a confirmation. Collecting the password in the sheet and clearing it on close, including the failure path, also keeps a wrong password out of component state for the next attempt.
+
+**Impact:** mobile Security screen only. The Relay and SDK already require the password.
+
+**Verification:** `pnpm --filter mobile run check-types`, `lint` and the 22-test suite pass.
+
 ## [2026-09-26] - Web: re-seal keys to devices that register after upload
 
 **What changed:**

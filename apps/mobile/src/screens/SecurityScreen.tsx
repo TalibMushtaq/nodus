@@ -14,6 +14,7 @@ import {
   EmptyState,
   Screen,
   SettingRow,
+  Sheet,
   TextField,
   ThemedText,
   useTheme,
@@ -23,6 +24,11 @@ export function SecurityScreen() {
   const app = useApp();
   const theme = useTheme();
   const [refreshing, setRefreshing] = React.useState(false);
+  // Controls the "regenerate recovery key" sheet. Regenerating drops the
+  // previous key's envelope coverage on the Relay, so the password is collected
+  // here (and only here) before the destructive step is authorized.
+  const [rotateOpen, setRotateOpen] = React.useState(false);
+  const [rotatePassword, setRotatePassword] = React.useState("");
   const [currentPassword, setCurrentPassword] = React.useState("");
   const [newPassword, setNewPassword] = React.useState("");
   const [confirmPassword, setConfirmPassword] = React.useState("");
@@ -57,6 +63,17 @@ export function SecurityScreen() {
       setNewPassword("");
       setConfirmPassword("");
     }
+  };
+
+  // Keep the password out of state once the sheet closes, including on the
+  // failure path: a wrong password should not leave the credential in memory
+  // for the next attempt to reuse by accident.
+  const submitRotate = async () => {
+    const password = rotatePassword;
+    setRotatePassword("");
+    setRotateOpen(false);
+    if (!password) return;
+    await app.rotateRecovery(password);
   };
 
   return (
@@ -105,7 +122,7 @@ export function SecurityScreen() {
         <Button
           title={app.busy === "rotating-recovery" ? "Regenerating…" : "Regenerate recovery key"}
           variant="destructive"
-          onPress={() => app.rotateRecovery()}
+          onPress={() => setRotateOpen(true)}
           disabled={!app.authed || app.busy !== null}
         />
         {app.securityStatus ? (
@@ -114,6 +131,36 @@ export function SecurityScreen() {
           </ThemedText>
         ) : null}
       </Card>
+
+      <Sheet
+        visible={rotateOpen}
+        title="Regenerate recovery key"
+        onClose={() => {
+          setRotatePassword("");
+          setRotateOpen(false);
+        }}
+      >
+        <ThemedText variant="caption" tone="muted">
+          This replaces your recovery phrase and re-seals your keys to the new one. Record the new
+          phrase immediately.
+        </ThemedText>
+        <ThemedText variant="caption" tone="muted">
+          The previous key loses access to your files, so confirm with your account password.
+        </ThemedText>
+        <TextField
+          label="Account password"
+          value={rotatePassword}
+          onChangeText={setRotatePassword}
+          secureTextEntry
+          autoCapitalize="none"
+        />
+        <Button
+          title={app.busy === "rotating-recovery" ? "Regenerating…" : "Regenerate"}
+          variant="destructive"
+          onPress={() => void submitRotate()}
+          disabled={!rotatePassword || app.busy !== null}
+        />
+      </Sheet>
 
       <ThemedText
         variant="sectionLabel"

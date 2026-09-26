@@ -5,6 +5,10 @@
 // device can open to the new recovery identity and stores the phrase locally.
 // Only keys this device holds can be re-sealed; the result reports skipped
 // keys so the UI can be honest about coverage.
+//
+// `currentPassword` is required: the Relay re-verifies the account password
+// before dropping the previous key's envelope coverage, so a stolen session
+// alone cannot be used to brick the account's recovery.
 
 import { resealRecoveryKeys, toCatalogEntry, type ResealResult, type SessionInfo } from "@repo/sdk";
 import type { StoredDeviceIdentity } from "@repo/relay-client";
@@ -25,6 +29,7 @@ export async function rotateRecoveryKey(
   ws: MobileWs,
   device: StoredDeviceIdentity,
   session: SessionInfo,
+  currentPassword: string,
 ): Promise<RotateResult> {
   const client = mobileRecoveryClient();
   const phrase = client.createPhrase();
@@ -32,7 +37,7 @@ export async function rotateRecoveryKey(
 
   // Enroll first: the Relay drops any envelopes sealed to the previous recovery
   // key, so re-sealing must come after or the new envelopes would be lost.
-  await client.enroll(publicKey);
+  await client.enroll(publicKey, currentPassword);
 
   const resealed = await resealRecoveryKeys(
     {

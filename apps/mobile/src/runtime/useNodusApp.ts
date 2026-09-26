@@ -1751,40 +1751,38 @@ export function useNodusApp() {
 
   // Regenerate the recovery key: enroll the new public key, re-seal every key
   // this device can open, and reveal the new phrase once.
-  const rotateRecovery = React.useCallback(() => {
-    if (!device || !session) return;
-    Alert.alert(
-      "Regenerate recovery key",
-      "This replaces your recovery phrase and re-seals your keys to the new one. Record the new phrase immediately.",
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Regenerate",
-          style: "destructive",
-          onPress: () => {
-            void (async () => {
-              setBusy("rotating-recovery");
-              setError(null);
-              setNotice(null);
-              setSecurityStatus(null);
-              try {
-                const { phrase, resealed } = await rotateRecoveryKey(wsRef.current!, device, session);
-                // Show the new phrase so it can be recorded before it is hidden.
-                setRevealedPhrase(phrase);
-                setSecurityStatus(
-                  `New phrase shown above. Re-sealed ${resealed.files} file / ${resealed.folders} folder key(s), skipped ${resealed.skipped}.`,
-                );
-              } catch (err) {
-                setError(err instanceof Error ? err.message : String(err));
-              } finally {
-                setBusy(null);
-              }
-            })();
-          },
-        },
-      ],
-    );
-  }, [device, session]);
+  //
+  // The caller supplies the account password because the Relay re-verifies it
+  // before dropping the previous key's envelope coverage. The confirm step now
+  // lives in the Security screen sheet, which collects that password, so this
+  // runs directly instead of behind a second Alert.
+  const rotateRecovery = React.useCallback(
+    async (currentPassword: string) => {
+      if (!device || !session) return;
+      setBusy("rotating-recovery");
+      setError(null);
+      setNotice(null);
+      setSecurityStatus(null);
+      try {
+        const { phrase, resealed } = await rotateRecoveryKey(
+          wsRef.current!,
+          device,
+          session,
+          currentPassword,
+        );
+        // Show the new phrase so it can be recorded before it is hidden.
+        setRevealedPhrase(phrase);
+        setSecurityStatus(
+          `New phrase shown above. Re-sealed ${resealed.files} file / ${resealed.folders} folder key(s), skipped ${resealed.skipped}.`,
+        );
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setBusy(null);
+      }
+    },
+    [device, session],
+  );
 
   const scan = React.useCallback(async () => {
     setBusy("scanning");
