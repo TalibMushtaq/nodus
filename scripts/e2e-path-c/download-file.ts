@@ -88,7 +88,10 @@ async function main(): Promise<void> {
         throw new Error(`shard ${location.shard_index} has no recorded hash`);
       }
       const client = new NodeClient(nodusBaseUrl(args.nodeHost, args.nodePort));
-      return client.fetchShard(identity.deviceId, identity.privateKey, location.hash);
+      // fetchShard wants a DeviceMessageSigner callback, not the raw key: the
+      // node verifies a hex Ed25519 signature over
+      // `${deviceId}:${objectId}:${timestamp}`.
+      return client.fetchShard(identity.deviceId, (message) => identity.sign(message), location.hash);
     },
   };
 

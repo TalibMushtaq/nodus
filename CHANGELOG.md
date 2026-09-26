@@ -1,5 +1,17 @@
 # Changelog
 
+## [2026-09-26] - E2E: the Path C downloader signs its shard fetch
+
+**What changed:**
+
+- `scripts/e2e-path-c/identity.ts` gives `HarnessIdentity` a `sign(message)` that returns the hex-encoded Ed25519 signature, and `scripts/e2e-path-c/download-file.ts` passes a signer callback to `NodeClient.fetchShard` instead of the raw private key.
+
+**Why:** the device→node LAN fetch authenticates with a hex Ed25519 signature over `${deviceId}:${objectId}:${timestamp}`, which the node checks in `verify_signature`, and `fetchShard` takes a `DeviceMessageSigner` callback. The harness passed `identity.privateKey`, so it threw `sign is not a function` and the run stopped at the download leg. The harness holds a raw seed rather than a WebCrypto handle, so it signs with the same noble key it already derives the public key from; the output matches `createDeviceSigner` byte for byte.
+
+**Impact:** `scripts/e2e-path-c` only.
+
+**Verification:** the full Path C harness is green — 12 passed, 0 failed — covering upload with a kill/resume, the node's signed `/buffer/fetch`, and LAN download plus decryption by a second device.
+
 ## [2026-09-26] - E2E: the Path C harness could not reach its own checks
 
 **What changed:**
@@ -8,7 +20,7 @@
 
 **Why:** `curl … | python3 - "$DEV_B" <<'PY'` gives Python the heredoc as stdin, so `json.load(sys.stdin)` reads EOF and the run aborts with a JSON decode error before any Path C step runs — that check could never pass. Pass 1 exits non-zero when the queued post for the next shard races the intended `process.exit(0)` after the simulated kill; that shows on Node 26, above this repo's `>=24 <25` engine range, and aborted the run under `set -e` even though the shard had buffered.
 
-**Impact:** `scripts/e2e-path-c.sh` only. Known remaining failure at the device-download leg, unrelated to Path C: `scripts/e2e-path-c/download-file.ts:91` passes `identity.privateKey` where `NodeClient.fetchShard` expects a `DeviceMessageSigner` callback, so it throws `sign is not a function`. Still open.
+**Impact:** `scripts/e2e-path-c.sh` only. The run then stopped at the device-download leg on a separate pre-existing bug, closed in the entry above.
 
 **Verification:** the harness now runs through the storage-node leg — 10 checks pass, including both shards reaching `NODE_STORED` with `[buffer-fetch] served` logged twice, which is where the signed `/buffer/fetch` change above is exercised end to end.
 

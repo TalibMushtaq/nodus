@@ -10,6 +10,13 @@ export interface HarnessIdentity {
   /** Ed25519 public key, base64 — exactly what the Relay stores/returns. */
   publicKeyB64: string;
   privateKey: Uint8Array;
+  /**
+   * Sign a message's UTF-8 bytes and return the hex-encoded Ed25519 signature.
+   * This is the `DeviceMessageSigner` shape the node's `X-Nodus-Signature`
+   * check expects; the product's web signer produces the same hex over the same
+   * bytes (see `createDeviceSigner`), so a node cannot tell the harness apart.
+   */
+  sign(message: string): string;
 }
 
 export function identityFromSeed(seedHex: string): HarnessIdentity {
@@ -24,5 +31,9 @@ export function identityFromSeed(seedHex: string): HarnessIdentity {
     deviceId,
     publicKeyB64: Buffer.from(publicKey).toString("base64"),
     privateKey,
+    sign(message: string): string {
+      const signature = ed25519.sign(new TextEncoder().encode(message), privateKey);
+      return Buffer.from(signature).toString("hex");
+    },
   };
 }
