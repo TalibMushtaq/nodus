@@ -1,5 +1,17 @@
 # Changelog
 
+## [2026-09-26] - Deploy: the proxy routes the whole Relay API, by content negotiation
+
+**What changed:**
+
+- `deploy/Caddyfile`'s Relay matcher now covers the full API surface and uses `not header Accept *text/html*`. Paths that are both a Relay route and a Next.js page (`/devices`, `/files`, `/tombstones`) go to the Relay for API clients and to Next for browser navigations, instead of the matcher picking one and breaking the other client.
+
+**Why:** the matcher was an enumerated list that had drifted from the Relay's routes, so through the bundled proxy a number of endpoints returned Next's 404: the Storage Node's `/node/shards/*` (peer repair) and, for mobile, `/shards/*`, `/nodes/*` (ping, rename), `/auth/recovery*`, `/envelopes/*`, `/folder-envelopes`, `/activities`, and `/files/*`. Probing the running deployment showed `404 text/html` for each. The bare paths were worse than missing: `/files` went to the Relay unconditionally, so a browser hard-navigating to the files page got a `401` JSON body, while `/devices` and `/tombstones` went to Next, so mobile got a page instead of its device and tombstone lists. Enumerating cannot express "same path, two clients", which is why the list kept losing a route every time one was added.
+
+**Impact:** `deploy/` only, but the Caddy container must be recreated to pick it up. No Relay or application change. Behaviour change worth knowing: a browser hard-navigation to `/files` now serves the Next page rather than a `401` JSON body, and `/devices` and `/tombstones` now serve the Relay API to non-browser clients.
+
+**Verification:** `caddy validate` passes; against the running deployment, `/files`, `/devices`, `/tombstones`, `/overview` return `200 text/html` with `Accept: text/html`, while `/files`, `/devices`, `/tombstones`, `/shards/*`, `/node/shards/*`, `/envelopes/summary`, `/folder-envelopes`, `/activities` return Relay responses (`401`/`405`, never Next's `404`) without it, and `/api/*` still reaches Next. `scripts/e2e-path-c.sh` re-run green at 12/0 through the proxy.
+
 ## [2026-09-26] - E2E: the Path C downloader signs its shard fetch
 
 **What changed:**

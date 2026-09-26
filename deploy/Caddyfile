@@ -9,22 +9,37 @@
 # pairing endpoints, rebuild, and health. This keeps mobile/CLI clients working
 # against the single origin, not just the browser and the Storage Node.
 #
-# The one deliberate exception is the bare `/devices` path: it is a Next.js
-# *page*, so it stays with Next, and the Relay's device list is reached through
-# Next's `/api/devices` handler. `/auth` (page) similarly stays with Next while
-# `/auth/*` (login/register/session/logout) goes to the Relay. Everything not
-# matched below (all pages and `/api/*`) is served by Next.js.
+# Three Relay paths also exist as Next.js pages: `/devices`, `/files` and
+# `/tombstones`. They are disambiguated by content negotiation rather than by
+# dropping one client: a browser navigation sends `Accept: text/html` and stays
+# with Next, while an API client (mobile, CLI, Storage Node) sends JSON or
+# `*/*` and reaches the Relay. Without this, an enumerated list has to pick a
+# winner, and whichever it picks the other client breaks — which is how the
+# Relay's `/devices` and `/tombstones` came to be unreachable through the proxy.
+#
+# Everything not matched below (all pages, `/api/*`, static assets) is served
+# by Next.js.
 
 {$SITE_ADDRESS} {
 	encode gzip
 
-	@relay path /ws /health /rebuild /files /folders /envelopes \
-	 /auth/register /auth/login /auth/session /auth/logout \
-	 /devices/register /devices/* \
-	 /nodes /nodes/register /nodes/verify \
- /pairing/sessions /pairing/sessions/* \
- /pairing/codes /pairing/codes/* \
- /buffer/upload /buffer/fetch
+	@relay {
+		path /ws /health /rebuild /activities /folder-envelopes \
+		 /shards/* \
+		 /files /files/* /folders \
+		 /tombstones /tombstones/* \
+		 /envelopes /envelopes/* \
+		 /account/* \
+		 /auth/register /auth/login /auth/session /auth/logout \
+		 /auth/password /auth/logout-all /auth/recovery /auth/recovery/* \
+		 /devices /devices/* \
+		 /nodes /nodes/* /node/shards/* \
+		 /pairing/sessions /pairing/sessions/* \
+		 /pairing/codes /pairing/codes/* \
+		 /buffer/upload /buffer/fetch
+		# A browser asking for a page keeps the Next.js page of the same name.
+		not header Accept *text/html*
+	}
 	handle @relay {
 		reverse_proxy relay:8080
 	}
