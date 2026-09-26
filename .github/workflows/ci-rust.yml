@@ -1,6 +1,7 @@
 name: ci-rust
 
 on:
+  workflow_dispatch:
   pull_request:
     paths:
       - "services/storage-node/**"
@@ -60,15 +61,22 @@ jobs:
           # Raises the advisory-DB fetch rate limit; public repos work without
           # it, but CI runners share an IP.
           token: ${{ secrets.GITHUB_TOKEN }}
+          # The value below is a YAML block scalar, so a `#` line inside it is
+          # sent to cargo-audit as data rather than treated as a comment. An ID
+          # written with trailing punctuation in such a line — "(RUSTSEC-2024-0370)."
+          # — parses as a malformed advisory ID and aborts the whole run before
+          # any crate is examined. Keep the block to bare IDs and put the
+          # reasoning here instead.
+          #
+          # RUSTSEC-2023-0071: Marvin key-recovery timing attack. Transitive via
+          # `piper`'s optional rsa feature; the node does no RSA operations, and
+          # upstream has no fixed release yet.
+          # RUSTSEC-2025-0052, RUSTSEC-2025-0141, RUSTSEC-2020-0016,
+          # RUSTSEC-2024-0370: unmaintained, all pulled in by `mdns 3.0.0` /
+          # `webrtc-dtls`, neither of which is being replaced for cleanup
+          # reasons. Revisit when mDNS or WebRTC is next upgraded.
           ignore: |
-            # Marvin key-recovery timing attack. Transitive via `piper`'s
-            # optional rsa feature; the node does no RSA operations, and
-            # upstream has no fixed release yet (RUSTSEC-2023-0071).
             RUSTSEC-2023-0071
-            # Unmaintained, all from `mdns 3.0.0` / `webrtc-dtls`, neither of
-            # which is being replaced for cleanup reasons. Revisit when mDNS or
-            # WebRTC is next upgraded (RUSTSEC-2025-0052, RUSTSEC-2025-0141,
-            # RUSTSEC-2020-0016, RUSTSEC-2024-0370).
             RUSTSEC-2025-0052
             RUSTSEC-2025-0141
             RUSTSEC-2020-0016

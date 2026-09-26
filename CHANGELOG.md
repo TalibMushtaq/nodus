@@ -1,5 +1,17 @@
 # Changelog
 
+## [2026-09-26] - CI: the RustSec ignore list was aborting cargo-audit
+
+**What changed:**
+
+- `.github/workflows/ci-rust.yml`'s `ignore:` input now holds only bare advisory IDs; the explanatory lines moved into YAML comments above it. The workflow also gains `workflow_dispatch` so it can be run on demand.
+
+**Why:** `ignore` is a YAML block scalar, so the `#` lines inside it were sent to cargo-audit as data, not treated as comments. One of them spelled an ID with trailing punctuation — `…(RUSTSEC-2024-0370).` — which cargo-audit parsed as the advisory ID `RUSTSEC-2024-0370)` and rejected with "malformed advisory ID", aborting the run before any crate was examined. The audit job has failed on every run since it was added, so the red badge said nothing about the dependencies it exists to check.
+
+**Impact:** `.github/workflows/ci-rust.yml` only.
+
+**Verification:** the exact error reproduces locally with `cargo audit --ignore "RUSTSEC-2024-0370)."`. The corrected bare-ID list exits 0 against the storage node's lockfile with the same five exceptions, and `yaml.safe_load` parses the workflow.
+
 ## [2026-09-26] - Relay: the WebPush host test no longer assumes a resolver
 
 **What changed:**
