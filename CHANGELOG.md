@@ -1,5 +1,24 @@
 # Changelog
 
+## [2026-09-26] - Relay: the buffered-shard fetch token is bound to its target node
+
+**What changed:**
+
+- `GET /buffer/fetch` is wrapped in `auth.RequireNodeAuth`, the same Ed25519 request-signature middleware `GET /node/shards/{object_id}` already uses. The node sends `X-Nodus-Node-Id`, `X-Nodus-Timestamp` and `X-Nodus-Signature` alongside the bearer token.
+- `internal/rdb`: a fetch token's value is now `{"node_id":…,"buffer_id":…}` rather than a bare `buffer_id`. `SetFetchToken` takes the target node; `ConsumeFetchToken` returns it and a found flag. A value that does not decode — a token minted before this change — is treated as absent, so a rolling deploy yields a `401` the node recovers from by reconnecting, not a `500`.
+- `internal/handler/buffer_notify.go`: `issueFetchToken` refuses to mint a token with no target node, and `buildPendingNotifyEnvelope` takes the target node from its two callers (`md.TargetNode` on upload, `c.NodeID` on reconnect). `BufferFetch` compares the token's node against `auth.GetNodeID` and answers `403` on a mismatch — not `401`, because the token is valid and unexpired and reporting it as invalid would send the reader looking for expiry or replay instead of a binding.
+- `services/storage-node`: `fetch_verify_store` signs the request with the node's key. The signed path is read off the fetch URL rather than hardcoded, because a proxied deployment fetches through a prefix such as `/proxy/buffer/fetch` and the Relay compares against exactly the path it sees.
+
+**Why:** the token was a bare `buffer_id`, so it proved only that its holder knew a UUID. `BufferFetch` was not node-authenticated, so any holder of a valid token — a leaked Redis value, a proxy access log from before the move to the header, a malicious co-tenant node — could redeem a shard routed to a different node and move it into `NODE_RECEIVING`, denying the real destination and taking custody of its ciphertext. Single-use and a 10-minute TTL bounded the window, not the identity.
+
+The previous entry's scope note called this "a larger change than moving the header" on the grounds that the node "only [proves identity] over the WebSocket challenge handshake". That was wrong and worth recording: the node already signs plain HTTP requests for `/node/shards/{object_id}` with a stateless Ed25519 signature over `node_id:method:path:timestamp`, and the signing code was already in scope at the fetch call site. Binding the token was small.
+
+The token is spent even when the wrong node presents it. That is deliberate — a token a rejected node could keep retrying would be a way to starve the shard's real destination — and the burn is recoverable because the rightful node is re-notified with a fresh token when it next connects.
+
+**Impact:** a wire change on two services that must move together. An older node against this Relay gets `401` (no signature), and a Relay from before this change rejects an upgraded node too, so deploy the Relay and node together. A `REVOKED` node can no longer pull buffered shards at all: the correct property, but a behaviour change beyond authentication. Existing tokens minted before the upgrade are refused and replaced on the node's next `pending_notify`; nothing needs manual invalidation.
+
+**Verification:** `TestBufferFetchRefusesTokenIssuedToAnotherNode` redeems a valid token as a second registered node and asserts `403`, that the shard is still `RELAY_BUFFERED` (a refused fetch, not a corrupted one), that no bytes are returned, that the token is burned, and that a fresh token for the right node still works. Confirmed to fail with the binding check neutered. `TestBufferFetchRefusesRequestWithoutNodeIdentity` covers the fail-closed path and fails if the check is made to depend on the identity being present. `TestBufferFetchRefusesUnboundLegacyToken` covers a pre-binding value shape. `TestIssueFetchTokenRefusesUnboundCall` pins issuance; removing the guard fails it. On the node, `test_fetch_signed_path_matches_the_request_path` pins the signed path including a proxy prefix. The existing fetch tests now sign as a node through a `fetchShard` harness helper, and `TestRegisterRerunsDeliveryAfterOfflineUpload` exercises real issuance-to-redemption end to end. `scripts/test-integration.sh -race -count=1` green, `cargo test` 232+245 green, `cargo clippy --all-targets` clean, `packages/protocol` `tsc`/`eslint`/80 tests green.
+
 ## [2026-09-26] - Relay: the WebPush redirect test was passing for the wrong reason
 
 **What changed:**
@@ -47,7 +66,7 @@ The nil guard is new because the shared instance is now a wiring responsibility.
 
 The query parameter is rejected rather than kept as a fallback on purpose. A silent fallback would leave the log-exposure path open while looking like a fix, and the token is 10-minute, single-use and fetches E2E-encrypted bytes, so the clean break costs one redeploy of the node. Rejecting loudly means an un-upgraded node gets a `400` that says exactly what to change, instead of a bare `401` it would take a log-reading session to diagnose.
 
-**Scope note:** this is the mitigation half of the audit's fetch-token-binding finding, not all of it. The token is still not bound to the node it was issued for — `issueFetchToken` only receives a `buffer_id`, so any holder of a valid token can redeem it. Closing that needs the node to prove its identity over HTTP (it currently only does so over the WebSocket challenge handshake), which is a larger change than moving the header and is **still open**. What this removes is the realistic way the token escapes: logs and headers. What remains is a bounded one — single-use, 10-minute TTL, encrypted payload, and redemption only transitions that one shard to `NODE_RECEIVING`.
+**Scope note:** this is the mitigation half of the audit's fetch-token-binding finding, not all of it. The token was still not bound to the node it was issued for — `issueFetchToken` only received a `buffer_id`, so any holder of a valid token could redeem it. That was closed in the entry above; it turned out to be small rather than large, because the node already signs plain HTTP requests for `/node/shards/{object_id}`. What this entry removed was the realistic way the token escapes: logs and headers. What remained until the entry above was the identity gap — single-use, 10-minute TTL, encrypted payload, and redemption only transitions that one shard to `NODE_RECEIVING` bounded it.
 
 **Impact:** wire change. The Relay, storage node, and the `fetch_token` field's documentation must move together; a Relay on this commit rejects a node that has not been rebuilt. No schema or Redis key change, and the token's TTL, single-use `GETDEL` semantics and 10-minute lifetime are untouched.
 

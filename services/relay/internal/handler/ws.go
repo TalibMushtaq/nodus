@@ -434,7 +434,7 @@ func checkAndDeliverPendingShards(ctx context.Context, c *hub.Client, pool *db.P
 			continue
 		}
 
-		envBytes, ok := buildPendingNotifyEnvelope(ctx, rClient, PendingNotifyPayload{
+		envBytes, ok := buildPendingNotifyEnvelope(ctx, rClient, c.NodeID, PendingNotifyPayload{
 			FileID:        fileID,
 			VersionNumber: versionNumber,
 			ShardIndex:    shardIndex,

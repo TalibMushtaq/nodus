@@ -344,7 +344,7 @@ func main() {
 
 		// Phase 10: Path C relay buffer — client pushes shards here when the
 		// target Storage Node is offline; the node pulls them with a single-use
-		// token via /buffer/fetch (deliberately unauthenticated).
+		// token via /buffer/fetch.
 		mux.Handle("POST /buffer/upload", auth.RequireAuth(sessionStore, cfg)(handler.BufferUpload(pool, redisClient, buf, wsHub, cfg.MaxShardBytes)))
 		// Design A: relay-mediated shard download fallback. Session-authenticated;
 		// FetchShard resolves the account from the session and only serves shards
@@ -356,7 +356,12 @@ func main() {
 		// but authenticated by the node's stateless Ed25519 signature instead of
 		// a session. RequireNodeAuth sets the account context FetchShard reads.
 		mux.Handle("GET /node/shards/{object_id}", auth.RequireNodeAuth(nodeStore, 5*time.Minute)(handler.FetchShard(pool, wsHub, shardRegistry, buf, cfg.MaxShardBytes)))
-		mux.HandleFunc("GET /buffer/fetch", handler.BufferFetch(pool, redisClient, buf))
+		// The buffered-shard fetch, signed the same way. The single-use token
+		// scopes the request to one shard but says nothing about who is asking,
+		// so the token is bound to the target node and checked against the
+		// identity RequireNodeAuth established. Wrapping it here also means a
+		// REVOKED node stops being able to pull buffered shards.
+		mux.Handle("GET /buffer/fetch", auth.RequireNodeAuth(nodeStore, 5*time.Minute)(handler.BufferFetch(pool, redisClient, buf)))
 	}
 
 	// WebSocket Gateway (browser auth via session cookie; node auth via Ed25519

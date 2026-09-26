@@ -2,7 +2,9 @@ package rdb
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/TalibMushtaq/nodus/services/relay/internal/config"
@@ -86,23 +88,57 @@ func (c *Client) ConsumeAuthNonce(ctx context.Context, sessionID, expectedNonce 
 	return stored == expectedNonce && expectedNonce != "", nil
 }
 
-// SetFetchToken stores a single-use, time-limited fetch token for a buffered shard.
-// The token maps to bufferID so the node can call GET /buffer/fetch?token=...
-// without needing its own auth middleware. 10-minute TTL is the v1 default.
-func (c *Client) SetFetchToken(ctx context.Context, token, bufferID string, ttl time.Duration) error {
-	return c.Set(ctx, fmt.Sprintf("fetch_token:%s", token), bufferID, ttl).Err()
+// fetchTokenValue is what a fetch token resolves to. The node it was issued
+// for is stored alongside the buffer_id so redemption can be checked against
+// the node that proves its identity, instead of trusting whoever holds the
+// token. It is JSON rather than a delimited string because a mis-split here
+// would bind the token to the wrong node, which is the failure this whole
+// structure exists to prevent.
+type fetchTokenValue struct {
+	NodeID   string `json:"node_id"`
+	BufferID string `json:"buffer_id"`
+}
+
+// SetFetchToken stores a single-use, time-limited fetch token bound to the node
+// the shard is destined for. The node redeems it against GET /buffer/fetch with
+// `Authorization: Bearer <token>` plus its own request signature; 10-minute TTL
+// is the v1 default.
+func (c *Client) SetFetchToken(ctx context.Context, token, nodeID, bufferID string, ttl time.Duration) error {
+	value, err := json.Marshal(fetchTokenValue{NodeID: nodeID, BufferID: bufferID})
+	if err != nil {
+		return fmt.Errorf("encoding fetch token: %w", err)
+	}
+	return c.Set(ctx, fmt.Sprintf("fetch_token:%s", token), value, ttl).Err()
 }
 
 // ConsumeFetchToken atomically retrieves and deletes the fetch token, returning
-// the associated buffer_id. Returns ("", nil) if the token is missing/expired.
-func (c *Client) ConsumeFetchToken(ctx context.Context, token string) (string, error) {
+// the node it was issued for and the associated buffer_id. found is false when
+// the token is missing or expired, which is the replay case.
+//
+// The token is consumed even when the caller turns out not to be the bound
+// node: a single-use token that a wrong node can burn is a denial of service
+// against the shard's real destination, and letting a rejected request keep its
+// token would leave it redeemable by whoever raced it.
+func (c *Client) ConsumeFetchToken(ctx context.Context, token string) (nodeID, bufferID string, found bool, err error) {
 	key := fmt.Sprintf("fetch_token:%s", token)
-	bufferID, err := c.GetDel(ctx, key).Result()
+	raw, err := c.GetDel(ctx, key).Result()
 	if err == redis.Nil {
-		return "", nil
+		return "", "", false, nil
 	}
 	if err != nil {
-		return "", err
+		return "", "", false, err
 	}
-	return bufferID, nil
+	var value fetchTokenValue
+	if err := json.Unmarshal([]byte(raw), &value); err != nil {
+		// A value we cannot read the node binding from is a token we cannot
+		// verify, so it is treated as absent rather than as a server fault. This
+		// is also what a token minted by a Relay from before the binding existed
+		// looks like — a bare buffer_id — and during a rolling deploy that is a
+		// 401 the node recovers from with a fresh pending_notify, not a 500
+		// that reads like the Relay is broken. It is logged because a silent
+		// 401 is otherwise indistinguishable from an expiry.
+		log.Printf("[rdb] fetch token value is not a node-bound token: %v", err)
+		return "", "", false, nil
+	}
+	return value.NodeID, value.BufferID, true, nil
 }

@@ -141,6 +141,24 @@ func (h *bufferHarness) uploadShard(t testing.TB, md uploadMetadata, body []byte
 	return rr
 }
 
+// fetchShard drives the BufferFetch handler as the given node, which is what
+// auth.RequireNodeAuth would have put in the context. Passing an empty asNode
+// leaves the request with no node identity at all — that is how the
+// "authenticated by nothing" case is expressed, not by omitting the argument.
+func (h *bufferHarness) fetchShard(t testing.TB, token, asNode string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest("GET", "/buffer/fetch", nil)
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	if asNode != "" {
+		req = req.WithContext(context.WithValue(req.Context(), auth.NodeIDKey, asNode))
+	}
+	rr := httptest.NewRecorder()
+	BufferFetch(h.pool, h.rClient, h.buf)(rr, req)
+	return rr
+}
+
 // shardStatus reads the file_locations status for a (file, version, shard, node).
 func (h *bufferHarness) shardStatus(t testing.TB, fileID string, versionNumber, shardIndex int) string {
 	t.Helper()
@@ -170,13 +188,10 @@ func TestBufferUploadThenFetchE2E(t *testing.T) {
 
 	require.NotNil(t, h.rClient, "Redis required to mint fetch tokens for this test")
 	token := "tok-e2e-" + uuid.NewString()
-	require.NoError(t, h.rClient.SetFetchToken(h.ctx, token, resp.BufferID, time.Minute))
+	require.NoError(t, h.rClient.SetFetchToken(h.ctx, token, h.nodeID, resp.BufferID, time.Minute))
 
 	// Node fetches the shard bytes.
-	fetchReq := httptest.NewRequest("GET", "/buffer/fetch", nil)
-	fetchReq.Header.Set("Authorization", "Bearer "+token)
-	fetchRR := httptest.NewRecorder()
-	BufferFetch(h.pool, h.rClient, h.buf)(fetchRR, fetchReq)
+	fetchRR := h.fetchShard(t, token, h.nodeID)
 	require.Equal(t, 200, fetchRR.Code)
 	require.Equal(t, body, fetchRR.Body.Bytes())
 	require.Equal(t, h.fileID, fetchRR.Header().Get("X-Nodus-File-ID"))
@@ -185,10 +200,7 @@ func TestBufferUploadThenFetchE2E(t *testing.T) {
 	require.Equal(t, "NODE_RECEIVING", h.shardStatus(t, h.fileID, 1, 0))
 
 	// The token is single-use: replay must fail after the GETDEL consumed it.
-	fetchReq2 := httptest.NewRequest("GET", "/buffer/fetch", nil)
-	fetchReq2.Header.Set("Authorization", "Bearer "+token)
-	fetchRR2 := httptest.NewRecorder()
-	BufferFetch(h.pool, h.rClient, h.buf)(fetchRR2, fetchReq2)
+	fetchRR2 := h.fetchShard(t, token, h.nodeID)
 	require.Equal(t, 401, fetchRR2.Code)
 }
 
@@ -203,11 +215,12 @@ func TestBufferFetchRejectsTokenInQueryString(t *testing.T) {
 
 	token := "tok-query-" + uuid.NewString()
 	bufferID := "buf-query-" + uuid.NewString()
-	require.NoError(t, h.rClient.SetFetchToken(h.ctx, token, bufferID, time.Minute))
+	require.NoError(t, h.rClient.SetFetchToken(h.ctx, token, h.nodeID, bufferID, time.Minute))
 
 	// A valid token in the query string is refused, and refused before it is
 	// consumed: the token has to survive for the header path to work.
 	req := httptest.NewRequest("GET", "/buffer/fetch?token="+token, nil)
+	req = req.WithContext(context.WithValue(req.Context(), auth.NodeIDKey, h.nodeID))
 	rr := httptest.NewRecorder()
 	BufferFetch(h.pool, h.rClient, h.buf)(rr, req)
 	require.Equal(t, 400, rr.Code)
@@ -215,10 +228,7 @@ func TestBufferFetchRejectsTokenInQueryString(t *testing.T) {
 
 	// The same token in the header still works, so the rejection really was
 	// about the transport and did not burn the token.
-	hdrReq := httptest.NewRequest("GET", "/buffer/fetch", nil)
-	hdrReq.Header.Set("Authorization", "Bearer "+token)
-	hdrRR := httptest.NewRecorder()
-	BufferFetch(h.pool, h.rClient, h.buf)(hdrRR, hdrReq)
+	hdrRR := h.fetchShard(t, token, h.nodeID)
 	require.NotEqual(t, 400, hdrRR.Code, "the query-param rejection consumed the token")
 }
 
@@ -240,11 +250,112 @@ func TestBufferFetchRequiresABearerHeader(t *testing.T) {
 			if header != "" {
 				req.Header.Set("Authorization", header)
 			}
+			// A correctly identified node, so a 401 can only be about the token.
+			req = req.WithContext(context.WithValue(req.Context(), auth.NodeIDKey, h.nodeID))
 			rr := httptest.NewRecorder()
 			BufferFetch(h.pool, h.rClient, h.buf)(rr, req)
 			require.Equal(t, 401, rr.Code, "body: %s", rr.Body.String())
 		})
 	}
+}
+
+// TestBufferFetchRefusesTokenIssuedToAnotherNode is the regression test for the
+// audit's fetch-token finding. The token used to be a bare `buffer_id`, so it
+// proved only that its holder knew a UUID; any node that obtained it could
+// redeem a shard routed to somebody else and move it into NODE_RECEIVING. The
+// token is now bound to the target node and checked against the identity
+// RequireNodeAuth established.
+func TestBufferFetchRefusesTokenIssuedToAnotherNode(t *testing.T) {
+	h := setupBufferHarness(t)
+	require.NotNil(t, h.rClient, "Redis required to mint fetch tokens for this test")
+
+	body := []byte("encrypted-shard-bytes")
+	md := uploadMetadata{FileID: h.fileID, VersionNumber: 1, ShardIndex: 0, Size: int64(len(body)), TransferID: "t-bind", TargetNode: h.nodeID, SourceDevice: "dev-1"}
+	rr := h.uploadShard(t, md, body, "")
+	require.Equal(t, 201, rr.Code)
+
+	var resp struct {
+		BufferID string `json:"buffer_id"`
+	}
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &resp))
+	require.NotEmpty(t, resp.BufferID)
+
+	// A perfectly valid token, issued for the node that owns the shard.
+	token := "tok-bound-" + uuid.NewString()
+	require.NoError(t, h.rClient.SetFetchToken(h.ctx, token, h.nodeID, resp.BufferID, time.Minute))
+
+	// Redeemed by a different, equally registered node. 403, not 401: the token
+	// is real and unexpired, so reporting it as invalid would be a lie that
+	// sends the operator looking for expiry or replay instead of a binding.
+	other := h.fetchShard(t, token, "node-not-the-destination")
+	require.Equal(t, 403, other.Code, "body: %s", other.Body.String())
+	require.NotContains(t, other.Body.String(), "encrypted-shard-bytes",
+		"another node's request must not return the shard's bytes")
+
+	// Nothing moved: the shard is still waiting for its real destination, so
+	// this is a refused fetch and not a corrupted one.
+	require.Equal(t, "RELAY_BUFFERED", h.shardStatus(t, h.fileID, 1, 0),
+		"a refused fetch must not transition the shard out of RELAY_BUFFERED")
+
+	// The wrong node's attempt spent the token. That is deliberate — a token a
+	// rejected node could keep retrying is a way to starve the shard's real
+	// destination — and it is recoverable because the rightful node is re-notified
+	// with a fresh token on its next reconnect. Pinned so the tradeoff is a
+	// decision rather than an accident.
+	require.Equal(t, 401, h.fetchShard(t, token, h.nodeID).Code,
+		"a token burned by a wrong node must not still be redeemable by the right one")
+
+	// And a fresh token for the rightful node works, so the burn is recoverable.
+	fresh := "tok-fresh-" + uuid.NewString()
+	require.NoError(t, h.rClient.SetFetchToken(h.ctx, fresh, h.nodeID, resp.BufferID, time.Minute))
+	recovered := h.fetchShard(t, fresh, h.nodeID)
+	require.Equal(t, 200, recovered.Code)
+	require.Equal(t, body, recovered.Body.Bytes())
+	require.Equal(t, "NODE_RECEIVING", h.shardStatus(t, h.fileID, 1, 0))
+}
+
+// TestBufferFetchRefusesRequestWithoutNodeIdentity covers the fail-closed case.
+// The route is wrapped in RequireNodeAuth, so a real request always has an
+// identity here; this asserts the handler is not relying on that wiring being
+// correct. An unbound comparison would treat a missing identity as "" and the
+// check would depend on the stored binding also being empty.
+func TestBufferFetchRefusesRequestWithoutNodeIdentity(t *testing.T) {
+	h := setupBufferHarness(t)
+	require.NotNil(t, h.rClient, "Redis required to mint fetch tokens for this test")
+
+	token := "tok-nobody-" + uuid.NewString()
+	require.NoError(t, h.rClient.SetFetchToken(h.ctx, token, h.nodeID, "buf-nobody", time.Minute))
+
+	rr := h.fetchShard(t, token, "")
+	require.Equal(t, 403, rr.Code, "body: %s", rr.Body.String())
+}
+
+// TestBufferFetchRefusesUnboundLegacyToken covers a rolling deploy. A Relay from
+// before the binding wrote a bare buffer_id; such a token carries no node, so
+// there is nothing to verify it against and it must not be honoured as if it
+// did. It is a 401 rather than a 500, because the node recovers from it by
+// reconnecting and being re-notified, and a 500 reads as the Relay being down.
+func TestBufferFetchRefusesUnboundLegacyToken(t *testing.T) {
+	h := setupBufferHarness(t)
+	require.NotNil(t, h.rClient, "Redis required to mint fetch tokens for this test")
+
+	token := "tok-legacy-" + uuid.NewString()
+	// Write the pre-binding value shape directly.
+	require.NoError(t, h.rClient.Set(h.ctx, "fetch_token:"+token, "buf-legacy", time.Minute).Err())
+
+	rr := h.fetchShard(t, token, h.nodeID)
+	require.Equal(t, 401, rr.Code, "body: %s", rr.Body.String())
+}
+
+// TestIssueFetchTokenRefusesUnboundCall covers issuance. A caller that has lost
+// track of which node a shard is for must get no token at all, rather than a
+// working one that nobody can be prevented from redeeming.
+func TestIssueFetchTokenRefusesUnboundCall(t *testing.T) {
+	h := setupBufferHarness(t)
+	require.NotNil(t, h.rClient, "Redis required to mint fetch tokens for this test")
+
+	require.Empty(t, issueFetchToken(h.ctx, h.rClient, "", "buf-unbound"),
+		"a token with no target node is exactly the token this change removes")
 }
 
 func TestBufferUploadRejectsUnknownVersion(t *testing.T) {
@@ -422,10 +533,10 @@ found:
 
 	// The re-issued token is redeemable: consuming it serves the bytes and
 	// moves the shard out of RELAY_BUFFERED, completing the deferred delivery.
-	fetchReq := httptest.NewRequest("GET", "/buffer/fetch", nil)
-	fetchReq.Header.Set("Authorization", "Bearer "+notify.FetchToken)
-	fetchRR := httptest.NewRecorder()
-	BufferFetch(h.pool, h.rClient, h.buf)(fetchRR, fetchReq)
+	// The token was minted by the real issuance path for the node that just
+	// registered, so this also covers the binding end to end — nothing here
+	// tells the fetch which node to accept.
+	fetchRR := h.fetchShard(t, notify.FetchToken, client.NodeID)
 	require.Equal(t, 200, fetchRR.Code)
 	require.Equal(t, body, fetchRR.Body.Bytes())
 	require.Equal(t, "NODE_RECEIVING", h.shardStatus(t, fileID, 1, 0))

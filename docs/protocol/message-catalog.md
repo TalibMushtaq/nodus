@@ -155,7 +155,9 @@ Acknowledges receipt/verification of a shard. Ties into the file state machine
 Relay → Node notification that a buffered shard is waiting for pickup
 (Path C, §13 relay buffer lifecycle). Sent when a client uploaded a shard
 via `POST /buffer/upload` while the target node was offline. Includes a
-`fetch_token` so the node can fetch the shard bytes over HTTP.
+`fetch_token` so the node can fetch the shard bytes over HTTP. The token is
+bound to the targeted node, and redemption is authenticated with that node's
+`X-Nodus-*` request signature as well as the bearer token.
 
 | Field | Type | Required | Notes |
 |---|---|---|---|
@@ -163,7 +165,7 @@ via `POST /buffer/upload` while the target node was offline. Includes a
 | `version_number` | integer ≥ 1 | yes | File version this shard belongs to |
 | `shard_index` | integer ≥ 0 | yes | 0-based shard position |
 | `buffer_id` | string | yes | Relay-assigned buffer identifier |
-| `fetch_token` | string | yes | Single-use bearer token for `GET /buffer/fetch` (10-min TTL, Redis GETDEL), sent as `Authorization: Bearer <token>` |
+| `fetch_token` | string | yes | Single-use bearer token for `GET /buffer/fetch` (10-min TTL, Redis GETDEL), bound to this node. Sent as `Authorization: Bearer <token>` alongside the node's `X-Nodus-*` signature headers; a token presented by a different node is refused with `403` |
 | `from_device` | string | yes | Device that uploaded the shard |
 | `hash` | string | yes | BLAKE3 hex digest — node verifies after fetch |
 | `size` | integer ≥ 0 | yes | Encrypted payload size in bytes — node verifies after fetch |

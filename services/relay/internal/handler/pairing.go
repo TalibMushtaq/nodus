@@ -150,9 +150,10 @@ func CreatePairingSession(pool *db.Pool, wsHub *hub.Hub) http.HandlerFunc {
 }
 
 // VerifyPairingSession is the node's lazy fallback: /nodus/pair → Relay when
-// the token was not pushed locally (node offline at issuance). Like
-// /buffer/fetch, it is deliberately NOT JWT-protected — the token itself is
-// the credential, and the node has no JWT.
+// the token was not pushed locally (node offline at issuance). It is
+// deliberately NOT JWT-protected — the token itself is the credential, and the
+// node has no JWT. Unlike /buffer/fetch, the request carries no node identity,
+// so the token is the whole of the authentication here.
 func VerifyPairingSession(pool *db.Pool, cfg *config.Config, rClient *rdb.Client) http.HandlerFunc {
 	// 10 burst / 2 per second. The token is a UUIDv4 and single-use, so this is
 	// not about guessing it — it is that the handler runs an UPDATE against

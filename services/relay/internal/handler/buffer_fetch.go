@@ -6,18 +6,25 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/TalibMushtaq/nodus/services/relay/internal/auth"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/buffer"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/db"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/rdb"
 )
 
 // BufferFetch handles GET /buffer/fetch — a Storage Node pulling a buffered
-// shard's bytes over HTTP (Path C, §13). This endpoint is NOT behind JWT auth:
-// the node authenticates via the WS challenge handshake, and the single-use
-// fetch token (Redis GETDEL, 10-min TTL) is the request credential, presented as
-// `Authorization: Bearer <token>`.
-// Serving a fetch transitions the shard from RELAY_BUFFERED to NODE_RECEIVING;
-// the node subsequently acks "verified" or "failed" over WebSocket.
+// shard's bytes over HTTP (Path C, §13). This endpoint is not behind session
+// auth, because a node has no session; it is behind auth.RequireNodeAuth, which
+// checks the node's stateless Ed25519 request signature (the same credential
+// GET /node/shards/{object_id} uses). RequireNodeAuth puts the authenticated
+// node_id in the request context, which is what the token is checked against.
+//
+// Two things are therefore required, and neither is sufficient alone: a
+// single-use token (Redis GETDEL, 10-min TTL) that scopes the request to one
+// buffered shard, presented as `Authorization: Bearer <token>`, and a signature
+// proving which node is asking. The token alone used to be the whole credential,
+// which meant any holder of a leaked token could redeem a shard meant for
+// someone else and move it to NODE_RECEIVING.
 //
 // The token used to travel in the query string, which makes it a credential in
 // every access log, proxy log and Referer header between the node and here —
@@ -47,13 +54,29 @@ func BufferFetch(pool *db.Pool, rClient *rdb.Client, buf *buffer.Buffer) http.Ha
 
 		// Atomic single-use check: GETDEL removes the key so a replayed token
 		// is rejected on the second use.
-		bufferID, err := rClient.ConsumeFetchToken(r.Context(), token)
+		tokenNodeID, bufferID, found, err := rClient.ConsumeFetchToken(r.Context(), token)
 		if err != nil {
 			respondError(w, http.StatusInternalServerError, "failed to validate token")
 			return
 		}
-		if bufferID == "" {
+		if !found {
 			respondError(w, http.StatusUnauthorized, "invalid or expired fetch token")
+			return
+		}
+
+		// The token is bound to the node the shard was routed to. RequireNodeAuth
+		// has already established who is asking, so this is a comparison, not a
+		// second authentication — but it is still a check that has to fail closed.
+		// A request with no node identity in context must not match a token, and
+		// comparing an absent identity as "" would match nothing only by luck.
+		// The token is spent either way: it was consumed above, so a wrong node
+		// cannot retry with it, and the rightful node gets a fresh token on its
+		// next pending_notify.
+		requester, hasNode := auth.GetNodeID(r.Context())
+		if !hasNode || requester != tokenNodeID {
+			log.Printf("[buffer-fetch] token for node=%s redeemed by node=%q; refusing (buffer=%s)",
+				tokenNodeID, requester, bufferID)
+			respondError(w, http.StatusForbidden, "fetch token was issued to a different node")
 			return
 		}
 

@@ -67,9 +67,12 @@ export type ShardAckPayload = z.infer<typeof ShardAckPayloadSchema>;
  * Relay → Node notification that a buffered shard is waiting for pickup
  * (Path C, §13 relay buffer lifecycle). Sent when a client uploads a shard
  * via `POST /buffer/upload` while the target Storage Node is offline.
- * The `fetch_token` lets the node fetch the shard bytes over HTTP without
- * needing its own auth middleware. It is sent as an `Authorization: Bearer`
- * header rather than a query parameter.
+ * The `fetch_token` lets the node fetch the shard bytes over HTTP. It is sent
+ * as an `Authorization: Bearer` header rather than a query parameter, and it is
+ * bound to the targeted node: the fetch must also carry that node's `X-Nodus-*`
+ * request signature, and a token presented by a different node is refused. The
+ * token alone scopes the request to one shard; the signature says who may
+ * redeem it.
  */
 export const PendingNotifyPayloadSchema = z.object({
   file_id: ProtocolFileId,
@@ -79,9 +82,11 @@ export const PendingNotifyPayloadSchema = z.object({
   /** Relay-assigned buffer identifier */
   buffer_id: z.string(),
   /**
-   * Single-use token for GET /buffer/fetch (10-minute TTL, Redis GETDEL).
-   * Present it as `Authorization: Bearer <token>` — it is a bearer credential,
-   * so it must not go in the query string, where it would reach access logs.
+   * Single-use token for GET /buffer/fetch (10-minute TTL, Redis GETDEL),
+   * bound to the target node. Present it as `Authorization: Bearer <token>`
+   * together with the node's `X-Nodus-*` request signature — it is a bearer
+   * credential, so it must not go in the query string, where it would reach
+   * access logs, and a holder other than the bound node is refused.
    */
   fetch_token: z.string(),
   /** Device that uploaded the shard to the buffer */

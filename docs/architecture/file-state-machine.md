@@ -24,8 +24,9 @@ CREATED ──► UPLOADING ──► RELAY_BUFFERED ──► NODE_RECEIVING �
 The transitions that Shift-state by acks/sweeps:
 
 - `RELAY_BUFFERED → NODE_RECEIVING`: node calls `GET /buffer/fetch` with a valid
-  single-use token (`handler/buffer_fetch.go`, guarded by a status check so a
-  second fetch is `409`).
+  single-use token bound to that node plus its `X-Nodus-*` request signature
+  (`handler/buffer_fetch.go`, guarded by a status check so a second fetch is
+  `409`; a token redeemed by a different node is `403`).
 - `NODE_RECEIVING → NODE_VERIFIED → NODE_STORED`: node ack `shard_ack
   status="verified"` (`handler/ws.go` `handleShardAckVerified`).
 - `NODE_RECEIVING → RELAY_BUFFERED`: node ack `status="failed"`; the buffer file

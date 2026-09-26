@@ -20,6 +20,7 @@ use super::types::{
 };
 use crate::identity::NodeIdentity;
 use crate::store::ObjectStore;
+use crate::transfer::node_attempter::node_request_message;
 use crate::webrtc::OutboundSession;
 use crate::webrtc::session::ShardUploadPayload;
 
@@ -235,6 +236,24 @@ pub fn relay_http_fetch_url(relay_url: &str) -> String {
         return relay_url.to_string();
     }
     format!("{}/buffer/fetch", relay_http_base(relay_url))
+}
+
+/// The request path the Relay sign-checks for a fetch URL. The node's signature
+/// covers exactly the path the Relay sees (`r.URL.Path`), so this is read off the
+/// URL rather than hardcoded: a proxied deployment fetches through a prefix such
+/// as `/proxy/buffer/fetch`, and signing a guessed `/buffer/fetch` would produce
+/// a 401 that looks like a clock or key problem. An unparseable URL has no
+/// correct path, so it is an error rather than a reason to sign something made
+/// up.
+fn fetch_signed_path(fetch_url: &str) -> anyhow::Result<String> {
+    Ok(Url::parse(fetch_url)
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "relay fetch URL {fetch_url:?} is not parseable, cannot sign the request: {e}"
+            )
+        })?
+        .path()
+        .to_string())
 }
 
 /// Marker error returned by `run_sync_session` when the Relay rejects the node
@@ -1497,6 +1516,16 @@ impl SyncClient {
                 crate::limits::MAX_SHARD_BYTES
             );
         }
+        // The Relay now binds the fetch token to the node it was issued for, so
+        // this request has to prove which node is asking as well as present the
+        // token. Same Ed25519 key and same message shape as the Path C repair
+        // fetch in `transfer::node_attempter`; the token scopes the request to
+        // one shard, the signature says who may redeem it.
+        let signed_path = fetch_signed_path(&self.http_fetch_url)?;
+        let timestamp = chrono::Utc::now().timestamp_millis();
+        let message = node_request_message(&self.identity.node_id, "GET", &signed_path, timestamp);
+        let signature = hex::encode(self.identity.sign(message.as_bytes()).to_bytes());
+
         let resp = self
             .http_client
             .get(&self.http_fetch_url)
@@ -1506,6 +1535,9 @@ impl SyncClient {
             // directive away from writing it to disk. `Authorization` is also
             // redacted by most proxies by default.
             .header("Authorization", format!("Bearer {}", n.fetch_token))
+            .header("x-nodus-node-id", &self.identity.node_id)
+            .header("x-nodus-timestamp", timestamp.to_string())
+            .header("x-nodus-signature", signature)
             .send()
             .await
             // The URL no longer carries the token, but keep stripping it: these
@@ -2160,6 +2192,24 @@ mod tests {
             relay_http_fetch_url("wss://relay.example.com/proxy/ws"),
             "https://relay.example.com/proxy/buffer/fetch"
         );
+    }
+
+    #[test]
+    fn test_fetch_signed_path_matches_the_request_path() {
+        // The ordinary case.
+        assert_eq!(
+            fetch_signed_path("http://127.0.0.1:8080/buffer/fetch").unwrap(),
+            "/buffer/fetch"
+        );
+        // A proxied deployment: the whole path is signed, including the prefix,
+        // because that is what the Relay compares against.
+        assert_eq!(
+            fetch_signed_path("https://relay.example.com/proxy/buffer/fetch").unwrap(),
+            "/proxy/buffer/fetch"
+        );
+        // The degenerate unparseable URL has no signable path; erroring is what
+        // keeps the node from sending a request it cannot authenticate.
+        assert!(fetch_signed_path("not-a-url").is_err());
     }
 
     #[test]

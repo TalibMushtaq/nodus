@@ -260,7 +260,7 @@ func BufferUpload(pool *db.Pool, rClient *rdb.Client, buf *buffer.Buffer, h *hub
 		// make it wait for the next reconnect.
 		notifySent := false
 		if h != nil {
-			envBytes, ok := buildPendingNotifyEnvelope(r.Context(), rClient,
+			envBytes, ok := buildPendingNotifyEnvelope(r.Context(), rClient, md.TargetNode,
 				PendingNotifyPayload{
 					FileID:        md.FileID,
 					VersionNumber: md.VersionNumber,
