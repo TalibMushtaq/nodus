@@ -2,6 +2,7 @@ package handler
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
@@ -48,7 +49,8 @@ func recvChunk(t *testing.T, wait *shardFetchWait) shardFetchChunk {
 
 func TestShardFetchOkResultStreamsChunksThenDone(t *testing.T) {
 	reg := NewShardFetchRegistry()
-	ch, cleanup := reg.register("req-1", "node-a")
+	ch, cleanup, err := reg.register("req-1", "node-a", "acct-0")
+	require.NoError(t, err)
 	defer cleanup()
 
 	reg.HandleResult(shardClient("conn-a", "node-a"), ProtocolEnvelope{
@@ -70,9 +72,11 @@ func TestShardFetchOkResultStreamsChunksThenDone(t *testing.T) {
 // clobbered: this is the regression the per-connection arming scheme caused.
 func TestShardFetchConcurrentStreamsRouteByRequestID(t *testing.T) {
 	reg := NewShardFetchRegistry()
-	chA, cleanupA := reg.register("req-a", "node-a")
+	chA, cleanupA, err := reg.register("req-a", "node-a", "acct-1")
+	require.NoError(t, err)
 	defer cleanupA()
-	chB, cleanupB := reg.register("req-b", "node-a")
+	chB, cleanupB, err := reg.register("req-b", "node-a", "acct-1")
+	require.NoError(t, err)
 	defer cleanupB()
 
 	node := shardClient("conn-a", "node-a")
@@ -96,7 +100,8 @@ func TestShardFetchConcurrentStreamsRouteByRequestID(t *testing.T) {
 
 func TestShardFetchErrorResolvesWithoutBinary(t *testing.T) {
 	reg := NewShardFetchRegistry()
-	ch, cleanup := reg.register("req-2", "node-a")
+	ch, cleanup, err := reg.register("req-2", "node-a", "acct-3")
+	require.NoError(t, err)
 	defer cleanup()
 
 	reg.HandleResult(shardClient("conn-a", "node-a"), ProtocolEnvelope{
@@ -111,7 +116,8 @@ func TestShardFetchErrorResolvesWithoutBinary(t *testing.T) {
 
 func TestShardFetchIgnoresOtherNodeAndUnroutedBinary(t *testing.T) {
 	reg := NewShardFetchRegistry()
-	wait, cleanup := reg.register("req-3", "node-a")
+	wait, cleanup, err := reg.register("req-3", "node-a", "acct-4")
+	require.NoError(t, err)
 	defer cleanup()
 
 	// A DIFFERENT node may not answer a request assigned to node-a.
@@ -138,7 +144,8 @@ func TestShardFetchIgnoresOtherNodeAndUnroutedBinary(t *testing.T) {
 
 func TestShardFetchCleanupRemovesWaiter(t *testing.T) {
 	reg := NewShardFetchRegistry()
-	_, cleanup := reg.register("req-4", "node-a")
+	_, cleanup, err := reg.register("req-4", "node-a", "acct-5")
+	require.NoError(t, err)
 	cleanup()
 
 	require.NotPanics(t, func() {
@@ -193,7 +200,8 @@ func TestShardFetchSendsNeverBlockTheReadLoop(t *testing.T) {
 	reg := NewShardFetchRegistry()
 	client := &hub.Client{NodeID: "node-blocked"}
 
-	wait, cleanup := reg.register("req-blocked", "node-blocked")
+	wait, cleanup, err := reg.register("req-blocked", "node-blocked", "acct-6")
+	require.NoError(t, err)
 
 	// Fill the channel to capacity, standing in for a consumer that is not
 	// keeping up. The read loop copies each chunk before sending, so these are
@@ -274,4 +282,103 @@ func TestShardStreamCeiling(t *testing.T) {
 	// would refuse every shard over 1 MiB for reasons no operator could see.
 	require.Equal(t, config.DefaultMaxShardBytes+shardStreamOverheadBytes,
 		shardStreamCeiling(-1, 0))
+}
+
+// TestShardFetchCapsConcurrentStreamsPerAccount is the regression test for the
+// missing cap. Each in-flight fetch buffers a queue of 256 KiB node chunks, so an
+// uncapped account could register streams until the relay ran out of memory.
+func TestShardFetchCapsConcurrentStreamsPerAccount(t *testing.T) {
+	reg := NewShardFetchRegistry()
+	const account = "acct-hog"
+
+	cleanups := make([]func(), 0, maxConcurrentShardFetchesPerAccount)
+	for i := range maxConcurrentShardFetchesPerAccount {
+		_, cleanup, err := reg.register(fmt.Sprintf("req-%d", i), "node-a", account)
+		require.NoError(t, err, "stream %d should be inside the per-account cap", i)
+		cleanups = append(cleanups, cleanup)
+	}
+
+	_, _, err := reg.register("req-over", "node-a", account)
+	require.ErrorIs(t, err, ErrShardFetchAtCapacity,
+		"a fifth stream for one account must be refused")
+
+	// The cap is per account, so another account is unaffected by it.
+	_, cleanupOther, err := reg.register("req-other", "node-a", "acct-other")
+	require.NoError(t, err, "one account's usage must not consume another's allowance")
+	cleanupOther()
+	for _, c := range cleanups {
+		c()
+	}
+}
+
+// TestShardFetchCapsConcurrentStreamsGlobally covers the many-accounts case: the
+// per-account cap alone would let N accounts each take their full share.
+func TestShardFetchCapsConcurrentStreamsGlobally(t *testing.T) {
+	reg := NewShardFetchRegistry()
+	var cleanups []func()
+	for i := range maxConcurrentShardFetches {
+		account := "acct-" + string(rune('a'+i/4)) // four per account, so only the
+		_, cleanup, err := reg.register(           // global cap can be reached
+			"req-"+string(rune('a'+i%26))+"-"+string(rune('a'+i/26)), "node-a", account)
+		require.NoError(t, err, "stream %d should be inside the global cap", i)
+		cleanups = append(cleanups, cleanup)
+	}
+
+	_, _, err := reg.register("req-over", "node-a", "acct-fresh")
+	require.ErrorIs(t, err, ErrShardFetchAtCapacity, "the global cap must hold")
+	for _, c := range cleanups {
+		c()
+	}
+}
+
+// TestShardFetchCleanupReturnsCapacity covers the accounting: cleanup runs on
+// several exit paths and may follow a resolve that already removed the waiter, so
+// a double release would leak capacity until the relay stopped serving downloads.
+func TestShardFetchCleanupReturnsCapacity(t *testing.T) {
+	reg := NewShardFetchRegistry()
+	_, cleanup, err := reg.register("req-x", "node-a", "acct-x")
+	require.NoError(t, err)
+
+	cleanup()
+	cleanup() // idempotent, as the handler's exit paths require
+	cleanup()
+
+	reg.mu.Lock()
+	inFlight, perAccount := reg.inFlight, reg.perAccount["acct-x"]
+	reg.mu.Unlock()
+	require.Zero(t, inFlight, "cleanup must return the global count")
+	require.Zero(t, perAccount, "cleanup must return the account's count")
+
+	// And the account must be removable from the map rather than left at zero, so
+	// a long-lived relay does not accumulate an entry per account that ever
+	// downloaded a shard.
+	reg.mu.Lock()
+	_, stillTracked := reg.perAccount["acct-x"]
+	reg.mu.Unlock()
+	require.False(t, stillTracked, "a released account must not linger in the map")
+}
+
+// TestShardFetchCapIsNotLeakedByResolve checks the other exit path: a stream
+// ended by the node's done marker has its waiter removed by HandleDone, so the
+// handler's cleanup is the only thing that returns the capacity.
+func TestShardFetchCapIsNotLeakedByResolve(t *testing.T) {
+	reg := NewShardFetchRegistry()
+	for i := range maxConcurrentShardFetchesPerAccount {
+		requestID := fmt.Sprintf("req-%d", i)
+		wait, cleanup, err := reg.register(requestID, "node-a", "acct-d")
+		require.NoError(t, err)
+		if i == 0 {
+			// End this one the way a node would, so the waiter is gone before the
+			// handler's cleanup runs.
+			reg.HandleDone(shardClient("conn-d", "node-a"), ProtocolEnvelope{
+				Payload: []byte(fmt.Sprintf(`{"request_id":%q}`, requestID)),
+			})
+			require.Equal(t, shardFetchChunk{done: true}, recvChunk(t, wait))
+		}
+		cleanup()
+	}
+
+	_, cleanup, err := reg.register("req-after", "node-a", "acct-d")
+	require.NoError(t, err, "a finished stream must not leave the account over its cap")
+	cleanup()
 }

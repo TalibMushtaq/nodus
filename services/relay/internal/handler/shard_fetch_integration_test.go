@@ -386,3 +386,85 @@ func TestFetchShardStopsAnOversizedNodeStream(t *testing.T) {
 	require.Equal(t, fmt.Sprint(testMaxShardBytes), rr.Header().Get("Content-Length"),
 		"a known shard size must be declared so a truncated stream is visible")
 }
+
+// TestFetchShardShedsWhenAtCapacity covers the HTTP half of the concurrent-fetch
+// cap. The registry tests prove the accounting; this proves what a client is told
+// when it hits it, and that the answer distinguishes the relay shedding load from
+// a shard that could not be served — a client that treats them the same will
+// either give up on a shard that exists or hammer a relay that is merely busy.
+func TestFetchShardShedsWhenAtCapacity(t *testing.T) {
+	url := os.Getenv("TEST_DATABASE_URL")
+	if url == "" {
+		t.Skip("TEST_DATABASE_URL not set; skipping integration test")
+	}
+	ctx := context.Background()
+	require.NoError(t, db.RunMigrations(url))
+	pool, err := db.Open(ctx, &config.Config{DatabaseURL: url})
+	require.NoError(t, err)
+	t.Cleanup(pool.Close)
+
+	suffix := fmt.Sprint(time.Now().UnixNano())
+	acct, node := "acct-capacity-"+suffix, "node-capacity-"+suffix
+	hash := fmt.Sprintf("%064x", suffix)
+	file := "file-capacity-" + suffix
+
+	_, err = pool.Exec(ctx, `INSERT INTO accounts (account_id, email, password_hash) VALUES ($1, $2, 'hash')`, acct, acct+"@test.local")
+	require.NoError(t, err)
+	_, err = pool.Exec(ctx, `INSERT INTO storage_nodes (node_id, account_id, public_key) VALUES ($1, $2, 'ab')`, node, acct)
+	require.NoError(t, err)
+	_, err = pool.Exec(ctx, `INSERT INTO files (file_id, account_id, encrypted_name) VALUES ($1, $2, 'v1.aa')`, file, acct)
+	require.NoError(t, err)
+	_, err = pool.Exec(ctx, `INSERT INTO file_versions (file_id, version_number, version_hash, shard_count) VALUES ($1, 1, 'vh', 1)`, file)
+	require.NoError(t, err)
+	_, err = pool.Exec(ctx,
+		`INSERT INTO file_locations (file_id, version_number, shard_index, node_id, hash, size_bytes, status)
+		 VALUES ($1, 1, 0, $2, $3, $4, 'NODE_STORED')`,
+		file, node, hash, testMaxShardBytes)
+	require.NoError(t, err)
+
+	runCtx, stop := context.WithCancel(ctx)
+	h := hub.New(nil)
+	go h.Run(runCtx)
+	t.Cleanup(stop)
+
+	reg := NewShardFetchRegistry()
+	// The node is registered but never answers, so these streams stay in flight
+	// exactly as a slow or stalled holder would leave them.
+	h.Register(&hub.Client{
+		Hub: h, ConnID: "virtual-capacity-" + suffix, NodeID: node, Send: make(chan []byte, 8),
+	})
+
+	cleanups := make([]func(), 0, maxConcurrentShardFetchesPerAccount)
+	for i := range maxConcurrentShardFetchesPerAccount {
+		_, cleanup, err := reg.register(fmt.Sprintf("held-%d", i), node, acct)
+		require.NoError(t, err)
+		cleanups = append(cleanups, cleanup)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/shards/"+hash, nil)
+	req.SetPathValue("object_id", hash)
+	req = req.WithContext(context.WithValue(req.Context(), auth.AccountIDKey, acct))
+	rr := httptest.NewRecorder()
+	FetchShard(pool, h, reg, nil, testMaxShardBytes)(rr, req)
+
+	require.Equal(t, http.StatusServiceUnavailable, rr.Code)
+	require.Equal(t, "1", rr.Header().Get("Retry-After"),
+		"a shed request must say when to come back, or a client retries immediately")
+	require.NotEmpty(t, rr.Header().Get("Content-Type"))
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &body))
+	require.Equal(t, "shard_fetch_busy", body["error"],
+		"the client must be able to tell 'busy' from 'no node has this shard'")
+
+	// And the refused request must not have left a waiter behind, or a client
+	// that retries in a loop would make the leak permanent.
+	reg.mu.Lock()
+	live := len(reg.waiters)
+	reg.mu.Unlock()
+	require.Equal(t, maxConcurrentShardFetchesPerAccount, live,
+		"a refused request must not register a waiter")
+
+	for _, c := range cleanups {
+		c()
+	}
+}

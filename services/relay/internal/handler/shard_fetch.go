@@ -28,6 +28,26 @@ import (
 // node that stops making progress is dropped so the next holder can be tried.
 const shardFetchTimeout = 30 * time.Second
 
+// Concurrent stream caps.
+//
+// Each in-flight fetch holds a buffered chunk queue of node-sized chunks — the
+// node streams 256 KiB at a time into a 32-slot queue, so up to ~8 MiB — plus
+// the HTTP response it is writing. Left uncapped, one session with a valid
+// account can open as many downloads as it likes and the relay buffers every one
+// of them, which is a way to spend the relay's memory on demand.
+//
+// The per-account cap is the fairness bound, and sits below the node's own
+// MAX_CONCURRENT_SHARD_SERVES (8) so a single account cannot saturate one node's
+// serve budget either. The global cap is the resource bound, for when many
+// accounts do it at once.
+const (
+	maxConcurrentShardFetchesPerAccount = 4
+	maxConcurrentShardFetches           = 16
+)
+
+// ErrShardFetchAtCapacity is returned by register when the caps are reached.
+var ErrShardFetchAtCapacity = errors.New("too many concurrent shard fetches")
+
 // shardFetchRequestPayload is the relay → node wire body: which stored object
 // the Relay needs. The request is correlated by the envelope's MessageID (the
 // node echoes it back as request_id), so the payload only needs the target.
@@ -152,18 +172,31 @@ func decodeShardFrame(frame []byte) (requestID string, payload []byte, ok bool) 
 type ShardFetchRegistry struct {
 	mu      sync.Mutex
 	waiters map[string]*shardFetchWait
+	// inFlight and perAccount track registered waiters against the caps above.
+	// They are counts of registrations, not of bytes, which is the part that can
+	// be known before the first chunk arrives.
+	inFlight   int
+	perAccount map[string]int
 }
 
 func NewShardFetchRegistry() *ShardFetchRegistry {
 	return &ShardFetchRegistry{
-		waiters: make(map[string]*shardFetchWait),
+		waiters:    make(map[string]*shardFetchWait),
+		perAccount: make(map[string]int),
 	}
 }
 
-// register publishes a waiter for requestID assigned to fromNode. The returned
-// cleanup must be called once the HTTP handler finishes (success, timeout, or
-// client disconnect); it is idempotent with any resolve.
-func (r *ShardFetchRegistry) register(requestID, fromNode string) (*shardFetchWait, func()) {
+// register publishes a waiter for requestID assigned to fromNode on behalf of
+// accountID, and returns ErrShardFetchAtCapacity if the concurrent-fetch caps are
+// already reached — the caller must not send anything to the node in that case.
+//
+// The returned cleanup must be called once the HTTP handler finishes (success,
+// timeout, or client disconnect). It is idempotent, so calling it after a resolve
+// has already removed the waiter is safe, and that matters because it is what
+// returns the capacity.
+func (r *ShardFetchRegistry) register(
+	requestID, fromNode, accountID string,
+) (*shardFetchWait, func(), error) {
 	// Buffered so a burst of chunks from a fast node does not hand backpressure
 	// to the relay's WS read loop before the HTTP writer drains them.
 	ch := make(chan shardFetchChunk, 32)
@@ -174,16 +207,39 @@ func (r *ShardFetchRegistry) register(requestID, fromNode string) (*shardFetchWa
 		stopped:  make(chan struct{}),
 	}
 	r.mu.Lock()
-	r.waiters[requestID] = wait
-	r.mu.Unlock()
-	return wait, func() {
-		r.mu.Lock()
-		delete(r.waiters, requestID)
+	if r.inFlight >= maxConcurrentShardFetches ||
+		r.perAccount[accountID] >= maxConcurrentShardFetchesPerAccount {
 		r.mu.Unlock()
-		// Stop after unpublishing, so a sender that already resolved this waiter
-		// is released even if it has not reached its send yet.
-		wait.stop()
+		return nil, nil, ErrShardFetchAtCapacity
 	}
+	r.waiters[requestID] = wait
+	r.inFlight++
+	r.perAccount[accountID]++
+	r.mu.Unlock()
+
+	// One Once for the whole release. Cleanup is called on several exit paths and
+	// may race a resolve that already removed the waiter; decrementing twice
+	// would leak capacity permanently, which is the kind of drift that shows up
+	// as a relay that slowly stops serving downloads.
+	var releaseOnce sync.Once
+	return wait, func() {
+		releaseOnce.Do(func() {
+			r.mu.Lock()
+			delete(r.waiters, requestID)
+			if r.inFlight > 0 {
+				r.inFlight--
+			}
+			if r.perAccount[accountID] > 1 {
+				r.perAccount[accountID]--
+			} else {
+				delete(r.perAccount, accountID)
+			}
+			r.mu.Unlock()
+			// Stop after unpublishing, so a sender that already resolved this
+			// waiter is released even if it has not reached its send yet.
+			wait.stop()
+		})
+	}, nil
 }
 
 // HandleResult processes a node's shard_fetch_result. A non-ok status ends the
@@ -425,7 +481,24 @@ func FetchShard(
 
 		for _, nodeID := range nodeIDs {
 			requestID := uuid.NewString()
-			wait, cleanup := shards.register(requestID, nodeID)
+			wait, cleanup, err := shards.register(requestID, nodeID, accountID)
+			if err != nil {
+				// At capacity. Answering now rather than walking the remaining
+				// holders is deliberate: the caps are not per node, so every
+				// further attempt would fail the same way, and each one would
+				// cost a node round trip plus another idle-timeout wait.
+				//
+				// 503 rather than 429: this is the relay shedding load, not the
+				// client misbehaving, and Retry-After is the hint a client needs
+				// to space out its downloads instead of retrying immediately.
+				log.Printf("[shard-fetch] refusing %s for account %s: %v", objectID, accountID, err)
+				w.Header().Set("Retry-After", "1")
+				respondJSON(w, http.StatusServiceUnavailable, map[string]any{
+					"error":   "shard_fetch_busy",
+					"message": "too many downloads in progress; retry shortly",
+				})
+				return
+			}
 
 			payload, err := json.Marshal(shardFetchRequestPayload{
 				RequestID: requestID,

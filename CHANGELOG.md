@@ -1,5 +1,22 @@
 # Changelog
 
+## [2026-09-26] - Relay: concurrent shard fetches are capped per account and overall
+
+**What changed:**
+
+- `ShardFetchRegistry` counts registered waiters and refuses a registration with `ErrShardFetchAtCapacity` past **4 per account** or **16 overall**. `register` takes the account and returns that error; the released capacity comes back through the cleanup closure the handler already runs on every exit path.
+- `GET /shards/{object_id}` answers a refused request with `503` and `Retry-After: 1` instead of walking the remaining holders.
+
+**Why:** each in-flight fetch holds a buffered queue of node-sized chunks — the node streams 256 KiB at a time into a 32-slot queue, so up to ~8 MiB — plus the HTTP response it is writing. Nothing bounded how many a session could open, so one request stream with a valid account could register fetches until the relay ran out of memory. The proof: 500 live waiters for a single account, accepted without complaint.
+
+Both bounds are needed and they answer different questions. The per-account cap is the fairness bound, and it sits below the node's own `MAX_CONCURRENT_SHARD_SERVES` (8) so one account cannot saturate a single node's serve budget either. The global cap is the resource bound, for when many accounts do it at once — the per-account cap alone would let each of them take a full share.
+
+Capacity is returned through a `sync.Once` rather than being decremented inline, because cleanup runs on several exit paths and can follow a resolve that already removed the waiter. A double release would leak capacity permanently, and that failure mode is a relay that slowly stops serving downloads rather than an error anyone would look for.
+
+**Impact:** `services/relay` only. No schema, config or wire change. A client downloading a multi-shard file with four concurrent requests is unaffected; one asking for more than four at a time is told to space them out. `503` with `Retry-After` rather than `429`, because this is the relay shedding load rather than a client misbehaving, and the error code `shard_fetch_busy` is distinct from `shard_unavailable` so a client can tell "busy, retry" from "no node has this shard" and fail differently.
+
+**Verification:** Before the fix, 500 concurrent streams for one account registered with no error. After it, the 5th stream for an account and the 17th overall are both refused, and a different account is unaffected. `TestShardFetchCleanupReturnsCapacity` calls cleanup three times and asserts both counts return to zero and the account leaves the map, so a long-lived relay does not accumulate an entry per account that ever downloaded a shard. `TestShardFetchCapIsNotLeakedByResolve` ends a stream the way a node's done marker does, before the handler's cleanup runs. `TestFetchShardShedsWhenAtCapacity` covers the HTTP response, the `Retry-After` hint, the distinct error code, and that a refused request leaves no waiter behind. Full `scripts/test-integration.sh` and the database-backed `-race` run both green.
+
 ## [2026-09-26] - Relay: a web push endpoint can no longer point back into the network
 
 **What changed:**
