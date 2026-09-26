@@ -1,5 +1,20 @@
 # Changelog
 
+## [2026-09-26] - Relay: a refused snapshot fails the rebuild request that provoked it
+
+**What changed:**
+
+- New `failQueuedRebuildRequest` (`services/relay/internal/handler/snapshot.go`) flips the queued `rebuild_requests` row from `delivered` to `failed`. Every non-retryable refusal at `snapshot_begin` now calls it: incompatible data schema, signature that does not verify, a node that is not the account primary, an inconsistent cursor map, a malformed sequence, and a sequence that is not newer than the promoted watermark.
+- `abortRebuildSession` now calls the same helper instead of carrying its own copy of the `UPDATE`. Both are the same transition, so it is written once.
+
+**Why:** `REBUILD_REQUIRED` sets the row to `delivered` the moment it routes the message, and `abortRebuildSession` has always set it to `failed` — but that only runs once a session exists. A refusal at BEGIN is decided before any session is opened, so nothing ran and the row stayed at `delivered`. That is the one status that means no further work will ever happen, so the rebuild was silently consumed: the operator saw a request that looked finished, and the only evidence it was not was a relay log line that has since rotated away.
+
+The two tests split the cases that must not be confused. A stale or malformed snapshot fails its request, because retrying it would fail the same way forever. A `rebuild_in_progress` collision leaves the request at `delivered`, because the node is expected to retry once the in-flight transfer finishes and cancelling there would discard a rebuild the operator asked for.
+
+**Impact:** `services/relay` only. No schema change and no wire change: `failed` was already a legal value of `rebuild_requests.status` and already reachable, it just was not reachable from this direction. Rows that were previously and wrongly left at `delivered` stay that way; the next request for the same node creates a new row.
+
+**Verification:** 2 new tests, `TestRefusedSnapshotBeginFailsItsQueuedRequest` and `TestRetryableSnapshotRefusalKeepsItsQueuedRequest`. Before the fix the first fails with `expected "failed", actual "delivered"`; the second passes both before and after, which is the point of it. Full `scripts/test-integration.sh` and the database-backed `-race` run both green.
+
 ## [2026-09-26] - Protocol: the ErrorCode enum lists every code the relay emits
 
 **What changed:**

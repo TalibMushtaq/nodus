@@ -251,3 +251,93 @@ func clearRebuildSessions(t *testing.T) {
 		rebuildSessionsMu.Unlock()
 	})
 }
+
+// TestRefusedSnapshotBeginFailsItsQueuedRequest covers the rebuild request's
+// terminal state. REBUILD_REQUIRED flips the queued row to 'delivered' the
+// moment it is routed, and abortRebuildSession flips it back to 'failed' — but a
+// refusal at BEGIN happens before any session exists, so nothing ever ran. The
+// row sat at 'delivered' for a transfer that had definitively failed, which is
+// the one status that means "nothing more will happen", so the rebuild was
+// silently consumed and the only trace was a relay log line.
+func TestRefusedSnapshotBeginFailsItsQueuedRequest(t *testing.T) {
+	h := setupE2E(t)
+	clearRebuildSessions(t)
+
+	// A snapshot at sequence 5 promotes, setting the node's watermark.
+	streamSnapshot(t, h, "snap-queued-5", 5, [][]byte{
+		[]byte(`[{"file_id":"queued-file","version_number":1,"version_hash":"h","shard_count":1}]`),
+	})
+
+	// queueRebuildRequest stands in for REBUILD_REQUIRED having been routed: the
+	// row exists and is already 'delivered'.
+	queueRebuildRequest(t, h, "req-stale")
+	streamSnapshot(t, h, "snap-queued-3", 3, [][]byte{
+		[]byte(`[{"file_id":"queued-file","version_number":1,"version_hash":"h","shard_count":1}]`),
+	})
+	require.Equal(t, "failed", rebuildRequestStatus(t, h),
+		"a snapshot refused as stale must not leave its request looking delivered")
+
+	// A malformed sequence is refused the same way.
+	queueRebuildRequest(t, h, "req-zero")
+	streamSnapshot(t, h, "snap-queued-0", 0, [][]byte{
+		[]byte(`[{"file_id":"queued-file","version_number":1,"version_hash":"h","shard_count":1}]`),
+	})
+	require.Equal(t, "failed", rebuildRequestStatus(t, h),
+		"a snapshot with a malformed sequence must fail its request too")
+}
+
+// TestRetryableSnapshotRefusalKeepsItsQueuedRequest is the other half: a refusal
+// the node is expected to retry must leave the request alone, or a transient
+// collision would cancel a rebuild the operator asked for.
+func TestRetryableSnapshotRefusalKeepsItsQueuedRequest(t *testing.T) {
+	h := setupE2E(t)
+	clearRebuildSessions(t)
+
+	// A first transfer opens a session and stops there, so the account has a
+	// rebuild in flight.
+	chunks := [][]byte{
+		[]byte(`[{"file_id":"retry-file","version_number":1,"version_hash":"h","shard_count":1}]`),
+	}
+	beginHash, err := hashSnapshotRecords(chunks)
+	require.NoError(t, err)
+	HandleSnapshotBegin(h.ctx, h.client, mkEnv("snapshot_begin", SnapshotBeginPayload{
+		SnapshotID:        "snap-inflight",
+		NodeID:            h.client.NodeID,
+		SnapshotSequence:  2,
+		TotalChunks:       1,
+		ContentHash:       beginHash,
+		Signature:         h.sign([]byte(beginHash)),
+		DataSchemaVersion: dataSchemaVersion,
+		Cursors:           []SnapshotCursor{{OriginID: "origin-e2e", Sequence: 1}},
+	}), h.pool)
+	_, live := getRebuildSession("snap-inflight")
+	require.True(t, live, "the first transfer should have opened a session")
+
+	// A second BEGIN is refused as retryable: another rebuild is in flight.
+	queueRebuildRequest(t, h, "req-retry")
+	streamSnapshot(t, h, "snap-queued-2", 2, chunks)
+	require.Equal(t, "delivered", rebuildRequestStatus(t, h),
+		"a retryable refusal must leave the request for the node to retry")
+}
+
+// queueRebuildRequest inserts the row REBUILD_REQUIRED would have created after
+// successfully routing the message.
+func queueRebuildRequest(t *testing.T, h *e2eHarness, reason string) {
+	t.Helper()
+	_, err := h.pool.Exec(h.ctx, `
+		INSERT INTO rebuild_requests (account_id, node_id, reason, status, delivered_at)
+		VALUES ($1, $2, $3, 'delivered', NOW())
+	`, h.accountID, h.client.NodeID, reason)
+	require.NoError(t, err)
+}
+
+func rebuildRequestStatus(t *testing.T, h *e2eHarness) string {
+	t.Helper()
+	var status string
+	require.NoError(t, h.pool.QueryRow(h.ctx, `
+		SELECT status FROM rebuild_requests
+		WHERE account_id = $1 AND node_id = $2
+		ORDER BY id DESC LIMIT 1
+	`, h.accountID, h.client.NodeID).Scan(&status))
+	return status
+}

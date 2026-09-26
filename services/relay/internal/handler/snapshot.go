@@ -269,6 +269,7 @@ func HandleSnapshotBegin(ctx context.Context, c *hub.Client, env ProtocolEnvelop
 			"error_message":  fmt.Sprintf("snapshot data_schema_version %q is incompatible", begin.DataSchemaVersion),
 			"retryable":      false,
 		})
+		failQueuedRebuildRequest(ctx, pool, c.AccountID, begin.NodeID, "an incompatible data schema")
 		return
 	}
 
@@ -281,6 +282,7 @@ func HandleSnapshotBegin(ctx context.Context, c *hub.Client, env ProtocolEnvelop
 			"error_message":  "snapshot signature verification failed",
 			"retryable":      false,
 		})
+		failQueuedRebuildRequest(ctx, pool, c.AccountID, begin.NodeID, "a signature that did not verify")
 		return
 	}
 
@@ -298,6 +300,7 @@ func HandleSnapshotBegin(ctx context.Context, c *hub.Client, env ProtocolEnvelop
 			"error_message":  "only the primary storage node may serve a rebuild",
 			"retryable":      false,
 		})
+		failQueuedRebuildRequest(ctx, pool, c.AccountID, begin.NodeID, "a node that is not the account primary")
 		return
 	}
 
@@ -314,6 +317,7 @@ func HandleSnapshotBegin(ctx context.Context, c *hub.Client, env ProtocolEnvelop
 			"error_message":  "snapshot cursor map is not consistent with the relay's event log",
 			"retryable":      false,
 		})
+		failQueuedRebuildRequest(ctx, pool, c.AccountID, begin.NodeID, "an inconsistent cursor map")
 		return
 	}
 
@@ -329,6 +333,7 @@ func HandleSnapshotBegin(ctx context.Context, c *hub.Client, env ProtocolEnvelop
 			"error_message":  "snapshot_sequence must be a positive integer",
 			"retryable":      false,
 		})
+		failQueuedRebuildRequest(ctx, pool, c.AccountID, begin.NodeID, "a malformed snapshot_sequence")
 		return
 	}
 
@@ -350,6 +355,7 @@ func HandleSnapshotBegin(ctx context.Context, c *hub.Client, env ProtocolEnvelop
 			"error_message":  "snapshot sequence is not newer than the last one promoted",
 			"retryable":      false,
 		})
+		failQueuedRebuildRequest(ctx, pool, c.AccountID, begin.NodeID, "a sequence that is not newer than the promoted watermark")
 		return
 	}
 
@@ -714,6 +720,34 @@ func HandleSnapshotEnd(ctx context.Context, c *hub.Client, env ProtocolEnvelope,
 // removes the session, clears the account's staged rebuild_* rows so a partial
 // transfer can never be promoted by a later session, and marks any in-flight
 // rebuild request for this node as 'failed' so operators can see the outcome.
+// failQueuedRebuildRequest records the terminal 'failed' state for a transfer
+// that reached its end and did not succeed, so the rebuild shows up in the admin
+// list as something that did not happen rather than as one still in progress.
+// abortRebuildSession and the non-retryable refusals at BEGIN share it, because
+// both are the same transition and it should only be written once.
+//
+// The row is already 'delivered' by the time a BEGIN arrives: REBUILD_REQUIRED
+// flips it when it routes the message, and that is correct, because the node has
+// been told. What was missing was the other terminal state. abortRebuildSession
+// has always set 'failed' for a transfer that got under way, but a refusal at
+// BEGIN happens before any session exists, so nothing ran and the row stayed at
+// 'delivered' — the one status that means no further work will happen.
+//
+// Only non-retryable refusals call this. A refusal the node is expected to retry
+// (rebuild_in_progress) must leave the request alone, or a transient collision
+// would cancel a rebuild the operator asked for.
+func failQueuedRebuildRequest(ctx context.Context, pool *db.Pool, accountID, nodeID, reason string) {
+	if pool == nil || accountID == "" || nodeID == "" {
+		return
+	}
+	if _, err := pool.Exec(ctx, `
+		UPDATE rebuild_requests SET status = 'failed'
+		WHERE account_id = $1 AND node_id = $2 AND status = 'delivered'
+	`, accountID, nodeID); err != nil {
+		log.Printf("[snapshot] could not mark the rebuild request failed after %s: %v", reason, err)
+	}
+}
+
 func abortRebuildSession(ctx context.Context, pool *db.Pool, sess *rebuildSession, reason string) {
 	sess.failed = true
 	sess.failedAt = time.Now()
@@ -722,13 +756,7 @@ func abortRebuildSession(ctx context.Context, pool *db.Pool, sess *rebuildSessio
 	removeRebuildSession(sess.snapshotID)
 	if pool != nil {
 		cleanupStagedData(ctx, pool, sess.accountID)
-		// The request was already flipped to 'delivered' when REBUILD_REQUIRED
-		// was sent; single-flight guarantees at most one such row per node, so
-		// flipping the most recent 'delivered' one to 'failed' is unambiguous.
-		_, _ = pool.Exec(ctx, `
-			UPDATE rebuild_requests SET status = 'failed'
-			WHERE account_id = $1 AND node_id = $2 AND status = 'delivered'
-		`, sess.accountID, sess.nodeID)
+		failQueuedRebuildRequest(ctx, pool, sess.accountID, sess.nodeID, "an aborted transfer")
 	}
 }
 
