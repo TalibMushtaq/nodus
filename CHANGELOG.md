@@ -1,5 +1,17 @@
 # Changelog
 
+## [2026-09-26] - E2E: the Path C harness could not reach its own checks
+
+**What changed:**
+
+- `scripts/e2e-path-c.sh`: the device-B ACTIVE check saves the `/api/devices` response to a file before parsing it, instead of piping into a `python3 - <<'PY'` heredoc. Pass 1 tolerates a non-zero exit from the intentional `--stop-after` run.
+
+**Why:** `curl … | python3 - "$DEV_B" <<'PY'` gives Python the heredoc as stdin, so `json.load(sys.stdin)` reads EOF and the run aborts with a JSON decode error before any Path C step runs — that check could never pass. Pass 1 exits non-zero when the queued post for the next shard races the intended `process.exit(0)` after the simulated kill; that shows on Node 26, above this repo's `>=24 <25` engine range, and aborted the run under `set -e` even though the shard had buffered.
+
+**Impact:** `scripts/e2e-path-c.sh` only. Known remaining failure at the device-download leg, unrelated to Path C: `scripts/e2e-path-c/download-file.ts:91` passes `identity.privateKey` where `NodeClient.fetchShard` expects a `DeviceMessageSigner` callback, so it throws `sign is not a function`. Still open.
+
+**Verification:** the harness now runs through the storage-node leg — 10 checks pass, including both shards reaching `NODE_STORED` with `[buffer-fetch] served` logged twice, which is where the signed `/buffer/fetch` change above is exercised end to end.
+
 ## [2026-09-26] - Relay: the buffered-shard fetch token is bound to its target node
 
 **What changed:**

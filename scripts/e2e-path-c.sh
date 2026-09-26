@@ -71,14 +71,20 @@ if ! curl --fail-with-body -sS -b "$JAR" -X POST "$BASE/api/devices/register" \
   cat /tmp/pathc-registerB.json
   exit 1
 fi
-# Verify the row is actually visible and ACTIVE before relying on it.
-if ! curl --fail-with-body -sS -b "$JAR" "$BASE/api/devices" \
-  | python3 - "$DEV_B" <<'PY'
+# Verify the row is actually visible and ACTIVE before relying on it. The list
+# is saved to a file first: a heredoc on the python invocation replaces stdin,
+# so `curl … | python3 - <<'PY'` gives python EOF instead of the JSON.
+if ! curl --fail-with-body -sS -b "$JAR" "$BASE/api/devices" >/tmp/pathc-devicesB.json; then
+  echo "FAIL: could not list devices to verify registration"
+  exit 1
+fi
+if ! python3 - "$DEV_B" /tmp/pathc-devicesB.json <<'PY'
 import json
 import sys
 
 device_id = sys.argv[1]
-devices = json.load(sys.stdin)
+with open(sys.argv[2]) as fh:
+    devices = json.load(fh)
 matches = [
     d for d in devices
     if d.get("device_id") == device_id and d.get("status") == "ACTIVE"
@@ -115,7 +121,14 @@ UPLOADER=(pnpm --filter e2e-path-c run uploader -- --base "$BASE" --cookie "$COO
   --device-id "$DEV_A" --seed "$SEED_A" --target-node "$NODE_ID" --file "$FILE" --file-id "$FILE_ID" --state-dir "$STATE")
 
 echo "===== Pass 1: kill after the first shard ====="
-"${UPLOADER[@]}" --stop-after 1 >/tmp/pathc-run1.log 2>&1
+# --stop-after simulates a kill, and the process can exit non-zero when the
+# queued post for the next shard races the intended exit(0) — observed on Node
+# 26, above this repo's `>=24 <25` engine range. A non-zero exit is expected
+# here; the checks below decide pass/fail from the log, so a real early failure
+# (shard 0 not buffered) still fails the run.
+if ! "${UPLOADER[@]}" --stop-after 1 >/tmp/pathc-run1.log 2>&1; then
+  echo "note: pass-1 uploader exited non-zero (expected for --stop-after)"
+fi
 check "shard 0 buffered" "$(grep -c 'shard 0 -> RELAY_BUFFERED' /tmp/pathc-run1.log)" "1"
 check "shard 1 not buffered before kill" "$(grep -c 'shard 1 -> RELAY_BUFFERED' /tmp/pathc-run1.log)" "0"
 
