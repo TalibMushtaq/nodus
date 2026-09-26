@@ -1,5 +1,17 @@
 # Changelog
 
+## [2026-09-26] - Relay: the WebPush host test no longer assumes a resolver
+
+**What changed:**
+
+- `TestWebPushClientRefusesHostThatResolvesInternal` treats any `LookupNetIP` failure as an acceptable outcome, not only `no such host`.
+
+**Why:** the test feeds the dialer hostname spellings like `0x7f000001` that a system resolver may read as `127.0.0.1`, and asserts the guard refuses the address. GitHub's runner answers those spellings with SERVFAIL ("server misbehaving") instead, so the request was stopped by resolution failing rather than by the guard, and the message assertion failed on CI while passing locally. The test's own comment already allowed for "does not resolve it at all"; it just matched too narrow an error string.
+
+**Impact:** `services/relay/internal/push` tests only.
+
+**Verification:** locally the spellings resolve, so the guard assertion still runs and passes; a throwaway case confirmed an unresolvable host produces an error behind `webpush: resolve`, the branch that now short-circuits. Full `go test ./...` green.
+
 ## [2026-09-26] - Mobile: unlock an account with its recovery phrase
 
 **What changed:**

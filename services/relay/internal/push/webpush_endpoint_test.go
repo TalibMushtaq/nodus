@@ -164,13 +164,17 @@ func TestWebPushClientRefusesHostThatResolvesInternal(t *testing.T) {
 			client := newWebPushClient(500 * time.Millisecond)
 			_, err = client.Do(req)
 			require.Error(t, err, "a request to %s must not succeed", host)
+			require.Empty(t, hits(received), "nothing may reach the listener behind %s", host)
 			// The resolver either understands the spelling, in which case the
-			// guard names the address it meant, or it does not resolve it at all.
-			// Both stop the request; only the first can explain itself.
-			if !strings.Contains(err.Error(), "no such host") {
+			// guard names the address it meant, or it does not resolve it. Both
+			// stop the request; only the first can explain itself, so require the
+			// guard's message only when resolution succeeded. "Does not resolve"
+			// is broader than NXDOMAIN: GitHub's runner answers the numeric
+			// spellings with SERVFAIL ("server misbehaving"), and the dialer
+			// reports any LookupNetIP failure behind "webpush: resolve".
+			if !strings.Contains(err.Error(), "webpush: resolve") {
 				require.Contains(t, err.Error(), "not a public address")
 			}
-			require.Empty(t, hits(received))
 		})
 	}
 }
