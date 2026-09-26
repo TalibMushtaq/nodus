@@ -1,5 +1,21 @@
 # Changelog
 
+## [2026-09-26] - Relay: the WebPush redirect test was passing for the wrong reason
+
+**What changed:**
+
+- `TestWebPushDeliveryRefusesRedirectToInternal` is replaced by `TestWebPushDeliveryClientRefusesToFollowRedirects`. No production code changed.
+
+**Why:** the old test stood up a loopback TLS "edge" that answered `302` with a link-local address, then asserted the internal target had received no hits. It passed — but the edge was itself on loopback, so the dial-time guard refused the *first* hop and the redirect was never followed at all. The assertion was equally satisfied by a completely absent guard, and the test's comment went further, saying it "covers the hop a URL check cannot see" and pins that property "by construction". Nothing about the test supported that sentence.
+
+The replacement asserts the two things that actually provide the protection, both of which can fail. `CheckRedirect` returns `ErrUseLastResponse`, so there is no second request to make internal; and the transport's dialer refuses an internal address on its own, which is what covers endpoints already stored from before the registration check existed.
+
+There is deliberately no end-to-end version of this test. It needs a first hop the guard will allow, and the guard refuses every address a test can listen on — loopback and the host's private interface addresses alike — so reaching the redirect would mean standing down the guard the behaviour depends on, which would test the stand-down rather than the behaviour. That limitation is now recorded in the test instead of hidden behind an assertion that could not fail.
+
+**Impact:** `services/relay/internal/push` tests only. Nothing in production changed, and no vulnerability is fixed here: the redirect behaviour was correct all along. What changes is that it is now pinned by assertions that would catch a regression, rather than by one that passed for an unrelated reason.
+
+**Verification:** dropping `CheckRedirect` fails the redirect assertion. Replacing the transport's guarded dialer with a plain one fails the guard assertion on the message — `not a public address` rather than `connection refused` — so the test distinguishes a refused address from an unreachable one, and needs no listener. Full `go test -count=1 ./...` and the `-race` run green, `go vet` and `gofmt -l` clean.
+
 ## [2026-09-26] - Relay: the two recovery endpoints share one limiter again
 
 **What changed:**

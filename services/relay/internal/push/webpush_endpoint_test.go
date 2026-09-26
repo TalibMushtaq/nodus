@@ -109,28 +109,41 @@ func TestWebPushDeliveryRefusesInternalEndpoint(t *testing.T) {
 	}
 }
 
-// TestWebPushDeliveryRefusesRedirectToInternal covers the hop a URL check cannot
-// see. Because the guard is in the dialer rather than in a URL matcher, every
-// hop is covered by construction; this pins that property.
-func TestWebPushDeliveryRefusesRedirectToInternal(t *testing.T) {
-	p256dh, auth := validSubKeys(t)
-	sender := vapidTestSender(t)
+// TestWebPushDeliveryClientRefusesToFollowRedirects covers the hop a URL check
+// cannot see: a push service that answers 302 must not be able to send the relay
+// somewhere else.
+//
+// This asserts the delivery client's policy rather than driving a redirect end to
+// end, and the reason is worth recording. An end-to-end version needs a first hop
+// the guard will allow, and the guard refuses every address a test can listen on
+// — loopback, and the host's private interface addresses alike — so the edge
+// server is refused at hop one and the redirect is never reached. Reaching it
+// would mean standing down the guard the behaviour depends on, which would test
+// the stand-down rather than the behaviour. What the literal-address and
+// hostname cases below establish is that hop one is judged on its resolved
+// address; what this establishes is that there is no hop two.
+func TestWebPushDeliveryClientRefusesToFollowRedirects(t *testing.T) {
+	client := newWebPushClient(webPushDeliveryTimeout)
 
-	internalURL, internalHits := serveOn(t, "127.0.0.1:0")
+	require.NotNil(t, client.CheckRedirect, "a redirect policy must be set explicitly, not left to the default")
+	req := httptest.NewRequest("GET", "https://push.example.test/redirect", nil)
+	prev := httptest.NewRequest("GET", "https://push.example.test/redirect", nil)
+	require.ErrorIs(t, client.CheckRedirect(req, []*http.Request{prev}), http.ErrUseLastResponse,
+		"a redirect must be handed back to the caller, not followed")
 
-	edge := httptestTLSServer(t, func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, internalURL+"/latest/meta-data/", http.StatusFound)
-	})
+	transport, ok := client.Transport.(*http.Transport)
+	require.True(t, ok, "the delivery client must use the guarded transport")
+	require.NotNil(t, transport.DialContext,
+		"the resolved-address guard has to be installed on the transport, not just on the registration path")
 
-	err := sender.SendWeb(context.Background(), []WebSubscription{{
-		Endpoint: edge + "/redirect",
-		P256dh:   p256dh,
-		Auth:     auth,
-	}}, "title", "body", nil)
-	t.Logf("redirect attempt returned: %v", err)
-
-	require.Empty(t, hits(internalHits),
-		"a redirect must not be able to turn a validated push into a request to an internal address")
+	// And it has to be the *guarded* dialer, not merely a custom one: a plain
+	// dialer also satisfies NotNil. Asking it for a loopback address is decided
+	// before any packet is sent, so this needs no listener and cannot be
+	// confused with a connection that merely failed.
+	_, dialErr := transport.DialContext(context.Background(), "tcp", "127.0.0.1:1")
+	require.Error(t, dialErr)
+	require.Contains(t, dialErr.Error(), "not a public address",
+		"the transport's dialer must refuse an internal address itself")
 }
 
 // TestWebPushClientRefusesHostThatResolvesInternal covers the dialer directly. A
