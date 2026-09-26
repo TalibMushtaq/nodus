@@ -182,12 +182,14 @@ func TestOpenEndpointAnswersUnavailableWhenLimiterIsDown(t *testing.T) {
 	t.Cleanup(func() { _ = dead.Close() })
 
 	cfg := &config.Config{}
+	// Both recovery handlers take the same limiter, as main wires them.
+	deadRecovery := NewRecoveryLimiter(dead)
 	for name, handler := range map[string]http.HandlerFunc{
 		"pairing session verify": VerifyPairingSession(nil, cfg, dead),
 		"node url verify":        VerifyNodeURL(nil, cfg, dead),
 		"pairing code redeem":    RedeemPairingCode(nil, cfg, dead),
-		"recovery challenge":     RecoveryChallenge(nil, cfg, dead),
-		"recover":                Recover(nil, nil, cfg, dead),
+		"recovery challenge":     RecoveryChallenge(nil, cfg, deadRecovery),
+		"recover":                Recover(nil, nil, cfg, deadRecovery),
 	} {
 		t.Run(name, func(t *testing.T) {
 			req := httptest.NewRequest("GET", "/nodes/verify?node_id=n-1", nil)

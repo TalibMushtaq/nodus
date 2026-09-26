@@ -270,8 +270,13 @@ func main() {
 		mux.Handle("POST /auth/logout-all", auth.RequireAuth(sessionStore, cfg)(handler.LogoutAll(pool, sessionStore, cfg)))
 		// ADR-0002 online recovery: unauthenticated by design — the signed
 		// challenge is the credential, so a lost-password user can still recover.
-		mux.HandleFunc("POST /auth/recovery/challenge", handler.RecoveryChallenge(pool, cfg, redisClient))
-		mux.HandleFunc("POST /auth/recovery", handler.Recover(pool, sessionStore, cfg, redisClient))
+		// One limiter for both recovery endpoints, not one each. These were steps
+		// of a single flow sharing a package-level budget before the Redis
+		// migration, and building a limiter per handler silently doubled the
+		// budget for any deployment running without Redis.
+		recoveryLimiter := handler.NewRecoveryLimiter(redisClient)
+		mux.HandleFunc("POST /auth/recovery/challenge", handler.RecoveryChallenge(pool, cfg, recoveryLimiter))
+		mux.HandleFunc("POST /auth/recovery", handler.Recover(pool, sessionStore, cfg, recoveryLimiter))
 
 		// Device & Node Management (Authenticated)
 		mux.Handle("POST /devices/register", auth.RequireAuth(sessionStore, cfg)(handler.RegisterDevice(pool)))

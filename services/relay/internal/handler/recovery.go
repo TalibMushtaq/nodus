@@ -159,12 +159,28 @@ type RecoveryChallengeResponse struct {
 // client can confirm the phrase matches before signing. Returns 401 (same as
 // Recover, so the two open endpoints do not disagree about failure semantics)
 // when the account does not exist or has no recovery key enrolled.
-func RecoveryChallenge(pool *db.Pool, cfg *config.Config, rClient *rdb.Client) http.HandlerFunc {
+// recoveryLimiterName, recoveryBurst and recoveryRefill describe the budget both
+// recovery endpoints draw on. Callers pass one *rateLimiter to both handlers
+// rather than each building its own, because the limiter used to be a package
+// global and the two sharing it is the point: alternating between the challenge
+// and recovery endpoints must not buy a second budget.
+const (
+	recoveryLimiterName = "recovery"
+	recoveryBurst       = 5
+	recoveryRefill      = 1
+)
+
+// NewRecoveryLimiter builds the rate limiter shared by RecoveryChallenge and
+// Recover. It lives here, next to the constants, so the wiring in main has to
+// name the sharing rather than infer it.
+func NewRecoveryLimiter(rClient *rdb.Client) *rateLimiter {
+	return newRateLimiter(rClient, recoveryLimiterName, recoveryBurst, recoveryRefill)
+}
+
+func RecoveryChallenge(pool *db.Pool, cfg *config.Config, recoveryLimiter *rateLimiter) http.HandlerFunc {
 	// Open endpoint (the phrase is the credential): throttle by IP so a caller
 	// cannot mint an unbounded number of nonce rows. 5 burst / 1 per second
-	// keeps a legit recovery flow (2 requests) well within a burst window. The
-	// two recovery endpoints share one limiter so they cannot disagree.
-	recoveryLimiter := newRateLimiter(rClient, "recovery", 5, 1)
+	// keeps a legit recovery flow (2 requests) well within a burst window.
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !allowRequest(w, r, cfg, recoveryLimiter) {
 			return
@@ -251,11 +267,10 @@ type RecoverRequest struct {
 // request read used_at = NULL and mint a second session). A rejected attempt —
 // wrong signature or a device owned by another account — rolls the transaction
 // back and leaves the nonce usable, so a client typo does not burn it.
-func Recover(pool *db.Pool, store auth.SessionStore, cfg *config.Config, rClient *rdb.Client) http.HandlerFunc {
-	// Shared with the challenge endpoint on purpose: the two are steps of one
-	// flow, and one rate limiter is the only way a client cannot get twice the
-	// intended rate by alternating between them.
-	recoveryLimiter := newRateLimiter(rClient, "recovery", 5, 1)
+// recoveryLimiter must be the same instance passed to RecoveryChallenge: the two
+// are steps of one flow, and one shared limiter is the only way a client cannot
+// get twice the intended rate by alternating between them.
+func Recover(pool *db.Pool, store auth.SessionStore, cfg *config.Config, recoveryLimiter *rateLimiter) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !allowRequest(w, r, cfg, recoveryLimiter) {
 			return

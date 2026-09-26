@@ -33,8 +33,8 @@ import (
 func setupRecoveryHarness(t *testing.T) *authHarness {
 	t.Helper()
 	return setupAuthHarnessWithRoutes(t, func(mux *http.ServeMux, pool *db.Pool, store auth.SessionStore, cfg *config.Config) {
-		mux.HandleFunc("POST /auth/recovery/challenge", RecoveryChallenge(pool, cfg, nil))
-		mux.HandleFunc("POST /auth/recovery", Recover(pool, store, cfg, nil))
+		mux.HandleFunc("POST /auth/recovery/challenge", RecoveryChallenge(pool, cfg, NewRecoveryLimiter(nil)))
+		mux.HandleFunc("POST /auth/recovery", Recover(pool, store, cfg, NewRecoveryLimiter(nil)))
 		mux.Handle("PUT /account/recovery", auth.RequireAuth(store, cfg)(UpdateRecoveryKey(pool)))
 	})
 }

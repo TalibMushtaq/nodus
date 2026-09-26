@@ -238,6 +238,15 @@ func (rl *rateLimiter) Allow(ctx context.Context, ip string) (bool, error) {
 // not do would both stall it for no reason and disguise an infrastructure fault
 // as client misbehaviour.
 func allowRequest(w http.ResponseWriter, r *http.Request, cfg *config.Config, rl *rateLimiter) bool {
+	// A nil limiter is a wiring mistake, and the two obvious ways to paper over
+	// it are both wrong: skipping the check would turn the endpoint unbounded,
+	// and panicking would drop the connection instead of answering. Fail closed
+	// with the same answer as an unreachable backend, which is what it is.
+	if rl == nil {
+		log.Printf("[ratelimit] refusing request: no rate limiter configured")
+		respondError(w, http.StatusServiceUnavailable, "rate_limit_unavailable")
+		return false
+	}
 	ip := clientIP(r, cfg)
 	allowed, err := rl.Allow(r.Context(), ip)
 	if err != nil {

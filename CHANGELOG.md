@@ -1,5 +1,24 @@
 # Changelog
 
+## [2026-09-26] - Relay: the two recovery endpoints share one limiter again
+
+**What changed:**
+
+- `RecoveryChallenge` and `Recover` now take a `*rateLimiter` instead of a `*rdb.Client`, and `main` builds one via the new `handler.NewRecoveryLimiter` and passes the same instance to both. The budget constants moved into `recovery.go` next to the handlers that draw on them.
+- `allowRequest` fails closed with `503 rate_limit_unavailable` on a nil limiter instead of dereferencing it.
+
+**Why:** moving the limiters to Redis-backed buckets made each handler construct its own, and the limiter had been a package-level global. With Redis configured the change was invisible — both handlers hit the same `ratelimit:recovery:<ip>` key, so the budget was still shared. Without Redis, each fell back to its own in-process bucket, and the two endpoints got 10 burst / 2 per second where the code and its comments said 5 / 1. The pre-migration behaviour was shared, so this was a regression rather than a new gap, and it hid in precisely the configuration a developer or a self-hosted operator without Redis runs.
+
+Recovery is two steps of one flow: mint a nonce, then spend it. A client that alternated between the two endpoints could draw twice the intended rate, which is the whole reason the two share a limiter. The Redis key was the only thing still enforcing it, so the guarantee held exactly when it was least needed to be documented.
+
+Handing the limiter in from `main` rather than adding a process-wide registry keyed by name keeps the sharing visible at the wiring site, and avoids a registry that would have to decide what to do when two callers use one name with different burst and refill values — a question with no good answer that would only ever matter by accident.
+
+The nil guard is new because the shared instance is now a wiring responsibility. Skipping the check would leave the endpoint unbounded and dereferencing nil drops the connection, so a missing limiter answers like the unreachable backend it amounts to.
+
+**Impact:** `services/relay` only (`main.go`, `internal/handler/recovery.go`, `internal/handler/ratelimit.go`). No wire, schema or Redis-key change, and the budget itself is unchanged at 5 burst / 1 per second — this restores what the deployed configuration already did. `RecoveryChallenge` and `Recover` are internal constructor signatures, not part of any contract.
+
+**Verification:** `TestRecoveryEndpointsShareOneLimiterWithoutRedis` drains the shared budget through the challenge endpoint alone and then asserts the recovery endpoint is also `429`. Confirmed to fail against the regression by making each handler mint its own limiter. `TestNilRateLimiterFailsClosed` covers the wiring mistake; confirmed to fail (as a `SIGSEGV` panic, not an assertion) with the guard removed. `TestOpenEndpointAnswersUnavailableWhenLimiterIsDown` now builds the dead-backend limiter once for both recovery handlers, matching how `main` wires them. Full `scripts/test-integration.sh` and the database-backed `-race` run green, `go vet` and `gofmt -l` clean.
+
 ## [2026-09-26] - Relay: the shard fetch token moves out of the query string
 
 **What changed:**

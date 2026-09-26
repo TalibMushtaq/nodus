@@ -57,7 +57,7 @@ func TestRecoverWithSignedChallenge(t *testing.T) {
 
 	challengeBody, _ := json.Marshal(RecoveryChallengeRequest{Email: email})
 	chRR := httptest.NewRecorder()
-	RecoveryChallenge(pool, cfg, nil)(chRR, httptest.NewRequest("POST", "/auth/recovery/challenge", bytes.NewReader(challengeBody)))
+	RecoveryChallenge(pool, cfg, NewRecoveryLimiter(nil))(chRR, httptest.NewRequest("POST", "/auth/recovery/challenge", bytes.NewReader(challengeBody)))
 	require.Equal(t, http.StatusOK, chRR.Code)
 
 	var challenge RecoveryChallengeResponse
@@ -73,13 +73,13 @@ func TestRecoverWithSignedChallenge(t *testing.T) {
 		DevicePublicKey: encodedKey,
 	})
 	rr := httptest.NewRecorder()
-	Recover(pool, store, cfg, nil)(rr, httptest.NewRequest("POST", "/auth/recovery", bytes.NewReader(recoverBody)))
+	Recover(pool, store, cfg, NewRecoveryLimiter(nil))(rr, httptest.NewRequest("POST", "/auth/recovery", bytes.NewReader(recoverBody)))
 	require.Equal(t, http.StatusOK, rr.Code)
 
 	// The nonce is single-use: replaying it (even with the same valid signature)
 	// must fail after the first attempt consumed it.
 	replayRR := httptest.NewRecorder()
-	Recover(pool, store, cfg, nil)(replayRR, httptest.NewRequest("POST", "/auth/recovery", bytes.NewReader(recoverBody)))
+	Recover(pool, store, cfg, NewRecoveryLimiter(nil))(replayRR, httptest.NewRequest("POST", "/auth/recovery", bytes.NewReader(recoverBody)))
 	require.Equal(t, http.StatusUnauthorized, replayRR.Code)
 }
 
@@ -96,7 +96,7 @@ func TestRecoverKeepsNonceAfterRejectedAttempt(t *testing.T) {
 
 	challengeBody, _ := json.Marshal(RecoveryChallengeRequest{Email: email})
 	chRR := httptest.NewRecorder()
-	RecoveryChallenge(pool, cfg, nil)(chRR, httptest.NewRequest("POST", "/auth/recovery/challenge", bytes.NewReader(challengeBody)))
+	RecoveryChallenge(pool, cfg, NewRecoveryLimiter(nil))(chRR, httptest.NewRequest("POST", "/auth/recovery/challenge", bytes.NewReader(challengeBody)))
 	require.Equal(t, http.StatusOK, chRR.Code)
 	var challenge RecoveryChallengeResponse
 	require.NoError(t, json.Unmarshal(chRR.Body.Bytes(), &challenge))
@@ -113,7 +113,7 @@ func TestRecoverKeepsNonceAfterRejectedAttempt(t *testing.T) {
 			DevicePublicKey: encodedKey,
 		})
 		rr := httptest.NewRecorder()
-		Recover(pool, store, cfg, nil)(rr, httptest.NewRequest("POST", "/auth/recovery", bytes.NewReader(body)))
+		Recover(pool, store, cfg, NewRecoveryLimiter(nil))(rr, httptest.NewRequest("POST", "/auth/recovery", bytes.NewReader(body)))
 		return rr
 	}
 
@@ -129,4 +129,72 @@ func TestRecoverKeepsNonceAfterRejectedAttempt(t *testing.T) {
 	require.Zero(t, deviceCount)
 
 	require.Equal(t, http.StatusOK, recoveryAttempt(priv, "good-sig-"+accountID).Code)
+}
+
+// TestRecoveryEndpointsShareOneLimiterWithoutRedis pins that the two recovery
+// endpoints draw on a single budget when Redis is not configured.
+//
+// This regressed once: the limiter used to be a package-level global, and when
+// it moved to Redis-backed buckets each handler started building its own. With
+// Redis present the bug was invisible — both hit the same `ratelimit:recovery:`
+// key — so it only showed in exactly the configuration this test uses. The
+// recovery flow is two steps of one thing; alternating between them must not buy
+// a second budget.
+func TestRecoveryEndpointsShareOneLimiterWithoutRedis(t *testing.T) {
+	pool, accountID := createPairingCodeHarness(t)
+	cfg := testRecoveryConfig()
+	store := auth.NewPGSessionStore(pool, cfg)
+
+	// One limiter, wired to both handlers, as main does.
+	limiter := NewRecoveryLimiter(nil)
+	challenge := RecoveryChallenge(pool, cfg, limiter)
+	recover := Recover(pool, store, cfg, limiter)
+
+	email := accountID + "@test.local"
+	challengeBody, err := json.Marshal(RecoveryChallengeRequest{Email: email})
+	require.NoError(t, err)
+	recoverBody, err := json.Marshal(RecoverRequest{Email: email, Nonce: "n", Signature: "s"})
+	require.NoError(t, err)
+
+	post := func(h http.HandlerFunc, path string, body []byte) int {
+		req := httptest.NewRequest("POST", path, bytes.NewReader(body))
+		req.RemoteAddr = "203.0.113.77:4321" // one client, so one bucket
+		rr := httptest.NewRecorder()
+		h(rr, req)
+		return rr.Code
+	}
+
+	// Drain the shared budget on the challenge endpoint alone. The bodies are
+	// not valid recovery attempts, so these answer 401/400 — the point is that
+	// the limiter admitted them.
+	for range recoveryBurst {
+		require.NotEqual(t, http.StatusTooManyRequests,
+			post(challenge, "/auth/recovery/challenge", challengeBody),
+			"the shared budget should admit a full burst")
+	}
+
+	// Both endpoints are now spent. If the limiter were per-handler, the
+	// recovery endpoint would still have its own burst.
+	require.Equal(t, http.StatusTooManyRequests,
+		post(challenge, "/auth/recovery/challenge", challengeBody),
+		"the challenge endpoint is over its burst")
+	require.Equal(t, http.StatusTooManyRequests,
+		post(recover, "/auth/recovery", recoverBody),
+		"the recovery endpoint drew on the same budget and must be limited too")
+}
+
+// TestNilRateLimiterFailsClosed covers the wiring mistake the shared limiter
+// makes possible. Skipping the check would leave the endpoint unbounded and
+// panicking would drop the connection; the honest answer is the same 503 an
+// unreachable backend gets, because that is what a missing limiter is.
+func TestNilRateLimiterFailsClosed(t *testing.T) {
+	cfg := testRecoveryConfig()
+	pool, _ := createPairingCodeHarness(t)
+
+	req := httptest.NewRequest("POST", "/auth/recovery/challenge", bytes.NewReader([]byte(`{}`)))
+	req.RemoteAddr = "203.0.113.78:4321"
+	rr := httptest.NewRecorder()
+	RecoveryChallenge(pool, cfg, nil)(rr, req)
+	require.Equal(t, http.StatusServiceUnavailable, rr.Code)
+	require.Contains(t, rr.Body.String(), "rate_limit_unavailable")
 }
