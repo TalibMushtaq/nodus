@@ -4,27 +4,44 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/TalibMushtaq/nodus/services/relay/internal/buffer"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/db"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/rdb"
 )
 
-// BufferFetch handles GET /buffer/fetch?token=... — a Storage Node pulling a
-// buffered shard's bytes over HTTP (Path C, §13). This endpoint is NOT behind
-// JWT auth: the node authenticates via the WS challenge handshake, and the
-// single-use fetch token (Redis GETDEL, 10-min TTL) is the request credential.
+// BufferFetch handles GET /buffer/fetch — a Storage Node pulling a buffered
+// shard's bytes over HTTP (Path C, §13). This endpoint is NOT behind JWT auth:
+// the node authenticates via the WS challenge handshake, and the single-use
+// fetch token (Redis GETDEL, 10-min TTL) is the request credential, presented as
+// `Authorization: Bearer <token>`.
 // Serving a fetch transitions the shard from RELAY_BUFFERED to NODE_RECEIVING;
 // the node subsequently acks "verified" or "failed" over WebSocket.
+//
+// The token used to travel in the query string, which makes it a credential in
+// every access log, proxy log and Referer header between the node and here —
+// and enabling access logging on the bundled Caddy is one `log` directive away.
+// A header is also what proxies redact by default, which is most of the value.
+// The query parameter is now rejected rather than ignored, so a node that has
+// not upgraded is told what to change instead of seeing a bare 401.
 func BufferFetch(pool *db.Pool, rClient *rdb.Client, buf *buffer.Buffer) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if rClient == nil {
 			respondError(w, http.StatusServiceUnavailable, "fetch tokens unavailable")
 			return
 		}
-		token := r.URL.Query().Get("token")
+		if r.URL.Query().Get("token") != "" {
+			respondError(w, http.StatusBadRequest,
+				"send the fetch token as 'Authorization: Bearer <token>', not as a query parameter")
+			return
+		}
+		token := ""
+		if header := r.Header.Get("Authorization"); strings.HasPrefix(header, "Bearer ") {
+			token = strings.TrimSpace(strings.TrimPrefix(header, "Bearer "))
+		}
 		if token == "" {
-			respondError(w, http.StatusBadRequest, "missing token query parameter")
+			respondError(w, http.StatusUnauthorized, "missing bearer fetch token")
 			return
 		}
 

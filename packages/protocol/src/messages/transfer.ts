@@ -68,7 +68,8 @@ export type ShardAckPayload = z.infer<typeof ShardAckPayloadSchema>;
  * (Path C, §13 relay buffer lifecycle). Sent when a client uploads a shard
  * via `POST /buffer/upload` while the target Storage Node is offline.
  * The `fetch_token` lets the node fetch the shard bytes over HTTP without
- * needing its own auth middleware.
+ * needing its own auth middleware. It is sent as an `Authorization: Bearer`
+ * header rather than a query parameter.
  */
 export const PendingNotifyPayloadSchema = z.object({
   file_id: ProtocolFileId,
@@ -77,7 +78,11 @@ export const PendingNotifyPayloadSchema = z.object({
   shard_index: z.number().int().min(0),
   /** Relay-assigned buffer identifier */
   buffer_id: z.string(),
-  /** Single-use token for GET /buffer/fetch (10-minute TTL, Redis GETDEL) */
+  /**
+   * Single-use token for GET /buffer/fetch (10-minute TTL, Redis GETDEL).
+   * Present it as `Authorization: Bearer <token>` — it is a bearer credential,
+   * so it must not go in the query string, where it would reach access logs.
+   */
   fetch_token: z.string(),
   /** Device that uploaded the shard to the buffer */
   from_device: DeviceId,

@@ -1,5 +1,23 @@
 # Changelog
 
+## [2026-09-26] - Relay: the shard fetch token moves out of the query string
+
+**What changed:**
+
+- `GET /buffer/fetch` now reads the single-use fetch token from `Authorization: Bearer <token>`. A `?token=` query parameter is rejected with `400` and a message naming the header, rather than ignored.
+- The storage node sends the bearer header instead of building a query pair, and `limits.rs`'s comment about stripping the fetch URL from transport errors is corrected — the URL no longer carries the token.
+- The `fetch_token` doc comments in `packages/protocol` and `docs/protocol/message-catalog.md` state that it is a bearer credential for the header.
+
+**Why:** a credential in a URL is a credential everywhere the URL goes. The token is the *only* auth on this endpoint — `BufferFetch` is deliberately not behind `RequireAuth`, because the node has no HTTP identity and the token is the request credential — so every hop that logs a request line wrote a live bearer token to disk. The bundled Caddyfile has no `log` directive, so nothing writes them today, but access logging is one directive away and is a normal thing to turn on; the same applies to any reverse proxy in front of the Relay, and a `Referer` header carries the full URL too.
+
+The query parameter is rejected rather than kept as a fallback on purpose. A silent fallback would leave the log-exposure path open while looking like a fix, and the token is 10-minute, single-use and fetches E2E-encrypted bytes, so the clean break costs one redeploy of the node. Rejecting loudly means an un-upgraded node gets a `400` that says exactly what to change, instead of a bare `401` it would take a log-reading session to diagnose.
+
+**Scope note:** this is the mitigation half of the audit's fetch-token-binding finding, not all of it. The token is still not bound to the node it was issued for — `issueFetchToken` only receives a `buffer_id`, so any holder of a valid token can redeem it. Closing that needs the node to prove its identity over HTTP (it currently only does so over the WebSocket challenge handshake), which is a larger change than moving the header and is **still open**. What this removes is the realistic way the token escapes: logs and headers. What remains is a bounded one — single-use, 10-minute TTL, encrypted payload, and redemption only transitions that one shard to `NODE_RECEIVING`.
+
+**Impact:** wire change. The Relay, storage node, and the `fetch_token` field's documentation must move together; a Relay on this commit rejects a node that has not been rebuilt. No schema or Redis key change, and the token's TTL, single-use `GETDEL` semantics and 10-minute lifetime are untouched.
+
+**Verification:** `TestBufferFetchRejectsTokenInQueryString` asserts a *valid* token in the query string is refused and, critically, that the same token still works afterwards in the header — so the rejection is about the transport and does not burn the token. `TestBufferFetchRequiresABearerHeader` covers no header, a bare token with no scheme, `Bearer ` with nothing after it, and the wrong scheme. Both were confirmed to fail against the pre-fix code: reverting to the query parameter, and separately keeping the query parameter as a silent fallback, each turn the first test red. The three existing fetch call sites in `buffer_integration_test.go` were moved to the header and still assert the full behaviour (bytes, `X-Nodus-*` headers, the `RELAY_BUFFERED` → `NODE_RECEIVING` transition, and `401` on replay). Full `scripts/test-integration.sh` and the database-backed `-race` run green, `cargo test` and `cargo clippy` clean, `packages/protocol` `tsc --noEmit` and 80 tests passing.
+
 ## [2026-09-26] - Deploy: Redis and Postgres require credentials, buffered shards are not world-readable
 
 **What changed:**

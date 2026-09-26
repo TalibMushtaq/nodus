@@ -29,9 +29,10 @@ pub async fn read_body_capped(resp: reqwest::Response, max: usize) -> anyhow::Re
     let mut stream = resp.bytes_stream();
     let mut buf = Vec::new();
     while let Some(chunk) = stream.next().await {
-        // Strip the request URL from transport errors: the Relay fetch URL
-        // carries the single-use `fetch_token` as a query parameter and this
-        // error is both logged and sent back to the Relay in `shard_ack`.
+        // Strip the request URL from transport errors: this error is both
+        // logged and echoed back to the Relay in `shard_ack`, and the path
+        // discloses which buffer is being fetched. The `fetch_token` itself
+        // travels in an `Authorization` header, not the URL.
         let chunk = chunk.map_err(|e| anyhow::Error::new(e.without_url()))?;
         if buf.len().saturating_add(chunk.len()) > max {
             anyhow::bail!("response body exceeds cap of {max} bytes");

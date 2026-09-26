@@ -163,7 +163,7 @@ via `POST /buffer/upload` while the target node was offline. Includes a
 | `version_number` | integer ≥ 1 | yes | File version this shard belongs to |
 | `shard_index` | integer ≥ 0 | yes | 0-based shard position |
 | `buffer_id` | string | yes | Relay-assigned buffer identifier |
-| `fetch_token` | string | yes | Single-use token for `GET /buffer/fetch` (10-min TTL, Redis GETDEL) |
+| `fetch_token` | string | yes | Single-use bearer token for `GET /buffer/fetch` (10-min TTL, Redis GETDEL), sent as `Authorization: Bearer <token>` |
 | `from_device` | string | yes | Device that uploaded the shard |
 | `hash` | string | yes | BLAKE3 hex digest — node verifies after fetch |
 | `size` | integer ≥ 0 | yes | Encrypted payload size in bytes — node verifies after fetch |

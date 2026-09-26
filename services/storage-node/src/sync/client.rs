@@ -1500,14 +1500,17 @@ impl SyncClient {
         let resp = self
             .http_client
             .get(&self.http_fetch_url)
-            // Pass the token as a properly-encoded query pair rather than
-            // interpolating it into the URL (a `&`/`#` in the token would
-            // otherwise alter the request).
-            .query(&[("token", n.fetch_token.as_str())])
+            // The token is a bearer credential, so it goes in a header rather
+            // than the query string: a URL ends up in access logs, proxy logs
+            // and Referer headers, and the Relay's own Caddy is one `log`
+            // directive away from writing it to disk. `Authorization` is also
+            // redacted by most proxies by default.
+            .header("Authorization", format!("Bearer {}", n.fetch_token))
             .send()
             .await
-            // `without_url` keeps the single-use fetch token out of the error
-            // message, which is logged and echoed back to the Relay.
+            // The URL no longer carries the token, but keep stripping it: these
+            // errors are logged and echoed back to the Relay, and the path still
+            // discloses which buffer is being fetched.
             .map_err(|e| anyhow::Error::new(e.without_url()))?;
         if !resp.status().is_success() {
             anyhow::bail!("relay /buffer/fetch returned {}", resp.status());

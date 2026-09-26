@@ -173,7 +173,8 @@ func TestBufferUploadThenFetchE2E(t *testing.T) {
 	require.NoError(t, h.rClient.SetFetchToken(h.ctx, token, resp.BufferID, time.Minute))
 
 	// Node fetches the shard bytes.
-	fetchReq := httptest.NewRequest("GET", "/buffer/fetch?token="+token, nil)
+	fetchReq := httptest.NewRequest("GET", "/buffer/fetch", nil)
+	fetchReq.Header.Set("Authorization", "Bearer "+token)
 	fetchRR := httptest.NewRecorder()
 	BufferFetch(h.pool, h.rClient, h.buf)(fetchRR, fetchReq)
 	require.Equal(t, 200, fetchRR.Code)
@@ -184,10 +185,66 @@ func TestBufferUploadThenFetchE2E(t *testing.T) {
 	require.Equal(t, "NODE_RECEIVING", h.shardStatus(t, h.fileID, 1, 0))
 
 	// The token is single-use: replay must fail after the GETDEL consumed it.
-	fetchReq2 := httptest.NewRequest("GET", "/buffer/fetch?token="+token, nil)
+	fetchReq2 := httptest.NewRequest("GET", "/buffer/fetch", nil)
+	fetchReq2.Header.Set("Authorization", "Bearer "+token)
 	fetchRR2 := httptest.NewRecorder()
 	BufferFetch(h.pool, h.rClient, h.buf)(fetchRR2, fetchReq2)
 	require.Equal(t, 401, fetchRR2.Code)
+}
+
+// TestBufferFetchRejectsTokenInQueryString pins the credential's transport. A
+// fetch token in the query string is a credential in every access log, proxy
+// log and Referer header between the node and the Relay, and the Relay's own
+// Caddy is one `log` directive away from writing it to disk. It is rejected
+// rather than ignored so an un-upgraded node is told what to change.
+func TestBufferFetchRejectsTokenInQueryString(t *testing.T) {
+	h := setupBufferHarness(t)
+	require.NotNil(t, h.rClient, "Redis required to mint fetch tokens for this test")
+
+	token := "tok-query-" + uuid.NewString()
+	bufferID := "buf-query-" + uuid.NewString()
+	require.NoError(t, h.rClient.SetFetchToken(h.ctx, token, bufferID, time.Minute))
+
+	// A valid token in the query string is refused, and refused before it is
+	// consumed: the token has to survive for the header path to work.
+	req := httptest.NewRequest("GET", "/buffer/fetch?token="+token, nil)
+	rr := httptest.NewRecorder()
+	BufferFetch(h.pool, h.rClient, h.buf)(rr, req)
+	require.Equal(t, 400, rr.Code)
+	require.Contains(t, rr.Body.String(), "Authorization: Bearer")
+
+	// The same token in the header still works, so the rejection really was
+	// about the transport and did not burn the token.
+	hdrReq := httptest.NewRequest("GET", "/buffer/fetch", nil)
+	hdrReq.Header.Set("Authorization", "Bearer "+token)
+	hdrRR := httptest.NewRecorder()
+	BufferFetch(h.pool, h.rClient, h.buf)(hdrRR, hdrReq)
+	require.NotEqual(t, 400, hdrRR.Code, "the query-param rejection consumed the token")
+}
+
+// TestBufferFetchRequiresABearerHeader covers the two ways a node can get the
+// credential wrong: none at all, and a header without the Bearer scheme.
+func TestBufferFetchRequiresABearerHeader(t *testing.T) {
+	h := setupBufferHarness(t)
+	require.NotNil(t, h.rClient, "Redis required to mint fetch tokens for this test")
+	const tokenOnly = "tok-bare-abc123"
+
+	for name, header := range map[string]string{
+		"no header":      "",
+		"missing scheme": tokenOnly,
+		"empty bearer":   "Bearer ",
+		"wrong scheme":   "Token " + tokenOnly,
+	} {
+		t.Run(name, func(t *testing.T) {
+			req := httptest.NewRequest("GET", "/buffer/fetch", nil)
+			if header != "" {
+				req.Header.Set("Authorization", header)
+			}
+			rr := httptest.NewRecorder()
+			BufferFetch(h.pool, h.rClient, h.buf)(rr, req)
+			require.Equal(t, 401, rr.Code, "body: %s", rr.Body.String())
+		})
+	}
 }
 
 func TestBufferUploadRejectsUnknownVersion(t *testing.T) {
@@ -365,7 +422,8 @@ found:
 
 	// The re-issued token is redeemable: consuming it serves the bytes and
 	// moves the shard out of RELAY_BUFFERED, completing the deferred delivery.
-	fetchReq := httptest.NewRequest("GET", "/buffer/fetch?token="+notify.FetchToken, nil)
+	fetchReq := httptest.NewRequest("GET", "/buffer/fetch", nil)
+	fetchReq.Header.Set("Authorization", "Bearer "+notify.FetchToken)
 	fetchRR := httptest.NewRecorder()
 	BufferFetch(h.pool, h.rClient, h.buf)(fetchRR, fetchReq)
 	require.Equal(t, 200, fetchRR.Code)
