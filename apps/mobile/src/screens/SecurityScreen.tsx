@@ -24,6 +24,8 @@ export function SecurityScreen() {
   const app = useApp();
   const theme = useTheme();
   const [refreshing, setRefreshing] = React.useState(false);
+  // Controls the "restore access with recovery phrase" sheet.
+  const [unlockOpen, setUnlockOpen] = React.useState(false);
   // Controls the "regenerate recovery key" sheet. Regenerating drops the
   // previous key's envelope coverage on the Relay, so the password is collected
   // here (and only here) before the destructive step is authorized.
@@ -87,6 +89,13 @@ export function SecurityScreen() {
         <ThemedText variant="caption" tone="muted">
           Anyone with these 24 words can recover the account. Keep them offline.
         </ThemedText>
+        {/* The phrase never leaves the device that created it, so a device that
+            merely signed in shows nothing until it is unlocked with the phrase. */}
+        <ThemedText variant="caption" tone="muted">
+          This device can show the phrase only if it created the account or was
+          unlocked with it. Use restore access to read files uploaded before this
+          device was added.
+        </ThemedText>
         {app.revealedPhrase ? (
           <View
             style={{
@@ -120,6 +129,13 @@ export function SecurityScreen() {
           ) : null}
         </View>
         <Button
+          title="Restore access with recovery phrase"
+          variant="secondary"
+          icon="download"
+          onPress={() => setUnlockOpen(true)}
+          disabled={!app.authed || app.busy !== null}
+        />
+        <Button
           title={app.busy === "rotating-recovery" ? "Regenerating…" : "Regenerate recovery key"}
           variant="destructive"
           onPress={() => setRotateOpen(true)}
@@ -131,6 +147,29 @@ export function SecurityScreen() {
           </ThemedText>
         ) : null}
       </Card>
+
+      <Sheet visible={unlockOpen} title="Restore access" onClose={() => setUnlockOpen(false)}>
+        <ThemedText variant="caption" tone="muted">
+          Enter the 24-word recovery phrase for this account to unlock files and
+          folders uploaded before this device was added.
+        </ThemedText>
+        <TextField
+          label="Recovery phrase"
+          value={app.recoveryUnlockInput}
+          onChangeText={app.setRecoveryUnlockInput}
+          placeholder="word1 word2 … word24"
+          autoCapitalize="none"
+          multiline
+        />
+        <Button
+          title={app.busy === "unlocking-keys" ? "Unlocking…" : "Unlock"}
+          onPress={() => {
+            void app.unlockWithPhrase();
+            setUnlockOpen(false);
+          }}
+          disabled={!app.recoveryUnlockInput.trim() || app.busy !== null}
+        />
+      </Sheet>
 
       <Sheet
         visible={rotateOpen}

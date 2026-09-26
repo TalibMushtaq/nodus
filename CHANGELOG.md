@@ -1,5 +1,17 @@
 # Changelog
 
+## [2026-09-26] - Mobile: unlock an account with its recovery phrase
+
+**What changed:**
+
+- New `unlockWithPhrase` and `recoveryUnlockInput` in `useNodusApp`, and a "Restore access with recovery phrase" sheet on the Security screen.
+
+**Why:** signing in registers a device but does not deliver key envelopes for files uploaded before that device existed, so names decrypt to id fallbacks and previews never start. Entering the account phrase opens the recovery-sealed envelopes into the local key store, after which the existing files and folders are readable here without waiting for another device to re-seal them. The phrase is checked for shape and its derived public key compared against the account's, so a well-formed but wrong phrase produces a specific error instead of silently unlocking nothing. The phrase is then saved locally so the Security screen can reveal it from now on, matching the registration and recovery flows.
+
+**Impact:** mobile only.
+
+**Verification:** `pnpm --filter mobile run check-types`, `lint` and the 22-test suite pass.
+
 ## [2026-09-26] - Mobile: regenerating the recovery key requires the account password
 
 **What changed:**

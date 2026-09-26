@@ -383,6 +383,8 @@ export function useNodusApp() {
   const [securityStatus, setSecurityStatus] = React.useState<string | null>(null);
   /** Revealed recovery phrase, or null when hidden/not loaded. */
   const [revealedPhrase, setRevealedPhrase] = React.useState<string | null>(null);
+  /** Phrase typed into the Security "restore access" sheet. */
+  const [recoveryUnlockInput, setRecoveryUnlockInput] = React.useState("");
 
   // ── Foreground gate (ADR-0004: Path A is foreground-only) ─────────────────
   const appActiveRef = React.useRef(true);
@@ -1749,6 +1751,50 @@ export function useNodusApp() {
     setNotice("Recovery phrase copied to the clipboard.");
   }, [revealedPhrase]);
 
+  // Unlock an account this device only signed into. Signing in registers the
+  // device but does not deliver key envelopes for files uploaded before it
+  // existed, so names decrypt to id fallbacks and image previews never start.
+  // Entering the account phrase opens the recovery-sealed envelopes into the
+  // local key store, after which every existing file/folder is readable here.
+  const unlockWithPhrase = React.useCallback(async () => {
+    if (!session) return;
+    const phrase = recoveryUnlockInput.trim();
+    if (!phrase) return;
+    const client = mobileRecoveryClient();
+    if (!client.isValid(phrase)) {
+      setError("That doesn't look like a 24-word recovery phrase.");
+      return;
+    }
+    // A well-formed but wrong phrase would silently unlock nothing; comparing the
+    // derived public key to the account's gives a precise error instead.
+    if (session.recovery_public_key && client.publicKey(phrase) !== session.recovery_public_key) {
+      setError("That recovery phrase does not match this account.");
+      return;
+    }
+    setBusy("unlocking-keys");
+    setError(null);
+    setNotice(null);
+    try {
+      const unlocked = await client.materialize(phrase);
+      // Keep the phrase locally so Security can reveal it from now on, matching
+      // the registration and recovery flows.
+      await client.save(session.account_id, phrase);
+      setRecoveryUnlockInput("");
+      // Names live in the file/folder state; refresh so the Files tab picks up
+      // the newly unlocked keys without a remount.
+      await Promise.all([loadFiles(), loadFolders()]);
+      if (unlocked.files + unlocked.folders === 0) {
+        setNotice("No recoverable keys were found for this account.");
+      } else {
+        setNotice(`Unlocked ${unlocked.files} file and ${unlocked.folders} folder key(s).`);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(null);
+    }
+  }, [session, recoveryUnlockInput, loadFiles, loadFolders]);
+
   // Regenerate the recovery key: enroll the new public key, re-seal every key
   // this device can open, and reveal the new phrase once.
   //
@@ -2074,6 +2120,9 @@ export function useNodusApp() {
     revealPhrase,
     copyPhrase,
     rotateRecovery,
+    recoveryUnlockInput,
+    setRecoveryUnlockInput,
+    unlockWithPhrase,
     // settings
     shardSizeBytes,
     chooseShardSize,
