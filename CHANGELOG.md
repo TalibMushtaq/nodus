@@ -1,5 +1,18 @@
 # Changelog
 
+## [2026-09-27] - Web: surface download cancellation and bound shard POSTs
+
+**What changed:**
+
+- `apps/web/lib/download.ts`: `fetchShardViaRelay` re-throws an abort as `DownloadCancelledError` instead of returning `{ok:false}`; `browserDownloadDeps.fetchShard` tracks the per-transport failure reason and includes it in the final `ShardUnavailableError`. `apps/web/lib/buffer.ts`: `ShardUpload` gains an optional `signal`, the XHR path gets `timeout`/`ontimeout`/`onabort` (300 s cap) and signal wiring, and the fetch path forwards `signal`.
+
+**Why:** an abort during the Relay fallback was swallowed into a generic "shard unavailable", so a cancelled download could be logged/reported as a transport error instead of cancelled. The bare `catch {}` blocks also discarded which transport failed, making LAN-vs-Relay problems indistinguishable. The Path C XHR had no timeout or abort, so a hung or cancelled shard POST could leave the upload pending indefinitely.
+
+**Impact:** web only. Cancellation now propagates consistently through all three transports; a shard POST that stalls past five minutes fails instead of hanging.
+
+**Verification:** `shard-relay.test.ts` gains an abort case asserting `DownloadCancelledError`; existing download/cancel and buffer tests pass. Full 292-test suite, `check-types`, and `lint` green.
+
+
 ## [2026-09-27] - Web: make IndexedDB writes atomic and durable
 
 **What changed:**

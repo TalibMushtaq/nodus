@@ -85,6 +85,9 @@ export function browserDownloadDeps(
       // Cancellation short-circuits the fallback chain: without this, an aborted
       // attempt would be swallowed and the next transport tried anyway.
       if (signal?.aborted) throw new DownloadCancelledError();
+      // Track the last failure of each transport so a final "unavailable"
+      // error says *why* rather than collapsing every path into one message.
+      let lastError: string | undefined;
       // Direct WebRTC pull first: the node stores the ciphertext, so a
       // NODE_STORED shard can be streamed over a data channel (LAN-preferred,
       // relay-signaling fallback). Any failure falls through to the HTTP paths.
@@ -102,8 +105,9 @@ export function browserDownloadDeps(
           });
           onTransport?.("webrtc");
           return data;
-        } catch {
+        } catch (err) {
           if (signal?.aborted) throw new DownloadCancelledError();
+          lastError = `webrtc: ${describeError(err)}`;
           // Fall through to LAN HTTP, then the Relay.
         }
       }
@@ -128,21 +132,32 @@ export function browserDownloadDeps(
             );
             onTransport?.("lan");
             return data;
-          } catch {
+          } catch (err) {
             if (signal?.aborted) throw new DownloadCancelledError();
+            lastError = `lan: ${describeError(err)}`;
             // Fall through to the Relay path below.
           }
         }
+        // An abort during the Relay fetch is re-thrown by fetchShardViaRelay as
+        // a cancellation, not returned as a failure.
         const viaRelay = await fetchShardViaRelay(location.hash, onProgress, signal);
         if (viaRelay.ok) {
           onTransport?.("relay");
           return viaRelay.data as Uint8Array;
         }
-        throw new ShardUnavailableError(location.shard_index, viaRelay.error ?? "relay_unavailable");
+        throw new ShardUnavailableError(
+          location.shard_index,
+          viaRelay.error ?? lastError ?? "relay_unavailable",
+        );
       }
       throw new ShardUnavailableError(location.shard_index, "no_trusted_host");
     },
   };
+}
+
+/** Short, log-safe description of a thrown value for error context. */
+function describeError(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
 
 export interface RelayShardFetchResult {
@@ -212,6 +227,13 @@ export async function fetchShardViaRelay(
     }
     return { ok: true, data };
   } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    // An abort must surface as a cancellation, not be folded into a generic
+    // "shard unavailable": the caller's cancel path (and the SDK's typed
+    // DownloadCancelledError) depends on distinguishing them. Browsers throw a
+    // DOMException named AbortError; some runtimes throw their own.
+    if (signal?.aborted || (err instanceof DOMException && err.name === "AbortError")) {
+      throw new DownloadCancelledError();
+    }
+    return { ok: false, error: describeError(err) };
   }
 }

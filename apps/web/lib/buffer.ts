@@ -19,12 +19,21 @@ export interface ShardUpload {
    * this; Path D (deferred queue) ignores it.
    */
   onProgress?: (sentBytes: number, totalBytes: number) => void;
+  /** Aborts an in-flight shard POST (e.g. download/upload cancelled). */
+  signal?: AbortSignal;
 }
 
 export interface ShardUploadResult {
   buffer_id: string;
   status: string;
 }
+
+/**
+ * Upper bound on a single shard POST. Generous (an 8 MiB shard on a slow link
+ * can take minutes) but bounded, so a hung connection cannot leave the upload
+ * pending forever.
+ */
+const SHARD_UPLOAD_TIMEOUT_MS = 300_000;
 
 /**
  * POST one encrypted shard. A 201 means the Relay has it as RELAY_BUFFERED;
@@ -52,7 +61,6 @@ export async function postShard(dto: ShardUpload, baseUrl = ""): Promise<ShardUp
   if (typeof XMLHttpRequest === "undefined") {
     return postShardFetch(baseUrl, headers, dto);
   }
-
   return new Promise<ShardUploadResult>((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open("POST", `${baseUrl}/api/buffer/upload`);
@@ -60,10 +68,21 @@ export async function postShard(dto: ShardUpload, baseUrl = ""): Promise<ShardUp
       xhr.setRequestHeader(key, value);
     }
     xhr.responseType = "json";
+    // Bound a hung POST: without a timeout an unreachable Relay (accepting the
+    // socket but never answering) leaves the upload pending forever.
+    xhr.timeout = SHARD_UPLOAD_TIMEOUT_MS;
+    const onAbort = () => xhr.abort();
+    if (dto.signal?.aborted) {
+      reject(new DOMException("shard upload aborted", "AbortError"));
+      return;
+    }
+    dto.signal?.addEventListener("abort", onAbort);
+    const cleanup = () => dto.signal?.removeEventListener("abort", onAbort);
     xhr.upload.onprogress = (event) => {
       if (event.lengthComputable) dto.onProgress?.(event.loaded, event.total);
     };
     xhr.onload = () => {
+      cleanup();
       if (xhr.status >= 200 && xhr.status < 300) {
         resolve(xhr.response as ShardUploadResult);
       } else {
@@ -71,7 +90,18 @@ export async function postShard(dto: ShardUpload, baseUrl = ""): Promise<ShardUp
         reject(new Error(body?.error ?? `shard upload failed: ${xhr.status}`));
       }
     };
-    xhr.onerror = () => reject(new Error("shard upload failed: network error"));
+    xhr.onerror = () => {
+      cleanup();
+      reject(new Error("shard upload failed: network error"));
+    };
+    xhr.ontimeout = () => {
+      cleanup();
+      reject(new Error("shard upload failed: timed out"));
+    };
+    xhr.onabort = () => {
+      cleanup();
+      reject(new DOMException("shard upload aborted", "AbortError"));
+    };
     xhr.send(dto.data as unknown as ArrayBufferView<ArrayBuffer>);
   });
 }
@@ -87,6 +117,8 @@ async function postShardFetch(
     // BufferSource is valid at runtime; the cast bridges the ArrayBufferLike
     // variance gap between lib.es and lib.dom typed-array definitions.
     body: dto.data as unknown as BodyInit,
+    // Propagate cancellation so a cancelled transfer tears down the request.
+    ...(dto.signal ? { signal: dto.signal } : {}),
   });
   if (!res.ok) {
     const body = (await res.json().catch(() => null)) as { error?: string } | null;

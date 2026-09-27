@@ -2,7 +2,7 @@ import "fake-indexeddb/auto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { autoPairCandidateHosts } from "../auto-pair";
-import { fetchShardViaRelay } from "../download";
+import { DownloadCancelledError, fetchShardViaRelay } from "../download";
 
 const ORIGINAL_FETCH = globalThis.fetch;
 
@@ -54,6 +54,18 @@ describe("fetchShardViaRelay", () => {
     const result = await fetchShardViaRelay("ef".repeat(32));
     expect(result.ok).toBe(false);
     expect(result.error).toContain("boom");
+  });
+
+  it("re-throws an abort as a cancellation instead of a shard failure", async () => {
+    const controller = new AbortController();
+    globalThis.fetch = vi
+      .fn()
+      .mockRejectedValue(new DOMException("aborted", "AbortError"));
+    controller.abort();
+
+    await expect(fetchShardViaRelay("aa".repeat(32), undefined, controller.signal)).rejects.toBeInstanceOf(
+      DownloadCancelledError,
+    );
   });
 });
 
