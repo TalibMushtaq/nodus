@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { relayFetch, relayErrorMessage } from "../../../../lib/relay";
+import { requestHasSessionCookie } from "../../../../lib/session-cookie";
 import type { RelayError } from "../../../../lib/relay";
 import { cleanDisplayName, readJsonObject } from "../../../../lib/validate";
 
@@ -8,6 +9,10 @@ import { cleanDisplayName, readJsonObject } from "../../../../lib/validate";
 // updates its catalog from the response.
 
 export async function PATCH(request: Request, { params }: { params: Promise<{ node_id: string }> }) {
+  // Refuse anonymous calls at the BFF before touching the Relay.
+  if (!requestHasSessionCookie(request)) {
+    return NextResponse.json({ error: "not authenticated" }, { status: 401 });
+  }
   const { node_id } = await params;
   const body = await readJsonObject(request);
   if (!body.ok) {

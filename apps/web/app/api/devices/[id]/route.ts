@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { relayFetch, relayErrorMessage } from "../../../../lib/relay";
+import { requestHasSessionCookie } from "../../../../lib/session-cookie";
 import type { RelayError } from "../../../../lib/relay";
 import { cleanDisplayName, readJsonObject } from "../../../../lib/validate";
 
@@ -8,7 +9,12 @@ import { cleanDisplayName, readJsonObject } from "../../../../lib/validate";
 // session bound to it, so the current browser only loses its session when it
 // is the device being revoked.
 
-export async function DELETE(_request: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function DELETE(request: Request, { params }: { params: Promise<{ id: string }> }) {
+  // Refuse anonymous calls at the BFF: the Relay also authorizes the target,
+  // but a missing session here can only be a forged/expired request.
+  if (!requestHasSessionCookie(request)) {
+    return NextResponse.json({ error: "not authenticated" }, { status: 401 });
+  }
   const { id } = await params;
   const { status, json } = await relayFetch<unknown>(`/devices/${encodeURIComponent(id)}`, {
     method: "DELETE",
@@ -21,6 +27,9 @@ export async function DELETE(_request: Request, { params }: { params: Promise<{ 
 
 // PATCH /api/devices/{id} — assign (or clear) this device's display name.
 export async function PATCH(request: Request, { params }: { params: Promise<{ id: string }> }) {
+  if (!requestHasSessionCookie(request)) {
+    return NextResponse.json({ error: "not authenticated" }, { status: 401 });
+  }
   const { id } = await params;
   const body = await readJsonObject(request);
   if (!body.ok) {

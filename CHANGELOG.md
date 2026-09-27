@@ -1,5 +1,18 @@
 # Changelog
 
+## [2026-09-27] - Web: block cross-site BFF requests and harden the session cookie
+
+**What changed:**
+
+- New `apps/web/lib/csrf.ts` and `apps/web/middleware.ts`: a `/api/:path*` matcher rejects mutating (`POST`/`PUT`/`PATCH`/`DELETE`) requests that are cross-site. New `apps/web/lib/session-cookie.ts` with `hardenSessionCookie` (asserts `HttpOnly` + `SameSite=Lax`, adds `Secure` in production) and `requestHasSessionCookie`. The six auth routes that forward `Set-Cookie` now run it through the hardener, and the destructive/probe proxies (`devices/[id]` DELETE+PATCH, `nodes/[node_id]` PATCH, both `/ping` routes) return 401 up front when the request carries no session cookie. `turbo.json` declares `NODE_ENV` in `globalEnv` for the lint rule.
+
+**Why:** all BFF mutations ride an HttpOnly session cookie, so a cross-site page could not read the cookie but could still make the browser send it; there was no Origin/`Sec-Fetch-Site` check. The BFF also forwarded the Relay's `Set-Cookie` verbatim, so nothing guaranteed `HttpOnly`/`SameSite`. Both are now enforced at the last hop, and the centralized middleware covers future routes automatically rather than relying on each author.
+
+**Impact:** web BFF only. Same-origin app requests and the e2e harness (no Origin header) are unaffected; cross-site form/fetch submissions now get 403, and anonymous calls to the guarded routes get 401 before reaching the Relay.
+
+**Verification:** new `lib/__tests__/csrf.test.ts` and `lib/__tests__/session-cookie.test.ts`; updated `app/api/auth/__tests__/routes.test.ts`. Full 278-test web suite, `check-types`, `lint`, and `next build` (middleware compiled) green.
+
+
 ## [2026-09-27] - Web: keep the X25519 private key out of localStorage
 
 **What changed:**

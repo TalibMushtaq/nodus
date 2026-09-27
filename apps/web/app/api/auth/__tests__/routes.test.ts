@@ -24,6 +24,8 @@ beforeEach(() => {
 });
 
 describe("auth route cookie forwarding", () => {
+  // The BFF normalizes the Relay's Set-Cookie and appends SameSite=Lax (and
+  // HttpOnly) so the browser never holds a cookie without the CSRF baseline.
   it.each([
     ["login", login, 200, "nodus_session=login-session; HttpOnly; Path=/"],
     ["register", register, 201, "nodus_session=register-session; HttpOnly; Path=/"],
@@ -40,7 +42,11 @@ describe("auth route cookie forwarding", () => {
     const response = await handler(new Request("http://localhost/api/auth", { method: "POST" }) as never);
 
     expect(response.status).toBe(status);
-    expect(response.headers.get("set-cookie")).toBe(setCookie);
+    // The helper normalizes spacing, so compare on the meaningful attributes.
+    const forwarded = response.headers.get("set-cookie") ?? "";
+    expect(forwarded).toContain("HttpOnly");
+    expect(forwarded).toContain("SameSite=Lax");
+    expect(forwarded).toContain(setCookie.split(";")[0]!.trim());
   });
 
   it("surfaces the Relay error body on a rejected password change", async () => {

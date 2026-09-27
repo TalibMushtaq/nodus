@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { relayFetch, relayErrorMessage } from "../../../../lib/relay";
+import { hardenSessionCookie } from "../../../../lib/session-cookie";
 import type { RelayError } from "../../../../lib/relay";
 import type { SessionInfo } from "../../../../lib/session";
 
@@ -18,7 +19,7 @@ export async function POST(request: Request) {
     { status },
   );
   if (setCookie) {
-    res.headers.set("set-cookie", setCookie);
+    res.headers.set("set-cookie", hardenSessionCookie(setCookie));
   }
   return res;
 }
