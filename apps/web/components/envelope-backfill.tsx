@@ -34,12 +34,17 @@ import { backfillMissingEnvelopes } from "../lib/envelope-backfill";
 export function EnvelopeBackfill() {
   const { device, session } = useAuth();
   const sendEventBatch = useEventBatch();
-  const startedRef = useRef(false);
+  // The device id the backfill last ran for. Keying on the id (not a boolean)
+  // lets the effect re-run when the account/device changes in the same mount —
+  // a second login must backfill the new identity, not be skipped as "already
+  // started".
+  const startedForRef = useRef<string | null>(null);
 
   useEffect(() => {
-    if (!device || startedRef.current) return;
+    if (!device) return;
+    if (startedForRef.current === device.device_id) return;
     const identityAtStart = device.device_id;
-    startedRef.current = true;
+    startedForRef.current = identityAtStart;
     void (async () => {
       try {
         // Warm the async encryption identity first (migrates legacy storage).
@@ -52,13 +57,9 @@ export function EnvelopeBackfill() {
           listDevices(),
           fetchEnvelopeSummary(),
         ]);
-        // Abort if the account/device changed mid-flight (second login in the
-        // same mount must re-run for the new identity instead of backfilling
-        // the old one).
-        if (!identityAtStart || device.device_id !== identityAtStart) {
-          startedRef.current = false;
-          return;
-        }
+        // Abort if the account/device changed mid-flight; the effect will have
+        // re-run (and reset the marker) for the new identity.
+        if (device.device_id !== identityAtStart) return;
         const [catalog, folders] = await Promise.all([getCachedCatalog(), getCachedFolders()]);
 
         // Build recipients the same way an upload does, then target the active

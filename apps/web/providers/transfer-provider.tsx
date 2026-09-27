@@ -115,48 +115,60 @@ export function TransferProvider({ children }: { children: ReactNode }) {
     // them so an unmount closes the peer connections and signaling sockets.
     const sessionCache = new WebRtcSessionCache();
     sessionCacheRef.current = sessionCache;
-    Promise.all([cache.hydrate(), queue.hydrate()]).then(() => {
-      if (cancelled) return;
-      const attemptPath = createBrowserAttemptPath({
-        postShard,
-        localQueue: queue,
-        sessionCache,
-        deviceId: device.device_id,
-        sourceDevice: device.device_id,
-        // Path A requires proving device identity to the node per message; the
-        // signer is a non-extractable handle (ADR-0008).
-        signLocal: (message) => signer.sign(message),
-        // Path B (internet WebRTC): signal through the Relay socket. Built per
-        // attempt because each shard transfer needs its own signaling state;
-        // it returns null when the socket is not up, which makes the executor
-        // fall through to Path C.
-        createRelayChannel: (targetNode) =>
-          createBrowserRelayChannel({
-            send: wsSend,
-            on: wsOn,
-            fromPeer: device.device_id,
-            toPeer: targetNode,
-            // Prove device identity so a compromised Relay cannot inject an
-            // offer on this device's behalf.
-            sign: (message) => signer.sign(message),
-          }),
-        // Skip Path B entirely while the Relay socket is down: it cannot signal,
-        // and otherwise every shard would burn a negotiation timeout before
-        // falling back to the buffer.
-        isRelayAvailable: () => wsStatusRef.current === "connected",
-        // Skip direct WebRTC entirely when the Relay catalog says the node is
-        // offline: negotiating then only delays the relay-buffer fallback.
-        isNodeOnline: (targetNode) => nodeOnlineRef.current.get(targetNode) ?? true,
+    Promise.all([cache.hydrate(), queue.hydrate()])
+      .then(() => {
+        if (cancelled) return;
+        const attemptPath = createBrowserAttemptPath({
+          postShard,
+          localQueue: queue,
+          sessionCache,
+          deviceId: device.device_id,
+          sourceDevice: device.device_id,
+          // Path A requires proving device identity to the node per message; the
+          // signer is a non-extractable handle (ADR-0008).
+          signLocal: (message) => signer.sign(message),
+          // Path B (internet WebRTC): signal through the Relay socket. Built per
+          // attempt because each shard transfer needs its own signaling state;
+          // it returns null when the socket is not up, which makes the executor
+          // fall through to Path C.
+          createRelayChannel: (targetNode) =>
+            createBrowserRelayChannel({
+              send: wsSend,
+              on: wsOn,
+              fromPeer: device.device_id,
+              toPeer: targetNode,
+              // Prove device identity so a compromised Relay cannot inject an
+              // offer on this device's behalf.
+              sign: (message) => signer.sign(message),
+            }),
+          // Skip Path B entirely while the Relay socket is down: it cannot signal,
+          // and otherwise every shard would burn a negotiation timeout before
+          // falling back to the buffer.
+          isRelayAvailable: () => wsStatusRef.current === "connected",
+          // Skip direct WebRTC entirely when the Relay catalog says the node is
+          // offline: negotiating then only delays the relay-buffer fallback.
+          isNodeOnline: (targetNode) => nodeOnlineRef.current.get(targetNode) ?? true,
+        });
+        queueRef.current = queue;
+        setManager(new TransferManager(attemptPath, undefined, cache, queue));
+        setQueuedCount(queue.size);
+      })
+      .catch((err) => {
+        // IndexedDB unavailable (private mode/quota): the manager never becomes
+        // ready. Report rather than leaving an unhandled rejection; the UI's
+        // `ready:false` already disables uploads.
+        console.error("transfer backend hydration failed", err);
       });
-      queueRef.current = queue;
-      setManager(new TransferManager(attemptPath, undefined, cache, queue));
-      setQueuedCount(queue.size);
-    });
     return () => {
       cancelled = true;
       queueRef.current = null;
       sessionCacheRef.current = null;
       sessionCache.closeAll();
+      // Drop the manager: on an identity/device change the next effect builds a
+      // fresh one bound to the new device id/signer, and the old manager must
+      // not remain reachable in between.
+      setManager(null);
+      setQueuedCount(0);
     };
   }, [device, signer, wsSend, wsOn]);
 

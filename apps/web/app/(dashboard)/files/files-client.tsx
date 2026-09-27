@@ -658,6 +658,11 @@ export function FilesClient() {
   // active task.
   const progressHandlerRef = useRef<((event: UploadProgressEvent) => void) | null>(null);
   const pathHandlerRef = useRef<((path: string) => void) | null>(null);
+  // Guards against overlapping upload batches. The Upload button is gated by
+  // `canUpload`, but the drop handler and the hidden file input can still fire
+  // mid-upload; a second batch would overwrite the shared progress/path sinks
+  // above and misattribute shard progress to the wrong task.
+  const uploadBatchRef = useRef(false);
   // Path the last shard actually used (local P2P / relay / buffer). Captured in
   // transferPostShard and written to the activity log on completion, where the
   // catalog no longer records how the bytes arrived.
@@ -838,6 +843,12 @@ export function FilesClient() {
         setActionError("Pair a storage node before uploading.");
         return;
       }
+      // Reject a second batch (drop / file-input race) while one is running.
+      if (uploadBatchRef.current) {
+        setActionError("An upload is already in progress. Wait for it to finish.");
+        return;
+      }
+      uploadBatchRef.current = true;
       setActionError(null);
       // Design B: proactively pair the chosen node so downloads (and Path A
       // WebRTC transfers) work after this upload — no dialog needed. Fire-and-
@@ -958,6 +969,7 @@ export function FilesClient() {
 
       progressHandlerRef.current = null;
       pathHandlerRef.current = null;
+      uploadBatchRef.current = false;
       setActiveId(null);
       if (skipped.length > 0) {
         setActionError(

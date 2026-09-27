@@ -169,11 +169,25 @@ export function NotificationProvider({ children }: { children: ReactNode }) {
   // Catalog watcher. `CATALOG_CHANGED` is the app's existing signal that the
   // Relay catalog moved; refresh once, then derive both alert classes from the
   // same snapshot so a single change does not fetch twice.
-  const seededRef = useRef(false);
+  //
+  // `seededDeviceRef` is keyed by device id: "seed only" (record existing items
+  // without alerting) must apply once per account, so a second login in the same
+  // mount does not treat that account's pre-existing conflicts as new. The
+  // in-flight/rerun flags coalesce a burst of events and prevent two overlapping
+  // checks from both reading the notified-set before either writes it, which
+  // would double-notify.
+  const seededDeviceRef = useRef<string | null>(null);
   useEffect(() => {
     if (!device) return;
     let cancelled = false;
+    let inFlight = false;
+    let rerun = false;
     const check = async () => {
+      if (inFlight) {
+        rerun = true;
+        return;
+      }
+      inFlight = true;
       try {
         await refreshCatalog();
         const [conflicts, catalog] = await Promise.all([
@@ -181,12 +195,20 @@ export function NotificationProvider({ children }: { children: ReactNode }) {
           getCachedCatalog(),
         ]);
         if (cancelled) return;
-        const seedOnly = !seededRef.current;
+        const seedOnly = seededDeviceRef.current !== device.device_id;
         await alertNewConflicts(conflicts, seedOnly);
         await alertNewBackups(catalog, seedOnly);
-        seededRef.current = true;
+        seededDeviceRef.current = device.device_id;
       } catch {
         // Relay/cache unavailable: retry on the next catalog change.
+      } finally {
+        inFlight = false;
+        // A burst of catalog changes that arrived while this check ran collapses
+        // into one follow-up refresh.
+        if (rerun && !cancelled) {
+          rerun = false;
+          void check();
+        }
       }
     };
     void check();

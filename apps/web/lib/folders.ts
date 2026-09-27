@@ -3,6 +3,7 @@
 
 import type { RelayFolder } from "./catalog";
 import { pruneFolders, upsertFolders } from "./catalog";
+import { serialize } from "./serialize";
 
 export async function fetchFolders(): Promise<RelayFolder[]> {
   const res = await fetch("/api/folders");
@@ -12,11 +13,16 @@ export async function fetchFolders(): Promise<RelayFolder[]> {
   return (await res.json()) as RelayFolder[];
 }
 
-/** Fetch the folder tree and refresh the local cache. */
-export async function refreshFolders(): Promise<RelayFolder[]> {
-  const folders = await fetchFolders();
-  await upsertFolders(folders);
-  // Same reconciliation as the file catalog: prune folders the Relay dropped.
-  await pruneFolders(new Set(folders.map((folder) => folder.folder_id)));
-  return folders;
+/**
+ * Fetch the folder tree and refresh the local cache. Serialized for the same
+ * reason as `refreshCatalog`: overlapping runs must not interleave upsert/prune.
+ */
+export function refreshFolders(): Promise<RelayFolder[]> {
+  return serialize("folders", async () => {
+    const folders = await fetchFolders();
+    await upsertFolders(folders);
+    // Same reconciliation as the file catalog: prune folders the Relay dropped.
+    await pruneFolders(new Set(folders.map((folder) => folder.folder_id)));
+    return folders;
+  });
 }

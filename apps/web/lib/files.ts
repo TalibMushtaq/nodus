@@ -4,6 +4,7 @@
 
 import type { RelayFile } from "./catalog";
 import { pruneCatalog, upsertCatalogEntries } from "./catalog";
+import { serialize } from "./serialize";
 
 export async function fetchFiles(): Promise<RelayFile[]> {
   const res = await fetch("/api/files");
@@ -13,12 +14,18 @@ export async function fetchFiles(): Promise<RelayFile[]> {
   return (await res.json()) as RelayFile[];
 }
 
-/** Fetch the catalog and refresh the local cache. Returns the fresh snapshot. */
-export async function refreshCatalog(): Promise<RelayFile[]> {
-  const files = await fetchFiles();
-  await upsertCatalogEntries(files);
-  // Reconcile against the snapshot: drop files the Relay no longer reports so
-  // the UI cannot render ghost rows from an earlier state/reset.
-  await pruneCatalog(new Set(files.map((file) => file.file_id)));
-  return files;
+/**
+ * Fetch the catalog and refresh the local cache. Returns the fresh snapshot.
+ * Serialized (see `serialize`) because the mount/poll/push callers can overlap:
+ * interleaved runs let an older snapshot's prune delete rows a newer run added.
+ */
+export function refreshCatalog(): Promise<RelayFile[]> {
+  return serialize("catalog", async () => {
+    const files = await fetchFiles();
+    await upsertCatalogEntries(files);
+    // Reconcile against the snapshot: drop files the Relay no longer reports so
+    // the UI cannot render ghost rows from an earlier state/reset.
+    await pruneCatalog(new Set(files.map((file) => file.file_id)));
+    return files;
+  });
 }

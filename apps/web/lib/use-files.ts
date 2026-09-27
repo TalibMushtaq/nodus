@@ -149,6 +149,10 @@ export function useFiles(pollMs = 60_000) {
   // Debounce handle for pushed catalog invalidations (a burst of events
   // coalesces into one refetch).
   const pushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Monotonic id of the newest started load. Mount/poll/push refreshes can
+  // resolve out of order (decrypt is async), so an older result must not
+  // overwrite a newer one in state.
+  const loadSeqRef = useRef(0);
 
   // Pure refresh + view mapping. Returns the rendered rows plus whether the
   // Relay round-trip failed, and touches no state, so effects can consume it
@@ -156,8 +160,14 @@ export function useFiles(pollMs = 60_000) {
   // setting state from async work (see the devices page). On failure the
   // cached rows are still returned so the list never blanks out.
   const load = useCallback(
-    async (): Promise<{ views: FileEntryView[]; folderViews: FolderView[]; error: string | null }> => {
-      if (!device) return { views: [], folderViews: [], error: null };
+    async (): Promise<{
+      views: FileEntryView[];
+      folderViews: FolderView[];
+      error: string | null;
+      seq: number;
+    }> => {
+      const seq = ++loadSeqRef.current;
+      if (!device) return { views: [], folderViews: [], error: null, seq };
       let error: string | null = null;
       try {
         await Promise.all([refreshCatalog(), refreshFolders()]);
@@ -170,7 +180,7 @@ export function useFiles(pollMs = 60_000) {
         Promise.all(cached.map((entry) => toView(entry, device))),
         toFolderViews(cachedFolders, device),
       ]);
-      return { views, folderViews, error };
+      return { views, folderViews, error, seq };
     },
     [device],
   );
@@ -182,8 +192,9 @@ export function useFiles(pollMs = 60_000) {
   useEffect(() => {
     if (!device) return;
     let cancelled = false;
-    void load().then(({ views, folderViews, error }) => {
-      if (cancelled) return;
+    void load().then(({ views, folderViews, error, seq }) => {
+      // Drop a superseded load: a newer one owns the state.
+      if (cancelled || seq !== loadSeqRef.current) return;
       if (error) setError(error);
       setFiles(views);
       setFolders(folderViews);
@@ -204,8 +215,8 @@ export function useFiles(pollMs = 60_000) {
     if (!device) return;
     let cancelled = false;
     const timer = setInterval(() => {
-      void load().then(({ views, folderViews, error }) => {
-        if (cancelled) return;
+      void load().then(({ views, folderViews, error, seq }) => {
+        if (cancelled || seq !== loadSeqRef.current) return;
         if (!error) setError(null);
         setFiles(views);
         setFolders(folderViews);
@@ -226,15 +237,15 @@ export function useFiles(pollMs = 60_000) {
     let cancelled = false;
     const off = on(MessageTypes.CATALOG_CHANGED, () => {
       if (pushTimerRef.current !== null) return;
-      pushTimerRef.current = setTimeout(() => {
-        pushTimerRef.current = null;
-        void load().then(({ views, folderViews, error }) => {
-          if (cancelled) return;
-          if (!error) setError(null);
-          setFiles(views);
-          setFolders(folderViews);
-        });
-      }, 150);
+        pushTimerRef.current = setTimeout(() => {
+          pushTimerRef.current = null;
+          void load().then(({ views, folderViews, error, seq }) => {
+            if (cancelled || seq !== loadSeqRef.current) return;
+            if (!error) setError(null);
+            setFiles(views);
+            setFolders(folderViews);
+          });
+        }, 150);
     });
     return () => {
       cancelled = true;

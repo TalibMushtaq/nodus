@@ -1,5 +1,18 @@
 # Changelog
 
+## [2026-09-27] - Web: serialize catalog refreshes and close transfer/notification races
+
+**What changed:**
+
+- New `apps/web/lib/serialize.ts`; `refreshCatalog`/`refreshFolders` now run through it. `lib/use-files.ts` tags each load with a sequence number and drops superseded results before `setState`. `providers/transfer-provider.tsx` handles hydration rejection and clears the manager on cleanup. `files-client.tsx` rejects an overlapping upload batch. `components/envelope-backfill.tsx` keys its run-once marker on the device id. `providers/notification-provider.tsx` coalesces concurrent catalog checks and scopes its seed flag to the account.
+
+**Why:** the mount/poll/push callers could run `refreshCatalog` concurrently, so an older snapshot's prune could delete rows a newer run just upserted and an older result could overwrite newer state. The transfer provider left hydration errors unhandled and kept a stale manager (old device id/signer) after an identity change. The drop handler and hidden file input could start a second upload batch mid-run and misattribute progress to the wrong task. The backfill skipped a second account in the same mount, and the notification watcher could double-fire alerts from overlapping checks and mis-seed a second account.
+
+**Impact:** web only. Each caller still gets a fresh snapshot (serialized, not coalesced); bursts of catalog changes collapse into one refresh.
+
+**Verification:** new `lib/__tests__/serialize.test.ts` (ordering, cross-key independence, recovery after rejection); existing use-files, transfer, and notification paths pass. Full 295-test suite, `check-types`, and `lint` green.
+
+
 ## [2026-09-27] - Web: surface download cancellation and bound shard POSTs
 
 **What changed:**
