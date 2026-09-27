@@ -20,6 +20,7 @@ import { useUploader } from "../../../lib/use-uploader";
 import { useFileMutations } from "../../../lib/use-file-mutations";
 import { useFolderMutations } from "../../../lib/folder-mutations";
 import { useMounted } from "../../../lib/use-mounted";
+import { useMenuKeyboard } from "../../../lib/use-menu-keyboard";
 import { usePreferences, type FilesIconSize } from "../../../lib/preferences";
 import type { ShardUpload, ShardUploadResult } from "../../../lib/buffer";
 import type { ShardTransferRequest } from "@repo/transfer-manager";
@@ -141,21 +142,18 @@ function MenuButton({
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement | null>(null);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const closeMenu = useCallback(() => setOpen(false), []);
+
+  useMenuKeyboard({ open, onClose: closeMenu, triggerRef, menuRef: ref });
 
   useEffect(() => {
     if (!open) return;
     const onPointerDown = (event: MouseEvent) => {
       if (ref.current && !ref.current.contains(event.target as Node)) setOpen(false);
     };
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setOpen(false);
-    };
     document.addEventListener("mousedown", onPointerDown);
-    document.addEventListener("keydown", onKeyDown);
-    return () => {
-      document.removeEventListener("mousedown", onPointerDown);
-      document.removeEventListener("keydown", onKeyDown);
-    };
+    return () => document.removeEventListener("mousedown", onPointerDown);
   }, [open]);
 
   return (
@@ -164,6 +162,7 @@ function MenuButton({
       className={variant === "overlay" ? "absolute top-1.5 right-1.5 z-10" : "relative shrink-0"}
     >
       <button
+        ref={triggerRef}
         type="button"
         aria-label={label}
         aria-haspopup="menu"
@@ -406,7 +405,7 @@ function FileTile({
       >
         {preview ? (
           // eslint-disable-next-line @next/next/no-img-element -- object URL, not a static asset
-          <img src={preview} alt="" className="w-full h-full object-cover" />
+          <img src={preview} alt={`Preview of ${file.name}`} loading="lazy" decoding="async" className="w-full h-full object-cover" />
         ) : (
           <span className="font-mono text-muted-foreground text-lg">
             {ext && ext.length <= 4 ? ext : "FILE"}
@@ -522,7 +521,7 @@ function FileRowView({
         <div className="w-9 h-9 shrink-0 border border-border bg-secondary overflow-hidden flex items-center justify-center">
           {preview ? (
             // eslint-disable-next-line @next/next/no-img-element -- object URL, not a static asset
-            <img src={preview} alt="" className="w-full h-full object-cover" />
+            <img src={preview} alt={`Preview of ${file.name}`} loading="lazy" decoding="async" className="w-full h-full object-cover" />
           ) : (
             <span className="font-mono text-muted-foreground text-[9px]">{ext ?? "IMG"}</span>
           )}

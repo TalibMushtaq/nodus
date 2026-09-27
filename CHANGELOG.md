@@ -1,5 +1,18 @@
 # Changelog
 
+## [2026-09-27] - Web: keyboard-accessible menus, drawer, and nav
+
+**What changed:**
+
+- New `apps/web/lib/use-menu-keyboard.ts` (APG menu-button keyboard behavior) and exported `useDialogA11y` from `@repo/ui` overlay. `app-shell.tsx` renders the mobile drawer through a `MobileNavDrawer` component that uses the shared dialog behavior. `topbar.tsx` and `files-client.tsx` `MenuButton` use the menu hook. `sidebar.tsx` collapsed links get `aria-label`/`aria-current`. Topbar hamburger gets `aria-expanded`/`aria-controls`, the theme toggle a descriptive label, and preview `<img>`s a real `alt`.
+
+**Why:** the mobile drawer was a mouse-only overlay with no `role="dialog"`, `aria-modal`, Escape-to-close, focus trap, or focus restore. The account and row menus announced `aria-haspopup`/`aria-expanded` but did nothing on arrow keys and did not return focus to the trigger on Escape. Collapsed icon-only nav relied on `title`, which screen readers do not reliably announce, and preview images had empty `alt`.
+
+**Impact:** web + `@repo/ui` (exports an existing hook; no behavior change for Modal/Drawer). Keyboard and screen-reader users can now open, traverse, and dismiss the drawer and menus.
+
+**Verification:** new `lib/__tests__/use-menu-keyboard.test.tsx` (initial focus, arrow/Home/End with disabled skip, Escape focus restore); `@repo/ui` `check-types`/`lint` and the full web suite pass.
+
+
 ## [2026-09-27] - Web: fix concurrent download indicators and small leaks
 
 **What changed:**

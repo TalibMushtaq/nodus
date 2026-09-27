@@ -1,12 +1,13 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Icon } from "@repo/ui/primitives/icons";
 import { Avatar } from "@repo/ui/primitives/brand";
 import { useTheme } from "../providers/theme-provider";
 import { useAuth } from "../providers/auth-provider";
 import { useDownload } from "../providers/download-provider";
+import { useMenuKeyboard } from "../lib/use-menu-keyboard";
 
 // The persistent top bar: page title, theme toggle, and the account menu.
 //
@@ -19,9 +20,11 @@ interface TopBarProps {
   title: string;
   /** Opens the mobile navigation drawer; omitted on layouts without a sidebar. */
   onMenuClick?: () => void;
+  /** Whether the mobile navigation drawer is open (for aria-expanded). */
+  navOpen?: boolean;
 }
 
-export function TopBar({ title, onMenuClick }: TopBarProps) {
+export function TopBar({ title, onMenuClick, navOpen = false }: TopBarProps) {
   const { theme, setTheme, resolvedDark } = useTheme();
   const { session, logout } = useAuth();
   const { tasks } = useDownload();
@@ -31,9 +34,14 @@ export function TopBar({ title, onMenuClick }: TopBarProps) {
   const activeDownloads = tasks.filter((task) => task.status === "active").length;
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
+  const menuTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const closeMenu = useCallback(() => setMenuOpen(false), []);
 
-  // Dismiss the account menu on outside click / Escape; otherwise it only
-  // closes by re-clicking the avatar, which reads as a stuck popover.
+  // Move focus into the menu, arrow between items, and return focus on Escape.
+  useMenuKeyboard({ open: menuOpen, onClose: closeMenu, triggerRef: menuTriggerRef, menuRef });
+
+  // Dismiss the account menu on outside click; Escape is handled by the keyboard
+  // hook above (which also restores focus to the trigger).
   useEffect(() => {
     if (!menuOpen) return;
     const onPointerDown = (e: MouseEvent) => {
@@ -41,15 +49,8 @@ export function TopBar({ title, onMenuClick }: TopBarProps) {
         setMenuOpen(false);
       }
     };
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setMenuOpen(false);
-    };
     document.addEventListener("mousedown", onPointerDown);
-    document.addEventListener("keydown", onKeyDown);
-    return () => {
-      document.removeEventListener("mousedown", onPointerDown);
-      document.removeEventListener("keydown", onKeyDown);
-    };
+    return () => document.removeEventListener("mousedown", onPointerDown);
   }, [menuOpen]);
 
   const cycleTheme = () => {
@@ -75,6 +76,8 @@ export function TopBar({ title, onMenuClick }: TopBarProps) {
           type="button"
           onClick={onMenuClick}
           aria-label="Open navigation"
+          aria-expanded={navOpen}
+          aria-controls="mobile-nav"
           className="md:hidden text-muted-foreground hover:text-foreground transition-colors"
         >
           <Icon name="list-view" size={16} />
@@ -97,7 +100,7 @@ export function TopBar({ title, onMenuClick }: TopBarProps) {
       <button
         type="button"
         onClick={cycleTheme}
-        aria-label="Toggle theme"
+        aria-label={`Switch to ${resolvedDark ? "light" : "dark"} mode`}
         className="flex h-7 w-7 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
         title={`Current: ${theme}${theme === "system" ? ` (${resolvedDark ? "dark" : "light"})` : ""}`}
       >
@@ -127,6 +130,7 @@ export function TopBar({ title, onMenuClick }: TopBarProps) {
       {/* Account menu */}
       <div className="relative" ref={menuRef}>
         <button
+          ref={menuTriggerRef}
           type="button"
           onClick={() => setMenuOpen((open) => !open)}
           aria-haspopup="menu"

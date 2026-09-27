@@ -20,8 +20,11 @@ const FOCUSABLE_SELECTOR =
  * Shared dialog behavior: Escape-to-close, focus trap, initial focus, focus
  * restore, and scroll lock. `onClose` is read through a ref so an inline-arrow
  * handler does not re-run the effect (and re-yank focus) on every render.
+ *
+ * Exported so non-Modal surfaces that are still modal in practice (the mobile
+ * nav drawer) reuse the same behavior instead of re-implementing it.
  */
-function useDialogA11y(onClose: () => void) {
+export function useDialogA11y(onClose: () => void) {
   const panelRef = useRef<HTMLDivElement | null>(null);
   const onCloseRef = useRef(onClose);
   useEffect(() => {

@@ -111,6 +111,8 @@ export function Sidebar({ collapsed, onCollapse }: SidebarProps) {
             <Link
               key={item.id}
               href={`/${item.id}`}
+              aria-label={collapsed ? item.label : undefined}
+              aria-current={active ? "page" : undefined}
               className={`w-full flex items-center gap-3 px-2.5 py-2.5 text-sm rounded-xl transition-all ${
                 active
                   ? "text-white font-semibold accent-gradient elev-card"
