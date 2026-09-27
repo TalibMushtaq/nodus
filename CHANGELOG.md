@@ -1,5 +1,20 @@
 # Changelog
 
+## [2026-09-27] - Web: isolate download ticks and parallelize overview loads
+
+**What changed:**
+
+- `topbar.tsx` extracts the downloads shortcut + badge into a `DownloadsShortcut` component so only it subscribes to `useDownload`. `overview-client.tsx` runs its four initial loads concurrently via one `Promise.allSettled` instead of the network pair followed by the local log/tombstones.
+
+**Why:** `TopBar` called `useDownload()` directly, so every per-second download progress tick re-rendered the whole header (title, theme toggle, account menu). The overview's activity/tombstone reads are local IndexedDB and were unnecessarily serialized behind the two `listNodes`/`listDevices` network calls.
+
+**Impact:** web UI only. Behavior unchanged; fewer re-renders and a faster first overview paint.
+
+**Follow-up:** deeper wins remain — `next/dynamic` for the Files modals/zip helper and `React.memo` on the tile/row components (needs stable callback props first) — deliberately left out to avoid a risky refactor in this pass.
+
+**Verification:** full 297-test suite, `check-types`, `lint`, and `next build` green.
+
+
 ## [2026-09-27] - Web: responsive action rows and visual accessibility fixes
 
 **What changed:**

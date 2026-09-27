@@ -27,11 +27,7 @@ interface TopBarProps {
 export function TopBar({ title, onMenuClick, navOpen = false }: TopBarProps) {
   const { theme, setTheme, resolvedDark } = useTheme();
   const { session, logout } = useAuth();
-  const { tasks } = useDownload();
   const router = useRouter();
-  // Drives the badge on the downloads shortcut; only in-flight work counts, so a
-  // finished list doesn't leave a permanent notification dot.
-  const activeDownloads = tasks.filter((task) => task.status === "active").length;
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
   const menuTriggerRef = useRef<HTMLButtonElement | null>(null);
@@ -109,23 +105,10 @@ export function TopBar({ title, onMenuClick, navOpen = false }: TopBarProps) {
 
       {/* Downloads shortcut — the dedicated tab the widget funnels into. Lives
           here (next to the account avatar) rather than only in the sidebar so an
-          in-flight transfer is reachable from any page via one click. */}
-      <button
-        type="button"
-        onClick={() => router.push("/downloads")}
-        aria-label={
-          activeDownloads > 0 ? `Downloads, ${activeDownloads} active` : "Downloads"
-        }
-        title="Downloads"
-        className="relative flex h-7 w-7 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
-      >
-        <Icon name="download" size={16} className={activeDownloads > 0 ? "animate-pulse" : ""} />
-        {activeDownloads > 0 && (
-          <span className="absolute -right-0.5 -top-0.5 flex h-3.5 min-w-3.5 items-center justify-center rounded-full accent-gradient px-1 text-[9px] font-semibold text-accent-foreground">
-            {activeDownloads > 9 ? "9+" : activeDownloads}
-          </span>
-        )}
-      </button>
+          in-flight transfer is reachable from any page via one click. Isolated
+          in its own component so the download progress ticks re-render only the
+          badge, not the whole header. */}
+      <DownloadsShortcut />
 
       {/* Account menu */}
       <div className="relative" ref={menuRef}>
@@ -174,5 +157,33 @@ export function TopBar({ title, onMenuClick, navOpen = false }: TopBarProps) {
         )}
       </div>
     </header>
+  );
+}
+
+/**
+ * The downloads shortcut + live badge. Kept separate from `TopBar` so the
+ * per-second download progress ticks only re-render this small subtree, not the
+ * whole header (title, theme toggle, account menu).
+ */
+function DownloadsShortcut() {
+  const { tasks } = useDownload();
+  const router = useRouter();
+  // Only in-flight work counts, so a finished list leaves no permanent dot.
+  const activeDownloads = tasks.filter((task) => task.status === "active").length;
+  return (
+    <button
+      type="button"
+      onClick={() => router.push("/downloads")}
+      aria-label={activeDownloads > 0 ? `Downloads, ${activeDownloads} active` : "Downloads"}
+      title="Downloads"
+      className="relative flex h-7 w-7 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+    >
+      <Icon name="download" size={16} className={activeDownloads > 0 ? "animate-pulse" : ""} />
+      {activeDownloads > 0 && (
+        <span className="absolute -right-0.5 -top-0.5 flex h-3.5 min-w-3.5 items-center justify-center rounded-full accent-gradient px-1 text-[9px] font-semibold text-accent-foreground">
+          {activeDownloads > 9 ? "9+" : activeDownloads}
+        </span>
+      )}
+    </button>
   );
 }

@@ -142,21 +142,28 @@ export function OverviewClient({ publicRelayUrl }: OverviewClientProps) {
 
   // Relay catalog (required) and the local activity log / tombstone list
   // (best-effort: a Relay hiccup must not blank the whole dashboard, and the
-  // local log is always available even when offline).
+  // local log is always available even when offline). All four loads run
+  // concurrently; the local log/tombstones no longer wait on the network pair.
   useEffect(() => {
     let cancelled = false;
     async function load() {
-      try {
-        const [n, d] = await Promise.all([listNodes(), listDevices()]);
-        if (cancelled) return;
-        setNodes(n);
-        setDevices(d);
-        setError(null);
-      } catch (err) {
-        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
-      }
-      const [log, trash] = await Promise.allSettled([listTransfers(), listTombstones()]);
+      const [nodesResult, devicesResult, log, trash] = await Promise.allSettled([
+        listNodes(),
+        listDevices(),
+        listTransfers(),
+        listTombstones(),
+      ]);
       if (cancelled) return;
+      const required = [nodesResult, devicesResult];
+      const failed = required.find((result) => result.status === "rejected");
+      if (failed && failed.status === "rejected") {
+        const reason = failed.reason;
+        setError(reason instanceof Error ? reason.message : String(reason));
+      } else if (nodesResult.status === "fulfilled" && devicesResult.status === "fulfilled") {
+        setNodes(nodesResult.value);
+        setDevices(devicesResult.value);
+        setError(null);
+      }
       if (log.status === "fulfilled") setActivity(log.value);
       if (trash.status === "fulfilled") setTombstones(trash.value);
       setLoading(false);
