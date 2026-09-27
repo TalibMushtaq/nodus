@@ -6,6 +6,7 @@ import {
   STORE_UPLOAD_PROGRESS,
   WEB_DB_NAME,
   WEB_STORES,
+  clearLocalDatabase,
   openWebDb,
 } from "../db";
 import { getCursors, getCursor, nextOriginSequence, resyncOriginSequence } from "../sync-state";
@@ -200,5 +201,20 @@ describe("web local DB", () => {
   it("exposes the upload progress store constant", () => {
     expect(STORE_UPLOAD_PROGRESS).toBe("upload_progress");
     expect(STORE_KEYS).toBe("keys");
+  });
+
+  it("keeps the recovery phrase on reset unless forgetting is requested", async () => {
+    const { saveRecoveryPhrase, loadRecoveryPhrase } = await import("../recovery");
+    await saveRecoveryPhrase("acct-1", "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about");
+    await putFileKey("file-x", new Uint8Array([9]));
+
+    // Default reset keeps the only copy of the phrase but drops content keys.
+    await clearLocalDatabase();
+    expect(await loadRecoveryPhrase("acct-1")).toContain("abandon");
+    expect(await getFileKey("file-x")).toBeUndefined();
+
+    // Explicit opt-in wipes the phrase too (shared browser).
+    await clearLocalDatabase({ forgetRecovery: true });
+    expect(await loadRecoveryPhrase("acct-1")).toBeNull();
   });
 });

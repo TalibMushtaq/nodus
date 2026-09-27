@@ -152,19 +152,22 @@ export { requestToPromise };
  * cookie are intentionally left intact: this clears local *content*, not the
  * account, so the user stays signed in and can re-sync from the Relay.
  *
- * The `recovery` store (the locally-kept account recovery phrase) is NOT
- * cleared: after a reset this device must still be able to reveal the phrase on
+ * The `recovery` store (the locally-kept account recovery phrase) is kept by
+ * default: after a reset this device must still be able to reveal the phrase on
  * the Security page, or a user who relied on it could lose the only copy if
- * every other device is gone too. It lives under its own store precisely so a
- * reset can keep it.
+ * every other device is gone too. Pass `{ forgetRecovery: true }` (behind an
+ * explicit checkbox in the reset dialog) to wipe it as well — e.g. on a shared
+ * browser where no secret may remain. It lives under its own store precisely so
+ * a reset can keep or drop it independently.
  *
  * `device_keys` is likewise kept: it holds the device's non-extractable signing
  * key, which is identity, not content. Clearing it while the public identity
  * remained would leave a device that can no longer authenticate.
  */
-export async function clearLocalDatabase(): Promise<void> {
+export async function clearLocalDatabase(options?: { forgetRecovery?: boolean }): Promise<void> {
   for (const store of WEB_STORES) {
-    if (store === STORE_RECOVERY || store === STORE_DEVICE_KEYS) continue;
+    if (store === STORE_DEVICE_KEYS) continue;
+    if (store === STORE_RECOVERY && !options?.forgetRecovery) continue;
     await idbClear(store);
   }
 }

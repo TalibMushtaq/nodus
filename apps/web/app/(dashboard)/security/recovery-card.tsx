@@ -9,6 +9,7 @@ import { shortId } from "../../../lib/format";
 import { useAuth } from "../../../providers/auth-provider";
 import { useRecoveryReseal } from "../../../lib/use-recovery-reseal";
 import {
+  clearRecoveryPhrase,
   createRecoveryPhrase,
   enrollRecoveryKey,
   loadRecoveryPhrase,
@@ -50,6 +51,8 @@ export function RecoveryCard() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  // Two-step inline confirm for forgetting the locally stored phrase.
+  const [forgetArmed, setForgetArmed] = useState(false);
 
   const enrolled = Boolean(session?.recovery_public_key);
   const accountId = session?.account_id ?? "";
@@ -134,6 +137,31 @@ export function RecoveryCard() {
     }
   }, [phrase]);
 
+  // Drop this device's copy of the phrase (e.g. on a shared browser). The
+  // enrolled recovery key on the Relay is untouched, so a copy kept anywhere
+  // else still recovers the account — but if this was the only copy, access is
+  // lost, hence the two-step confirm.
+  const forget = useCallback(async () => {
+    if (!accountId) return;
+    if (!forgetArmed) {
+      setForgetArmed(true);
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      await clearRecoveryPhrase(accountId);
+      setPhrase(null);
+      setRevealed(false);
+      setForgetArmed(false);
+      setNotice("Recovery key forgotten on this device. The enrolled key is unchanged.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }, [accountId, forgetArmed]);
+
   return (
     <Section title="Recovery key">
       <div className="elev-card bg-card border border-border rounded-2xl p-5 space-y-4">
@@ -159,6 +187,15 @@ export function RecoveryCard() {
                   Copy
                 </Button>
               )}
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => void forget()}
+                disabled={busy}
+                title="Remove this device's stored copy of the recovery phrase"
+              >
+                {forgetArmed ? "Confirm forget?" : "Forget on this device"}
+              </Button>
               <Button
                 variant="ghost"
                 size="sm"

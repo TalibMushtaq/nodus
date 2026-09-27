@@ -27,6 +27,9 @@ export default function SettingsPage() {
   const [resetting, setResetting] = useState(false);
   const [resetError, setResetError] = useState<string | null>(null);
   const [resetDone, setResetDone] = useState(false);
+  // Opt-in to also forget the locally stored recovery phrase on reset. Off by
+  // default: the phrase may be the account's only copy.
+  const [forgetRecovery, setForgetRecovery] = useState(false);
 
   // Credential changes rotate the session server-side; the client just needs
   // the current credential to authorize and to surface the rotation result.
@@ -82,15 +85,18 @@ export default function SettingsPage() {
 
   // Delete the entire local DB (catalog, keys, trusted nodes, queues) plus the
   // preference record. Keeps the session/device identity so the account is not
-  // silently signed out.
+  // silently signed out. The recovery phrase is kept unless the user explicitly
+  // opts into forgetting it: it may be the only copy, and silently dropping it
+  // could lock the user out of every device.
   const reset = async () => {
     setResetting(true);
     setResetError(null);
     try {
-      await clearLocalDatabase();
+      await clearLocalDatabase({ forgetRecovery });
       clearPreferences();
       setResetDone(true);
       setResetOpen(false);
+      setForgetRecovery(false);
     } catch (err) {
       setResetError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -269,11 +275,27 @@ export default function SettingsPage() {
           description={
             <>
               This deletes this browser&apos;s cached catalog, encryption keys, trusted nodes, and
-              pending transfers. Your account and device identity are kept. This cannot be undone.
+              pending transfers. Your account and device identity are kept. The recovery key stored
+              on this device is kept unless you also check the box below. This cannot be undone.
+              <label className="mt-3 flex items-start gap-2 text-xs cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={forgetRecovery}
+                  onChange={(e) => setForgetRecovery(e.target.checked)}
+                  className="mt-0.5"
+                />
+                <span>
+                  Also forget the recovery key on this device. Only do this if the phrase is saved
+                  somewhere safe — otherwise you may lose access to your files.
+                </span>
+              </label>
             </>
           }
           onConfirm={() => void reset()}
-          onClose={() => setResetOpen(false)}
+          onClose={() => {
+            setResetOpen(false);
+            setForgetRecovery(false);
+          }}
         />
       )}
     </div>
