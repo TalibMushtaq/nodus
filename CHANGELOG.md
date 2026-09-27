@@ -1,5 +1,66 @@
 # Changelog
 
+## [2026-09-27] - Web: keep the X25519 private key out of localStorage
+
+**What changed:**
+
+- `apps/web/lib/device.ts`: `getOrCreateEncryptionIdentity` is now async. It persists the X25519 identity in the `device_keys` IndexedDB store (alongside the Ed25519 signing key), keeps it in an in-memory session cache, and writes only the public half to `localStorage` for the synchronous sealing paths. New `getEncryptionPublicKey` (sync public-half), `getCachedEncryptionIdentity`, and `clearEncryptionIdentity`. A legacy `localStorage` record is migrated once and its private bytes removed. `lib/envelopes.ts` `openFolderKeyFromEnvelopes` is now async; all callers (`use-files`, `use-recovery-reseal`, `folder-mutations`, `envelope-backfill`, `auth-provider`, `recovery`, `use-uploader`) were updated.
+
+**Why:** the X25519 private key is the decryption identity for every key envelope on the account. Storing it as plaintext JSON in `localStorage` made it synchronously scrapeable by any injected script, and diverged from the Ed25519 signing key, which is already a non-extractable WebCrypto handle. IndexedDB is only marginally harder for same-origin XSS, so this is defense-in-depth and pairs with the new CSP headers; the material no longer sits in the one store every script reads first.
+
+**Impact:** web only. Existing sessions migrate on first load and keep their published public key. No SDK or protocol change.
+
+**Verification:** `apps/web/lib/__tests__/device.test.ts` (generation, reuse, legacy migration dropping private bytes, clear) and `envelopes.test.ts` (folder envelope round-trip) pass; `check-types`, `lint`, and the full 266-test web suite are green.
+
+## [2026-09-27] - Web: wipe local file keys on logout
+
+**What changed:**
+
+- New `clearFileKeys` in `apps/web/lib/keys.ts` (clears the `keys` store). `AuthProvider.handleLogout` now awaits it after `logout()` and after `clearEncryptionIdentity()`, best-effort, alongside a new `keys.test.ts`.
+
+**Why:** the local FEK/folder-key cache is a per-device decryption oracle. On a shared browser, signing out left every cached key readable in DevTools, so the next person could decrypt the previous account's files offline. The Relay envelopes remain the source of truth, so wiping the cache only costs a re-fetch on the next sign-in, not data loss.
+
+**Impact:** web only. Sign-out is slightly heavier but unchanged in shape.
+
+**Verification:** `apps/web/lib/__tests__/keys.test.ts` covers store/retrieve/wipe and single-key delete; `auth-provider.test.tsx` asserts `clearFileKeys` is called on logout. Full web suite green.
+
+## [2026-09-27] - Web: reset and Security can forget the stored recovery key
+
+**What changed:**
+
+- `clearLocalDatabase` in `apps/web/lib/db.ts` takes `{ forgetRecovery?: boolean }` (default keeps the `recovery` store). The Settings reset dialog gained an opt-in checkbox, and the Security recovery card gained a two-step "Forget on this device" action backed by the existing `clearRecoveryPhrase`.
+
+**Why:** the recovery phrase is the last-resort account key and may be the only copy, so silently deleting it during a reset could lock a user out of every device. It is still a plaintext secret in IndexedDB, though, so users on a shared browser need an explicit way to remove it without deleting the whole account. Both paths now make the trade-off explicit rather than deciding for the user.
+
+**Impact:** web only. Default reset behavior is unchanged (recovers the phrase by default, matching the prior "keep it" contract); the recovery key on the Relay is never touched by either path.
+
+**Verification:** `local-db.test.ts` gains a case asserting the phrase survives a default reset but is cleared with `forgetRecovery: true`; `check-types` and `lint` green.
+
+## [2026-09-27] - Web: send CSP and hardening response headers
+
+**What changed:**
+
+- `apps/web/next.config.js`: a `headers()` rule sets `Content-Security-Policy` (default-src self; script/style self+unsafe-inline for Next's inline hydration and the theme shim; img blob:; connect-src for same-origin /api+/ws, the dev Relay, LAN node signaling, and STUN; object-src none; frame-ancestors none), plus `X-Content-Type-Options`, `X-Frame-Options: DENY`, `Referrer-Policy: same-origin`, HSTS, and a restrictive `Permissions-Policy`.
+
+**Why:** the app had no response-header defenses at all, so an injected script would have unrestricted network and frame access — which is exactly the threat the client-side key-storage choices cannot fully stop. The CSP is the primary XSS mitigation and a prerequisite for treating the in-browser key stores as acceptable.
+
+**Impact:** web deploy only. `script-src` keeps `unsafe-inline` because the App Router emits inline hydration scripts; external scripts, framing, plugins, and non-allowlisted `connect-src` origins are blocked.
+
+**Verification:** `pnpm --filter web build` succeeds; headers verified on the served response. Manual smoke: previews (blob: images), WebSocket events, and LAN download paths remain functional.
+
+## [2026-09-27] - Web: validate and cap BFF request bodies
+
+**What changed:**
+
+- New `apps/web/lib/validate.ts` (`readJsonObject` size-cap + JSON-object guard, `isBlake3Hex`, `cleanDisplayName`, `isIntegerString`, body caps). Applied to `api/auth/login`, `api/auth/register`, `api/devices/register`, `api/pairing/sessions`, `api/devices/[id]` PATCH and `api/nodes/[node_id]` PATCH, `api/buffer/upload` (metadata + 12 MiB cap), and `api/shard/[hash]` (BLAKE3 hex required).
+
+**Why:** the BFF was a pure pass-through: it buffered whatever body arrived and forwarded unvalidated `X-Nodus-*` metadata and path segments to the Relay. The Relay remains the authority, but the Next process should not be a free memory amplifier or an arbitrary-path fetch proxy, and an invalid shard should fail at the front door. The checks avoid re-encoding product rules (password policy, account rules) that must stay in one place.
+
+**Impact:** web BFF only. Legitimate requests are unchanged; malformed/oversized ones now get 400/413 before reaching the Relay.
+
+**Verification:** new `lib/__tests__/validate.test.ts` and `app/api/shard/__tests__/route.test.ts`; existing auth/pairing/devices route tests still pass; full 266-test web suite, `check-types`, and `lint` green.
+
+
 ## [2026-09-26] - CI: the storage-node audit job never ran as intended
 
 **What changed:**
