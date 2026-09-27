@@ -143,6 +143,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } catch {
       // Best-effort: a failed wipe must not block logout.
     }
+    // Revoke cached decrypted image previews (and their object URLs) so no
+    // decrypted content for this account lingers. Imported lazily to avoid a
+    // module cycle with preview.ts's useAuth import.
+    try {
+      const { revokeAllPreviews } = await import("../lib/preview");
+      revokeAllPreviews();
+    } catch {
+      // Best-effort.
+    }
     setSession(null);
     setStatus("unauthenticated");
   }, []);

@@ -15,6 +15,11 @@ import { useAuth } from "../providers/auth-provider";
 // and every result is cached for the session (object URL) so scrolling and
 // re-renders do not re-fetch.
 
+// Image preview extensions. SVG is deliberately excluded: a decrypted SVG
+// rendered from a blob: URL can carry <script>/<foreignObject>, and the blob
+// inherits this app's origin, so opening the URL directly would run attacker
+// script with access to local storage. SVG files remain downloadable; they just
+// get no inline preview.
 const IMAGE_EXTENSIONS = new Set([
   "png",
   "jpg",
@@ -25,7 +30,6 @@ const IMAGE_EXTENSIONS = new Set([
   "avif",
   "heic",
   "heif",
-  "svg",
 ]);
 
 const IMAGE_MIME: Record<string, string> = {
@@ -38,7 +42,6 @@ const IMAGE_MIME: Record<string, string> = {
   avif: "image/avif",
   heic: "image/heic",
   heif: "image/heif",
-  svg: "image/svg+xml",
 };
 
 /** Plain extension test — deliberately cheap so it can run during render. */
@@ -88,6 +91,17 @@ function remember(key: string, url: string): void {
 
 export function getCachedPreview(file: FileEntryView): string | null {
   return cache.get(previewKey(file)) ?? null;
+}
+
+/**
+ * Revoke every cached preview URL and drop the cache. Call on logout so a
+ * shared browser does not retain decrypted image data (and its object URLs) for
+ * the signed-out account.
+ */
+export function revokeAllPreviews(): void {
+  for (const url of cache.values()) URL.revokeObjectURL(url);
+  cache.clear();
+  inflight.clear();
 }
 
 /** Download + decrypt an image and cache its object URL. Never rejects. */

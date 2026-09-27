@@ -1015,14 +1015,10 @@ export function FilesClient() {
           limiter: downloadLimiter,
           signal,
         });
-        // Save without an intermediate URL leak: revoke once the click is queued.
-        const blob = new Blob([result.data as unknown as BlobPart]);
-        const url = URL.createObjectURL(blob);
-        const anchor = document.createElement("a");
-        anchor.href = url;
-        anchor.download = result.name ?? file.name;
-        anchor.click();
-        URL.revokeObjectURL(url);
+        // Save via the shared helper: it sanitizes the decrypted filename,
+        // pins an explicit save-forcing MIME, and revokes the object URL only
+        // after the browser has had a chance to start the download.
+        triggerBlobDownload(result.data, result.name ?? file.name);
         finishDownload(taskId, "done");
         await finishTransfer(
           log.id,
@@ -1252,7 +1248,7 @@ export function FilesClient() {
               : `“${folder.name}” has no files to download.`,
           );
         } else {
-          triggerBlobDownload(archive.data, archive.fileName);
+          triggerBlobDownload(archive.data, archive.fileName, "application/zip");
           await finishTransfer(log.id, "complete", `${archive.fileCount} files, ${formatBytes(archive.bytes)}`);
           if (archive.skipped.length > 0) {
             const { message, pairingNeeded } = describeFolderSkips(archive.skipped);

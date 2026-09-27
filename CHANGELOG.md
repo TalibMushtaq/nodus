@@ -1,5 +1,18 @@
 # Changelog
 
+## [2026-09-27] - Web: stop previewing SVG and make file downloads safe
+
+**What changed:**
+
+- `apps/web/lib/preview.ts`: SVG removed from the preview extension/MIME maps, new `revokeAllPreviews`. `apps/web/lib/folder-download.ts`: `triggerBlobDownload` now takes a MIME (default `application/octet-stream`), sanitizes the filename with `safeSegment`, appends/removes the anchor, and defers `revokeObjectURL` to a later task; `safeSegment` is exported. `files-client.tsx` routes the single-file save through the helper. `AuthProvider.handleLogout` now revokes cached previews via a lazy import.
+
+**Why:** a decrypted SVG rendered from a blob: URL can carry `<script>`/`<foreignObject>`, and the blob inherits the app origin, so opening the URL directly would run attacker script against local storage — `<img>` blocks scripts, but the URL is reachable. SVG still downloads; it just gets no inline preview. The download path also created a blob with no MIME, used the raw decrypted filename, and revoked the URL in the same task, which can cancel a download in Safari or for large files.
+
+**Impact:** web only. Raster image previews are unchanged; SVG files fall back to the generic tile; signed-out browsers no longer retain decrypted image URLs.
+
+**Verification:** new `lib/__tests__/preview.test.ts` (SVG rejected, raster accepted); `auth-provider.test.tsx` asserts `revokeAllPreviews` runs on logout. Full 282-test suite, `check-types`, and `lint` green.
+
+
 ## [2026-09-27] - Web: block cross-site BFF requests and harden the session cookie
 
 **What changed:**

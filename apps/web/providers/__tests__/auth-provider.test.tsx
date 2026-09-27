@@ -37,8 +37,15 @@ vi.mock("../../lib/keys", () => ({
   clearFileKeys: vi.fn().mockResolvedValue(undefined),
 }));
 
+// Logout dynamically imports preview.ts to revoke decrypted image URLs; mock it
+// so the dynamic import resolves without loading the real download stack.
+vi.mock("../../lib/preview", () => ({
+  revokeAllPreviews: vi.fn(),
+}));
+
 import { login, register, logout, fetchSession } from "../../lib/auth-client";
 import { clearFileKeys } from "../../lib/keys";
+import { revokeAllPreviews } from "../../lib/preview";
 
 const mockLogin = vi.mocked(login);
 const mockRegister = vi.mocked(register);
@@ -176,6 +183,7 @@ describe("AuthProvider", () => {
     expect(screen.getByTestId("session")).toHaveTextContent("null");
     // Sign-out must not leave decryption material for a shared browser.
     expect(clearFileKeys).toHaveBeenCalled();
+    expect(revokeAllPreviews).toHaveBeenCalled();
   });
 
   it("login returns error on failure", async () => {

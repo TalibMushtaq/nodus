@@ -18,7 +18,7 @@ import {
 import { createZip, type ZipEntry } from "./zip";
 
 /** Filesystem-hostile characters replaced so entry names stay portable. */
-function safeSegment(name: string): string {
+export function safeSegment(name: string): string {
   const cleaned = name.replace(/[\\/:*?"<>|]/g, "_").replace(/^\.+$/, "").trim();
   return cleaned || "item";
 }
@@ -196,13 +196,28 @@ export async function buildFolderZip(options: {
   };
 }
 
-/** Trigger a browser download of raw bytes without leaking an object URL. */
-export function triggerBlobDownload(data: Uint8Array, fileName: string): void {
-  const blob = new Blob([data as unknown as BlobPart], { type: "application/zip" });
+/**
+ * Trigger a browser download of raw bytes without leaking an object URL.
+ * `mime` defaults to `application/octet-stream` so the browser saves the file
+ * rather than rendering it (and never content-sniffs it). The filename is
+ * sanitized so a hostile decrypted name cannot traverse or break paths. The
+ * object URL is revoked on a later task: revoking synchronously after `click()`
+ * can cancel the download in Safari and for large blobs before the browser has
+ * read the URL.
+ */
+export function triggerBlobDownload(
+  data: Uint8Array,
+  fileName: string,
+  mime = "application/octet-stream",
+): void {
+  const blob = new Blob([data as unknown as BlobPart], { type: mime });
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = url;
-  anchor.download = fileName;
+  anchor.download = safeSegment(fileName);
+  anchor.rel = "noopener";
+  document.body.appendChild(anchor);
   anchor.click();
-  URL.revokeObjectURL(url);
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 0);
 }
