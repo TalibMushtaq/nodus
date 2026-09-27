@@ -30,7 +30,15 @@ vi.mock("../../lib/device-info", () => ({
   detectDeviceInfo: () => ({ platform: "linux", browser: "Chrome 126" }),
 }));
 
+// The logout key wipe hits real IndexedDB (macrotask-timed under
+// fake-indexeddb); mock it so sign-out stays a microtask-flushed unit test.
+// The real wipe is covered by lib/__tests__/keys.test.ts.
+vi.mock("../../lib/keys", () => ({
+  clearFileKeys: vi.fn().mockResolvedValue(undefined),
+}));
+
 import { login, register, logout, fetchSession } from "../../lib/auth-client";
+import { clearFileKeys } from "../../lib/keys";
 
 const mockLogin = vi.mocked(login);
 const mockRegister = vi.mocked(register);
@@ -166,6 +174,8 @@ describe("AuthProvider", () => {
     expect(mockLogout).toHaveBeenCalled();
     expect(screen.getByTestId("status")).toHaveTextContent("unauthenticated");
     expect(screen.getByTestId("session")).toHaveTextContent("null");
+    // Sign-out must not leave decryption material for a shared browser.
+    expect(clearFileKeys).toHaveBeenCalled();
   });
 
   it("login returns error on failure", async () => {

@@ -6,6 +6,7 @@ import type { DevicePublicIdentity, DeviceSigner } from "@repo/sdk";
 
 import { fetchSession, login, register, logout } from "../lib/auth-client";
 import { clearEncryptionIdentity, getOrCreateDevice, getOrCreateEncryptionIdentity } from "../lib/device";
+import { clearFileKeys } from "../lib/keys";
 import { detectDeviceInfo } from "../lib/device-info";
 import { removePushSubscriptionQuietly } from "../lib/web-push";
 import type { SessionInfo } from "../lib/session";
@@ -134,8 +135,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     await logout();
     // A shared browser must not keep a decryption oracle for the signed-out
     // account: forget the in-memory + IndexedDB encryption identity (the next
-    // login re-creates or migrates its own).
+    // login re-creates or migrates its own) and drop the local FEK/folder-key
+    // cache (re-opened from Relay envelopes on next sign-in).
     await clearEncryptionIdentity();
+    try {
+      await clearFileKeys();
+    } catch {
+      // Best-effort: a failed wipe must not block logout.
+    }
     setSession(null);
     setStatus("unauthenticated");
   }, []);

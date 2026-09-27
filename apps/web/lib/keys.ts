@@ -13,7 +13,7 @@
 // trip; `fetchAndOpenFileKey` is the fallback for files this device did not
 // upload and only has an envelope for.
 
-import { STORE_KEYS, idbDelete, idbGet, idbPut } from "./db";
+import { STORE_KEYS, idbClear, idbDelete, idbGet, idbPut } from "./db";
 
 export interface FileKeyRecord {
   file_id: string;
@@ -41,4 +41,21 @@ export async function getFileKey(fileId: string): Promise<Uint8Array | undefined
 
 export async function deleteFileKey(fileId: string): Promise<void> {
   await idbDelete(STORE_KEYS, fileId);
+}
+
+/**
+ * Drop every locally cached file/folder key. Called on logout so a shared
+ * browser does not retain decryption material for the signed-out account.
+ * The Relay envelopes remain the source of truth: the next sign-in re-opens
+ * keys via `fetchAndOpenFileKey` / folder envelopes, so this only costs a
+ * re-fetch, not data loss.
+ *
+ * Why raw at rest (defense-in-depth note): these keys must be usable offline
+ * after a reload, so they cannot be sealed to a server-side secret. Wrapping
+ * them in a device-local non-extractable key would not raise the bar against
+ * same-origin XSS (the wrapper is equally reachable), which is why the
+ * mitigation is logout/reset wiping plus the CSP headers instead.
+ */
+export async function clearFileKeys(): Promise<void> {
+  await idbClear(STORE_KEYS);
 }
