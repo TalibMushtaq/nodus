@@ -1,5 +1,18 @@
 # Changelog
 
+## [2026-09-27] - Web: tests for the audited BFF and client paths
+
+**What changed:**
+
+- New `apps/web/app/api/devices/__tests__/id.test.ts` covering the auth guard (anonymous → 401 without touching the Relay) and display-name validation (non-string → 400, sanitized forward) on the `devices/[id]` proxy. Together with the tests added alongside each fix (device identity migration, file-key wipe, recovery reset, validate, shard hash, csrf, session-cookie, preview, lan-host, serialize, menu keyboard, IndexedDB concurrency), the audit's changed paths now have direct coverage.
+
+**Why:** the security and correctness fixes were committed one at a time; this closes the loop on the BFF guard/validation behavior that had no dedicated test, so a regression in the cookie-presence or name-sanitization checks is caught.
+
+**Impact:** tests only.
+
+**Verification:** full monorepo `pnpm test:ts` (17 tasks), `pnpm check-types` (11 tasks), and `pnpm lint` (16 tasks) all pass; `pnpm --filter web build` green.
+
+
 ## [2026-09-27] - Web: isolate download ticks and parallelize overview loads
 
 **What changed:**
