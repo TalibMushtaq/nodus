@@ -47,14 +47,18 @@ function pingViaSocket(
   return new Promise((resolve) => {
     const requestId = crypto.randomUUID();
     let settled = false;
+    // Declared before `finish` (and before the handlers that may call it) so the
+    // cleanup references are always initialized.
+    let off: () => void = () => {};
+    let timer: ReturnType<typeof setTimeout> | null = null;
     const finish = (result: PingResult | null) => {
       if (settled) return;
       settled = true;
       off();
-      clearTimeout(timer);
+      if (timer) clearTimeout(timer);
       resolve(result);
     };
-    const off = bridge.subscribe(MessageTypes.PRESENCE_RESULT, (payload) => {
+    off = bridge.subscribe(MessageTypes.PRESENCE_RESULT, (payload) => {
       const body = payload as PresenceResultPayload;
       if (!body || body.request_id !== requestId) return;
       finish({
@@ -63,11 +67,18 @@ function pingViaSocket(
         reason: typeof body.reason === "string" ? body.reason : undefined,
       });
     });
-    const timer = setTimeout(() => finish(null), PRESENCE_TIMEOUT_MS);
-    bridge.send({
-      type: MessageTypes.PRESENCE_QUERY,
-      payload: { request_id: requestId, peer_id: peerId, kind },
-    });
+    timer = setTimeout(() => finish(null), PRESENCE_TIMEOUT_MS);
+    try {
+      bridge.send({
+        type: MessageTypes.PRESENCE_QUERY,
+        payload: { request_id: requestId, peer_id: peerId, kind },
+      });
+    } catch {
+      // A synchronous send failure (socket closed between check and send) must
+      // not leak the subscription/timer: settle as "no answer" so the caller
+      // falls back to HTTP.
+      finish(null);
+    }
   });
 }
 

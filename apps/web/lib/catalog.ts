@@ -25,7 +25,9 @@ export type {
 /** Newest-cached first, matching the devices/node list convention. */
 export async function getCachedCatalog(): Promise<CatalogEntry[]> {
   const entries = await idbGetAll<CatalogEntry>(STORE_CATALOG);
-  return entries.sort((a, b) => (b.updated_at > a.updated_at ? 1 : -1));
+  // Return 0 for equal timestamps so the sort is stable instead of arbitrarily
+  // reversing equal entries.
+  return entries.sort((a, b) => (b.updated_at > a.updated_at ? 1 : b.updated_at < a.updated_at ? -1 : 0));
 }
 
 /** Upsert a whole catalog snapshot, one file at a time. */

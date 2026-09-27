@@ -62,6 +62,21 @@ const cache = new Map<string, string>();
 const inflight = new Map<string, Promise<string | null>>();
 let active = 0;
 const waiters: Array<() => void> = [];
+// Components holding a preview URL for a key that later gets evicted/revoked.
+// Notified so they can drop the now-dead URL instead of rendering a broken img.
+const evictionListeners = new Set<(key: string) => void>();
+
+/** Subscribe to cache evictions/revocation; returns an unsubscribe. */
+export function onPreviewEvicted(listener: (key: string) => void): () => void {
+  evictionListeners.add(listener);
+  return () => {
+    evictionListeners.delete(listener);
+  };
+}
+
+function notifyEvicted(key: string): void {
+  for (const listener of evictionListeners) listener(key);
+}
 
 async function acquire(): Promise<void> {
   if (active >= MAX_CONCURRENT) await new Promise<void>((resolve) => waiters.push(resolve));
@@ -86,6 +101,8 @@ function remember(key: string, url: string): void {
     const oldUrl = cache.get(oldest);
     cache.delete(oldest);
     if (oldUrl) URL.revokeObjectURL(oldUrl);
+    // Tell any mounted component still pointing at this URL to drop it.
+    notifyEvicted(oldest);
   }
 }
 
@@ -99,9 +116,11 @@ export function getCachedPreview(file: FileEntryView): string | null {
  * the signed-out account.
  */
 export function revokeAllPreviews(): void {
+  const keys = [...cache.keys()];
   for (const url of cache.values()) URL.revokeObjectURL(url);
   cache.clear();
   inflight.clear();
+  for (const key of keys) notifyEvicted(key);
 }
 
 /** Download + decrypt an image and cache its object URL. Never rejects. */
@@ -173,6 +192,15 @@ export function useImagePreview(file: FileEntryView, enabled = true): string | n
     // Depend on the fields that identify the bytes, not the object identity.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enabled, device, signer, file.fileId, file.versionHash, file.name]);
+
+  // Drop a URL the cache later evicted, so the tile shows its placeholder
+  // rather than a broken image.
+  useEffect(() => {
+    return onPreviewEvicted((key) => {
+      if (key === previewKey(file)) setUrl((current) => (current ? null : current));
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [file.fileId, file.versionHash, file.latestVersionNumber]);
 
   return url;
 }

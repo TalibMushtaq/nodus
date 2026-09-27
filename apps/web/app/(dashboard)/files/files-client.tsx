@@ -643,12 +643,18 @@ export function FilesClient() {
   // from one budget so several concurrent downloads do not each ramp to max.
   const downloadLimiter = useDownloadLimiter();
   const [actionError, setActionError] = useState<string | null>(null);
-  const [downloadingId, setDownloadingId] = useState<string | null>(null);
+  // File ids with an in-flight download. A Set (not a single id) so several
+  // concurrent downloads each keep their spinner and one finishing does not
+  // clear another's.
+  const [downloadingIds, setDownloadingIds] = useState<Set<string>>(new Set());
   // Set when a download failed because no trusted node host was known, or when
   // the browser has no paired node at all — both mean the user must pair one.
   const [pairingNudge, setPairingNudge] = useState(false);
   const [trustedNodeCount, setTrustedNodeCount] = useState<number | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  // Deferred catalog refresh after a resync drain; tracked so unmount clears it
+  // instead of firing setState on a torn-down page.
+  const resyncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Content hashes accepted in this session. The catalog only refreshes after
   // an upload completes, so this catches a second identical file selected in
   // the same batch (or before the refresh lands) without a round trip.
@@ -734,6 +740,14 @@ export function FilesClient() {
       window.removeEventListener("drop", onDrop);
     };
   }, []);
+
+  // Clear any pending resync refresh on unmount.
+  useEffect(
+    () => () => {
+      if (resyncTimerRef.current !== null) clearTimeout(resyncTimerRef.current);
+    },
+    [],
+  );
 
   // Load the node catalog to resolve an upload target (primary preferred), then
   // re-poll so a node that goes offline while this page is open is reflected in
@@ -996,7 +1010,7 @@ export function FilesClient() {
       ) {
         return;
       }
-      setDownloadingId(file.fileId);
+      setDownloadingIds((previous) => new Set(previous).add(file.fileId));
       setActionError(null);
       // The path is not known up front: the LAN fetch is preferred but a miss
       // falls back to the Relay, so the real transport is captured during the
@@ -1050,7 +1064,12 @@ export function FilesClient() {
         await finishTransfer(log.id, "failed", message, transport ? TRANSPORT_PATH[transport] : undefined);
         setActionError(message);
       } finally {
-        setDownloadingId(null);
+        setDownloadingIds((previous) => {
+          if (!previous.has(file.fileId)) return previous;
+          const next = new Set(previous);
+          next.delete(file.fileId);
+          return next;
+        });
       }
     },
     [
@@ -1286,9 +1305,14 @@ export function FilesClient() {
       setResyncHint(null);
       if (hasPending(file.fileId)) {
         // Shards are queued locally (Path D): drain now instead of waiting for
-        // the next reconnect, then re-read the catalog.
+        // the next reconnect, then re-read the catalog. The timer is tracked so
+        // an unmount before it fires does not schedule work on a dead page.
         retryPending();
-        window.setTimeout(refresh, 1500);
+        if (resyncTimerRef.current !== null) clearTimeout(resyncTimerRef.current);
+        resyncTimerRef.current = setTimeout(() => {
+          resyncTimerRef.current = null;
+          refresh();
+        }, 1500);
         return;
       }
       // No retained ciphertext for this file, so it cannot be re-sent without
@@ -1640,7 +1664,7 @@ export function FilesClient() {
                 key={file.fileId}
                 file={file}
                 iconSize={filesIconSize}
-                downloading={downloadingId === file.fileId}
+                downloading={downloadingIds.has(file.fileId)}
                 busy={mutating}
                 deleting={deletingId === file.fileId}
                 onDownload={handleDownload}
@@ -1677,7 +1701,7 @@ export function FilesClient() {
               <FileRowView
                 key={file.fileId}
                 file={file}
-                downloading={downloadingId === file.fileId}
+                downloading={downloadingIds.has(file.fileId)}
                 busy={mutating}
                 deleting={deletingId === file.fileId}
                 onDownload={handleDownload}

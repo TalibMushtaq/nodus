@@ -1,5 +1,18 @@
 # Changelog
 
+## [2026-09-27] - Web: fix concurrent download indicators and small leaks
+
+**What changed:**
+
+- `files-client.tsx`: `downloadingId` becomes a `Set` (`downloadingIds`), the resync refresh timer is tracked and cleared on unmount. `lib/ping.ts` initializes its cleanup handles before use and settles on a synchronous `bridge.send` failure. `lib/catalog.ts` comparator returns 0 for equal timestamps. `lib/preview.ts` notifies subscribers when a cached preview URL is evicted/revoked and drops it from mounted tiles.
+
+**Why:** a single `downloadingId` meant a second concurrent download overwrote the first's spinner and whichever finished first cleared it, so an in-flight download showed no indicator. The resync `setTimeout` fired `setState` after unmount. A synchronous socket-send failure leaked the presence subscription and timeout (and could hit a TDZ on the timer). The catalog sort never returned 0, giving unstable order for equal timestamps. Evicted preview URLs stayed in component state, rendering broken images after scrolling past the cache cap, and logout's revoke left stale URLs mounted.
+
+**Impact:** web UI only. Concurrent downloads each keep their own indicator; no post-unmount state churn; previews reload cleanly after eviction.
+
+**Verification:** existing download/files/ping/catalog/preview tests pass. Full 295-test suite, `check-types`, and `lint` green.
+
+
 ## [2026-09-27] - Web: serialize catalog refreshes and close transfer/notification races
 
 **What changed:**
