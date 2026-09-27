@@ -99,7 +99,8 @@ async function toFolderViews(entries: FolderEntry[], device: DevicePublicIdentit
       if (!fek) {
         try {
           fek =
-            openFolderKeyFromEnvelopes(envelopes, entry.folder_id, device.device_id) ?? undefined;
+            (await openFolderKeyFromEnvelopes(envelopes, entry.folder_id, device.device_id)) ??
+            undefined;
         } catch {
           fek = undefined;
         }

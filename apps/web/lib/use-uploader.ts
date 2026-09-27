@@ -6,7 +6,7 @@ import type { EventPayload } from "@repo/protocol";
 
 import { useAuth } from "../providers/auth-provider";
 import { collectRecipients, encryptionPublicKeyBytes, envelopeEvent, sealFekForRecipients } from "./envelopes";
-import { getOrCreateEncryptionIdentity } from "./device";
+import { getEncryptionPublicKey } from "./device";
 import { nextOriginSequence } from "./sync-state";
 import { useEventBatch } from "./use-event-batch";
 import { browserUploadDeps } from "./upload-deps";
@@ -36,13 +36,21 @@ export function useUploader(
       if (!device) {
         throw new Error("no device identity available for key envelopes");
       }
+      // Seal this device's own copy to its standalone X25519 key (the key it
+      // opens with); without it the self envelope is unreadable after the
+      // local key cache is lost. Only the public half is needed for sealing.
+      const selfPublic = getEncryptionPublicKey();
       const recipients = await collectRecipients({
         deviceId: device.device_id,
         edPublicKey: identityPublicKey(device),
-        // Seal this device's own copy to its standalone X25519 key (the key it
-        // opens with); without it the self envelope is unreadable after the
-        // local key cache is lost.
-        x25519PublicKey: encryptionPublicKeyBytes(getOrCreateEncryptionIdentity()),
+        ...(selfPublic
+          ? {
+              x25519PublicKey: encryptionPublicKeyBytes({
+                public_key: selfPublic,
+                private_key: "",
+              }),
+            }
+          : {}),
         // Seal to the account recovery identity when enrolled, so the user's
         // offline phrase can open this file after losing every device.
         recoveryPublicKey: session?.recovery_public_key ?? null,

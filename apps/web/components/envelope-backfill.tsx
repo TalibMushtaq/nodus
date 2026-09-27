@@ -25,7 +25,7 @@ import {
   fetchFolderEnvelopes,
   openFolderKeyFromEnvelopes,
 } from "../lib/envelopes";
-import { getOrCreateEncryptionIdentity } from "../lib/device";
+import { getEncryptionPublicKey, getOrCreateEncryptionIdentity } from "../lib/device";
 import { getFileKey } from "../lib/keys";
 import { getFolderKey } from "../lib/folder-keys";
 import { nextOriginSequence } from "../lib/sync-state";
@@ -38,9 +38,12 @@ export function EnvelopeBackfill() {
 
   useEffect(() => {
     if (!device || startedRef.current) return;
+    const identityAtStart = device.device_id;
     startedRef.current = true;
     void (async () => {
       try {
+        // Warm the async encryption identity first (migrates legacy storage).
+        await getOrCreateEncryptionIdentity();
         // Refresh first so the cache is a complete snapshot of what needs
         // covering; the summary tells us which devices are already complete.
         const [, , devices, summary] = await Promise.all([
@@ -49,16 +52,34 @@ export function EnvelopeBackfill() {
           listDevices(),
           fetchEnvelopeSummary(),
         ]);
+        // Abort if the account/device changed mid-flight (second login in the
+        // same mount must re-run for the new identity instead of backfilling
+        // the old one).
+        if (!identityAtStart || device.device_id !== identityAtStart) {
+          startedRef.current = false;
+          return;
+        }
         const [catalog, folders] = await Promise.all([getCachedCatalog(), getCachedFolders()]);
 
         // Build recipients the same way an upload does, then target the active
-        // devices among them that are short of coverage.
+        // devices among them that are short of coverage. Only the public half
+        // is needed for sealing.
+        const selfPublic = getEncryptionPublicKey();
         const recipients = await collectRecipients({
           deviceId: device.device_id,
           edPublicKey: identityPublicKey(device),
-          x25519PublicKey: encryptionPublicKeyBytes(getOrCreateEncryptionIdentity()),
+          ...(selfPublic
+            ? {
+                x25519PublicKey: encryptionPublicKeyBytes({
+                  public_key: selfPublic,
+                  private_key: "",
+                }),
+              }
+            : {}),
           recoveryPublicKey: session?.recovery_public_key ?? null,
         });
+        // Bulk folder envelopes once (not per folder) for the N+1 fix below.
+        const folderEnvelopes = await fetchFolderEnvelopes().catch(() => []);
 
         await backfillMissingEnvelopes({
           deviceId: device.device_id,
@@ -80,10 +101,9 @@ export function EnvelopeBackfill() {
             const local = await getFolderKey(folderId);
             if (local) return local;
             try {
-              return openFolderKeyFromEnvelopes(
-                await fetchFolderEnvelopes(),
-                folderId,
-                device.device_id,
+              return (
+                (await openFolderKeyFromEnvelopes(folderEnvelopes, folderId, device.device_id)) ??
+                null
               );
             } catch {
               return null;

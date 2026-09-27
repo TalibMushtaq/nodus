@@ -104,9 +104,11 @@ export async function fetchAndOpenFileKey(
   const mine = envelopes.find((e) => e.recipient_id === deviceId);
   if (!mine) return null;
   // Envelopes are sealed to this device's X25519 encryption identity (ADR-0008).
+  // The private half is loaded asynchronously from IndexedDB so it never sits
+  // in synchronously-dumpable localStorage.
   return openFekFromEnvelopeX25519(
     mine.encrypted_key,
-    encryptionPrivateKeyBytes(getOrCreateEncryptionIdentity()),
+    encryptionPrivateKeyBytes(await getOrCreateEncryptionIdentity()),
   );
 }
 
@@ -114,16 +116,16 @@ export async function fetchAndOpenFileKey(
  * Open this device's folder-key envelope from an already-fetched list using its
  * X25519 encryption identity (ADR-0008).
  */
-export function openFolderKeyFromEnvelopes(
+export async function openFolderKeyFromEnvelopes(
   envelopes: RelayFolderEnvelope[],
   folderId: string,
   deviceId: string,
-): Uint8Array | null {
+): Promise<Uint8Array | null> {
   return sdkOpenFolderKeyFromEnvelopes(
     envelopes,
     folderId,
     deviceId,
-    encryptionPrivateKeyBytes(getOrCreateEncryptionIdentity()),
+    encryptionPrivateKeyBytes(await getOrCreateEncryptionIdentity()),
   );
 }
 

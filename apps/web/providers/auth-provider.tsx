@@ -5,7 +5,7 @@ import type { ReactNode } from "react";
 import type { DevicePublicIdentity, DeviceSigner } from "@repo/sdk";
 
 import { fetchSession, login, register, logout } from "../lib/auth-client";
-import { getOrCreateDevice, getOrCreateEncryptionIdentity } from "../lib/device";
+import { clearEncryptionIdentity, getOrCreateDevice, getOrCreateEncryptionIdentity } from "../lib/device";
 import { detectDeviceInfo } from "../lib/device-info";
 import { removePushSubscriptionQuietly } from "../lib/web-push";
 import type { SessionInfo } from "../lib/session";
@@ -95,7 +95,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const withInfo = { ...identity, info: detectDeviceInfo() };
     // Publish the X25519 encryption key alongside the Ed25519 identity so other
     // devices seal envelopes to it directly (ADR-0008).
-    const res = await login(email, password, withInfo, getOrCreateEncryptionIdentity().public_key);
+    const encryption = await getOrCreateEncryptionIdentity();
+    const res = await login(email, password, withInfo, encryption.public_key);
     if (!res.ok) {
       return { ok: false, error: res.error };
     }
@@ -107,7 +108,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const handleRegister = useCallback(
     async (email: string, password: string, recoveryPublicKey?: string) => {
       const { identity } = await getOrCreateDevice();
-      const encryptionKey = getOrCreateEncryptionIdentity().public_key;
+      const encryption = await getOrCreateEncryptionIdentity();
+      const encryptionKey = encryption.public_key;
       const withInfo = { ...identity, info: detectDeviceInfo() };
       // Only pass the recovery key when enrolling, so a plain registration keeps
       // its original call shape.
@@ -130,6 +132,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // receiving the signed-out account's alerts.
     await removePushSubscriptionQuietly();
     await logout();
+    // A shared browser must not keep a decryption oracle for the signed-out
+    // account: forget the in-memory + IndexedDB encryption identity (the next
+    // login re-creates or migrates its own).
+    await clearEncryptionIdentity();
     setSession(null);
     setStatus("unauthenticated");
   }, []);

@@ -88,11 +88,11 @@ describe("FEK envelopes (ADR-0008)", () => {
     expect(event.payload).toMatchObject({ file_id: "file-1", recipient_kind: "device" });
   });
 
-  it("builds folder key envelope events and opens them with this browser's key", () => {
+  it("builds folder key envelope events and opens them with this browser's key", async () => {
     const fek = generateFileEncryptionKey();
     // The opener uses the browser's persisted encryption identity, so seal to
     // exactly that public key.
-    const local = getOrCreateEncryptionIdentity();
+    const local = await getOrCreateEncryptionIdentity();
     const [sealed] = sealFekForRecipients(fek, [
       {
         recipientId: "dev-1",
@@ -118,11 +118,11 @@ describe("FEK envelopes (ADR-0008)", () => {
         encrypted_key: sealed!.encrypted_key,
       },
     ];
-    expect(Array.from(openFolderKeyFromEnvelopes(envelopes, "dir-1", "dev-1") ?? [])).toEqual(
+    expect(Array.from((await openFolderKeyFromEnvelopes(envelopes, "dir-1", "dev-1")) ?? [])).toEqual(
       Array.from(fek),
     );
     // A different folder id has no matching envelope.
-    expect(openFolderKeyFromEnvelopes(envelopes, "dir-2", "dev-1")).toBeNull();
+    expect(await openFolderKeyFromEnvelopes(envelopes, "dir-2", "dev-1")).toBeNull();
   });
 });
 

@@ -17,10 +17,12 @@ vi.mock("../../lib/device", () => ({
     identity: { device_id: "test-device-id", public_key: "test-public-key" },
     signer: { deviceId: "test-device-id", publicKey: "test-public-key", sign: vi.fn() },
   }),
-  getOrCreateEncryptionIdentity: vi.fn().mockReturnValue({
+  getOrCreateEncryptionIdentity: vi.fn().mockResolvedValue({
     public_key: "test-encryption-public-key",
     private_key: "test-encryption-private-key",
   }),
+  getEncryptionPublicKey: vi.fn().mockReturnValue("test-encryption-public-key"),
+  clearEncryptionIdentity: vi.fn().mockResolvedValue(undefined),
 }));
 
 // Pin the auto-detected fingerprint so the auth call assertion is stable.

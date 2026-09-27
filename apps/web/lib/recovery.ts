@@ -59,10 +59,11 @@ export type { RecoveryLoginResult } from "@repo/sdk";
  * Recover this account, publishing the fresh device's X25519 encryption key
  * (ADR-0008) so later uploads can seal envelopes to it directly.
  */
-export function recoverAccount(
+export async function recoverAccount(
   email: string,
   phrase: string,
   device: DevicePublicIdentity,
 ): Promise<RecoveryLoginResult> {
-  return client.recover(email, phrase, device, getOrCreateEncryptionIdentity().public_key);
+  const encryption = await getOrCreateEncryptionIdentity();
+  return client.recover(email, phrase, device, encryption.public_key);
 }

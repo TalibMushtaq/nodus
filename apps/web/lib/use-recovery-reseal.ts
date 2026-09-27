@@ -49,10 +49,12 @@ export function useRecoveryReseal() {
               const local = await getFolderKey(folderId);
               if (local) return local;
               try {
-                return openFolderKeyFromEnvelopes(
-                  await fetchFolderEnvelopes(),
-                  folderId,
-                  device.device_id,
+                return (
+                  (await openFolderKeyFromEnvelopes(
+                    await fetchFolderEnvelopes(),
+                    folderId,
+                    device.device_id,
+                  )) ?? null
                 );
               } catch {
                 return null;

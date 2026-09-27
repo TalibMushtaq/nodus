@@ -17,7 +17,7 @@ import { nextOriginSequence } from "./sync-state";
 import { getFolderKey, putFolderKey } from "./folder-keys";
 import { encryptionPublicKeyBytes, fetchFolderEnvelopes, openFolderKeyFromEnvelopes } from "./envelopes";
 import { listDevices, listNodes } from "./pairing";
-import { getOrCreateEncryptionIdentity } from "./device";
+import { getEncryptionPublicKey, getOrCreateEncryptionIdentity } from "./device";
 
 export interface UseFolderMutations extends FolderMutations {
   /** True once a device identity is available. */
@@ -42,13 +42,20 @@ export function useFolderMutations(): UseFolderMutations {
       };
     }
 
+    // Seal this device's own folder-key envelope to its standalone X25519 key.
+    // Only the publishable public half is needed here, read synchronously so
+    // this memo stays sync; the private half is only touched asynchronously in
+    // resolveFolderKey below.
+    const selfX25519 = getEncryptionPublicKey();
+    const selfKeyBytes = selfX25519 ? encryptionPublicKeyBytes({ public_key: selfX25519, private_key: "" }) : undefined;
+
     const mutations = createFolderMutations({
       device: {
         deviceId: device.device_id,
         edPublicKey: identityPublicKey(device),
         // Seal this device's own folder-key envelope to its standalone X25519
         // key, matching the opener (ADR-0008).
-        x25519PublicKey: encryptionPublicKeyBytes(getOrCreateEncryptionIdentity()),
+        ...(selfKeyBytes ? { x25519PublicKey: selfKeyBytes } : {}),
       },
       recoveryPublicKey: session?.recovery_public_key ?? null,
       putFolderKey,
@@ -57,7 +64,15 @@ export function useFolderMutations(): UseFolderMutations {
       // folder envelope opened with its X25519 encryption key (ADR-0008).
       resolveFolderKey: async (folderId) => {
         try {
-          return openFolderKeyFromEnvelopes(await fetchFolderEnvelopes(), folderId, device.device_id);
+          // Warm the async identity (migrates legacy storage on first use).
+          await getOrCreateEncryptionIdentity();
+          return (
+            (await openFolderKeyFromEnvelopes(
+              await fetchFolderEnvelopes(),
+              folderId,
+              device.device_id,
+            )) ?? null
+          );
         } catch {
           return null;
         }
