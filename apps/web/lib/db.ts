@@ -99,8 +99,10 @@ function requestToPromise<T>(req: IDBRequest<T>): Promise<T> {
 /**
  * Run `fn` against one store inside a transaction and resolve with its request
  * result. `fn` must synchronously issue its request(s) (IndexedDB requirement);
- * the transaction's own completion decides when the promise settles so writes
- * are durable before callers proceed.
+ * the promise settles on the transaction's `complete` event, not the request's
+ * `success`, so a write is only reported as done once it is durable. A
+ * transaction that errors/aborts after a request succeeded therefore rejects
+ * instead of silently reporting success.
  */
 export async function withStore<T>(
   store: WebStore,
@@ -112,9 +114,28 @@ export async function withStore<T>(
     return await new Promise<T>((resolve, reject) => {
       const tx = db.transaction(store, mode);
       const req = fn(tx.objectStore(store));
-      req.onsuccess = () => resolve(req.result);
-      req.onerror = () => reject(req.error);
-      tx.onabort = () => reject(tx.error ?? new Error("IndexedDB transaction aborted"));
+      // Hold the request result until the transaction commits; the request's
+      // own success does not imply the transaction is durable.
+      let result!: T;
+      let sealed = false;
+      req.onsuccess = () => {
+        result = req.result;
+      };
+      tx.oncomplete = () => {
+        if (sealed) return;
+        sealed = true;
+        resolve(result);
+      };
+      tx.onerror = () => {
+        if (sealed) return;
+        sealed = true;
+        reject(tx.error ?? new Error("IndexedDB transaction failed"));
+      };
+      tx.onabort = () => {
+        if (sealed) return;
+        sealed = true;
+        reject(tx.error ?? new Error("IndexedDB transaction aborted"));
+      };
     });
   } finally {
     db.close();

@@ -34,12 +34,14 @@ export class IndexedDBPathCache implements PathCache {
     const entry: PathCacheEntry = { path, lastSuccessAt: Date.now() };
     this.memory.set(nodeId, entry);
     // Fire-and-forget: the interface is sync and a missed persist only costs a
-    // cold-start cache miss next session, not correctness.
-    void idbPut<CachedPathRow>(STORE_PATH_CACHE, { node_id: nodeId, ...entry });
+    // cold-start cache miss next session, not correctness. The explicit catch
+    // prevents an IndexedDB quota/blocked error from becoming an unhandled
+    // rejection.
+    void idbPut<CachedPathRow>(STORE_PATH_CACHE, { node_id: nodeId, ...entry }).catch(() => undefined);
   }
 
   evict(nodeId: string): void {
     this.memory.delete(nodeId);
-    void idbDelete(STORE_PATH_CACHE, nodeId);
+    void idbDelete(STORE_PATH_CACHE, nodeId).catch(() => undefined);
   }
 }

@@ -1,5 +1,18 @@
 # Changelog
 
+## [2026-09-27] - Web: make IndexedDB writes atomic and durable
+
+**What changed:**
+
+- `apps/web/lib/db.ts` `withStore` now settles on the transaction's `complete`/`error`/`abort` events instead of `request.onsuccess`, holding the result until commit. `apps/web/lib/upload-progress.ts` `markShardComplete` does its read-modify-write in one `readwrite` transaction. `apps/web/lib/transfer/local-queue.ts` captures persist failures and re-throws them from `whenPersisted`. `apps/web/lib/transfer/path-cache.ts` catches the fire-and-forget put/delete.
+
+**Why:** `withStore` resolved before the transaction committed, so a write that aborted afterwards (quota, a later failure in the same transaction) was reported as durable. `markShardComplete` read in one transaction and wrote in another, so two shards completing concurrently could each read the same set and the later write would drop the other's index — a resume then re-sends a shard, or the incomplete list never drains. The queue and path cache swallowed/could leak persist errors, making an in-memory/on-disk divergence invisible.
+
+**Impact:** web only. Writes now reject on post-success abort; callers that await persistence get the truth. No schema change.
+
+**Verification:** `local-db.test.ts` gains a 20-shard concurrent `markShardComplete` case (all indices recorded); existing upload-progress, queue, and path-cache tests pass. Full 291-test web suite, `check-types`, and `lint` green.
+
+
 ## [2026-09-27] - Web: validate LAN node hosts and bind discovery advertisements
 
 **What changed:**

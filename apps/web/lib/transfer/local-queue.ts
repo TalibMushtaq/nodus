@@ -11,6 +11,10 @@ export class IndexedDBLocalQueue implements LocalQueue {
   private items: QueueItem[] = [];
   private listeners: Array<() => void> = [];
   private pending: Promise<unknown> = Promise.resolve();
+  // Last persistence failure, surfaced through `whenPersisted` so a caller can
+  // tell that the on-disk queue diverged from the in-memory one instead of
+  // trusting an always-resolved promise.
+  private lastError: unknown = null;
 
   /** Load persisted items in enqueue order. Call before use. */
   async hydrate(): Promise<void> {
@@ -18,9 +22,17 @@ export class IndexedDBLocalQueue implements LocalQueue {
     this.items = rows.sort((a, b) => a.enqueuedAt - b.enqueuedAt);
   }
 
-  /** Serialize writes so the on-disk order matches the in-memory order. */
+  /**
+   * Serialize writes so the on-disk order matches the in-memory order. Errors
+   * are captured (not swallowed silently) and re-thrown from `whenPersisted`
+   * so a caller that cares about durability can observe them.
+   */
   private track(work: Promise<unknown>): void {
-    this.pending = this.pending.then(() => work).catch(() => undefined);
+    this.pending = this.pending.then(() =>
+      work.catch((err) => {
+        this.lastError = err;
+      }),
+    );
   }
 
   enqueue(item: QueueItem): void {
@@ -62,9 +74,15 @@ export class IndexedDBLocalQueue implements LocalQueue {
     return this.items.length;
   }
 
-  /** Resolve once every queued write has been committed. */
+  /** Resolve once every queued write has been committed; reject on a persist failure. */
   whenPersisted(): Promise<unknown> {
-    return this.pending;
+    return this.pending.then(() => {
+      if (this.lastError !== null) {
+        const err = this.lastError;
+        this.lastError = null;
+        throw err;
+      }
+    });
   }
 
   async clear(): Promise<void> {

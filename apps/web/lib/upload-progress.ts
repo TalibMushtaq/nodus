@@ -13,7 +13,7 @@
 // avoids re-uploading completed shards once the file is provided again. The
 // Node e2e harness uses a file-backed store where the source survives a kill.
 
-import { STORE_UPLOAD_PROGRESS, idbDelete, idbGet, idbGetAll, idbPut } from "./db";
+import { STORE_UPLOAD_PROGRESS, idbDelete, idbGet, idbGetAll, idbPut, openWebDb } from "./db";
 import { uploadKey, type UploadProgress } from "@repo/sdk";
 
 // The record and its key are defined in @repo/sdk so web and native persist the
@@ -29,29 +29,54 @@ export async function getUploadProgress(fileId: string, versionNumber: number): 
   return idbGet<UploadProgress>(STORE_UPLOAD_PROGRESS, uploadKey(fileId, versionNumber));
 }
 
-/** Record one successfully buffered shard. Idempotent by index. */
+/**
+ * Record one successfully buffered shard. Idempotent by index.
+ *
+ * The read-modify-write runs in a single `readwrite` transaction: shards
+ * complete concurrently during an upload, and a get-then-put across two
+ * transactions would lose updates when two completions interleave (both read
+ * the same set, the later put wins, and one index vanishes — causing a resume
+ * to re-send a shard, or `listIncompleteUploads` to never drain).
+ */
 export async function markShardComplete(
   fileId: string,
   versionNumber: number,
   shardIndex: number,
   hash?: string,
 ): Promise<void> {
-  const progress = await getUploadProgress(fileId, versionNumber);
-  if (!progress) return;
-  let hashChanged = false;
-  if (hash !== undefined) {
-    progress.shardHashes ??= [];
-    hashChanged = progress.shardHashes[shardIndex] !== hash;
-    progress.shardHashes[shardIndex] = hash;
-  }
-  const newlyCompleted = !progress.completedShards.includes(shardIndex);
-  if (newlyCompleted) {
-    progress.completedShards.push(shardIndex);
-    progress.completedShards.sort((a, b) => a - b);
-  }
-  if (hashChanged || newlyCompleted) {
-    progress.updatedAt = new Date().toISOString();
-    await saveUploadProgress(progress);
+  const db = await openWebDb();
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(STORE_UPLOAD_PROGRESS, "readwrite");
+      const store = tx.objectStore(STORE_UPLOAD_PROGRESS);
+      const request = store.get(uploadKey(fileId, versionNumber));
+      request.onsuccess = () => {
+        const progress = request.result as UploadProgress | undefined;
+        if (!progress) return; // Nothing tracked for this version.
+        let changed = false;
+        if (hash !== undefined) {
+          progress.shardHashes ??= [];
+          if (progress.shardHashes[shardIndex] !== hash) {
+            progress.shardHashes[shardIndex] = hash;
+            changed = true;
+          }
+        }
+        if (!progress.completedShards.includes(shardIndex)) {
+          progress.completedShards.push(shardIndex);
+          progress.completedShards.sort((a, b) => a - b);
+          changed = true;
+        }
+        if (changed) {
+          progress.updatedAt = new Date().toISOString();
+          store.put(progress);
+        }
+      };
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error ?? new Error("upload progress write failed"));
+      tx.onabort = () => reject(tx.error ?? new Error("upload progress write aborted"));
+    });
+  } finally {
+    db.close();
   }
 }
 

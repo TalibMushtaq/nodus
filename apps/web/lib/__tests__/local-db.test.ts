@@ -203,6 +203,29 @@ describe("web local DB", () => {
     expect(STORE_KEYS).toBe("keys");
   });
 
+  it("records concurrently-completed shards without losing updates", async () => {
+    const now = new Date().toISOString();
+    await saveUploadProgress({
+      transferId: "file-c:1",
+      fileId: "file-c",
+      versionNumber: 1,
+      targetNode: "n1",
+      totalShards: 20,
+      versionHash: "vh",
+      encryptedName: "enc",
+      announced: true,
+      completedShards: [],
+      createdAt: now,
+      updatedAt: now,
+    });
+    // Shards complete in parallel during an upload; the read-modify-write must
+    // be atomic or interleaved get/put calls drop indices.
+    await Promise.all(Array.from({ length: 20 }, (_, index) => markShardComplete("file-c", 1, index)));
+
+    const progress = await getUploadProgress("file-c", 1);
+    expect(progress?.completedShards).toEqual(Array.from({ length: 20 }, (_, index) => index));
+  });
+
   it("keeps the recovery phrase on reset unless forgetting is requested", async () => {
     const { saveRecoveryPhrase, loadRecoveryPhrase } = await import("../recovery");
     await saveRecoveryPhrase("acct-1", "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about");
