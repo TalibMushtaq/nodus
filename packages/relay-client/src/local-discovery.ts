@@ -46,11 +46,20 @@ export type DeviceMessageSigner = (message: string) => string | Promise<string>;
 /**
  * Build the base URL for a discovered/mannually-entered node.
  * Host is whatever the discovery source produced (IP or hostname); the port
- * is fixed by the protocol. DNS-rebinding hardening for browsers is a web-app
- * concern (see apps/web), not something this helper can enforce.
+ * is fixed by the protocol. A path/query and any userinfo are stripped because
+ * `device@other` would otherwise redirect signed requests to `other`; only a
+ * bare host survives. DNS-rebinding hardening for browsers is a web-app concern
+ * (see apps/web), not something this helper can enforce.
  */
 export function nodusBaseUrl(host: string, port: number = NODUS_LOCAL_PORT): string {
-  const trimmed = host.trim().replace(/^https?:\/\//, "").replace(/\/+$/, "");
+  const trimmed = host
+    .trim()
+    .replace(/^https?:\/\//i, "")
+    .replace(/[/?#].*$/, "")
+    .replace(/\/+$/, "");
+  if (!trimmed || trimmed.includes("@")) {
+    throw new Error(`invalid node host: ${host}`);
+  }
   return `http://${trimmed}:${port}`;
 }
 

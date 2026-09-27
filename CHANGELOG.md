@@ -1,5 +1,18 @@
 # Changelog
 
+## [2026-09-27] - Web: validate LAN node hosts and bind discovery advertisements
+
+**What changed:**
+
+- New `apps/web/lib/lan-host.ts` (`normalizeLanHost`, `advertisementBindsNode`). `lib/trusted-nodes.ts` `addTrustedNode` normalizes/validates the host before persisting. `app/pair/page.tsx` validates the manual host before probing and checks the advertisement binds the pending node. `lib/auto-pair.ts` uses `advertisementBindsNode` instead of a bare `node_id` compare. `packages/relay-client` `nodusBaseUrl` now strips path/query and rejects userinfo.
+
+**Why:** the manual-IP field fed `nodusBaseUrl`, which string-concatenated the value into an authority, so a value like `127.0.0.1@attacker.example` or `evil.example/path` changed the destination of later signed shard fetches. Separately, a Storage Node's `node_id` is the hex of its Ed25519 public key, so an advertisement where the two disagree is malformed; requiring them to match (and to match the node the pairing token was issued for) rejects naive spoofs and prevents pairing this browser to the wrong node. This is not full authentication — the public key is public, so an active MITM still needs a signed advertisement, which is a follow-up.
+
+**Impact:** web + relay-client. Legitimate IPs/hostnames are unaffected; malformed/credential-bearing hosts and mismatched advertisements are refused.
+
+**Verification:** new `lib/__tests__/lan-host.test.ts`; updated `lib/__tests__/shard-relay.test.ts` (advertisements now carry a matching public key) and relay-client `local-discovery.test.ts`. Web suite 290 tests, relay-client 54 tests, plus `check-types` and `lint`, green.
+
+
 ## [2026-09-27] - Web: stop previewing SVG and make file downloads safe
 
 **What changed:**

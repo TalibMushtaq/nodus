@@ -4,6 +4,7 @@
 // show "known nodes" without re-advertising and re-auth can target a host.
 
 import { STORE_TRUSTED_NODES, idbGetAll, idbPut } from "./db";
+import { normalizeLanHost } from "./lan-host";
 
 export interface TrustedNode {
   node_id: string;
@@ -19,7 +20,15 @@ export async function getTrustedNodes(): Promise<TrustedNode[]> {
   return nodes.sort((a, b) => b.paired_at.localeCompare(a.paired_at));
 }
 
-/** Record a successful pairing (idempotent by node_id). */
+/**
+ * Record a successful pairing (idempotent by node_id). The host is validated
+ * and normalized first: it later feeds `nodusBaseUrl` for signed shard fetches,
+ * so a malformed value must never be persisted as a trust anchor.
+ */
 export async function addTrustedNode(node: TrustedNode): Promise<void> {
-  await idbPut(STORE_TRUSTED_NODES, node);
+  const host = normalizeLanHost(node.host);
+  if (!host) {
+    throw new Error(`refusing to trust a node with an invalid host: ${node.host}`);
+  }
+  await idbPut<TrustedNode>(STORE_TRUSTED_NODES, { ...node, host });
 }

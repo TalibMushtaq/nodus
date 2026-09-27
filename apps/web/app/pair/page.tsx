@@ -33,6 +33,7 @@ import { PageHeader } from "@repo/ui/primitives/page-header";
 import { Button } from "@repo/ui/primitives/button";
 import { StatusBadge } from "@repo/ui/primitives/badge";
 import { addTrustedNode, getTrustedNodes, type TrustedNode } from "../../lib/trusted-nodes";
+import { advertisementBindsNode, normalizeLanHost } from "../../lib/lan-host";
 import {
   listNodes,
   issuePairingToken,
@@ -117,18 +118,36 @@ export default function PairPage() {
   const probeNode = useCallback(async () => {
     setProbe(null);
     setLanResult(null);
-    const base = nodusBaseUrl(lanHost);
+    // Validate the free-text host before it becomes an authority: reject
+    // credentials/paths, normalize to a bare host.
+    const host = normalizeLanHost(lanHost);
+    if (!host) {
+      setProbe({ host: lanHost, ok: false, detail: "enter a bare IP address or hostname" });
+      return;
+    }
+    const base = nodusBaseUrl(host);
     try {
       const adv = await fetchAdvertisement(base);
-      setProbe({ host: lanHost, ok: true, detail: `${adv.node_id.slice(0, 12)}… (v${adv.schema_version})` });
+      // Bind the advertisement to the node the token was issued for: a node_id
+      // must equal the hex of the public key it presents, and match the pending
+      // session's node. This stops pointing the pairing at a different node.
+      if (!advertisementBindsNode(adv, pending?.node_id ?? null)) {
+        setProbe({
+          host,
+          ok: false,
+          detail: `advertisement does not match node ${pending?.node_id?.slice(0, 12) ?? ""}…`,
+        });
+        return;
+      }
+      setProbe({ host, ok: true, detail: `${adv.node_id.slice(0, 12)}… (v${adv.schema_version})` });
     } catch (err) {
       setProbe({
-        host: lanHost,
+        host,
         ok: false,
         detail: err instanceof Error ? err.message : String(err),
       });
     }
-  }, [lanHost]);
+  }, [lanHost, pending]);
 
   const pairOnDevice = useCallback(async () => {
     if (!device || !pending || !probe?.ok) return;

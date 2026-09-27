@@ -63,10 +63,14 @@ describe("ensureNodeTrusted", () => {
     device_id: "device-1",
     public_key: "ab",
   };
+  // A real node_id is the hex of the node's Ed25519 public key, so the
+  // advertisement must present a matching public_key for the binding check.
+  const NODE_A = "aa".repeat(32);
+  const NODE_B = "bb".repeat(32);
   const discovery = {
-    node_id: "node-1",
+    node_id: NODE_A,
     account_id: "acct-1",
-    public_key: "ab".repeat(32),
+    public_key: NODE_A,
     schema_version: "1.8",
   };
 
@@ -86,7 +90,7 @@ describe("ensureNodeTrusted", () => {
 
   it("re-verifies a cached node and stays paired while it still recognizes the device", async () => {
     vi.doMock("../trusted-nodes", () => ({
-      getTrustedNodes: vi.fn().mockResolvedValue([{ node_id: "node-1", host: "127.0.0.1" }]),
+      getTrustedNodes: vi.fn().mockResolvedValue([{ node_id: NODE_A, host: "127.0.0.1" }]),
       addTrustedNode: vi.fn(),
     }));
     vi.doMock("../pairing", () => ({
@@ -99,11 +103,11 @@ describe("ensureNodeTrusted", () => {
     globalThis.fetch = routeFetch({
       discovery: () => new Response(JSON.stringify(discovery), { status: 200 }),
       challenge: () => new Response(JSON.stringify({ nonce: "n-1", ttl_seconds: 60 }), { status: 200 }),
-      auth: () => new Response(JSON.stringify({ status: "ok", node_id: "node-1" }), { status: 200 }),
+      auth: () => new Response(JSON.stringify({ status: "ok", node_id: NODE_A }), { status: 200 }),
     });
 
     const { ensureNodeTrusted } = await import("../auto-pair");
-    await expect(ensureNodeTrusted("node-1")).resolves.toEqual({
+    await expect(ensureNodeTrusted(NODE_A)).resolves.toEqual({
       paired: true,
       host: "127.0.0.1",
     });
@@ -112,7 +116,7 @@ describe("ensureNodeTrusted", () => {
   it("re-pairs when the node has forgotten this device", async () => {
     let saved: unknown = null;
     vi.doMock("../trusted-nodes", () => ({
-      getTrustedNodes: vi.fn().mockResolvedValue([{ node_id: "node-1", host: "127.0.0.1" }]),
+      getTrustedNodes: vi.fn().mockResolvedValue([{ node_id: NODE_A, host: "127.0.0.1" }]),
       addTrustedNode: vi.fn(async (node) => {
         saved = node;
       }),
@@ -135,21 +139,21 @@ describe("ensureNodeTrusted", () => {
         authCalls += 1;
         return authCalls === 1
           ? new Response(JSON.stringify({ error: "unknown_device" }), { status: 401 })
-          : new Response(JSON.stringify({ status: "ok", node_id: "node-1" }), { status: 200 });
+          : new Response(JSON.stringify({ status: "ok", node_id: NODE_A }), { status: 200 });
       },
       pair: () =>
-        new Response(JSON.stringify({ node_id: "node-1", account_id: "acct-1" }), {
+        new Response(JSON.stringify({ node_id: NODE_A, account_id: "acct-1" }), {
           status: 200,
         }),
     });
 
     const { ensureNodeTrusted } = await import("../auto-pair");
-    const result = await ensureNodeTrusted("node-1");
+    const result = await ensureNodeTrusted(NODE_A);
 
     expect(result.paired).toBe(true);
     expect(result.host).toBe("127.0.0.1");
     expect(saved).toEqual(
-      expect.objectContaining({ node_id: "node-1", host: "127.0.0.1", device_id: "device-1" }),
+      expect.objectContaining({ node_id: NODE_A, host: "127.0.0.1", device_id: "device-1" }),
     );
   });
 
@@ -167,7 +171,7 @@ describe("ensureNodeTrusted", () => {
     globalThis.fetch = vi.fn().mockRejectedValue(new Error("refused"));
 
     const { ensureNodeTrusted } = await import("../auto-pair");
-    await expect(ensureNodeTrusted("node-2")).resolves.toEqual({ paired: false });
+    await expect(ensureNodeTrusted(NODE_B)).resolves.toEqual({ paired: false });
   });
 
   it("pairs when a candidate advertises the target node", async () => {
@@ -189,21 +193,21 @@ describe("ensureNodeTrusted", () => {
         .mockResolvedValue({ identity: device, signer: { sign: vi.fn().mockResolvedValue("00".repeat(64)) } }),
     }));
 
-    const target = { ...discovery, node_id: "node-2", account_id: "acct-2" };
+    const target = { ...discovery, node_id: NODE_B, public_key: NODE_B, account_id: "acct-2" };
     // Two real fetches happen (token issuance is mocked away): the discovery
     // advertisement, then the node's /nodus/pair redeem.
     globalThis.fetch = vi
       .fn()
       .mockResolvedValueOnce(new Response(JSON.stringify(target), { status: 200 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ node_id: "node-2", account_id: "acct-2" }), { status: 200 }));
+      .mockResolvedValueOnce(new Response(JSON.stringify({ node_id: NODE_B, account_id: "acct-2" }), { status: 200 }));
 
     const { ensureNodeTrusted } = await import("../auto-pair");
-    const result = await ensureNodeTrusted("node-2");
+    const result = await ensureNodeTrusted(NODE_B);
 
     expect(result.paired).toBe(true);
     expect(result.host).toBe("127.0.0.1");
     expect(saved).toEqual(
-      expect.objectContaining({ node_id: "node-2", host: "127.0.0.1", device_id: "device-1" }),
+      expect.objectContaining({ node_id: NODE_B, host: "127.0.0.1", device_id: "device-1" }),
     );
   });
 });

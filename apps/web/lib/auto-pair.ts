@@ -10,6 +10,7 @@ import type { DevicePublicIdentity, DeviceSigner } from "@repo/sdk";
 import { getOrCreateDevice } from "./device";
 import { issuePairingToken } from "./pairing";
 import { addTrustedNode, getTrustedNodes } from "./trusted-nodes";
+import { advertisementBindsNode } from "./lan-host";
 
 /**
  * Which LAN hosts this browser will probe when auto-pairing. Deliberately
@@ -54,7 +55,7 @@ async function nodeRecognizesDevice(
   try {
     const base = nodusBaseUrl(host);
     const adv = await fetchAdvertisement(base, 2_000);
-    if (adv.node_id !== nodeId) return false;
+    if (!advertisementBindsNode(adv, nodeId)) return false;
     await new NodeClient(base).authenticate(device.device_id, (message) => signer.sign(message));
     return true;
   } catch {
@@ -99,7 +100,7 @@ export async function ensureNodeTrusted(nodeId: string): Promise<EnsureNodeTrust
     const base = nodusBaseUrl(host);
     try {
       const adv = await fetchAdvertisement(base, 2_000);
-      if (adv.node_id !== nodeId) continue;
+      if (!advertisementBindsNode(adv, nodeId)) continue;
       const session = await issuePairingToken(nodeId, device);
       const client = new NodeClient(base);
       const confirm = await client.pair(

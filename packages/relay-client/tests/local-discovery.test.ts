@@ -35,6 +35,12 @@ describe("nodusBaseUrl", () => {
     expect(nodusBaseUrl("192.168.1.10")).toBe("http://192.168.1.10:9378");
     expect(nodusBaseUrl("  http://node.local/ ")).toBe("http://node.local:9378");
   });
+
+  it("strips a path/query and rejects userinfo", () => {
+    expect(nodusBaseUrl("node.local/evil?x=1")).toBe("http://node.local:9378");
+    expect(() => nodusBaseUrl("127.0.0.1@evil.example")).toThrow(/invalid node host/);
+    expect(() => nodusBaseUrl("   ")).toThrow(/invalid node host/);
+  });
 });
 
 describe("parsePairingUrl", () => {
