@@ -115,7 +115,7 @@ function NodeRowView({
   // Staleness-derived, not "has ever been seen" (see isNodeOnline).
   const online = isNodeOnline(node);
   return (
-    <div className="flex items-center gap-4 px-5 py-3.5 border-b border-border last:border-0 hover:bg-secondary/40 transition-colors">
+    <div className="flex flex-wrap items-center gap-x-4 gap-y-2 px-5 py-3.5 border-b border-border last:border-0 hover:bg-secondary/40 transition-colors">
       <div className="w-9 h-9 rounded-xl border border-border flex items-center justify-center shrink-0 bg-secondary">
         <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
           <rect x="2" y="2" width="14" height="14" rx="1" stroke="currentColor" strokeWidth="1.3" />
@@ -198,7 +198,7 @@ function DeviceRowView({
   // Auto-captured at login (platform · browser/app); null for older clients.
   const infoLabel = describeDeviceInfo(device.device_info);
   return (
-    <div className="flex items-center gap-4 px-5 py-3.5 border-b border-border last:border-0 hover:bg-secondary/40 transition-colors">
+    <div className="flex flex-wrap items-center gap-x-4 gap-y-2 px-5 py-3.5 border-b border-border last:border-0 hover:bg-secondary/40 transition-colors">
       <div className="w-9 h-9 rounded-xl border border-border flex items-center justify-center shrink-0 bg-secondary">
         <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
           <rect x="5" y="1.5" width="8" height="15" rx="1.5" stroke="currentColor" strokeWidth="1.3" />

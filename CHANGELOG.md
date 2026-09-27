@@ -1,5 +1,18 @@
 # Changelog
 
+## [2026-09-27] - Web: responsive action rows and visual accessibility fixes
+
+**What changed:**
+
+- `devices-client.tsx`, `conflicts-client.tsx`, `tombstones-client.tsx` row actions wrap instead of overflowing. `tokens.css` `.accent-gradient` second stop darkened and active-nav/badge text switched to `text-accent-foreground`. `overlay.tsx` scrims use `bg-black/40`. `globals.css` scrollbars are always-visible and thin, a global `:focus-visible` outline is added, and reduced-motion now covers utility animations.
+
+**Why:** the paired action rows had no `flex-wrap`, so at 360px they forced horizontal scroll/clipping. White on the gradient's light stop (#d4773a) was ~2.9:1, below AA for 14px nav text. The `bg-foreground/20` scrim flipped to a light veil in dark mode. Hiding scrollbars until hover removed the scroll affordance; custom interactive elements had no visible focus ring; and `animate-pulse`/`animate-spin` ignored `prefers-reduced-motion`.
+
+**Impact:** web UI + `@repo/ui` tokens. Slightly darker accent gradient; no behavior change.
+
+**Verification:** full 297-test suite, web and `@repo/ui` `check-types`/`lint`, and `next build` green.
+
+
 ## [2026-09-27] - Web: keyboard-accessible menus, drawer, and nav
 
 **What changed:**

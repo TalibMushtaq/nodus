@@ -121,7 +121,7 @@ export function TopBar({ title, onMenuClick, navOpen = false }: TopBarProps) {
       >
         <Icon name="download" size={16} className={activeDownloads > 0 ? "animate-pulse" : ""} />
         {activeDownloads > 0 && (
-          <span className="absolute -right-0.5 -top-0.5 flex h-3.5 min-w-3.5 items-center justify-center rounded-full accent-gradient px-1 text-[9px] font-semibold text-white">
+          <span className="absolute -right-0.5 -top-0.5 flex h-3.5 min-w-3.5 items-center justify-center rounded-full accent-gradient px-1 text-[9px] font-semibold text-accent-foreground">
             {activeDownloads > 9 ? "9+" : activeDownloads}
           </span>
         )}

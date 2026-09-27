@@ -28,25 +28,34 @@
   }
 }
 
-/* Scrollbar — hidden unless hovering, matching the prototype's restraint */
+/* Scrollbar — a thin, always-present affordance. It used to be hidden until
+ * hover, which removed the only cue that a pane scrolls (and the scrollbar
+ * itself) for keyboard and touch users. */
 * {
-  scrollbar-width: none;
-}
-*::-webkit-scrollbar {
-  display: none;
-}
-*:hover {
   scrollbar-width: thin;
   scrollbar-color: var(--color-border) transparent;
 }
-*:hover::-webkit-scrollbar {
-  display: block;
-  width: 4px;
-  height: 4px;
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
 }
-*:hover::-webkit-scrollbar-thumb {
+*::-webkit-scrollbar-thumb {
   background: var(--color-border);
-  border-radius: 2px;
+  border-radius: 4px;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--color-muted-foreground);
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* Visible keyboard focus. Interactive elements previously relied on the browser
+ * default, which is invisible on the custom backgrounds used here. */
+:where(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
+  outline: 2px solid var(--color-ring);
+  outline-offset: 2px;
+  border-radius: var(--radius);
 }
 
 /* ── Elevation ──────────────────────────────────────────────────────────
@@ -171,5 +180,15 @@
   .card-interactive:hover {
     transition: none;
     transform: none;
+  }
+  /* Catch the utility animations (animate-pulse/spin) that are not covered
+   * above, so a reduced-motion user sees none of them. */
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
 }

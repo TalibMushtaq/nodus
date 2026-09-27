@@ -115,7 +115,7 @@ export function Sidebar({ collapsed, onCollapse }: SidebarProps) {
               aria-current={active ? "page" : undefined}
               className={`w-full flex items-center gap-3 px-2.5 py-2.5 text-sm rounded-xl transition-all ${
                 active
-                  ? "text-white font-semibold accent-gradient elev-card"
+                  ? "text-accent-foreground font-semibold accent-gradient elev-card"
                   : "text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-white/5"
               } ${collapsed ? "justify-center" : ""}`}
               title={collapsed ? item.label : undefined}

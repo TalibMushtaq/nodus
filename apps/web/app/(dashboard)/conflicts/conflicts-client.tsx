@@ -101,7 +101,7 @@ export function ConflictsClient() {
             {conflicts.map((conflict) => (
               <div
                 key={conflict.fileId}
-                className="flex items-center gap-4 px-5 py-3.5 border-b border-border last:border-0 hover:bg-secondary/40 transition-colors"
+                className="flex flex-wrap items-center gap-x-4 gap-y-2 px-5 py-3.5 border-b border-border last:border-0 hover:bg-secondary/40 transition-colors"
               >
                 <span className="text-muted-foreground shrink-0">
                   <Icon name="copy" size={15} />

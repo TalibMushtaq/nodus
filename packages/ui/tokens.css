@@ -119,9 +119,11 @@
   --status-local-bg: #0c1e2c;
 }
 
-/* Accent gradient used by primary buttons, nav-active, and brand moments. */
+/* Accent gradient used by primary buttons, nav-active, and brand moments.
+ * The second stop stays dark enough for white text to meet WCAG AA: the
+ * previous #d4773a gave ~2.9:1 against white. */
 .accent-gradient {
-  background: linear-gradient(135deg, var(--color-accent), #d4773a);
+  background: linear-gradient(135deg, var(--color-accent), #b85c1a);
 }
 
 /* Warm surface gradient for Sidebar/TopBar — each has a designed dark twin. */

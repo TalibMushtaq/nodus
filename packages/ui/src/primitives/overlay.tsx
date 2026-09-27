@@ -97,7 +97,7 @@ export function Modal({ children, onClose, className = "" }: ModalProps) {
   return (
     <div
       role="presentation"
-      className="fixed inset-0 bg-foreground/20 backdrop-blur-sm flex items-center justify-center z-50"
+      className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-50"
       onClick={onClose}
     >
       <div
@@ -127,7 +127,7 @@ export function Drawer({ children, onClose, className = "" }: DrawerProps) {
   return (
     <div
       role="presentation"
-      className="fixed inset-0 bg-foreground/20 backdrop-blur-sm flex items-center justify-end z-50"
+      className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-end z-50"
       onClick={onClose}
     >
       <div
