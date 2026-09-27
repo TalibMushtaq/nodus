@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { relayFetchRaw } from "../../../../lib/relay";
+import { MAX_SHARD_BODY_BYTES, isBlake3Hex, isIntegerString } from "../../../../lib/validate";
 
 // POST /api/buffer/upload — Path C shard proxy. The browser posts the raw
 // encrypted shard here with `X-Nodus-*` metadata; this forwards the body and
@@ -22,6 +23,33 @@ const FORWARD_HEADERS = [
 ] as const;
 
 export async function POST(request: Request) {
+  // Catch an oversized shard before the stream is opened: a shard is 8 MiB, so
+  // anything past the cap is malformed or hostile and must not be proxied.
+  const contentLength = Number(request.headers.get("content-length") ?? "0");
+  if (Number.isFinite(contentLength) && contentLength > MAX_SHARD_BODY_BYTES) {
+    return NextResponse.json({ error: "shard body too large" }, { status: 413 });
+  }
+  // Validate the metadata the Relay parses so an invalid shard never leaves the
+  // BFF (the Relay still re-validates; this is the cheap front door).
+  const fileId = request.headers.get("x-nodus-file-id");
+  const targetNode = request.headers.get("x-nodus-target-node");
+  const transferId = request.headers.get("x-nodus-transfer-id");
+  const hash = request.headers.get("x-nodus-hash");
+  const versionNumber = request.headers.get("x-nodus-version-number");
+  const shardIndex = request.headers.get("x-nodus-shard-index");
+  const size = request.headers.get("x-nodus-size");
+  if (
+    !fileId ||
+    !targetNode ||
+    !transferId ||
+    !isBlake3Hex(hash) ||
+    !isIntegerString(versionNumber) ||
+    !isIntegerString(shardIndex) ||
+    !isIntegerString(size)
+  ) {
+    return NextResponse.json({ error: "invalid shard metadata" }, { status: 400 });
+  }
+
   const headers = new Headers();
   for (const name of FORWARD_HEADERS) {
     const value = request.headers.get(name);

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { relayFetch, relayErrorMessage } from "../../../../lib/relay";
 import type { RelayError } from "../../../../lib/relay";
+import { readJsonObject } from "../../../../lib/validate";
 
 // POST /api/devices/register — authenticated proxy for the Relay's
 // POST /devices/register (ownership-safe device upsert). Used to enroll an
@@ -13,11 +14,14 @@ import type { RelayError } from "../../../../lib/relay";
 // for it and its download fails with MissingEnvelopeError.
 
 export async function POST(request: Request) {
-  const body = await request.text();
+  const body = await readJsonObject(request);
+  if (!body.ok) {
+    return NextResponse.json({ error: body.error }, { status: body.status });
+  }
 
   const { status, json } = await relayFetch<unknown>("/devices/register", {
     method: "POST",
-    body,
+    body: JSON.stringify(body.value),
   });
 
   return NextResponse.json(
