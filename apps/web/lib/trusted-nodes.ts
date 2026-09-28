@@ -17,7 +17,9 @@ export interface TrustedNode {
 /** List all trusted nodes, newest-paired first. */
 export async function getTrustedNodes(): Promise<TrustedNode[]> {
   const nodes = await idbGetAll<TrustedNode>(STORE_TRUSTED_NODES);
-  return nodes.sort((a, b) => b.paired_at.localeCompare(a.paired_at));
+  // Default a missing/non-string timestamp so a hand-edited or migrated record
+  // cannot throw out of a simple list call.
+  return nodes.sort((a, b) => (b.paired_at ?? "").localeCompare(a.paired_at ?? ""));
 }
 
 /**

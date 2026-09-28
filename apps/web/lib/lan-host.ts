@@ -8,11 +8,26 @@
 
 const HOSTNAME_RE =
   /^(?=.{1,253}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/i;
-// Bracketed IPv6 literal, e.g. [fe80::1] or [::1].
-const IPV6_RE = /^\[[0-9a-f:.]+\]$/i;
 // Bare IPv4 (each octet 0-255).
 const IPV4_RE =
   /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/;
+
+/**
+ * Validate a bare IPv6 literal with the platform parser.
+ *
+ * The previous character-class regex accepted malformed values such as `a` or
+ * `::::`, and this host later feeds `nodusBaseUrl` for signed requests, so a
+ * bad value would send device authentication to the wrong authority. A URL
+ * round-trip only succeeds for a real IPv6 address.
+ */
+function isValidIpv6(bare: string): boolean {
+  try {
+    const hostname = new URL(`http://[${bare}]/`).hostname;
+    return hostname.startsWith("[") && hostname.endsWith("]");
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Normalize a manually-entered node host: tolerate a pasted `http(s)://`
@@ -32,12 +47,15 @@ export function normalizeLanHost(raw: string): string | null {
   // Drop a trailing numeric port; the protocol fixes the port, so any provided
   // one is ignored rather than trusted.
   value = value.replace(/:\d+$/, "");
-  // Drop brackets for validation, remember IPv6-ness via the bracket form.
-  const isIpv6 = IPV6_RE.test(value);
+  // Drop brackets for validation, remembering IPv6-ness via the bracket form.
+  const isIpv6 = value.startsWith("[") && value.endsWith("]");
   const bare = isIpv6 ? value.slice(1, -1) : value;
   if (!bare) return null;
-  if (!isIpv6 && !IPV4_RE.test(bare) && !HOSTNAME_RE.test(bare)) return null;
-  if (isIpv6 && !/^[0-9a-f:.]+$/i.test(bare)) return null;
+  if (isIpv6) {
+    if (!isValidIpv6(bare)) return null;
+  } else if (!IPV4_RE.test(bare) && !HOSTNAME_RE.test(bare)) {
+    return null;
+  }
   return value.toLowerCase();
 }
 

@@ -23,6 +23,18 @@ describe("normalizeLanHost", () => {
   it("strips a pasted path rather than trusting it as part of the authority", () => {
     expect(normalizeLanHost("evil.example/path")).toBe("evil.example");
   });
+
+  it("rejects malformed IPv6 literals", () => {
+    expect(normalizeLanHost("[a]")).toBeNull();
+    expect(normalizeLanHost("[::::]")).toBeNull();
+    expect(normalizeLanHost("[1.2.3.4]")).toBeNull();
+  });
+
+  it("accepts valid IPv6 literals, with or without a port", () => {
+    expect(normalizeLanHost("[::1]")).toBe("[::1]");
+    expect(normalizeLanHost("[2001:db8::1]")).toBe("[2001:db8::1]");
+    expect(normalizeLanHost("[fe80::1]:9378")).toBe("[fe80::1]");
+  });
 });
 
 describe("advertisementBindsNode", () => {

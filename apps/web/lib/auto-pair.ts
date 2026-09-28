@@ -110,8 +110,14 @@ export async function ensureNodeTrusted(nodeId: string): Promise<EnsureNodeTrust
         identityPublicKey(device),
         5_000,
       );
+      // The node must confirm the identity we asked to pair with; recording a
+      // different node_id would poison the trusted-node cache.
+      const confirmedNodeId = confirm?.node_id as string | undefined;
+      if (confirmedNodeId && confirmedNodeId.toLowerCase() !== nodeId.toLowerCase()) {
+        continue;
+      }
       await addTrustedNode({
-        node_id: (confirm?.node_id as string | undefined) ?? nodeId,
+        node_id: nodeId,
         host,
         account_id: (confirm?.account_id as string | undefined) ?? "auto-pair",
         device_id: device.device_id,

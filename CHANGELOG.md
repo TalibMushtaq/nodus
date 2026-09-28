@@ -1,5 +1,18 @@
 # Changelog
 
+## [2026-09-28] - Web: validate IPv6 hosts, non-aborting reset, confirmed auto-pair
+
+**What changed:**
+
+- `apps/web/lib/lan-host.ts`: IPv6 literals are validated via a `URL` round-trip instead of a character-class regex; `normalizeLanHost` also recognizes the bracket form directly. New IPv6 cases in `lib/__tests__/lan-host.test.ts`.
+- `apps/web/lib/db.ts`: `clearLocalDatabase` clears each store independently and collects failures, throwing once at the end.
+- `apps/web/lib/trusted-nodes.ts`: the sort defaults a missing `paired_at` instead of throwing.
+- `apps/web/lib/auto-pair.ts`: a pairing confirmation whose `node_id` differs from the requested node aborts instead of poisoning the cache.
+
+**Why:** the regex accepted malformed values (`[a]`, `[::::]`) that then fed `nodusBaseUrl` for signed requests. A single store failure aborted the reset loop, leaving keys/recovery populated while the UI reported success. A hand-edited trusted-node record with no `paired_at` threw out of a plain list call. And a malicious node that passed the advertisement check could confirm a different `node_id` than the one it was paired for.
+
+**Impact:** web only. Valid hosts are unaffected; malformed IPv6 and mismatched pairing confirmations are refused, and a partial reset now surfaces an explicit error instead of failing silently.
+
 ## [2026-09-28] - Web: close preview and push-registration teardown races
 
 **What changed:**

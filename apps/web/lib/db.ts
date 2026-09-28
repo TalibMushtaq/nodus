@@ -186,9 +186,19 @@ export { requestToPromise };
  * remained would leave a device that can no longer authenticate.
  */
 export async function clearLocalDatabase(options?: { forgetRecovery?: boolean }): Promise<void> {
+  const failed: WebStore[] = [];
   for (const store of WEB_STORES) {
     if (store === STORE_DEVICE_KEYS) continue;
     if (store === STORE_RECOVERY && !options?.forgetRecovery) continue;
-    await idbClear(store);
+    try {
+      await idbClear(store);
+    } catch {
+      // Clear each store independently: aborting on the first failure would
+      // leave later stores (keys/recovery) populated while reporting success.
+      failed.push(store);
+    }
+  }
+  if (failed.length > 0) {
+    throw new Error(`failed to clear local store(s): ${failed.join(", ")}`);
   }
 }
