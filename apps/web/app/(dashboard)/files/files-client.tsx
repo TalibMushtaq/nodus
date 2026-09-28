@@ -925,7 +925,9 @@ export function FilesClient() {
           // (same fileId/version) rather than creating a duplicate, so
           // re-selecting a failed upload completes the original entry.
           const incomplete = findIncompleteByHash(files, measured.versionHash);
-          sessionHashes.current.add(measured.versionHash);
+          // The hash is added to the session's seen-set only after the upload
+          // succeeds (below), so a failed upload stays retryable instead of
+          // being skipped forever as an "already stored" duplicate.
           uploadFileId = incomplete?.fileId;
           const versionNumber = incomplete?.latestVersionNumber ?? 1;
 
@@ -952,6 +954,9 @@ export function FilesClient() {
                 totalShards: result.shardCount,
                 error: undefined,
               });
+              // Mark the content seen only now that it is durably stored, so a
+              // later selection is skipped but a failure above stays retryable.
+              sessionHashes.current.add(measured.versionHash);
               refresh();
               uploadError = null;
               break;

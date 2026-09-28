@@ -1,5 +1,15 @@
 # Changelog
 
+## [2026-09-28] - Web: keep failed uploads retryable
+
+**What changed:**
+
+- `apps/web/app/(dashboard)/files/files-client.tsx`: the content hash is added to `sessionHashes.current` only after the upload succeeds, and removed from the pre-upload duplicate check path.
+
+**Why:** the hash was recorded before the upload ran, and the duplicate check treated that set as authoritative. A transport failure therefore left the file permanently classified as "already stored" for the rest of the session, so re-selecting it was silently skipped with no way to retry.
+
+**Impact:** web only. Re-selecting a failed upload now re-enters the upload path (resuming an announced-but-incomplete file when the catalogue knows about it). Successful uploads are still deduplicated within the session.
+
 ## [2026-09-28] - Web: serialize event batches across all callers
 
 **What changed:**
