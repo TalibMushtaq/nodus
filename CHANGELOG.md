@@ -1,5 +1,15 @@
 # Changelog
 
+## [2026-09-28] - Web: serialize event batches across all callers
+
+**What changed:**
+
+- `apps/web/lib/use-event-batch.ts`: the serialization chain moved from a `useRef` created per `useEventBatch()` call site to a module-level `batchQueue` shared by the whole tab. New `lib/__tests__/use-event-batch.test.tsx` drives two hook instances against one socket and asserts only one batch is in flight and each resolves against its own ack.
+
+**Why:** the Relay's `batch_ack` carries no correlation id (its optional `batch_id` is never populated by the device-batch handler). With a per-instance queue, the seven call sites (uploader, file/folder mutations, activity, recovery reset, envelope backfill, conflicts) could each have a batch outstanding simultaneously and resolve on another caller's ack, so `applied_event_ids` could mark events synced that were never applied — silent sync loss.
+
+**Impact:** web only. Batches from different call sites now leave strictly in order; a single caller's behavior is unchanged. Residual limitation documented: a late ack for a timed-out batch can still be misattributed, which needs the batch id echoed on the ack (a protocol change) to fully close.
+
 ## [2026-09-28] - Web: keep the device encryption identity across logout
 
 **What changed:**
