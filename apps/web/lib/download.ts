@@ -18,7 +18,7 @@ import {
 import { getCachedCatalog } from "./catalog";
 import { fetchAndOpenFileKey } from "./envelopes";
 import { getFileKey } from "./keys";
-import { getTrustedNodes } from "./trusted-nodes";
+import { getTrustedNodes, type TrustedNode } from "./trusted-nodes";
 
 export {
   downloadFile,
@@ -65,7 +65,17 @@ export function browserDownloadDeps(
   signer: DeviceSigner,
   onTransport?: (transport: DownloadTransport) => void,
   fetchViaWebRtc?: WebRtcShardFetch,
+  /** Pre-resolved trusted nodes, so a multi-shard file reads the store once. */
+  trustedNodes?: TrustedNode[],
 ): DownloadDeps {
+  // A 100-shard file would otherwise do a full IndexedDB `getAll` per shard.
+  // Callers that download many shards pass the snapshot; single-shard callers
+  // (previews, folder entries) fall back to a one-off read.
+  let trustedPromise: Promise<TrustedNode[]> | null = trustedNodes ? Promise.resolve(trustedNodes) : null;
+  const loadTrustedNodes = (): Promise<TrustedNode[]> => {
+    if (!trustedPromise) trustedPromise = getTrustedNodes();
+    return trustedPromise;
+  };
   return {
     onTransport,
     async fetchFileKey(fileId) {
@@ -118,7 +128,7 @@ export function browserDownloadDeps(
       // the Relay pulls the shard from the node over its authenticated WS
       // connection, or serves it from its own buffer (design A).
       if (location.hash) {
-        const nodes = await getTrustedNodes();
+        const nodes = await loadTrustedNodes();
         const host = location.status === "NODE_STORED" ? nodes.find((n) => n.node_id === location.node_id)?.host : undefined;
         if (host) {
           try {
@@ -150,7 +160,10 @@ export function browserDownloadDeps(
           viaRelay.error ?? lastError ?? "relay_unavailable",
         );
       }
-      throw new ShardUnavailableError(location.shard_index, "no_trusted_host");
+      // `location.hash` is absent because the catalog has no hash for this
+      // shard — a data/status gap, not a pairing one. Use a distinct reason so
+      // callers do not tell the user to re-pair over a missing-hash problem.
+      throw new ShardUnavailableError(location.shard_index, "missing_hash");
     },
   };
 }

@@ -1,5 +1,17 @@
 # Changelog
 
+## [2026-09-28] - Web: fix folder-download transport, shard reason, and trusted-node reads
+
+**What changed:**
+
+- `apps/web/lib/download.ts`: `browserDownloadDeps` accepts a pre-resolved trusted-node snapshot and caches the read; the missing-`hash` case now raises `ShardUnavailableError(index, "missing_hash")` instead of `no_trusted_host`.
+- `apps/web/lib/folder-download.ts`: `classifySkip` no longer maps `missing_hash` to `not-paired`.
+- `apps/web/app/(dashboard)/files/files-client.tsx`: folder archives now pass the WebRTC shard fetcher and a single trusted-node snapshot into `browserDownloadDeps`.
+
+**Why:** folder archives called `browserDownloadDeps(device, signer)` with no WebRTC fetcher, so on an https page the LAN HTTP fetch was blocked as mixed content and the archive could never reach a paired node. Every shard did a full IndexedDB `getAll` of trusted nodes, so a many-shard file performed hundreds of reads. A shard with no catalog hash was reported as a pairing gap, showing the wrong "pair a node" guidance.
+
+**Impact:** web only. Folder downloads can use WebRTC and read trusted nodes once per archive; missing-hash failures are now classified as generic. Single-file behavior is unchanged.
+
 ## [2026-09-28] - Web: validate IPv6 hosts, non-aborting reset, confirmed auto-pair
 
 **What changed:**

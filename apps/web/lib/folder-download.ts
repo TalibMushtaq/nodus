@@ -92,7 +92,8 @@ export interface FolderSkip {
 export function classifySkip(error: unknown): FolderSkipKind {
   if (error instanceof MissingEnvelopeError) return "missing-key";
   // The browser deps raise ShardUnavailableError when no trusted node host is
-  // recorded for a stored shard — a pairing gap, not a storage gap.
+  // recorded for a stored shard — a pairing gap, not a storage gap. A missing
+  // hash is a different problem and falls through to "failed".
   if (error instanceof ShardUnavailableError && error.message.includes("no_trusted_host")) {
     return "not-paired";
   }

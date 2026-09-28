@@ -1254,6 +1254,9 @@ export function FilesClient() {
       setMutationError(null);
       setFolderDownloadId(folder.folderId);
       setFolderDownload({ name: folder.name, completed: 0, total: 0 });
+      // Resolve the trusted nodes once for the whole archive: a folder with many
+      // files would otherwise re-read IndexedDB for every shard.
+      const trustedNodes = await getTrustedNodes().catch(() => []);
       // Folder archives fetch each file from a trusted LAN node, so the path is
       // local P2P; recorded for the Activity view like single-file downloads.
       const log = await startTransfer({
@@ -1268,7 +1271,10 @@ export function FilesClient() {
           folderId: folder.folderId,
           folders,
           files,
-          deps: browserDownloadDeps(device, signer),
+          // Pass the WebRTC fetcher too: without it the archive is stuck on LAN
+          // HTTP / Relay, which an https page blocks as mixed content, so a
+          // folder download could never reach a paired node on a secure origin.
+          deps: browserDownloadDeps(device, signer, undefined, downloadShardViaWebRtc, trustedNodes),
           limiter: downloadLimiter,
           onProgress: (completed, total) => setFolderDownload({ name: folder.name, completed, total }),
         });
@@ -1300,7 +1306,7 @@ export function FilesClient() {
         setFolderDownloadId(null);
       }
     },
-    [device, signer, folders, files, folderDownloadId, downloadLimiter],
+    [device, signer, folders, files, folderDownloadId, downloadLimiter, downloadShardViaWebRtc],
   );
 
   const resync = useCallback(
