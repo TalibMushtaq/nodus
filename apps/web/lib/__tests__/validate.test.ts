@@ -6,6 +6,7 @@ import {
   isIntegerString,
   MAX_DISPLAY_NAME_LENGTH,
   readJsonObject,
+  readRawBody,
 } from "../validate";
 
 function jsonRequest(body: string, headers: Record<string, string> = {}): Request {
@@ -48,6 +49,25 @@ describe("readJsonObject", () => {
     const huge = `{"pad":"${"x".repeat(1000)}"}`;
     const result = await readJsonObject(jsonRequest(huge), 100);
     expect(result).toMatchObject({ ok: false, status: 413 });
+  });
+});
+
+describe("readRawBody", () => {
+  it("returns the raw body verbatim", async () => {
+    expect(await readRawBody(jsonRequest('{"a":1}'))).toEqual({ ok: true, value: '{"a":1}' });
+  });
+
+  it("rejects a body over the Content-Length cap", async () => {
+    const result = await readRawBody(jsonRequest("{}", { "content-length": "2048" }), 1024);
+    expect(result).toMatchObject({ ok: false, status: 413 });
+  });
+
+  it("caps on UTF-8 bytes, not UTF-16 code units", async () => {
+    // Six 3-byte characters are 6 code units but 18 bytes; a cap of 10 must
+    // reject them even though the string length looks small.
+    const multibyte = "€".repeat(6);
+    expect(multibyte.length).toBeLessThan(10);
+    expect(await readRawBody(jsonRequest(multibyte), 10)).toMatchObject({ ok: false, status: 413 });
   });
 });
 

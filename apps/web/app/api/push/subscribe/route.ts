@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 import { relayFetch, relayErrorMessage } from "../../../../lib/relay";
+import { readJsonObject } from "../../../../lib/validate";
+import { requireSession } from "../../../../lib/bff-guard";
 import type { RelayError } from "../../../../lib/relay";
 
 // POST /api/push/subscribe — registers a browser PushSubscription with the
@@ -7,21 +9,21 @@ import type { RelayError } from "../../../../lib/relay";
 // `PushSubscription.toJSON()` shape ({ endpoint, keys: { p256dh, auth } }).
 
 export async function POST(request: Request) {
-  const body = (await request.json().catch(() => null)) as
-    | { endpoint?: unknown; keys?: unknown }
-    | null;
-  if (
-    !body ||
-    typeof body.endpoint !== "string" ||
-    !body.keys ||
-    typeof body.keys !== "object"
-  ) {
+  const unauthorized = requireSession(request);
+  if (unauthorized) return unauthorized;
+  const body = await readJsonObject(request);
+  if (!body.ok) {
+    return NextResponse.json({ error: body.error }, { status: body.status });
+  }
+
+  const { endpoint, keys } = body.value;
+  if (typeof endpoint !== "string" || !keys || typeof keys !== "object") {
     return NextResponse.json({ error: "invalid subscription" }, { status: 400 });
   }
 
   const { status, json } = await relayFetch<unknown>("/devices/web-push", {
     method: "POST",
-    body: JSON.stringify(body),
+    body: JSON.stringify(body.value),
   });
   if (status !== 200) {
     return NextResponse.json(

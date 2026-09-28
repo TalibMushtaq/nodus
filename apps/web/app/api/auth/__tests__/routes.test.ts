@@ -5,6 +5,7 @@ const { mockRelayFetch } = vi.hoisted(() => ({ mockRelayFetch: vi.fn() }));
 vi.mock("../../../../lib/relay", () => ({
   relayFetch: mockRelayFetch,
   relayErrorMessage: ({ json }: { json: { error?: string } | null }) => json?.error ?? "Relay request failed",
+  RELAY_SESSION_COOKIE: "nodus_session",
 }));
 
 import { POST as login } from "../login/route";
@@ -39,7 +40,12 @@ describe("auth route cookie forwarding", () => {
       setCookie,
     });
 
-    const response = await handler(new Request("http://localhost/api/auth", { method: "POST" }) as never);
+    const response = await handler(
+      new Request("http://localhost/api/auth", {
+        method: "POST",
+        headers: { cookie: "nodus_session=test-session" },
+      }) as never,
+    );
 
     expect(response.status).toBe(status);
     // The helper normalizes spacing, so compare on the meaningful attributes.
@@ -57,7 +63,11 @@ describe("auth route cookie forwarding", () => {
     });
 
     const response = await changePassword(
-      new Request("http://localhost/api/auth/password", { method: "POST", body: "{}" }) as never,
+      new Request("http://localhost/api/auth/password", {
+        method: "POST",
+        body: "{}",
+        headers: { cookie: "nodus_session=test-session" },
+      }) as never,
     );
 
     expect(response.status).toBe(401);

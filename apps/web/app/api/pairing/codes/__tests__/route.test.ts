@@ -6,6 +6,7 @@ vi.mock("../../../../../lib/relay", () => ({
   relayFetch: mockRelayFetch,
   relayErrorMessage: ({ json }: { json: { error?: string } | null }) =>
     json?.error ?? "Relay request failed",
+  RELAY_SESSION_COOKIE: "nodus_session",
 }));
 
 import { POST } from "../route";
@@ -24,7 +25,10 @@ describe("POST /api/pairing/codes", () => {
     mockRelayFetch.mockResolvedValue({ status: 201, json: created, setCookie: null });
 
     const response = await POST(
-      new Request("http://localhost/api/pairing/codes", { method: "POST" }) as never,
+      new Request("http://localhost/api/pairing/codes", {
+        method: "POST",
+        headers: { cookie: "nodus_session=test-session" },
+      }) as never,
     );
 
     expect(response.status).toBe(201);
@@ -43,7 +47,10 @@ describe("POST /api/pairing/codes", () => {
     });
 
     const response = await POST(
-      new Request("http://localhost/api/pairing/codes", { method: "POST" }) as never,
+      new Request("http://localhost/api/pairing/codes", {
+        method: "POST",
+        headers: { cookie: "nodus_session=test-session" },
+      }) as never,
     );
 
     expect(response.status).toBe(401);
@@ -54,7 +61,10 @@ describe("POST /api/pairing/codes", () => {
     mockRelayFetch.mockResolvedValue({ status: 200, json: created, setCookie: null });
 
     const response = await POST(
-      new Request("http://localhost/api/pairing/codes", { method: "POST" }) as never,
+      new Request("http://localhost/api/pairing/codes", {
+        method: "POST",
+        headers: { cookie: "nodus_session=test-session" },
+      }) as never,
     );
 
     expect(response.status).toBe(200);

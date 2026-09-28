@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 import { relayFetch, relayErrorMessage } from "../../../../lib/relay";
+import { readRawBody } from "../../../../lib/validate";
+import { requireSession } from "../../../../lib/bff-guard";
 import type { RelayError } from "../../../../lib/relay";
 
 // POST /api/pairing/codes — authenticated proxy for the Relay's
@@ -8,11 +10,16 @@ import type { RelayError } from "../../../../lib/relay";
 // The session cookie authenticates the account server-side via relayFetch.
 
 export async function POST(request: Request) {
-  const body = await request.text();
+  const unauthorized = requireSession(request);
+  if (unauthorized) return unauthorized;
+  const body = await readRawBody(request);
+  if (!body.ok) {
+    return NextResponse.json({ error: body.error }, { status: body.status });
+  }
 
   const { status, json } = await relayFetch<unknown>("/pairing/codes", {
     method: "POST",
-    body,
+    body: body.value,
   });
 
   // Pass a successful mint through as-is; the Relay currently returns 201, but

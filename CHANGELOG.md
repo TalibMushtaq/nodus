@@ -1,5 +1,19 @@
 # Changelog
 
+## [2026-09-28] - Web: guard and cap the mutating BFF routes
+
+**What changed:**
+
+- New `apps/web/lib/bff-guard.ts` (`requireSession`) and `apps/web/lib/validate.ts` `readRawBody`, plus a UTF-8 byte cap in `readJsonObject`.
+- Applied `requireSession` to the mutating routes that lacked it: `auth/password`, `account/recovery`, `pairing/codes`, `pairing/sessions`, `push/subscribe`, `push/unsubscribe`, both `tombstones/*`, `buffer/upload`, and the `shard/[hash]` GET proxy.
+- Applied `readRawBody` (64 KiB default cap) to every route that previously read `request.text()`/`request.json()` unbounded: `auth/password`, `auth/recovery`, `auth/recovery/challenge`, `account/recovery`, `pairing/codes`, `push/subscribe`, `push/unsubscribe`. New `lib/__tests__/bff-guard.test.ts`, `readRawBody` cases in `lib/__tests__/validate.test.ts`, and cookie headers added to the auth/pairing/shard route tests.
+
+**Why:** seven handlers buffered whatever body arrived before forwarding it, five of them with no session pre-check, so an anonymous client could use the Next process as a free memory amplifier (the Relay's own limit runs only after the BFF has buffered). Several routes also forwarded anonymous traffic to the Relay despite comments claiming they were authenticated. Separately, `readJsonObject` capped UTF-16 code units, so a chunked payload of multi-byte characters could reach ~4× the intended byte limit.
+
+**Impact:** web BFF only. Authenticated app requests are unchanged; anonymous calls now get 401 before the Relay and oversized bodies get 413 before buffering. The `shard/[hash]` proxy still validates the hash before the guard so malformed input keeps returning 400.
+
+**Follow-ups:** `buffer/upload` still relies on Content-Length to reject oversize shards; a chunked body without the header is bounded only by the Relay's `MaxBytesReader`. A byte-counting stream wrapper would close that.
+
 ## [2026-09-28] - Web: cap the in-memory folder-archive size
 
 **What changed:**

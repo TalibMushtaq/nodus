@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { relayFetch, relayErrorMessage } from "../../../../lib/relay";
 import { hardenSessionCookie } from "../../../../lib/session-cookie";
+import { readRawBody } from "../../../../lib/validate";
 import type { RelayError } from "../../../../lib/relay";
 import type { SessionInfo } from "../../../../lib/session";
 
@@ -8,10 +9,14 @@ import type { SessionInfo } from "../../../../lib/session";
 // endpoint. On success it forwards the Set-Cookie that starts the session.
 
 export async function POST(request: Request) {
-  const body = await request.text();
+  // Public by design, but still capped so the BFF is not a body amplifier.
+  const body = await readRawBody(request);
+  if (!body.ok) {
+    return NextResponse.json({ error: body.error }, { status: body.status });
+  }
   const { status, json, setCookie } = await relayFetch<SessionInfo & RelayError>("/auth/recovery", {
     method: "POST",
-    body,
+    body: body.value,
   });
 
   const res = NextResponse.json(

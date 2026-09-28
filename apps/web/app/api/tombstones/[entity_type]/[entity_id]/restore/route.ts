@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { relayFetch, relayErrorMessage } from "../../../../../../lib/relay";
+import { requireSession } from "../../../../../../lib/bff-guard";
 import type { RelayError } from "../../../../../../lib/relay";
 
 // POST /api/tombstones/{entity_type}/{entity_id}/restore — undo a soft delete.
@@ -7,9 +8,11 @@ import type { RelayError } from "../../../../../../lib/relay";
 // retained node data is no longer purged at the original deadline.
 
 export async function POST(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ entity_type: string; entity_id: string }> },
 ) {
+  const unauthorized = requireSession(request);
+  if (unauthorized) return unauthorized;
   const { entity_type, entity_id } = await params;
   const path = `/tombstones/${encodeURIComponent(entity_type)}/${encodeURIComponent(entity_id)}/restore`;
   const { status, json } = await relayFetch<unknown>(path, { method: "POST" });

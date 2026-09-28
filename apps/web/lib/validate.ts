@@ -44,7 +44,9 @@ export async function readJsonObject(
   } catch {
     return { ok: false, status: 400, error: "could not read request body" };
   }
-  if (raw.length > maxBytes) {
+  // Compare real UTF-8 bytes, not UTF-16 code units: a chunked body of
+  // multi-byte characters would otherwise pass at up to ~4× the intended cap.
+  if (Buffer.byteLength(raw, "utf8") > maxBytes) {
     return { ok: false, status: 413, error: "request body too large" };
   }
   if (raw.trim() === "") {
@@ -60,6 +62,31 @@ export async function readJsonObject(
     return { ok: false, status: 400, error: "expected a JSON object" };
   }
   return { ok: true, value: parsed as Record<string, unknown> };
+}
+
+/**
+ * Read a raw text body with a size cap. Used by the BFF routes that forward a
+ * body verbatim (auth, pairing, push) instead of parsing it, so an anonymous
+ * client cannot make the Next process buffer an arbitrarily large payload
+ * before the Relay's own limit applies.
+ */
+export async function readRawBody(
+  request: Request,
+  maxBytes = MAX_JSON_BODY_BYTES,
+): Promise<GuardSuccess<string> | GuardFailure> {
+  if (contentLengthTooLarge(request, maxBytes)) {
+    return { ok: false, status: 413, error: "request body too large" };
+  }
+  let raw: string;
+  try {
+    raw = await request.text();
+  } catch {
+    return { ok: false, status: 400, error: "could not read request body" };
+  }
+  if (Buffer.byteLength(raw, "utf8") > maxBytes) {
+    return { ok: false, status: 413, error: "request body too large" };
+  }
+  return { ok: true, value: raw };
 }
 
 /** True for a BLAKE3 hex digest (32 bytes → 64 hex chars). */

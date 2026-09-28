@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { relayFetchRaw } from "../../../../lib/relay";
 import { MAX_SHARD_BODY_BYTES, isBlake3Hex, isIntegerString } from "../../../../lib/validate";
+import { requireSession } from "../../../../lib/bff-guard";
 
 // POST /api/buffer/upload — Path C shard proxy. The browser posts the raw
 // encrypted shard here with `X-Nodus-*` metadata; this forwards the body and
@@ -23,6 +24,10 @@ const FORWARD_HEADERS = [
 ] as const;
 
 export async function POST(request: Request) {
+  // Reject anonymous uploads before touching the stream: the shard is
+  // account-scoped, and the guard keeps the proxy from being an open relay.
+  const unauthorized = requireSession(request);
+  if (unauthorized) return unauthorized;
   // Catch an oversized shard before the stream is opened: a shard is 8 MiB, so
   // anything past the cap is malformed or hostile and must not be proxied.
   const contentLength = Number(request.headers.get("content-length") ?? "0");

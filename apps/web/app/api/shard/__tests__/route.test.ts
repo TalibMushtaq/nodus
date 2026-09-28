@@ -4,6 +4,7 @@ const { mockRelayFetchRaw } = vi.hoisted(() => ({ mockRelayFetchRaw: vi.fn() }))
 
 vi.mock("../../../../lib/relay", () => ({
   relayFetchRaw: mockRelayFetchRaw,
+  RELAY_SESSION_COOKIE: "nodus_session",
 }));
 
 import { GET } from "../[hash]/route";
@@ -28,9 +29,14 @@ describe("GET /api/shard/[hash]", () => {
   it("proxies a valid hash", async () => {
     mockRelayFetchRaw.mockResolvedValue(new Response(new Uint8Array([1, 2, 3]), { status: 200 }));
 
-    const response = await GET(new Request(`http://localhost/api/shard/${HASH}`) as never, {
-      params: Promise.resolve({ hash: HASH }),
-    });
+    const response = await GET(
+      new Request(`http://localhost/api/shard/${HASH}`, {
+        headers: { cookie: "nodus_session=test-session" },
+      }) as never,
+      {
+        params: Promise.resolve({ hash: HASH }),
+      },
+    );
 
     expect(response.status).toBe(200);
     expect(mockRelayFetchRaw).toHaveBeenCalledWith(`/shards/${HASH}`, { method: "GET" });
