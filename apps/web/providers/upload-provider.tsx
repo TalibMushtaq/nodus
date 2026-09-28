@@ -101,29 +101,60 @@ export function UploadProvider({ children }: { children: ReactNode }) {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [speedBps, setSpeedBps] = useState(0);
   const [stalled, setStalled] = useState(false);
-  // Latest plaintext byte count reported for the active task; the sampler
-  // below turns consecutive readings into a transfer rate.
-  const liveBytesRef = useRef(0);
+  // Latest plaintext byte count per task; the sampler below turns consecutive
+  // readings of the active task into a transfer rate. Keyed by task id so a
+  // concurrent upload cannot overwrite the active task's sample.
+  const liveBytesRef = useRef(new Map<string, number>());
   // Consecutive sampler ticks with no byte progress (4 × 500ms ≈ 2s).
   const stallTicksRef = useRef(0);
+  // Newest uncommitted progress event per task, flushed once per animation
+  // frame. Committing every chunk re-rendered every useUpload consumer (the
+  // whole Files page) hundreds of times per shard.
+  const pendingProgressRef = useRef(new Map<string, UploadProgressEvent>());
+  const frameRef = useRef<number | null>(null);
 
-  const reportProgress = useCallback((id: string, event: UploadProgressEvent) => {
-    liveBytesRef.current = event.completedBytes;
+  const flushProgress = useCallback(() => {
+    frameRef.current = null;
+    const pending = pendingProgressRef.current;
+    if (pending.size === 0) return;
+    const batch = new Map(pending);
+    pending.clear();
     setTasks((previous) =>
-      previous.map((task) =>
-        task.id === id
-          ? {
-              ...task,
-              completedBytes: event.completedBytes,
-              completedShards: event.completedShards,
-              totalShards: event.totalShards,
-              phase: event.phase,
-              status: "active",
-            }
-          : task,
-      ),
+      previous.map((task) => {
+        const event = batch.get(task.id);
+        if (!event) return task;
+        return {
+          ...task,
+          completedBytes: event.completedBytes,
+          completedShards: event.completedShards,
+          totalShards: event.totalShards,
+          phase: event.phase,
+          status: "active",
+        };
+      }),
     );
   }, []);
+
+  // Drop a queued frame on unmount so it cannot setState after teardown.
+  useEffect(
+    () => () => {
+      if (frameRef.current !== null) cancelAnimationFrame(frameRef.current);
+    },
+    [],
+  );
+
+  const reportProgress = useCallback(
+    (id: string, event: UploadProgressEvent) => {
+      liveBytesRef.current.set(id, event.completedBytes);
+      // Coalesce: keep only the newest event for this task and commit on the
+      // next animation frame.
+      pendingProgressRef.current.set(id, event);
+      if (frameRef.current === null) {
+        frameRef.current = requestAnimationFrame(flushProgress);
+      }
+    },
+    [flushProgress],
+  );
 
   const reportPath = useCallback((id: string, path: string) => {
     setTasks((previous) =>
@@ -131,12 +162,22 @@ export function UploadProvider({ children }: { children: ReactNode }) {
     );
   }, []);
 
-  const dismiss = useCallback(() => setTasks([]), []);
+  const dismiss = useCallback(() => {
+    setTasks((previous) => {
+      // Never clear an in-flight batch: the upload loop lives in the Files page
+      // and keeps reporting, so emptying the queue mid-run would drop its
+      // progress on the floor. The widget only offers Dismiss once all done.
+      if (previous.some((task) => task.status === "queued" || task.status === "active")) {
+        return previous;
+      }
+      return [];
+    });
+  }, []);
 
   // Selecting a task also resets the rate counter; done here (not in the
   // sampler effect) so the effect never calls setState synchronously.
   const beginTask = useCallback((id: string | null) => {
-    liveBytesRef.current = 0;
+    if (id) liveBytesRef.current.set(id, 0);
     stallTicksRef.current = 0;
     setSpeedBps(0);
     setStalled(false);
@@ -155,11 +196,12 @@ export function UploadProvider({ children }: { children: ReactNode }) {
   // here rather than in the upload loop so it survives navigation.
   useEffect(() => {
     if (!activeId || !activeUploading) return;
-    let lastBytes = liveBytesRef.current;
+    const taskId = activeId;
+    let lastBytes = liveBytesRef.current.get(taskId) ?? 0;
     let lastAt = Date.now();
     const timer = setInterval(() => {
       const now = Date.now();
-      const bytes = liveBytesRef.current;
+      const bytes = liveBytesRef.current.get(taskId) ?? 0;
       const seconds = (now - lastAt) / 1000;
       if (seconds > 0) {
         const delta = bytes - lastBytes;

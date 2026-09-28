@@ -164,11 +164,10 @@ export function TransferProvider({ children }: { children: ReactNode }) {
       queueRef.current = null;
       sessionCacheRef.current = null;
       sessionCache.closeAll();
-      // Drop the manager: on an identity/device change the next effect builds a
-      // fresh one bound to the new device id/signer, and the old manager must
-      // not remain reachable in between.
-      setManager(null);
-      setQueuedCount(0);
+      // No setState here: this cleanup also runs on a real unmount, and the
+      // next effect run (identity change) installs its own manager. The
+      // `cancelled` guard above already prevents the stale hydration promise
+      // from publishing a manager for the old identity.
     };
   }, [device, signer, wsSend, wsOn]);
 

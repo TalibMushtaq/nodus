@@ -71,4 +71,33 @@ describe("DownloadProvider retry", () => {
     });
     expect(result.current.tasks[0]?.status).toBe("active");
   });
+
+  it("ignores progress that arrives after a task finishes", async () => {
+    const { result } = renderHook(() => useDownload(), { wrapper });
+
+    let taskId = "";
+    act(() => {
+      taskId = result.current.startDownload({ name: "late.bin" }).id;
+      result.current.finishDownload(taskId, "done");
+    });
+    expect(result.current.tasks[0]?.status).toBe("done");
+
+    act(() => {
+      // A transport can report once more after completion; it must not flip the
+      // terminal task back to active.
+      result.current.reportProgress(taskId, {
+        phase: "fetching",
+        completedShards: 1,
+        totalShards: 4,
+        completedBytes: 10,
+        totalBytes: 40,
+      });
+    });
+    // Let any queued animation frame flush before asserting.
+    await act(async () => {
+      await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
+    });
+
+    expect(result.current.tasks[0]?.status).toBe("done");
+  });
 });

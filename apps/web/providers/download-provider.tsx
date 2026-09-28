@@ -162,7 +162,9 @@ export function DownloadProvider({ children }: { children: ReactNode }) {
     setTasks((previous) =>
       previous.map((task) => {
         const event = batch.get(task.id);
-        if (!event) return task;
+        // Ignore progress for a task that already finished/cancelled: its
+        // controller is gone, and a late event must not flip it back to active.
+        if (!event || !controllersRef.current.has(task.id)) return task;
         return {
           ...task,
           phase: event.phase,
@@ -179,10 +181,16 @@ export function DownloadProvider({ children }: { children: ReactNode }) {
     );
   }, []);
 
-  // Drop a queued frame on unmount so it cannot setState after teardown.
+  // Drop a queued frame on unmount so it cannot setState after teardown, and
+  // abort every in-flight transfer so navigating away (logout/identity change)
+  // does not leave fetches running headless with their progress callbacks.
   useEffect(
     () => () => {
       if (frameRef.current !== null) cancelAnimationFrame(frameRef.current);
+      for (const controller of controllersRef.current.values()) controller.abort();
+      controllersRef.current.clear();
+      retryRunnersRef.current.clear();
+      pendingProgressRef.current.clear();
     },
     [],
   );
@@ -210,6 +218,9 @@ export function DownloadProvider({ children }: { children: ReactNode }) {
 
   const reportProgress = useCallback(
     (id: string, event: DownloadProgressEvent) => {
+      // Ignore progress for a task that is no longer tracked (finished or
+      // cancelled) so a late callback cannot resurrect it.
+      if (!controllersRef.current.has(id)) return;
       // Keep only the newest event for this task; the frame flush commits it.
       pendingProgressRef.current.set(id, event);
       if (frameRef.current === null) {

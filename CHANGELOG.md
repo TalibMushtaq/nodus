@@ -1,5 +1,17 @@
 # Changelog
 
+## [2026-09-28] - Web: fix provider teardown and upload-progress re-renders
+
+**What changed:**
+
+- `apps/web/providers/download-provider.tsx`: unmount cleanup now aborts every in-flight controller and clears the retry/pending maps; `reportProgress` and the frame flush ignore task ids no longer tracked, so a late callback cannot flip a finished/cancelled task back to active. New test in `providers/__tests__/download-provider.test.tsx`.
+- `apps/web/providers/upload-provider.tsx`: per-task byte counters (`Map`) instead of one shared number, progress committed once per animation frame, and `dismiss` refuses while a task is queued/active.
+- `apps/web/providers/transfer-provider.tsx`: the effect cleanup no longer calls `setManager(null)`/`setQueuedCount(0)` on every teardown.
+
+**Why:** downloads kept running headless after the provider unmounted (logout), with progress callbacks setting state on a gone component. The upload sampler wrote every task's byte count into one ref, so a concurrent upload corrupted the active task's speed/stall reading, and progress was committed to React on every chunk, re-rendering the whole Files page. Transfer cleanup performed state updates during unmount.
+
+**Impact:** web UI only. Concurrent uploads report speed correctly, upload progress no longer re-renders consumers per chunk, and unmounting the dashboard aborts downloads. Behavior for a single transfer is unchanged.
+
 ## [2026-09-28] - Web: stop caching authenticated BFF responses
 
 **What changed:**
