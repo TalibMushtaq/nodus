@@ -1,5 +1,16 @@
 # Changelog
 
+## [2026-09-28] - Web: close preview and push-registration teardown races
+
+**What changed:**
+
+- `apps/web/lib/preview.ts`: a module `epoch` is bumped by `revokeAllPreviews`; `loadImagePreview` captures it before downloading and revokes/returns null instead of caching a URL created after a logout. New test in `lib/__tests__/preview.test.ts`.
+- `apps/web/providers/notification-provider.tsx`: an `aliveRef` guards state writes and push registration that resolve after unmount; `reconcilePush` runs through a serialized promise chain, and the preference-change effect routes through it instead of registering independently.
+
+**Why:** a preview download that resolved after `revokeAllPreviews` re-inserted a decrypted object URL for a signed-out account (the revoked URL map does not cancel in-flight tasks). The notification provider could `setPushSubscribed` after unmount, and its two effects could register the push subscription concurrently with independently captured preference snapshots, leaving the relay with a stale preference set.
+
+**Impact:** web only. Previews that race a logout are discarded and their object URLs revoked; push registration is serialized and stops after unmount.
+
 ## [2026-09-28] - Web: fix provider teardown and upload-progress re-renders
 
 **What changed:**

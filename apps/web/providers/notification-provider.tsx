@@ -100,6 +100,20 @@ export function NotificationProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     preferencesRef.current = preferences;
   }, [preferences]);
+  // False once the provider unmounts (logout). Registration and state writes
+  // that resolve after teardown are dropped, so a shared browser cannot
+  // re-register a signed-out account's push endpoint.
+  const aliveRef = useRef(true);
+  useEffect(
+    () => () => {
+      aliveRef.current = false;
+    },
+    [],
+  );
+  // Serializes `reconcilePush` invocations. The mount timer, a preference
+  // change, the push-change event, and a worker message can all arrive at once;
+  // running them concurrently could leave the relay with a stale preference set.
+  const pushChainRef = useRef<Promise<unknown>>(Promise.resolve());
 
   // Mirror toggles into the module that non-React callers use.
   useEffect(() => {
@@ -120,16 +134,25 @@ export function NotificationProvider({ children }: { children: ReactNode }) {
   // rotates the subscription (`pushsubscriptionchange` forwarded by the worker).
   // Mobile refreshes its token on every session/pref change; this is the web
   // counterpart, so a rotated endpoint or a changed opt-out does not go stale.
-  const reconcilePush = useCallback(async () => {
-    try {
-      const subscription = await getPushSubscription();
-      const subscribed = Boolean(subscription);
-      setPushSubscribed(subscribed);
-      configureLocalNotifications({ pushSubscribed: subscribed });
-      if (subscription) await registerPushSubscription(subscription, preferencesRef.current);
-    } catch {
-      // Best-effort: without a subscription the local channel still works.
-    }
+  const reconcilePush = useCallback((): Promise<void> => {
+    const run = async () => {
+      try {
+        const subscription = await getPushSubscription();
+        if (!aliveRef.current) return;
+        const subscribed = Boolean(subscription);
+        setPushSubscribed(subscribed);
+        configureLocalNotifications({ pushSubscribed: subscribed });
+        if (subscription && aliveRef.current) {
+          await registerPushSubscription(subscription, preferencesRef.current);
+        }
+      } catch {
+        // Best-effort: without a subscription the local channel still works.
+      }
+    };
+    // Serialize: each call waits for the previous registration to settle.
+    const next = pushChainRef.current.then(run, run);
+    pushChainRef.current = next.catch(() => undefined);
+    return next;
   }, []);
 
   useEffect(() => {
@@ -145,13 +168,11 @@ export function NotificationProvider({ children }: { children: ReactNode }) {
 
   // Re-send the per-category opt-outs whenever a toggle changes on an active
   // subscription, so the relay stops (or starts) delivering that category.
+  // Routed through `reconcilePush` so the two registration paths cannot race.
   useEffect(() => {
     if (!pushSubscribed) return;
-    void (async () => {
-      const subscription = await getPushSubscription();
-      if (subscription) await registerPushSubscription(subscription, preferences);
-    })();
-  }, [preferences, pushSubscribed]);
+    void reconcilePush();
+  }, [preferences, pushSubscribed, reconcilePush]);
 
   // A browser can rotate a subscription while the tab is open; the worker has no
   // VAPID key, so it tells the app to re-subscribe + re-register.

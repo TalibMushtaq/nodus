@@ -62,6 +62,10 @@ const cache = new Map<string, string>();
 const inflight = new Map<string, Promise<string | null>>();
 let active = 0;
 const waiters: Array<() => void> = [];
+// Bumped by `revokeAllPreviews`. A preview download captures it before fetching
+// and refuses to cache its URL if the epoch moved (logout/revocation happened
+// mid-flight), so a resolved decrypted URL cannot resurrect after the wipe.
+let epoch = 0;
 // Components holding a preview URL for a key that later gets evicted/revoked.
 // Notified so they can drop the now-dead URL instead of rendering a broken img.
 const evictionListeners = new Set<(key: string) => void>();
@@ -116,6 +120,7 @@ export function getCachedPreview(file: FileEntryView): string | null {
  * the signed-out account.
  */
 export function revokeAllPreviews(): void {
+  epoch += 1;
   const keys = [...cache.keys()];
   for (const url of cache.values()) URL.revokeObjectURL(url);
   cache.clear();
@@ -139,6 +144,7 @@ export async function loadImagePreview(
   if (pending) return pending;
 
   const task = (async () => {
+    const taskEpoch = epoch;
     await acquire();
     try {
       const result = await downloadFile({
@@ -154,6 +160,12 @@ export async function loadImagePreview(
         type: IMAGE_MIME[ext] ?? "application/octet-stream",
       });
       const url = URL.createObjectURL(blob);
+      // A logout/revocation that landed while this was downloading must win:
+      // never re-cache (or hand back) decrypted bytes for a signed-out account.
+      if (epoch !== taskEpoch) {
+        URL.revokeObjectURL(url);
+        return null;
+      }
       remember(key, url);
       return url;
     } finally {
