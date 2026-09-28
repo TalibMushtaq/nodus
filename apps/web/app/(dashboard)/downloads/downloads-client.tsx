@@ -168,11 +168,16 @@ export function DownloadsClient() {
   }, [device, signer]);
 
   const load = useCallback(async () => {
-    const remote = await fetchRemote();
-    if (remote) await importRemoteActivities(remote);
-    const all = await listTransfers();
-    setHistory(all.filter((entry) => entry.kind === "download"));
-    setLoading(false);
+    try {
+      const remote = await fetchRemote();
+      if (remote) await importRemoteActivities(remote);
+      const all = await listTransfers();
+      setHistory(all.filter((entry) => entry.kind === "download"));
+    } catch {
+      // A local-store failure must not leave the page spinning forever.
+    } finally {
+      setLoading(false);
+    }
   }, [fetchRemote]);
 
   // Runs on mount, when auth becomes available, and whenever a task changes

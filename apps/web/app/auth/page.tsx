@@ -364,10 +364,19 @@ export default function AuthPage() {
     }
 
     setLoading(true);
-    const res =
-      mode === "register"
-        ? await register(email, password, recoveryPublicKey(recoveryPhrase))
-        : await login(email, password);
+    let res;
+    try {
+      res =
+        mode === "register"
+          ? await register(email, password, recoveryPublicKey(recoveryPhrase))
+          : await login(email, password);
+    } catch (err) {
+      // register/login touch WebCrypto/IndexedDB and the network; a rejection
+      // must not leave the form stuck on "Please wait…".
+      setLoading(false);
+      setError(err instanceof Error ? err.message : "Authentication failed");
+      return;
+    }
     setLoading(false);
 
     if (!res.ok) {

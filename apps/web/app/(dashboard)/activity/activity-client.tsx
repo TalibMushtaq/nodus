@@ -116,10 +116,16 @@ export function ActivityClient() {
 
   // Merge the remote feed into the local store, then read the combined list.
   const load = useCallback(async () => {
-    const remote = await fetchRemote();
-    if (remote) await importRemoteActivities(remote);
-    setEntries(await listTransfers());
-    setLoading(false);
+    try {
+      const remote = await fetchRemote();
+      if (remote) await importRemoteActivities(remote);
+      setEntries(await listTransfers());
+    } catch {
+      // A local-store failure must not leave the page spinning forever; the
+      // cached feed (already in state) is what remains.
+    } finally {
+      setLoading(false);
+    }
   }, [fetchRemote]);
 
   useEffect(() => {

@@ -1,5 +1,16 @@
 # Changelog
 
+## [2026-09-28] - Web: keep loading states from hanging on a rejected read
+
+**What changed:**
+
+- `apps/web/app/(dashboard)/activity/activity-client.tsx` and `downloads/downloads-client.tsx`: the initial `load()` wraps its work in `try/finally` so `setLoading(false)` always runs.
+- `apps/web/app/auth/page.tsx`: `register`/`login` are wrapped in `try/catch` so a rejected WebCrypto/IndexedDB/network call clears the loading state and surfaces an error instead of leaving "Please wait…".
+
+**Why:** these paths cleared their spinner only on the success path. An IndexedDB rejection left the Activity/Downloads pages on "Loading…" forever (and produced an unhandled rejection), and an auth rejection left the sign-in form stuck.
+
+**Impact:** web UI only. Failure paths now show an error/empty state instead of an indefinite spinner.
+
 ## [2026-09-28] - Web: fix folder-download transport, shard reason, and trusted-node reads
 
 **What changed:**
