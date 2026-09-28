@@ -26,12 +26,16 @@ export async function GET(request: Request, { params }: { params: Promise<{ hash
   try {
     const res = await relayFetchRaw(`/shards/${encodeURIComponent(hash)}`, { method: "GET" });
     if (!res.ok) {
-      let error = `relay shard fetch failed: ${res.status}`;
-      try {
-        const body = (await res.json()) as { error?: string };
-        if (body?.error) error = body.error;
-      } catch {
-        // Non-JSON error body; keep the HTTP status message.
+      // 4xx bodies are meant for the user; a 5xx can carry internal detail, so
+      // fall back to a generic message instead of echoing it.
+      let error = "relay shard fetch failed";
+      if (res.status < 500) {
+        try {
+          const body = (await res.json()) as { error?: string };
+          if (body?.error) error = body.error;
+        } catch {
+          // Non-JSON error body; keep the generic message.
+        }
       }
       return NextResponse.json({ error }, { status: res.status });
     }

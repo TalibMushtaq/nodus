@@ -1,5 +1,18 @@
 # Changelog
 
+## [2026-09-28] - Web: harden BFF cookie forwarding and error responses
+
+**What changed:**
+
+- `apps/web/lib/relay.ts`: `relayFetch` now returns `setCookies: string[]` read via `Headers.getSetCookie()` (falling back to the joined header only when unavailable); `relayErrorMessage` returns a generic message for 5xx instead of echoing the Relay body. The `buffer/upload` and `shard/[hash]` proxies also genericize 5xx bodies.
+- `apps/web/lib/session-cookie.ts`: new `appendHardenedCookies`; `hardenSessionCookie` now overwrites `SameSite=None` with `Lax` and defaults a missing `Path=/`. The six auth routes forward each cookie separately.
+- `apps/web/app/api/auth/logout/route.ts`: derives its body from the status so a Relay 5xx with an empty body no longer returns `{ status: "logged out" }`.
+- Tests updated across `relay`, `session`, `session-cookie`, `devices`, `pairing/codes`, and the auth routes.
+
+**Why:** `relayFetch` read `headers.get("set-cookie")`, which joins multiple cookies with ", ", so `hardenSessionCookie` re-splitting on ";" would corrupt them the moment the Relay set a second cookie. `hardenSessionCookie` preserved an upstream `SameSite=None`, defeating the CSRF baseline. And a 5xx body can carry internal `err.Error()` text that the BFF was returning to the browser.
+
+**Impact:** web BFF only. A single Relay cookie still forwards identically (now via `append`); `SameSite=None` inputs become `Lax`, and malformed cookies gain `Path=/`. 5xx responses now read "Relay request failed" while 4xx messages are unchanged.
+
 ## [2026-09-28] - Web: guard and cap the mutating BFF routes
 
 **What changed:**

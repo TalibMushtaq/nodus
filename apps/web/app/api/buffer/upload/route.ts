@@ -75,6 +75,10 @@ export async function POST(request: Request) {
     if (body === null) {
       return NextResponse.json({ error: "relay returned a non-JSON response" }, { status: res.status });
     }
+    // A 5xx body can carry internal error text; do not relay it to the browser.
+    if (res.status >= 500) {
+      return NextResponse.json({ error: "relay request failed" }, { status: res.status });
+    }
     return NextResponse.json(body, { status: res.status });
   } catch {
     return NextResponse.json({ error: "relay unreachable" }, { status: 503 });

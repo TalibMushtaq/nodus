@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { relayFetch, relayErrorMessage } from "../../../../lib/relay";
-import { hardenSessionCookie } from "../../../../lib/session-cookie";
+import { appendHardenedCookies } from "../../../../lib/session-cookie";
 import type { RelayError } from "../../../../lib/relay";
 import type { SessionInfo } from "../../../../lib/session";
 
@@ -8,7 +8,7 @@ import type { SessionInfo } from "../../../../lib/session";
 // issues a fresh one for this device. The returned Set-Cookie keeps the calling
 // browser signed in while every other device is invalidated.
 export async function POST() {
-  const { status, json, setCookie } = await relayFetch<SessionInfo & RelayError>(
+  const { status, json, setCookies } = await relayFetch<SessionInfo & RelayError>(
     "/auth/logout-all",
     { method: "POST" },
   );
@@ -17,8 +17,6 @@ export async function POST() {
     status === 200 ? json : { error: relayErrorMessage({ status, json }) },
     { status },
   );
-  if (setCookie) {
-    res.headers.set("set-cookie", hardenSessionCookie(setCookie));
-  }
+  appendHardenedCookies(res.headers, setCookies);
   return res;
 }

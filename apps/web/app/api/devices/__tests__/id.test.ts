@@ -33,7 +33,7 @@ describe("DELETE /api/devices/[id]", () => {
   });
 
   it("proxies an authenticated revoke", async () => {
-    mockRelayFetch.mockResolvedValue({ status: 200, json: { status: "revoked" }, setCookie: null });
+    mockRelayFetch.mockResolvedValue({ status: 200, json: { status: "revoked" }, setCookies: [] });
     const response = await DELETE(request("DELETE", "") as never, {
       params: Promise.resolve({ id: "dev-1" }),
     });
@@ -57,7 +57,7 @@ describe("PATCH /api/devices/[id]", () => {
   });
 
   it("forwards a sanitized name", async () => {
-    mockRelayFetch.mockResolvedValue({ status: 200, json: { display_name: "Desk" }, setCookie: null });
+    mockRelayFetch.mockResolvedValue({ status: 200, json: { display_name: "Desk" }, setCookies: [] });
     const response = await PATCH(request("PATCH", '{"name":"  Desk  "}') as never, {
       params: Promise.resolve({ id: "dev-1" }),
     });

@@ -23,7 +23,7 @@ describe("device register proxy", () => {
     mockRelayFetch.mockResolvedValue({
       status: 201,
       json: { device_id: "dev-b", account_id: "acct-1", status: "ACTIVE" },
-      setCookie: null,
+      setCookies: [],
     });
 
     const request = new Request("http://localhost/api/devices/register", {
@@ -44,7 +44,7 @@ describe("device register proxy", () => {
     mockRelayFetch.mockResolvedValue({
       status: 409,
       json: { error: "device belongs to another account" },
-      setCookie: null,
+      setCookies: [],
     });
 
     const response = await registerDevice(

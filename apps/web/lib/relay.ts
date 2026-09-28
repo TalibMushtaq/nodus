@@ -29,13 +29,27 @@ export function publicRelayUrl(): string | null {
 export interface RelayResult<T> {
   status: number;
   json: T | null;
-  /** The Relay's raw Set-Cookie header to forward, if any. */
-  setCookie: string | null;
+  /** The Relay's raw Set-Cookie headers to forward, in order. */
+  setCookies: string[];
+}
+
+/**
+ * Read every Set-Cookie header individually.
+ *
+ * `Headers.get("set-cookie")` joins multiple cookies with ", ", which would make
+ * a downstream re-split corrupt them. `getSetCookie()` returns them separately
+ * (Node 19+/undici); fall back to the joined value only when it is unavailable.
+ */
+function readSetCookies(headers: Headers): string[] {
+  const getter = (headers as Headers & { getSetCookie?: () => string[] }).getSetCookie;
+  if (typeof getter === "function") return getter.call(headers);
+  const single = headers.get("set-cookie");
+  return single ? [single] : [];
 }
 
 /**
  * Calls the Relay with the current request's session cookie attached. Returns
- * the status, parsed JSON, and the Relay's Set-Cookie header verbatim.
+ * the status, parsed JSON, and the Relay's Set-Cookie headers verbatim.
  */
 export async function relayFetch<T>(path: string, init?: RequestInit): Promise<RelayResult<T>> {
   const sessionCookie = (await cookies()).get(RELAY_SESSION_COOKIE)?.value;
@@ -48,11 +62,11 @@ export async function relayFetch<T>(path: string, init?: RequestInit): Promise<R
 
   try {
     const res = await fetch(`${relayUrl()}${path}`, { ...init, headers });
-    const setCookie = res.headers.get("set-cookie");
+    const setCookies = readSetCookies(res.headers);
     const json = (await res.json().catch(() => null)) as T | null;
-    return { status: res.status, json, setCookie };
+    return { status: res.status, json, setCookies };
   } catch {
-    return { status: 503, json: null, setCookie: null };
+    return { status: 503, json: null, setCookies: [] };
   }
 }
 
@@ -78,5 +92,9 @@ export interface RelayError {
 }
 
 export function relayErrorMessage(res: { status: number; json: RelayError | null }): string {
+  // The Relay emits canned 4xx strings that are useful to the user, but a 5xx
+  // body can carry internal `err.Error()` detail; surface only a generic
+  // message so the BFF never leaks server internals to the browser.
+  if (res.status >= 500) return "Relay request failed";
   return res.json?.error ?? "Relay request failed";
 }

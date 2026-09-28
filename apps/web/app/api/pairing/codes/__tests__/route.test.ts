@@ -22,7 +22,7 @@ beforeEach(() => {
 
 describe("POST /api/pairing/codes", () => {
   it("proxies to the Relay and returns the minted code", async () => {
-    mockRelayFetch.mockResolvedValue({ status: 201, json: created, setCookie: null });
+    mockRelayFetch.mockResolvedValue({ status: 201, json: created, setCookies: [] });
 
     const response = await POST(
       new Request("http://localhost/api/pairing/codes", {
@@ -43,7 +43,7 @@ describe("POST /api/pairing/codes", () => {
     mockRelayFetch.mockResolvedValue({
       status: 401,
       json: { error: "unauthorized" },
-      setCookie: null,
+      setCookies: [],
     });
 
     const response = await POST(
@@ -58,7 +58,7 @@ describe("POST /api/pairing/codes", () => {
   });
 
   it("treats any 2xx as a successful mint", async () => {
-    mockRelayFetch.mockResolvedValue({ status: 200, json: created, setCookie: null });
+    mockRelayFetch.mockResolvedValue({ status: 200, json: created, setCookies: [] });
 
     const response = await POST(
       new Request("http://localhost/api/pairing/codes", {

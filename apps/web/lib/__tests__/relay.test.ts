@@ -5,7 +5,7 @@ const { mockCookies } = vi.hoisted(() => ({ mockCookies: vi.fn() }));
 vi.mock("server-only", () => ({}));
 vi.mock("next/headers", () => ({ cookies: mockCookies }));
 
-import { relayFetch, publicRelayUrl } from "../relay";
+import { relayFetch, relayErrorMessage, publicRelayUrl } from "../relay";
 
 const ORIGINAL_FETCH = globalThis.fetch;
 
@@ -47,7 +47,20 @@ describe("relayFetch", () => {
 
     const result = await relayFetch("/auth/login", { method: "POST" });
 
-    expect(result.setCookie).toBe("nodus_session=new-session; HttpOnly; Path=/");
+    expect(result.setCookies).toEqual(["nodus_session=new-session; HttpOnly; Path=/"]);
+  });
+});
+
+describe("relayErrorMessage", () => {
+  it("passes a 4xx error through for the user", () => {
+    expect(relayErrorMessage({ status: 401, json: { error: "unauthorized" } })).toBe("unauthorized");
+  });
+
+  it("genericizes a 5xx body that may carry internal detail", () => {
+    expect(relayErrorMessage({ status: 500, json: { error: "pq: relation does not exist" } })).toBe(
+      "Relay request failed",
+    );
+    expect(relayErrorMessage({ status: 503, json: null })).toBe("Relay request failed");
   });
 });
 

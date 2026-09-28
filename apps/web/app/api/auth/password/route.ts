@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { relayFetch, relayErrorMessage } from "../../../../lib/relay";
-import { hardenSessionCookie } from "../../../../lib/session-cookie";
+import { appendHardenedCookies } from "../../../../lib/session-cookie";
 import { readRawBody } from "../../../../lib/validate";
 import { requireSession } from "../../../../lib/bff-guard";
 import type { RelayError } from "../../../../lib/relay";
@@ -20,7 +20,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: body.error }, { status: body.status });
   }
 
-  const { status, json, setCookie } = await relayFetch<SessionInfo & RelayError>(
+  const { status, json, setCookies } = await relayFetch<SessionInfo & RelayError>(
     "/auth/password",
     { method: "POST", body: body.value },
   );
@@ -29,8 +29,6 @@ export async function POST(request: Request) {
     status === 200 ? json : { error: relayErrorMessage({ status, json }) },
     { status },
   );
-  if (setCookie) {
-    res.headers.set("set-cookie", hardenSessionCookie(setCookie));
-  }
+  appendHardenedCookies(res.headers, setCookies);
   return res;
 }

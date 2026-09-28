@@ -37,7 +37,7 @@ describe("auth route cookie forwarding", () => {
     mockRelayFetch.mockResolvedValue({
       status,
       json: handler === logout ? { status: "logged out" } : session,
-      setCookie,
+      setCookies: setCookie ? [setCookie] : [],
     });
 
     const response = await handler(
@@ -59,7 +59,7 @@ describe("auth route cookie forwarding", () => {
     mockRelayFetch.mockResolvedValue({
       status: 401,
       json: { error: "current password is incorrect" },
-      setCookie: null,
+      setCookies: [],
     });
 
     const response = await changePassword(

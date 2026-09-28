@@ -33,7 +33,7 @@ describe("getSession", () => {
     mockRelayFetch.mockResolvedValue({
       status: 200,
       json: mockSession,
-      setCookie: null,
+      setCookies: [],
     });
 
     const session = await getSession();
@@ -46,7 +46,7 @@ describe("getSession", () => {
     mockRelayFetch.mockResolvedValue({
       status: 401,
       json: { error: "unauthorized" },
-      setCookie: null,
+      setCookies: [],
     });
 
     const session = await getSession();
@@ -58,7 +58,7 @@ describe("getSession", () => {
     mockRelayFetch.mockResolvedValue({
       status: 200,
       json: null,
-      setCookie: null,
+      setCookies: [],
     });
 
     const session = await getSession();
@@ -72,7 +72,7 @@ describe("requireAuth", () => {
     mockRelayFetch.mockResolvedValue({
       status: 200,
       json: mockSession,
-      setCookie: null,
+      setCookies: [],
     });
 
     const session = await requireAuth();
@@ -85,7 +85,7 @@ describe("requireAuth", () => {
     mockRelayFetch.mockResolvedValue({
       status: 401,
       json: null,
-      setCookie: null,
+      setCookies: [],
     });
 
     await requireAuth();
@@ -97,7 +97,7 @@ describe("requireAuth", () => {
     mockRelayFetch.mockResolvedValue({
       status: 200,
       json: null,
-      setCookie: null,
+      setCookies: [],
     });
 
     await requireAuth();
