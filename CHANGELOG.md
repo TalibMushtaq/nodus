@@ -1,5 +1,18 @@
 # Changelog
 
+## [2026-09-28] - Web: UI polish and dead-code removal
+
+**What changed:**
+
+- `apps/web/components/app-shell.tsx`: added the missing `conflicts` page title and renamed `files` to "Backups" to match the sidebar.
+- `apps/web/app/(dashboard)/security/page.tsx`: the export anchor is attached before `click()` and removed after; the page error is announced with `role="alert"`.
+- `apps/web/app/(dashboard)/settings/page.tsx`: the reset error is announced with `role="alert"`.
+- Removed dead code: `createLocalStorageSecureStore` from `lib/adapters.ts` and the unused `requestToPromise` helper/re-export in `lib/db.ts`.
+
+**Why:** `/conflicts` rendered the raw lowercase path segment as its heading, and the Files route disagreed with its sidebar label. The export anchor was clicked while detached, which some engines ignore. Errors on Security/Settings were not announced to assistive tech. Both removed exports had no callers — `createLocalStorageSecureStore` would additionally have persisted identity material to synchronously-dumpable localStorage if it were ever wired up.
+
+**Impact:** web only. No behavioral change beyond the corrected titles, the more reliable export download, and the removal of unused surface area.
+
 ## [2026-09-28] - Web: keep loading states from hanging on a rejected read
 
 **What changed:**

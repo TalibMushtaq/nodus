@@ -89,13 +89,6 @@ export function openWebDb(): Promise<IDBDatabase> {
   });
 }
 
-function requestToPromise<T>(req: IDBRequest<T>): Promise<T> {
-  return new Promise((resolve, reject) => {
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
-  });
-}
-
 /**
  * Run `fn` against one store inside a transaction and resolve with its request
  * result. `fn` must synchronously issue its request(s) (IndexedDB requirement);
@@ -161,9 +154,6 @@ export function idbDelete(store: WebStore, key: IDBValidKey): Promise<undefined>
 export function idbClear(store: WebStore): Promise<undefined> {
   return withStore<undefined>(store, "readwrite", (s) => s.clear());
 }
-
-/** Resolve the underlying raw value of an IDBRequest without a wrapper store. */
-export { requestToPromise };
 
 /**
  * Clear the local content stores (catalog, keys, trusted nodes, transfer queue,

@@ -18,10 +18,11 @@ const COLLAPSE_KEY = "nodus.sidebar.collapsed";
 
 const pageTitles: Record<string, string> = {
   overview: "Overview",
-  files: "Files",
+  files: "Backups",
   downloads: "Downloads",
   tombstones: "Tombstone",
   devices: "Devices",
+  conflicts: "Conflicts",
   activity: "Activity",
   security: "Security",
   settings: "Settings",

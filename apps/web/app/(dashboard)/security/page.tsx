@@ -102,7 +102,11 @@ export default function SecurityPage() {
       const anchor = document.createElement("a");
       anchor.href = url;
       anchor.download = `nodus-key-envelopes-${backup.account_id.slice(0, 8)}-${backup.generated_at.slice(0, 10)}.json`;
+      // Attach before clicking: a detached anchor's click is ignored by some
+      // engines, and remove it once the download is initiated.
+      document.body.appendChild(anchor);
       anchor.click();
+      anchor.remove();
       // Defer the revoke so the browser finishes initiating the download; some
       // engines abort the transfer if the URL is revoked synchronously.
       setTimeout(() => URL.revokeObjectURL(url), 0);
@@ -121,7 +125,7 @@ export default function SecurityPage() {
         description="Recovery identity, per-device key coverage, and device revocation."
       />
 
-      {error && <p className="text-xs text-destructive">{error}</p>}
+      {error && <p className="text-xs text-destructive" role="alert">{error}</p>}
 
       {/* Recovery key (ADR-0002) */}
       <RecoveryCard />

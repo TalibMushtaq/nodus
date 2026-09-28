@@ -263,7 +263,7 @@ export default function SettingsPage() {
             Local data cleared. Your account is still signed in.
           </p>
         )}
-        {resetError && <p className="text-xs text-destructive px-1 mt-2">{resetError}</p>}
+        {resetError && <p className="text-xs text-destructive px-1 mt-2" role="alert">{resetError}</p>}
       </Section>
 
       {resetOpen && (
