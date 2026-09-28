@@ -1,5 +1,15 @@
 # Changelog
 
+## [2026-09-28] - Web: stop caching authenticated BFF responses
+
+**What changed:**
+
+- `apps/web/next.config.js`: a `headers()` rule for `/api/:path*` sets `Cache-Control: no-store` and `Vary: Cookie`, alongside the existing global security headers.
+
+**Why:** no route or config set a cache directive, so authenticated JSON (`/api/auth/session`, `/api/files`, `/api/envelopes/export`, …) and the `/api/shard/[hash]` bytes could be heuristically cached by the browser or an intermediary and later served without revalidation.
+
+**Impact:** web deploy only. API responses are no longer stored; page assets keep their default caching.
+
 ## [2026-09-28] - Web: harden BFF cookie forwarding and error responses
 
 **What changed:**

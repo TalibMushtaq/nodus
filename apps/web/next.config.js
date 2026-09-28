@@ -53,6 +53,16 @@ const nextConfig = {
           },
         ],
       },
+      {
+        // Authenticated BFF responses (session, catalog, envelopes, shard
+        // bytes) must never be heuristically cached by a browser or an
+        // intermediary; Vary: Cookie keys any cache on the session identity.
+        source: "/api/:path*",
+        headers: [
+          { key: "Cache-Control", value: "no-store" },
+          { key: "Vary", value: "Cookie" },
+        ],
+      },
     ];
   },
 };
