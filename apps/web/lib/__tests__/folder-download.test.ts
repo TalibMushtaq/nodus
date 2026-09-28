@@ -8,6 +8,8 @@ import {
   classifySkip,
   collectFolderFiles,
   describeFolderSkips,
+  FolderArchiveTooLargeError,
+  MAX_FOLDER_ARCHIVE_BYTES,
 } from "../folder-download";
 import type { RelayFileLocation } from "../catalog";
 
@@ -131,6 +133,23 @@ describe("buildFolderZip", () => {
       { name: "not-paired.txt", kind: "not-paired", detail: "shard 0 is not downloadable (status: no_trusted_host)" },
       { name: "corrupt.txt", kind: "failed", detail: "shard 0 is not downloadable (status: integrity mismatch)" },
     ]);
+  });
+
+  it("refuses an archive over the in-memory size cap before fetching", async () => {
+    const folders = [makeFolder("a", "alpha", null)];
+    const files = [makeFile("f1", "huge.bin", "a", { sizeBytes: MAX_FOLDER_ARCHIVE_BYTES + 1 })];
+    // The size is known up front, so no shard/key fetch may happen.
+    const deps: DownloadDeps = {
+      fetchFileKey: async () => new Uint8Array(1),
+      getShardLocations: async () => [],
+      fetchShard: async () => {
+        throw new Error("should not fetch a shard");
+      },
+    };
+
+    await expect(
+      buildFolderZip({ folderName: "alpha", folderId: "a", folders, files, deps }),
+    ).rejects.toBeInstanceOf(FolderArchiveTooLargeError);
   });
 });
 

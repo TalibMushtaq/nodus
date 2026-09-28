@@ -1,5 +1,15 @@
 # Changelog
 
+## [2026-09-28] - Web: cap the in-memory folder-archive size
+
+**What changed:**
+
+- `apps/web/lib/folder-download.ts`: exported `MAX_FOLDER_ARCHIVE_BYTES` (512 MiB) and `FolderArchiveTooLargeError`; `buildFolderZip` now refuses before fetching when a file's known `sizeBytes` would breach the cap, and after fetching when the actual bytes would, re-throwing the limit error so it aborts the archive. New case in `lib/__tests__/folder-download.test.ts`.
+
+**Why:** `buildFolderZip` accumulated every decrypted file in memory, then `createZip` materialized the archive again, then the `Blob` copied it a third time. A large folder could OOM the tab with no explanation. A cap converts that crash into a clear "download its subfolders separately" error.
+
+**Impact:** web only. Folders over 512 MiB of decrypted content now fail fast with an actionable message; smaller folders are unchanged. Streaming entries directly into the ZIP writer (to remove the cap entirely) is a follow-up in `@repo/sdk`'s `zip.ts`.
+
 ## [2026-09-28] - Web: guard the conflicts inbox against out-of-order loads
 
 **What changed:**

@@ -133,6 +133,27 @@ export interface FolderArchive {
   bytes: number;
 }
 
+/**
+ * Ceiling on the total *decrypted* bytes held for one folder archive.
+ *
+ * The archive is built in memory twice (the decrypted entries, then the ZIP
+ * output, then a third copy in the Blob), so an unbounded folder can OOM the
+ * tab. A cap turns that crash into a clear, actionable error. Streaming the
+ * entries straight into the archive is the follow-up that would remove the cap;
+ * that writer lives in `@repo/sdk`.
+ */
+export const MAX_FOLDER_ARCHIVE_BYTES = 512 * 1024 * 1024;
+
+/** Raised when a folder's contents exceed `MAX_FOLDER_ARCHIVE_BYTES`. */
+export class FolderArchiveTooLargeError extends Error {
+  constructor(readonly limitBytes: number = MAX_FOLDER_ARCHIVE_BYTES) {
+    super(
+      `folder archive exceeds the ${Math.round(limitBytes / (1024 * 1024))} MB download limit; download its subfolders separately`,
+    );
+    this.name = "FolderArchiveTooLargeError";
+  }
+}
+
 export async function buildFolderZip(options: {
   folderName: string;
   folderId: string;
@@ -167,6 +188,11 @@ export async function buildFolderZip(options: {
       suffix += 1;
     }
     try {
+      // Reject before downloading when the size is already known, so a huge
+      // folder does not spend the bandwidth and memory to then be refused.
+      if (file.sizeBytes != null && bytes + file.sizeBytes > MAX_FOLDER_ARCHIVE_BYTES) {
+        throw new FolderArchiveTooLargeError();
+      }
       const result = await downloadFile({
         fileId: file.fileId,
         versionNumber: file.latestVersionNumber,
@@ -176,9 +202,17 @@ export async function buildFolderZip(options: {
         deps: options.deps,
         limiter: options.limiter,
       });
+      // Covers entries whose size was unknown until the bytes arrived.
+      if (bytes + result.data.length > MAX_FOLDER_ARCHIVE_BYTES) {
+        throw new FolderArchiveTooLargeError();
+      }
       entries.push({ path, data: result.data });
       bytes += result.data.length;
     } catch (err) {
+      // A size-limit breach aborts the whole archive: returning a silently
+      // truncated zip would look like data loss. Every other failure is
+      // per-file, so keep the reason and continue.
+      if (err instanceof FolderArchiveTooLargeError) throw err;
       // One unreachable file must not abort the archive; keep the reason so
       // the caller can tell "not stored" from "not paired" from "failed".
       skipped.push({ name: file.name, kind: classifySkip(err), detail: err instanceof Error ? err.message : String(err) });
