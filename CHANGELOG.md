@@ -1,5 +1,15 @@
 # Changelog
 
+## [2026-09-28] - Web: tests for the previously unguarded BFF routes
+
+**What changed:**
+
+- New route tests: `app/api/push/__tests__/routes.test.ts` (subscribe + unsubscribe auth/validation/forwarding), `app/api/tombstones/__tests__/routes.test.ts` (purge + restore auth/encoding), and `app/api/pairing/sessions/__tests__/route.test.ts` (auth, body shape, forwarding).
+
+**Why:** the push, tombstone, and pairing-session proxies were state-changing routes with no tests, so the new session guard and body validation could regress unnoticed.
+
+**Impact:** tests only. Web suite is 56 files / 332 tests; `check-types`, `lint`, and `next build` all pass.
+
 ## [2026-09-28] - Web: UI polish and dead-code removal
 
 **What changed:**
