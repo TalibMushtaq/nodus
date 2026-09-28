@@ -1,5 +1,18 @@
 # Changelog
 
+## [2026-09-28] - Web: keep the device encryption identity across logout
+
+**What changed:**
+
+- `apps/web/lib/device.ts`: new `clearEncryptionMemory()` that drops only the in-memory X25519 identity; `clearEncryptionIdentity()` is retained for explicit device-identity resets. The no-IndexedDB fallback no longer writes the private half to `localStorage`, and the legacy-record migration only overwrites the `localStorage` record after the IndexedDB put commits.
+- `apps/web/providers/auth-provider.tsx`: `handleLogout` now calls `clearEncryptionMemory()` instead of `clearEncryptionIdentity()`, wipes the account's recovery phrase via `clearRecoveryPhrase(account_id)`, wraps the remote `logout()` so local wipes always run, and moves `setSession(null)`/`setStatus` into the `finally`. The initial `getOrCreateDevice()` promise now has a rejection handler that falls back to `unauthenticated`. Tests updated/added in `lib/__tests__/device.test.ts` and `providers/__tests__/auth-provider.test.tsx`.
+
+**Why:** clearing the X25519 private key on logout deleted a *device* identity while the Ed25519 signing key and `device_id` were kept, so the next login generated a new X25519 key and every FEK/folder-key envelope sealed to the old key became unopenable — a single-device account permanently lost access to all previously uploaded files (the local FEK cache is also wiped). The X25519 identity is now treated like the signing key: device-scoped and kept, with account-scoped material (FEK/folder keys, recovery phrase, previews) wiped instead. A failed `logout()` no longer skips those wipes, and a WebCrypto/IndexedDB failure no longer leaves the app stuck on "loading" forever.
+
+**Impact:** web only. Sign-out keeps this browser's device keypair (so re-signing in still decrypts existing files) and now also removes the cached recovery phrase. The reliability fixes are behavior-preserving for the success path. Verified: `vitest` for `device.test.ts` and `auth-provider.test.tsx`.
+
+**Follow-ups:** the X25519 private key is still a plaintext string in IndexedDB (defense-in-depth vs same-origin XSS only), and a shared browser now retains the device keypair across accounts. Per-account key scoping is tracked as future work.
+
 ## [2026-09-27] - Web: tests for the audited BFF and client paths
 
 **What changed:**

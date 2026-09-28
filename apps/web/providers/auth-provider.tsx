@@ -5,8 +5,9 @@ import type { ReactNode } from "react";
 import type { DevicePublicIdentity, DeviceSigner } from "@repo/sdk";
 
 import { fetchSession, login, register, logout } from "../lib/auth-client";
-import { clearEncryptionIdentity, getOrCreateDevice, getOrCreateEncryptionIdentity } from "../lib/device";
+import { clearEncryptionMemory, getOrCreateDevice, getOrCreateEncryptionIdentity } from "../lib/device";
 import { clearFileKeys } from "../lib/keys";
+import { clearRecoveryPhrase } from "../lib/recovery";
 import { detectDeviceInfo } from "../lib/device-info";
 import { removePushSubscriptionQuietly } from "../lib/web-push";
 import type { SessionInfo } from "../lib/session";
@@ -53,11 +54,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // SSR (browser-only); the identity/public half is the only persisted part.
   useEffect(() => {
     let cancelled = false;
-    getOrCreateDevice().then(({ identity, signer: s }) => {
-      if (cancelled) return;
-      setDevice(identity);
-      setSigner(s);
-    });
+    getOrCreateDevice().then(
+      ({ identity, signer: s }) => {
+        if (cancelled) return;
+        setDevice(identity);
+        setSigner(s);
+      },
+      // A WebCrypto/IndexedDB failure must not leave the app stuck in
+      // "loading" forever with no device: fall back to unauthenticated so the
+      // auth wizard renders and can surface a retry.
+      () => {
+        if (cancelled) return;
+        setStatus("unauthenticated");
+      },
+    );
     return () => {
       cancelled = true;
     };
@@ -128,33 +138,46 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   );
 
   const handleLogout = useCallback(async () => {
-    // Drop this browser's push subscription before the session is invalidated:
-    // the DELETE proxy needs the cookie, and a shared browser must not keep
-    // receiving the signed-out account's alerts.
-    await removePushSubscriptionQuietly();
-    await logout();
-    // A shared browser must not keep a decryption oracle for the signed-out
-    // account: forget the in-memory + IndexedDB encryption identity (the next
-    // login re-creates or migrates its own) and drop the local FEK/folder-key
-    // cache (re-opened from Relay envelopes on next sign-in).
-    await clearEncryptionIdentity();
+    const accountId = session?.account_id ?? null;
+    // Best-effort remote cleanup first, but never let a network failure skip the
+    // local wipes below: otherwise the user appears signed out while the
+    // account's decryption material stays on a shared browser.
     try {
-      await clearFileKeys();
+      // Drop this browser's push subscription before the session is
+      // invalidated: the DELETE proxy needs the cookie.
+      await removePushSubscriptionQuietly();
+      await logout();
     } catch {
-      // Best-effort: a failed wipe must not block logout.
+      // Ignore: the local session is cleared in the finally regardless.
+    } finally {
+      // A shared browser must not keep a decryption oracle for the signed-out
+      // account. This wipes account-scoped material only — the X25519 device
+      // identity is kept, because deleting it would make this device publish a
+      // new key and strand every envelope sealed to the old one.
+      try {
+        clearEncryptionMemory();
+        await clearFileKeys();
+      } catch {
+        // Best-effort: a failed wipe must not block logout.
+      }
+      try {
+        if (accountId) await clearRecoveryPhrase(accountId);
+      } catch {
+        // Best-effort: the Relay never holds the phrase.
+      }
+      // Revoke cached decrypted image previews (and their object URLs) so no
+      // decrypted content for this account lingers. Imported lazily to avoid a
+      // module cycle with preview.ts's useAuth import.
+      try {
+        const { revokeAllPreviews } = await import("../lib/preview");
+        revokeAllPreviews();
+      } catch {
+        // Best-effort.
+      }
+      setSession(null);
+      setStatus("unauthenticated");
     }
-    // Revoke cached decrypted image previews (and their object URLs) so no
-    // decrypted content for this account lingers. Imported lazily to avoid a
-    // module cycle with preview.ts's useAuth import.
-    try {
-      const { revokeAllPreviews } = await import("../lib/preview");
-      revokeAllPreviews();
-    } catch {
-      // Best-effort.
-    }
-    setSession(null);
-    setStatus("unauthenticated");
-  }, []);
+  }, [session]);
 
   const value = useMemo(
     () => ({

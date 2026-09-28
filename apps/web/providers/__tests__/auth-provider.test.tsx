@@ -22,7 +22,14 @@ vi.mock("../../lib/device", () => ({
     private_key: "test-encryption-private-key",
   }),
   getEncryptionPublicKey: vi.fn().mockReturnValue("test-encryption-public-key"),
+  clearEncryptionMemory: vi.fn(),
   clearEncryptionIdentity: vi.fn().mockResolvedValue(undefined),
+}));
+
+// The account recovery phrase is wiped on logout; mock the SDK-backed client so
+// the unit test does not pull in the real envelope/IndexedDB stack.
+vi.mock("../../lib/recovery", () => ({
+  clearRecoveryPhrase: vi.fn().mockResolvedValue(undefined),
 }));
 
 // Pin the auto-detected fingerprint so the auth call assertion is stable.
@@ -45,6 +52,8 @@ vi.mock("../../lib/preview", () => ({
 
 import { login, register, logout, fetchSession } from "../../lib/auth-client";
 import { clearFileKeys } from "../../lib/keys";
+import { clearRecoveryPhrase } from "../../lib/recovery";
+import { clearEncryptionMemory } from "../../lib/device";
 import { revokeAllPreviews } from "../../lib/preview";
 
 const mockLogin = vi.mocked(login);
@@ -181,8 +190,12 @@ describe("AuthProvider", () => {
     expect(mockLogout).toHaveBeenCalled();
     expect(screen.getByTestId("status")).toHaveTextContent("unauthenticated");
     expect(screen.getByTestId("session")).toHaveTextContent("null");
-    // Sign-out must not leave decryption material for a shared browser.
+    // Sign-out must not leave account-scoped decryption material for a shared
+    // browser, but must keep the device X25519 identity so existing envelopes
+    // still open on the next sign-in.
     expect(clearFileKeys).toHaveBeenCalled();
+    expect(clearEncryptionMemory).toHaveBeenCalled();
+    expect(clearRecoveryPhrase).toHaveBeenCalledWith("acct-123");
     expect(revokeAllPreviews).toHaveBeenCalled();
   });
 

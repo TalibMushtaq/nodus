@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import {
   clearEncryptionIdentity,
+  clearEncryptionMemory,
   getEncryptionPublicKey,
   getOrCreateEncryptionIdentity,
   ENCRYPTION_IDENTITY_KEY,
@@ -69,5 +70,18 @@ describe("getOrCreateEncryptionIdentity", () => {
 
     expect(localStorage.getItem(ENCRYPTION_IDENTITY_KEY)).toBeNull();
     expect(getEncryptionPublicKey()).toBeNull();
+  });
+
+  it("keeps the persisted identity across a memory-only clear (logout)", async () => {
+    const first = await getOrCreateEncryptionIdentity();
+
+    clearEncryptionMemory();
+
+    // The public half is still synchronously readable and a reload picks up the
+    // same keypair, so envelopes sealed to the old public key still open.
+    expect(getEncryptionPublicKey()).toBe(first.public_key);
+    const second = await getOrCreateEncryptionIdentity();
+    expect(second.public_key).toBe(first.public_key);
+    expect(second.private_key).toBe(first.private_key);
   });
 });

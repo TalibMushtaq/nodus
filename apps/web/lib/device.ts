@@ -146,9 +146,24 @@ export function getCachedEncryptionIdentity(): StoredEncryptionIdentity | null {
 }
 
 /**
- * Forget the encryption identity in memory, IndexedDB, and the legacy
- * `localStorage` record. Used on logout so a shared browser does not keep a
- * decryption oracle for the signed-out account.
+ * Drop the in-memory X25519 identity for the current page, leaving the
+ * persisted record intact. This is the logout path: the encryption identity is
+ * a *device* identity (like the Ed25519 signing key, which logout already
+ * keeps), so deleting it would make the same `device_id` publish a different
+ * X25519 key on next login and permanently strand every envelope sealed to the
+ * old key. Account-scoped decryption material (FEK/folder keys, recovery
+ * phrase) is wiped separately on logout.
+ */
+export function clearEncryptionMemory(): void {
+  encMemory = null;
+  encPending = null;
+}
+
+/**
+ * Forget the encryption identity everywhere: memory, IndexedDB, and the
+ * `localStorage` public-half cache. Reserved for explicit device-identity
+ * resets — **not** sign-out, because a regenerated key cannot open envelopes
+ * addressed to the previous one (see `clearEncryptionMemory`).
  */
 export async function clearEncryptionIdentity(): Promise<void> {
   encMemory = null;
@@ -210,11 +225,10 @@ async function loadOrCreateEncryptionIdentity(): Promise<StoredEncryptionIdentit
     const legacy = readLegacyLocalIdentity();
     if (legacy) return legacy;
     const fresh = createEncryptionIdentity();
-    try {
-      localStorage.setItem(ENCRYPTION_IDENTITY_KEY, JSON.stringify(fresh));
-    } catch {
-      // Ignore persistence failure; the in-memory copy still works.
-    }
+    // Only the public half may reach localStorage — the same rule the
+    // IndexedDB path enforces. The private half stays in memory for the
+    // session; without IndexedDB there is no durable store to protect anyway.
+    cachePublicHalf(fresh);
     return fresh;
   }
 
@@ -233,15 +247,19 @@ async function loadOrCreateEncryptionIdentity(): Promise<StoredEncryptionIdentit
   // keeps its published public key instead of re-pairing.
   const legacy = readLegacyLocalIdentity();
   const identity = legacy ?? createEncryptionIdentity();
+  let persisted = false;
   try {
     await idbPut<StoredEncryptionIdentityRecord>(STORE_DEVICE_KEYS, {
       id: X25519_KEY_ID,
       public_key: identity.public_key,
       private_key: identity.private_key,
     });
+    persisted = true;
   } catch {
-    // Quota/blocked — fall through; the memory + public-half cache still work.
+    // Quota/blocked — keep the full legacy record intact so a later load can
+    // retry the migration. Overwriting it with the public half now would drop
+    // the only copy of the private key if the IndexedDB write did not commit.
   }
-  cachePublicHalf(identity);
+  if (persisted) cachePublicHalf(identity);
   return identity;
 }
