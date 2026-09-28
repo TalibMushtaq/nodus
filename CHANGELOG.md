@@ -1,5 +1,15 @@
 # Changelog
 
+## [2026-09-28] - Web: guard the conflicts inbox against out-of-order loads
+
+**What changed:**
+
+- `apps/web/lib/use-conflicts.ts`: added a monotonic `loadSeqRef`; both the mount/refresh load and the 15s poll now tag their result with a sequence number and drop it when a newer load has started, mirroring `use-files.ts`.
+
+**Why:** the mount load, a manual `refresh()`, and the background poll could overlap (the catalog refresh is async) and resolve out of order, so an older snapshot could overwrite newer conflict rows in state.
+
+**Impact:** web only. Same data, but a superseded load no longer clobbers the newest conflict list.
+
 ## [2026-09-28] - Web: keep failed uploads retryable
 
 **What changed:**

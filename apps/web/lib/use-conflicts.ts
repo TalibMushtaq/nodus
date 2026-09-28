@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { listConflicts, type ConflictEntry } from "./conflicts";
 import { refreshCatalog } from "./files";
@@ -17,12 +17,18 @@ export function useConflicts(pollMs = 15_000) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [reloadToken, setReloadToken] = useState(0);
+  // Monotonic id of the newest started load. The mount, refresh, and poll
+  // loads can overlap (the catalog refresh is async), so an older result must
+  // not overwrite a newer one in state — the same guard useFiles uses.
+  const loadSeqRef = useRef(0);
 
   const load = useCallback(async (): Promise<{
     rows: ConflictEntry[];
     error: string | null;
+    seq: number;
   }> => {
-    if (!device) return { rows: [], error: null };
+    const seq = ++loadSeqRef.current;
+    if (!device) return { rows: [], error: null, seq };
     let error: string | null = null;
     try {
       await refreshCatalog();
@@ -31,14 +37,15 @@ export function useConflicts(pollMs = 15_000) {
       error = err instanceof Error ? err.message : String(err);
     }
     const rows = await listConflicts(device);
-    return { rows, error };
+    return { rows, error, seq };
   }, [device]);
 
   useEffect(() => {
     if (!device) return;
     let cancelled = false;
-    void load().then(({ rows, error }) => {
-      if (cancelled) return;
+    void load().then(({ rows, error, seq }) => {
+      // Drop a superseded load: a newer one owns the state.
+      if (cancelled || seq !== loadSeqRef.current) return;
       if (error) setError(error);
       setConflicts(rows);
       setLoading(false);
@@ -53,8 +60,8 @@ export function useConflicts(pollMs = 15_000) {
     if (!device) return;
     let cancelled = false;
     const timer = setInterval(() => {
-      void load().then(({ rows, error }) => {
-        if (cancelled) return;
+      void load().then(({ rows, error, seq }) => {
+        if (cancelled || seq !== loadSeqRef.current) return;
         if (!error) setError(null);
         setConflicts(rows);
       });
