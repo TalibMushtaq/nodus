@@ -92,6 +92,16 @@ async function clearSessionToken(): Promise<void> {
   await secureStore.delete(SESSION_KEY);
 }
 
+/**
+ * Explicitly clear the persisted session. Sign-out and a Relay auth rejection
+ * (close code 4001) call this directly: the Relay revokes the session in both
+ * cases, so leaving the token in the keychain would let the next launch restore
+ * a dead — or in the offline sign-out case, still-live — session.
+ */
+export async function clearPersistedSession(): Promise<void> {
+  await clearSessionToken();
+}
+
 /** Shape of the Relay auth response that carries the native session ID. */
 interface AuthTokenBody {
   access_token?: string;

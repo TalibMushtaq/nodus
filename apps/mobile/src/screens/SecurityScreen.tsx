@@ -26,6 +26,10 @@ export function SecurityScreen() {
   const [refreshing, setRefreshing] = React.useState(false);
   // Controls the "restore access with recovery phrase" sheet.
   const [unlockOpen, setUnlockOpen] = React.useState(false);
+  // Controls the "confirm password to reveal" sheet. The phrase is the account
+  // master secret, so it is only shown after re-proving the account password.
+  const [revealOpen, setRevealOpen] = React.useState(false);
+  const [revealPassword, setRevealPassword] = React.useState("");
   // Controls the "regenerate recovery key" sheet. Regenerating drops the
   // previous key's envelope coverage on the Relay, so the password is collected
   // here (and only here) before the destructive step is authorized.
@@ -113,7 +117,15 @@ export function SecurityScreen() {
           <Button
             title={app.revealedPhrase ? "Hide" : "Reveal"}
             variant="secondary"
-            onPress={() => (app.revealedPhrase ? app.setRevealedPhrase(null) : void app.revealPhrase())}
+            onPress={() => {
+              // Hiding is harmless; revealing requires the account password.
+              if (app.revealedPhrase) {
+                app.setRevealedPhrase(null);
+              } else {
+                setRevealPassword("");
+                setRevealOpen(true);
+              }
+            }}
             disabled={!app.authed || app.busy !== null}
             style={{ flex: 1 }}
           />
@@ -147,6 +159,40 @@ export function SecurityScreen() {
           </ThemedText>
         ) : null}
       </Card>
+
+      <Sheet
+        visible={revealOpen}
+        title="Confirm password"
+        onClose={() => {
+          setRevealPassword("");
+          setRevealOpen(false);
+        }}
+      >
+        <ThemedText variant="caption" tone="muted">
+          Enter your account password to display the recovery phrase. Anyone who
+          can read this phrase can recover the account.
+        </ThemedText>
+        <TextField
+          label="Account password"
+          value={revealPassword}
+          onChangeText={setRevealPassword}
+          secureTextEntry
+          autoCapitalize="none"
+        />
+        <Button
+          title={app.busy === "revealing-phrase" ? "Checking…" : "Reveal phrase"}
+          onPress={() => {
+            void (async () => {
+              const ok = await app.revealPhrase(revealPassword);
+              // Keep the sheet open on failure so the error is visible and the
+              // password is cleared; close it only once the phrase is revealed.
+              setRevealPassword("");
+              if (ok) setRevealOpen(false);
+            })();
+          }}
+          disabled={!revealPassword || app.busy !== null}
+        />
+      </Sheet>
 
       <Sheet visible={unlockOpen} title="Restore access" onClose={() => setUnlockOpen(false)}>
         <ThemedText variant="caption" tone="muted">

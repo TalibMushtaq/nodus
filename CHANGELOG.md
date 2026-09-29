@@ -1,5 +1,18 @@
 # Changelog
 
+## [2026-09-29] - Mobile: clear account state on sign-out and gate recovery-phrase reveal
+
+**What changed:**
+
+- `apps/mobile/src/runtime/useNodusApp.ts`: new `resetSensitiveState()` clears the session, email/password inputs, revealed phrase, phrase inputs, and the whole account catalogue (files, folders, tombstones, devices, nodes, conflicts, activity, envelope summary). `signOut` now calls it, and the WS 4001 `onAuthError` handler calls it too.
+- `revealPhrase(password)` now re-proves the account password with a normal login before displaying the phrase; it no longer calls `changePassword(password, password)`.
+- `apps/mobile/src/screens/SecurityScreen.tsx`: Reveal opens a password-confirmation sheet that only closes once the phrase is shown.
+- `apps/mobile/src/adapters.ts` / `src/relay.ts`: added `clearPersistedSession`; sign-out and the WS auth error now clear the keychain token even when the network logout fails.
+
+**Why:** the state hook is mounted at the navigator root and never unmounted, so a second user signing in on the same app instance could read the previous user's revealed phrase, password field, and file list. Reveal/copy also required no re-authentication, and a failed offline logout left the token in SecureStore for the next launch to restore.
+
+**Impact:** mobile only. Sign-out now fully clears sensitive state; revealing the phrase requires the account password; dead sessions no longer persist.
+
 ## [2026-09-29] - Mobile: enforce TLS for the Relay and scope cleartext to the LAN
 
 **What changed:**

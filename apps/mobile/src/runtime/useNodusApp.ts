@@ -55,6 +55,7 @@ import {
 
 import { discoverNodes, probeHost, type LanCandidate } from "../discovery";
 import {
+  clearPersistedSession,
   getSessionToken,
   relayActivities,
   relayChangePassword,
@@ -454,6 +455,42 @@ export function useNodusApp() {
     for (const node of nodes) nodeOnlineRef.current.set(node.node_id, node.status === "ACTIVE");
   }, [nodes]);
 
+  /**
+   * Drop every piece of account-scoped in-memory state. The hook lives at the
+   * navigator root and is never unmounted, so without this a second user to sign
+   * in on the same app instance could still read the first user's revealed
+   * recovery phrase, password input, and file catalogue.
+   */
+  const resetSensitiveState = React.useCallback(() => {
+    setSession(null);
+    setPassword("");
+    setEmail("");
+    // The revealed phrase and any phrase typed into the unlock sheet are the
+    // account master secret; never carry them across a sign-out.
+    setRevealedPhrase(null);
+    setRecoveryUnlockInput("");
+    setRecoveryPhraseInput("");
+    setSignupPhrase(null);
+    // Account catalog + metadata, so a stale list is not shown to the next user.
+    setFiles([]);
+    setFileNames({});
+    setFolders([]);
+    setFolderNames({});
+    setTombstones([]);
+    setTombstoneNames({});
+    setDevices([]);
+    setNodes([]);
+    setConflicts([]);
+    setEnvelopeSummary([]);
+    setActivity([]);
+    setSecurityStatus(null);
+    setLastDownload(null);
+    setLastDownloadFailed(false);
+    setFileNameInput("");
+    setFolderNameInput("");
+    setCurrentFolderId(null);
+  }, []);
+
   // Bring the Relay socket up once we have both a session and the device id
   // (the latter is the presence/heartbeat identity). A 4001 close means the
   // session is dead, so drop local auth rather than reconnect-looping.
@@ -462,7 +499,13 @@ export function useNodusApp() {
     if (session && device) {
       ws.start(device.device_id, {
         onStateChange: setWsState,
-        onAuthError: () => setSession(null),
+        // The Relay rejected the session (4001). Clear the persisted token and
+        // account state rather than only dropping the in-memory session, or the
+        // dead token would be restored on the next launch (M2).
+        onAuthError: () => {
+          void clearPersistedSession().catch(() => undefined);
+          resetSensitiveState();
+        },
       });
     } else {
       ws.stop();
@@ -472,7 +515,7 @@ export function useNodusApp() {
       setWsState("disconnected");
     }
     return () => ws.stop();
-  }, [session, device]);
+  }, [session, device, resetSensitiveState]);
 
   // Build the transfer manager once authed: it hydrates the SQLite queue/path
   // cache and owns the WebRTC sessions, so it must be torn down on sign-out.
@@ -615,10 +658,14 @@ export function useNodusApp() {
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setSession(null);
+      // Clear the persisted token even when the network logout failed, otherwise
+      // the next launch would restore a still-valid session (M1). Then drop all
+      // account-scoped state so it cannot leak to the next user (H3).
+      await clearPersistedSession().catch(() => undefined);
+      resetSensitiveState();
       setBusy(null);
     }
-  }, []);
+  }, [resetSensitiveState]);
 
   const chooseShardSize = React.useCallback((bytes: number) => {
     setShardSizeBytes(bytes);
@@ -1729,21 +1776,39 @@ export function useNodusApp() {
     }
   }, [authed]);
 
-  const revealPhrase = React.useCallback(async () => {
-    if (!session) return;
-    setBusy("revealing-phrase");
-    setError(null);
-    setNotice(null);
-    try {
-      const phrase = await sqliteRecoveryStore.load(session.account_id);
-      setRevealedPhrase(phrase);
-      if (!phrase) setNotice("No recovery phrase is stored on this device for this account.");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy(null);
-    }
-  }, [session]);
+  /**
+   * Reveal the stored recovery phrase, but only after re-proving the account
+   * password. The phrase is the account master secret, so possession of an
+   * unlocked session alone must not be enough to display or copy it.
+   */
+  const revealPhrase = React.useCallback(
+    async (password: string) => {
+      if (!session || !device) return false;
+      if (!password) return false;
+      setBusy("revealing-phrase");
+      setError(null);
+      setNotice(null);
+      try {
+        // Re-prove the password with a normal login rather than a password
+        // change: it verifies the credential without mutating the account, and
+        // the adapter captures the freshly minted session so this device stays
+        // signed in even though the login rotates the previous one.
+        if (!email.trim()) throw new Error("Re-enter your email to confirm the password.");
+        await relayLogin(email, password, device, encryption?.public_key);
+        setSession(await relaySession());
+        const phrase = await sqliteRecoveryStore.load(session.account_id);
+        setRevealedPhrase(phrase);
+        if (!phrase) setNotice("No recovery phrase is stored on this device for this account.");
+        return true;
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+        return false;
+      } finally {
+        setBusy(null);
+      }
+    },
+    [session, device, encryption, email],
+  );
 
   const copyPhrase = React.useCallback(async () => {
     if (!revealedPhrase) return;

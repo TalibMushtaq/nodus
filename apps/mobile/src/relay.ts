@@ -14,7 +14,7 @@ import type { StoredDeviceIdentity } from "@repo/relay-client";
 import { RELAY_BASE, createNativeRelayHttp, getSessionToken } from "./adapters";
 import { detectDeviceInfo } from "./device-info";
 
-export { RELAY_BASE, getSessionToken } from "./adapters";
+export { RELAY_BASE, clearPersistedSession, getSessionToken } from "./adapters";
 
 const http = createNativeRelayHttp();
 const auth = createAuthClient(http);
