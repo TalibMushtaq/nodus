@@ -1,5 +1,18 @@
 # Changelog
 
+## [2026-09-29] - Mobile: robustness fixes for resume state, startup, and cache filenames
+
+**What changed:**
+
+- `apps/mobile/src/store/upload-progress.ts`: added `parseJson` and routed `completed_shards`/`shard_hashes` through it, so one corrupt row degrades to empty instead of throwing and breaking resumable uploads.
+- `apps/mobile/src/runtime/useNodusApp.ts`: the bootstrap effect now wraps its work in `try/catch`; a failed session restore clears a dead token, and an offline restore reports the error instead of becoming an unhandled rejection.
+- `apps/mobile/src/download/filename.ts` (new): `safeFileName` reduces a decrypted filename to a safe leaf (basename only, no `..`, reserved/control characters replaced, 255-byte cap, fixed fallback). `src/download/save.ts` uses it in `writeToCache`.
+- `apps/mobile/src/download/__tests__/filename.test.ts` (new): covers traversal, reserved characters, empty input, and length bounds.
+
+**Why:** unguarded `JSON.parse` on a DB column, a bootstrap IIFE with no error handling, and only-ad-hoc filename sanitization were each latent crash/path-safety hazards.
+
+**Impact:** mobile only. Resume survives a corrupt row; startup surfaces errors instead of rejecting silently; cache writes cannot escape the cache directory.
+
 ## [2026-09-29] - Mobile: clear account state on sign-out and gate recovery-phrase reveal
 
 **What changed:**

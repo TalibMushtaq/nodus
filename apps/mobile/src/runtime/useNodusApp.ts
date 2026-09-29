@@ -401,36 +401,51 @@ export function useNodusApp() {
 
   React.useEffect(() => {
     void (async () => {
-      // Foreground notification presentation must be configured before any
-      // notification can arrive, so set it as early as possible.
-      configureNotificationHandler();
-      setDevice(await loadOrCreateDevice());
-      setEncryption(await loadOrCreateEncryptionIdentity());
-      setTrusted(await getTrustedNodes());
-      // Restore the shard-size preference (falls back to the 8 MiB default).
-      const storedShardSize = await getPreference("shardSizeBytes");
-      if (storedShardSize) setShardSizeBytes(Number(storedShardSize) || SHARD_SIZE_BYTES);
-      // Restore the parallel-download cap (defaults to the mobile-safe 4).
-      const storedParallelMax = await getPreference(PARALLEL_MAX_PREF_KEY);
-      if (storedParallelMax) {
-        const parsed = Math.floor(Number(storedParallelMax));
-        if (Number.isFinite(parsed)) {
-          setDownloadParallelMax(Math.min(PARALLEL_MAX_MAX, Math.max(PARALLEL_MAX_MIN, parsed)));
+      try {
+        // Foreground notification presentation must be configured before any
+        // notification can arrive, so set it as early as possible.
+        configureNotificationHandler();
+        setDevice(await loadOrCreateDevice());
+        setEncryption(await loadOrCreateEncryptionIdentity());
+        setTrusted(await getTrustedNodes());
+        // Restore the shard-size preference (falls back to the 8 MiB default).
+        const storedShardSize = await getPreference("shardSizeBytes");
+        if (storedShardSize) setShardSizeBytes(Number(storedShardSize) || SHARD_SIZE_BYTES);
+        // Restore the parallel-download cap (defaults to the mobile-safe 4).
+        const storedParallelMax = await getPreference(PARALLEL_MAX_PREF_KEY);
+        if (storedParallelMax) {
+          const parsed = Math.floor(Number(storedParallelMax));
+          if (Number.isFinite(parsed)) {
+            setDownloadParallelMax(Math.min(PARALLEL_MAX_MAX, Math.max(PARALLEL_MAX_MIN, parsed)));
+          }
         }
-      }
-      // Notification toggles default on; only a stored "false" disables one.
-      const notifEntries = await Promise.all(
-        (Object.keys(NOTIF_PREF_KEYS) as (keyof NotificationPrefs)[]).map(
-          async (key) =>
-            [key, (await getPreference(NOTIF_PREF_KEYS[key])) !== "false"] as const,
-        ),
-      );
-      setNotificationPrefsState(Object.fromEntries(notifEntries) as unknown as NotificationPrefs);
-      // Restore the device-local activity feed.
-      setActivity(await listTransfers());
-      // A stored session token restores the signed-in state across launches.
-      if (await getSessionToken()) {
-        setSession(await relaySession());
+        // Notification toggles default on; only a stored "false" disables one.
+        const notifEntries = await Promise.all(
+          (Object.keys(NOTIF_PREF_KEYS) as (keyof NotificationPrefs)[]).map(
+            async (key) =>
+              [key, (await getPreference(NOTIF_PREF_KEYS[key])) !== "false"] as const,
+          ),
+        );
+        setNotificationPrefsState(Object.fromEntries(notifEntries) as unknown as NotificationPrefs);
+        // Restore the device-local activity feed.
+        setActivity(await listTransfers());
+        // A stored session token restores the signed-in state across launches.
+        // A rejected restore (revoked/offline-refused session) must not leave the
+        // app half-initialized: surface it and clear the dead token.
+        if (await getSessionToken()) {
+          try {
+            const restored = await relaySession();
+            setSession(restored);
+            if (!restored) await clearPersistedSession().catch(() => undefined);
+          } catch (err) {
+            // Offline or Relay error: keep the token so a later launch can retry,
+            // but report the failure instead of an unhandled rejection.
+            setError(err instanceof Error ? err.message : String(err));
+          }
+        }
+      } catch (err) {
+        // Identity/preference init failure: report rather than reject silently.
+        setError(err instanceof Error ? err.message : String(err));
       }
     })();
   }, []);

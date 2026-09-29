@@ -8,6 +8,8 @@
 import * as FileSystem from "expo-file-system/legacy";
 import * as Sharing from "expo-sharing";
 
+import { safeFileName } from "./filename";
+
 function bytesToBase64(bytes: Uint8Array): string {
   let bin = "";
   const chunkSize = 0x8000;
@@ -22,7 +24,7 @@ function bytesToBase64(bytes: Uint8Array): string {
 export async function writeToCache(data: Uint8Array, name: string): Promise<string> {
   const dir = FileSystem.cacheDirectory ?? FileSystem.documentDirectory;
   if (!dir) throw new Error("no writable directory available");
-  const uri = `${dir}${name.replace(/[/\\]/g, "_")}`;
+  const uri = `${dir}${safeFileName(name)}`;
   await FileSystem.writeAsStringAsync(uri, bytesToBase64(data), { encoding: "base64" });
   return uri;
 }

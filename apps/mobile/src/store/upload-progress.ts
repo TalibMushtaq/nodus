@@ -23,6 +23,19 @@ interface UploadRow {
   updated_at: string;
 }
 
+/**
+ * Parse a JSON column defensively. A single corrupt row must not throw and
+ * break resumable uploads, so an unreadable value degrades to the fallback.
+ */
+function parseJson<T>(value: string | null, fallback: T): T {
+  if (!value) return fallback;
+  try {
+    return JSON.parse(value) as T;
+  } catch {
+    return fallback;
+  }
+}
+
 function toProgress(row: UploadRow): UploadProgress {
   return {
     transferId: row.transfer_id,
@@ -34,8 +47,10 @@ function toProgress(row: UploadRow): UploadProgress {
     encryptedName: row.encrypted_name,
     shardSizeBytes: row.shard_size_bytes ?? undefined,
     announced: row.announced !== 0,
-    completedShards: JSON.parse(row.completed_shards) as number[],
-    shardHashes: row.shard_hashes ? (JSON.parse(row.shard_hashes) as string[]) : undefined,
+    completedShards: parseJson<number[]>(row.completed_shards, []),
+    shardHashes: row.shard_hashes
+      ? parseJson<string[]>(row.shard_hashes, [])
+      : undefined,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
