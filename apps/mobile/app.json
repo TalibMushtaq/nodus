@@ -21,7 +21,6 @@
       }
     },
     "android": {
-      "usesCleartextTraffic": true,
       "allowBackup": false,
       "googleServicesFile": "./google-services.json",
       "permissions": [
@@ -46,6 +45,7 @@
       "expo-secure-store",
       "expo-background-task",
       "./plugins/with-rnscreens-fragment-factory",
+      "./plugins/with-lan-cleartext",
       [
         "expo-build-properties",
         {

@@ -1,5 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 
+import { openAtRest, openStringAtRest, sealAtRest, sealStringAtRest, isSealed } from "./at-rest";
+
 const store = new Map<string, string>();
 vi.mock("expo-secure-store", () => ({
   getItemAsync: async (k: string) => store.get(k) ?? null,
@@ -10,8 +12,6 @@ vi.mock("expo-secure-store", () => ({
 vi.mock("expo-crypto", () => ({
   getRandomBytes: (n: number) => globalThis.crypto.getRandomValues(new Uint8Array(n)),
 }));
-
-import { openAtRest, openStringAtRest, sealAtRest, sealStringAtRest, isSealed } from "./at-rest";
 
 describe("at-rest encryption", () => {
   it("round-trips strings without leaving plaintext", async () => {

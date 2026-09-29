@@ -1,5 +1,18 @@
 # Changelog
 
+## [2026-09-29] - Mobile: enforce TLS for the Relay and scope cleartext to the LAN
+
+**What changed:**
+
+- `apps/mobile/src/adapters.ts`: `RELAY_BASE` is now validated; a non-local `EXPO_PUBLIC_RELAY_URL` must be `https://`/`wss://`, otherwise startup throws instead of sending the bearer session in cleartext. Cleartext remains allowed for loopback and the Android emulator alias (`localhost`, `127.0.0.1`, `::1`, `10.0.2.2`).
+- New `apps/mobile/plugins/with-lan-cleartext.js`: replaces the global `android.usesCleartextTraffic` with a generated `network_security_config.xml` that denies cleartext by default and permits it only for loopback and RFC1918 private ranges; registered in `app.json`.
+- `apps/mobile/app.json`: removed `usesCleartextTraffic: true`.
+- `apps/mobile/.env.example`: documented the TLS requirement and added a production example.
+
+**Why:** the opaque session ID is a full account credential carried as `Authorization: Bearer` on every HTTP request and WS handshake; with `usesCleartextTraffic: true` and any `http://` origin, an on-path observer could steal it.
+
+**Impact:** mobile only. Remote Relays now require TLS; local development against `10.0.2.2`/loopback is unchanged. LAN node traffic (which never carries the bearer token) still works over cleartext.
+
 ## [2026-09-29] - Mobile: encrypt account secrets at rest and disable Android backup
 
 **What changed:**

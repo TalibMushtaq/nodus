@@ -10,8 +10,44 @@
 import * as SecureStore from "expo-secure-store";
 import type { RelayHttp, RelayRequestInit, RelayResponse, SecureStore as SecureStoreAdapter } from "@repo/sdk";
 
-/** Operator-configured Relay origin; no default so first-run never guesses localhost. */
-export const RELAY_BASE = (process.env.EXPO_PUBLIC_RELAY_URL ?? "").replace(/\/+$/, "");
+/**
+ * Operator-configured Relay origin; no default so first-run never guesses
+ * localhost. The session is a bearer credential, so a non-loopback origin must
+ * use TLS: the validation below rejects cleartext http(s) for anything that is
+ * not a local dev host, which would otherwise expose the token to any on-path
+ * observer. (LAN node traffic is separate — it never carries the bearer token.)
+ */
+const RAW_RELAY_URL = (process.env.EXPO_PUBLIC_RELAY_URL ?? "").replace(/\/+$/, "");
+
+/** Hosts where cleartext is allowed: loopback plus the Android emulator alias. */
+function isLocalHost(host: string): boolean {
+  return (
+    host === "localhost" ||
+    host === "127.0.0.1" ||
+    host === "::1" ||
+    host === "10.0.2.2"
+  );
+}
+
+function validateRelayUrl(url: string): string {
+  if (!url) return "";
+  if (url.startsWith("https://") || url.startsWith("wss://")) return url;
+  if (url.startsWith("http://") || url.startsWith("ws://")) {
+    // Allow cleartext only for a local development origin; a remote origin must
+    // be upgraded to TLS rather than silently sending the bearer token in clear.
+    try {
+      if (isLocalHost(new URL(url).hostname)) return url;
+    } catch {
+      // Fall through to the throw below: an unparseable URL is not usable.
+    }
+    throw new Error(
+      "EXPO_PUBLIC_RELAY_URL must use https:// (or wss://) for a non-local Relay; refusing to send the session in cleartext",
+    );
+  }
+  throw new Error("EXPO_PUBLIC_RELAY_URL must be an http(s)/ws(s) URL");
+}
+
+export const RELAY_BASE = validateRelayUrl(RAW_RELAY_URL);
 
 /** Keychain entry holding the opaque session ID (never a JWT). */
 export const SESSION_KEY = "nodus.relay.session";
