@@ -1,5 +1,20 @@
 # Changelog
 
+## [2026-09-29] - Mobile: encrypt account secrets at rest and disable Android backup
+
+**What changed:**
+
+- New `apps/mobile/src/at-rest.ts`: seals/opens values with AES-256-GCM under a random 256-bit data key held in `expo-secure-store`; sealed values carry a `v1:` prefix plus nonce so legacy rows remain readable.
+- `apps/mobile/src/recovery/store.ts`: the ADR-0002 recovery phrase is sealed on write and opened on read (plaintext legacy rows still load).
+- `apps/mobile/src/store/keys.ts`: per-file encryption keys are sealed on write and opened on read (raw-BLOB legacy rows still load).
+- `apps/mobile/src/store/db.ts`: corrected the header comment to match the new model.
+- `apps/mobile/app.json`: set `android.allowBackup: false` so `nodus.db`/WAL is no longer eligible for cloud or adb backup.
+- Added `@noble/ciphers` to the mobile dependencies and `src/at-rest.test.ts` covering round-trip and corrupt-value handling.
+
+**Why:** the recovery phrase — the account master secret — and every FEK were persisted as plaintext in SQLite, contradicting the store's own "credentials never here" comment, and `allowBackup=true` made that database exfiltratable through Android backup.
+
+**Impact:** mobile only. Secrets now require the device keychain key to read; a leaked database alone is useless. Legacy plaintext rows continue to load and are upgraded on next write.
+
 ## [2026-09-29] - Mobile: fix `atob` shim stack overflow that broke large uploads
 
 **What changed:**

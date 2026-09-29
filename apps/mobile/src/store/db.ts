@@ -1,9 +1,11 @@
 // SQLite database for the mobile client's local state.
 //
 // This is the native counterpart to the web client's IndexedDB store: it holds
-// the durable, non-secret data (trusted nodes, the Path D transfer queue, the
-// last-working-path cache, and later the cached catalogue/keys). Credentials
-// stay in the OS keychain via expo-secure-store, never here.
+// the durable data (trusted nodes, the Path D transfer queue, the
+// last-working-path cache, and the cached catalogue/keys). Long-lived
+// credentials stay in the OS keychain via expo-secure-store; account secrets
+// that must live here (the recovery phrase, per-file keys) are sealed with the
+// device-local key from `../at-rest` so the file is never plaintext at rest.
 //
 // The file lives in the app's sandboxed document directory and is opened over
 // expo-sqlite's async API; WAL keeps a background write from blocking reads.
