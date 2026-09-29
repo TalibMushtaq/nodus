@@ -40,23 +40,37 @@ if (typeof g.btoa !== "function") {
 }
 
 if (typeof g.atob !== "function") {
+  // The reverse lookup is built once, not per call: atob can run per upload
+  // shard, and rebuilding a 64-entry Map each time is pure overhead.
+  const lookup = new Map<string, number>();
+  for (let i = 0; i < B64_CHARS.length; i += 1) {
+    lookup.set(B64_CHARS[i], i);
+  }
+
   g.atob = (input: string): string => {
-    const clean = input.replace(/=+$/, "");
-    const lookup = new Map<string, number>();
-    for (let i = 0; i < B64_CHARS.length; i += 1) {
-      lookup.set(B64_CHARS[i], i);
-    }
-    const out: number[] = [];
+    // Strip padding/newlines so the decoded length is exact and a trailing
+    // partial group is still handled.
+    const clean = input.replace(/[^A-Za-z0-9+/]/g, "");
+    const bytes = new Uint8Array(Math.floor((clean.length * 3) / 4));
+    let out = 0;
     for (let i = 0; i < clean.length; i += 4) {
       const c0 = lookup.get(clean[i]) ?? 0;
       const c1 = lookup.get(clean[i + 1] ?? "") ?? 0;
       const c2 = lookup.get(clean[i + 2] ?? "") ?? 0;
       const c3 = lookup.get(clean[i + 3] ?? "") ?? 0;
-      out.push((c0 << 2) | (c1 >> 4));
-      if (i + 2 < clean.length) out.push(((c1 & 0x0f) << 4) | (c2 >> 2));
-      if (i + 3 < clean.length) out.push(((c2 & 0x03) << 6) | c3);
+      if (out < bytes.length) bytes[out++] = (c0 << 2) | (c1 >> 4);
+      if (out < bytes.length) bytes[out++] = ((c1 & 0x0f) << 4) | (c2 >> 2);
+      if (out < bytes.length) bytes[out++] = ((c2 & 0x03) << 6) | c3;
     }
-    return String.fromCharCode(...out);
+    // Emit the binary string in bounded chunks. A single `String.fromCharCode(...)`
+    // spread over a multi-MB shard's decoded bytes overflows the call stack, which
+    // silently broke uploads of anything larger than a few hundred KB.
+    let bin = "";
+    const chunkSize = 0x8000;
+    for (let i = 0; i < bytes.length; i += chunkSize) {
+      bin += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+    }
+    return bin;
   };
 }
 

@@ -1,5 +1,15 @@
 # Changelog
 
+## [2026-09-29] - Mobile: fix `atob` shim stack overflow that broke large uploads
+
+**What changed:**
+
+- `apps/mobile/src/compat.ts`: rewrote the Hermes `atob` shim to decode into a `Uint8Array` and build the binary string in bounded 32 KB chunks instead of spreading the entire decoded byte array into one `String.fromCharCode(...)` call. The base64 reverse lookup is now built once at install rather than per call.
+
+**Why:** `String.fromCharCode(...out)` passes every decoded byte as a function argument. An upload shard is 4–16 MB (~3–11 M decoded bytes), far past the JS engine's argument/stack limit, so `atob` threw `RangeError: Maximum call stack size exceeded` and any upload beyond a few hundred KB failed.
+
+**Impact:** mobile only. Uploads of normal-sized files now work; the shim still only installs when Hermes lacks a native `atob`.
+
 ## [2026-09-28] - Web: tests for the previously unguarded BFF routes
 
 **What changed:**
