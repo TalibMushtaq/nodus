@@ -1,5 +1,17 @@
 # Changelog
 
+## [2026-09-30] - Docs: link the docs site from the root README
+
+**What changed:**
+
+- `README.md`: added a Documentation section (with the `pnpm --filter docs dev` command) and listed `apps/docs` in the repository-layout tree.
+
+**Why:** the new documentation site was not discoverable from the project entry point.
+
+**Impact:** README only. The full docs site builds 77 static pages; TypeScript, lint, and build all pass, and every internal `/docs` link resolves.
+
+**Follow-ups:** none.
+
 ## [2026-09-30] - Docs: add Developer section
 
 **What changed:**

@@ -89,7 +89,8 @@ Nodus is a single monorepo — one repo, multiple languages:
 nodus/
 ├─ apps/
 │  ├─ web/                 # Next.js web client (ported design UI)
-│  └─ mobile/               # React Native / Expo mobile client (scaffold)
+│  ├─ mobile/               # React Native / Expo mobile client (scaffold)
+│  └─ docs/                 # Documentation site (Next.js + Fumadocs)
 ├─ packages/
 │  ├─ core/                 # Domain logic: sharding, crypto abstractions
 │  ├─ protocol/              # Canonical protocol schemas/types (zod, JSON Schema)
@@ -114,6 +115,21 @@ nodus/
 The TypeScript apps and packages are managed by Turborepo + pnpm. The Rust
 Storage Node and Go Relay live in the same repository under `services/` but
 sit outside the pnpm/Turborepo workspace, with their own native tooling.
+
+## Documentation
+
+The official documentation site lives in `apps/docs` (Next.js + Fumadocs) and
+covers everything end to end — user guides, self-hosting, and the full
+CLI/API/protocol reference:
+
+```bash
+pnpm --filter docs dev      # http://localhost:3001
+```
+
+Content is authored as MDX under `apps/docs/content/docs/`. The engineering
+docs in `docs/` (ADRs, protocol, architecture) remain canonical and are mirrored
+into the site's Reference and ADR sections.
+
 
 ## Current status
 
