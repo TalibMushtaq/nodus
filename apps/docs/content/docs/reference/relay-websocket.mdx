@@ -1,0 +1,66 @@
+---
+title: Relay WebSocket
+description: "The /ws gateway: authentication, presence, and message families."
+---
+
+`GET /ws` is the single WebSocket gateway. It carries presence, sync events,
+push, pairing-token pushes, and shard bytes during relay-mediated transfers.
+
+## Authentication
+
+Two peer types authenticate differently on the same socket:
+
+| Peer | How it authenticates |
+| --- | --- |
+| Browser client | HttpOnly session cookie |
+| Node | Ed25519 challenge-response |
+
+When a node opens `/ws`, the Relay sends `node_auth_challenge` (a single-use
+nonce, 30s TTL); the node answers with `node_auth_response` (an Ed25519
+signature over the nonce bytes). The Relay replies `node_auth_result`.
+
+## Peer identity
+
+- A browser peer's id is its `device_id`.
+- A node's id is its stable `node_id`.
+
+Both are derived from the authenticated connection, never from an
+unauthenticated payload. On `event_batch`, the server also enforces that each
+event's `origin_id` equals the session peer id.
+
+## Message families
+
+See the [message catalog](/docs/reference/message-catalog) for full payloads:
+
+- **Control:** `register`, `heartbeat`, node auth challenge/response/result.
+- **WebRTC signaling:** `webrtc_offer`, `webrtc_answer`, `webrtc_ice_candidate`
+  (SDP/ICE carried verbatim).
+- **Transfer:** `shard_upload`, `shard_ack`, `pending_notify`, `tombstone_ack`,
+  `purge_tombstone`, `restore_tombstone`, `shard_fetch`, `shard_delete`, and the
+  Design A binary shard stream.
+- **Sync:** `sync_hello`, `sync_status`, `event_batch`, `batch_ack`, `reconcile`.
+- **Snapshot:** `snapshot_begin`, `snapshot_chunk`, `snapshot_end`.
+- **Errors:** the `error` envelope and its codes.
+
+## Presence
+
+`heartbeat` drives Relay-side presence in Redis. A node or device is marked
+absent when no heartbeat arrives within the configured window. The
+`/devices/{id}/ping` and `/nodes/{id}/ping` REST endpoints send a WS ping and
+await a pong.
+
+## Session expiry
+
+When a session is revoked or expires, the Relay closes the socket with code
+`4001`. Clients treat that as a signal to clear the session and sign out.
+
+## Limits
+
+- The WS read limit is derived from `MAX_SHARD_BYTES_MB` plus 1 MiB of framing
+  headroom.
+- Server read/write timeouts are 15s; idle timeout is 60s.
+
+## Related
+
+- [Relay REST API](/docs/reference/relay-api)
+- [Schema versioning](/docs/reference/schema-versioning)

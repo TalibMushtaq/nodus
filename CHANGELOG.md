@@ -1,5 +1,20 @@
 # Changelog
 
+## [2026-09-30] - Docs: add Reference section and port canonical docs
+
+**What changed:**
+
+- `apps/docs/content/docs/reference/`: hand-authored Protocol overview, Storage Node CLI, Relay REST API, Relay WebSocket, Configuration, Data formats, and Glossary.
+- Ported the repo's canonical markdown into MDX: `message-catalog`, `event-types`, `schema-versioning`, `local-discovery`, `file-state-machine`, `transfer-manager-spec`, `local-endpoints`, and `bootstrap-pairing` (H1 moved to frontmatter).
+- `apps/docs/content/docs/adr/`: ported ADR-0001 through ADR-0008 plus an ADR index and `meta.json`.
+- `content/docs/meta.json`: surfaced Reference and ADRs in the sidebar.
+
+**Why:** the deep protocol, architecture, security, and decision records existed only as repo markdown with no navigable, searchable home.
+
+**Impact:** docs only; 70 static pages build. Root `docs/` remains canonical for engineering ADRs/protocol.
+
+**Follow-ups:** the Developer section remains.
+
 ## [2026-09-30] - Docs: add Self-hosting section
 
 **What changed:**

@@ -1,0 +1,23 @@
+{
+  "title": "Reference",
+  "pages": [
+    "protocol",
+    "cli",
+    "relay-api",
+    "relay-websocket",
+    "configuration",
+    "data-formats",
+    "---Protocol---",
+    "message-catalog",
+    "event-types",
+    "schema-versioning",
+    "local-discovery",
+    "---Architecture---",
+    "file-state-machine",
+    "transfer-manager-spec",
+    "---Security---",
+    "local-endpoints",
+    "bootstrap-pairing",
+    "glossary"
+  ]
+}

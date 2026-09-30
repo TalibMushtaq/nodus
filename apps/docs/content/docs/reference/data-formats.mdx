@@ -1,0 +1,69 @@
+---
+title: Data formats
+description: Shard, envelope, and object-store byte formats shared across languages.
+---
+
+These formats are produced by `packages/core` (TypeScript) and must be matched
+byte-for-byte by the Rust Storage Node. They are a cross-language contract: any
+change must be coordinated between implementations.
+
+## Shards
+
+Files are split into fixed-size shards (`SHARD_SIZE_BYTES`, default 8 MB) and
+reconstructed by index. All crypto operates on `Uint8Array` only — no `Buffer`,
+no streams, no platform globals.
+
+## Encryption
+
+- **Cipher:** AES-256-GCM.
+- **Nonce:** 12 random bytes, unique per shard.
+- **Auth tag:** 16 bytes, **appended to the ciphertext** (not stored
+  separately). `EncryptedShard.ciphertext` includes the tag.
+- A decryption authentication failure throws a distinct error (tampered
+  ciphertext or wrong key).
+
+## Integrity
+
+- **Hash:** BLAKE3, 32-byte digest, hex-encoded to 64 lowercase hex characters.
+- The hash is computed over **ciphertext**, not plaintext, so a Storage Node can
+  verify integrity without the file key.
+
+## Key envelopes
+
+`sealFekForRecipient` / `openFekEnvelope` implement an anonymous sealed box:
+
+1. Ephemeral X25519 keypair per envelope.
+2. ECDH with the recipient's static public key.
+3. HKDF-SHA256 with info string `"nodus-fek-envelope-v1"`.
+4. AES-256-GCM encrypts the FEK under the derived symmetric key.
+
+Sender authenticity is not a goal; the objective is that the Relay never sees
+plaintext keys. Keys are 32 bytes.
+
+## Object store
+
+Objects are content-addressed by the BLAKE3 hash of their ciphertext:
+
+```text
+<data-dir>/objects/<64-char lowercase hex BLAKE3>
+<data-dir>/temp/<id>
+```
+
+Writes are atomic (write to `temp/`, then rename). SQLite runs in WAL mode with
+`foreign_keys=ON`, `busy_timeout=5000`, and `synchronous=FULL`.
+
+## Snapshot records
+
+Snapshots carry homogeneous chunks with `record_type` one of `file_version`,
+`folder`, `key_envelope`, or `tombstone`, up to
+`SNAPSHOT_CHUNK_MAX_RECORDS` (1000) records per chunk. See the
+[message catalog](/docs/reference/message-catalog#snapshot-messages).
+
+## Crypto libraries
+
+`packages/core` uses audited, dependency-free pure-JS implementations that
+behave identically across Node, browser, and React Native:
+
+- `@noble/ciphers` — AES-256-GCM
+- `@noble/hashes` — BLAKE3, HKDF, SHA-256, randomBytes
+- `@noble/curves` — X25519

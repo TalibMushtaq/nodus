@@ -1,0 +1,14 @@
+{
+  "title": "ADRs",
+  "pages": [
+    "index",
+    "0001-key-hierarchy",
+    "0002-recovery-mechanism",
+    "0003-conflict-resolution-ux",
+    "0004-mobile-local-discovery",
+    "0005-garbage-collection-policy",
+    "0006-self-hosted-node-bootstrap-pairing",
+    "0007-mobile-native-and-sdk",
+    "0008-non-extractable-device-keys"
+  ]
+}

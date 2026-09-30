@@ -1,0 +1,111 @@
+---
+title: Relay REST API
+description: Every HTTP endpoint exposed by the Go Relay.
+---
+
+The Relay registers routes on Go's `net/http` `ServeMux` (method + pattern
+routing). Routes marked **session** require an authenticated session cookie or
+bearer token; **node** routes require a stateless Ed25519 request signature
+(`X-Nodus-*`, valid for a 5-minute window). All routes except `/health` and
+`/ws` are only registered when PostgreSQL is available.
+
+## Health
+
+| Method | Path | Auth | Purpose |
+| --- | --- | --- | --- |
+| GET | `/health` | open | Liveness/readiness; reports Postgres + Redis status |
+
+## Auth and sessions
+
+| Method | Path | Auth | Purpose |
+| --- | --- | --- | --- |
+| POST | `/auth/register` | open | Create an account (Argon2id password) |
+| POST | `/auth/login` | open | Login; issues a session |
+| GET | `/auth/session` | session | Return the current session/account |
+| POST | `/auth/logout` | open | Revoke the current session |
+| POST | `/auth/password` | session | Change password; rotates the session |
+| POST | `/auth/logout-all` | session | Revoke all sessions except the current device |
+| POST | `/auth/recovery/challenge` | open | Issue a signed recovery challenge |
+| POST | `/auth/recovery` | open | Complete recovery via a signed challenge |
+
+## Devices
+
+| Method | Path | Auth | Purpose |
+| --- | --- | --- | --- |
+| POST | `/devices/register` | session | Register a device |
+| GET | `/devices` | session | List devices |
+| DELETE | `/devices/{id}` | session | Revoke a device and its sessions |
+| PATCH | `/devices/{id}` | session | Rename a device |
+| POST | `/devices/push-token` | session | Register a mobile push token |
+| DELETE | `/devices/push-token` | session | Unregister a mobile push token |
+| POST | `/devices/web-push` | session | Register a browser PushSubscription |
+| DELETE | `/devices/web-push` | session | Unregister a browser PushSubscription |
+| POST | `/devices/{device_id}/ping` | session | Send a WS ping; await pong |
+
+## Account recovery identity
+
+| Method | Path | Auth | Purpose |
+| --- | --- | --- | --- |
+| PUT | `/account/recovery` | session | Enroll/rotate the recovery public key |
+
+## Storage nodes
+
+| Method | Path | Auth | Purpose |
+| --- | --- | --- | --- |
+| POST | `/nodes/register` | session | Register a node |
+| GET | `/nodes` | session | List nodes |
+| PATCH | `/nodes/{node_id}` | session | Rename a node |
+| POST | `/nodes/{node_id}/ping` | session | WS reachability probe |
+| GET | `/nodes/verify` | open | Pre-flight a discovered node URL against the Relay |
+
+## Catalog
+
+| Method | Path | Auth | Purpose |
+| --- | --- | --- | --- |
+| GET | `/files` | session | File catalog |
+| GET | `/folders` | session | Folder tree |
+| GET | `/activities` | session | Account activity feed |
+| GET | `/envelopes` | session | Key envelopes |
+| GET | `/envelopes/summary` | session | Per-recipient coverage counts |
+| GET | `/envelopes/export` | session | Ciphertext-only envelope backup |
+| GET | `/folder-envelopes` | session | Bulk folder-key envelopes |
+
+## Tombstones and conflicts
+
+| Method | Path | Auth | Purpose |
+| --- | --- | --- | --- |
+| GET | `/tombstones` | session | List soft-deleted entities |
+| DELETE | `/tombstones/{entity_type}/{entity_id}` | session | Permanently purge |
+| POST | `/tombstones/{entity_type}/{entity_id}/restore` | session | Restore a soft-deleted entity |
+| POST | `/files/{file_id}/conflicts/resolve` | session | Resolve a conflict over HTTP |
+
+## Pairing
+
+| Method | Path | Auth | Purpose |
+| --- | --- | --- | --- |
+| POST | `/pairing/sessions` | session | Issue a device-bound pairing token; WS-pushed to the node |
+| POST | `/pairing/sessions/verify` | open | Node's lazy token-verification fallback |
+| POST | `/pairing/codes` | session | Mint a bootstrap pairing code |
+| POST | `/pairing/codes/redeem` | open | Consume a code; register a node |
+
+## Rebuild, buffer, shards
+
+| Method | Path | Auth | Purpose |
+| --- | --- | --- | --- |
+| POST | `/rebuild` | session | Trigger a full snapshot / Relay rebuild |
+| POST | `/buffer/upload` | session | Path C: upload an encrypted shard while the node is offline |
+| GET | `/shards/{object_id}` | session | Relay-mediated shard download fallback |
+| GET | `/node/shards/{object_id}` | node | Node→Relay peer-repair shard fetch |
+| GET | `/buffer/fetch` | node | Node pulls a buffered shard with a single-use token |
+
+## WebSocket
+
+| Method | Path | Auth | Purpose |
+| --- | --- | --- | --- |
+| GET | `/ws` | session or node challenge | Presence, sync events, push, pairing-token push, relay-mediated shard bytes |
+
+## Related
+
+- [Relay WebSocket](/docs/reference/relay-websocket)
+- [Message catalog](/docs/reference/message-catalog)
+- [Bootstrap pairing](/docs/reference/bootstrap-pairing)

@@ -1,0 +1,51 @@
+---
+title: Configuration
+description: Web, mobile, and Storage Node configuration.
+---
+
+For the Relay and deployment unit, see
+[Self-hosting → Configuration](/docs/self-hosting/configuration).
+
+## Web client (`apps/web/.env.local`)
+
+| Variable | Scope | Purpose |
+| --- | --- | --- |
+| `RELAY_URL` | server | Internal Relay base URL for route handlers (default `http://localhost:8080`) |
+| `PUBLIC_RELAY_URL` | server | Public origin shown in the pairing command; required for “+ Add Storage Node” |
+| `NEXT_PUBLIC_RELAY_URL` | browser | Relay WS origin; leave unset in single-origin deploys |
+| `NEXT_PUBLIC_VAPID_PUBLIC_KEY` | browser | VAPID public key for browser push; must match the Relay |
+| `NEXT_PUBLIC_SHARD_SIZE_BYTES` | browser (build) | Build-time default shard size (clamped) |
+
+## Mobile client (`apps/mobile/.env`)
+
+| Variable | Purpose |
+| --- | --- |
+| `EXPO_PUBLIC_RELAY_URL` | Relay origin; non-local must be `https://`/`wss://` |
+| `EXPO_PUBLIC_EAS_PROJECT_ID` | EAS project id for Expo push tokens; unset disables push |
+
+## Storage Node
+
+Environment variables:
+
+| Variable | Purpose |
+| --- | --- |
+| `NODUS_DATA_DIR` | Data directory (tilde-expanded) |
+| `NODUS_RELAY_URL` | Relay endpoint fallback |
+| `NODUS_PAIRING_CODE` | Pairing code for automation |
+
+Files:
+
+| Path | Contents |
+| --- | --- |
+| `~/.nodus/config.toml` | `data_dir`, and `relay_url` after a successful pairing |
+| `~/.nodus/identity/node_private_key` | Raw 32-byte Ed25519 seed (mode `0600`) |
+| `~/.nodus/identity/node_id` | Hex-encoded Ed25519 public key (the stable `node_id`) |
+| `~/.nodus/migration.json` | Journal for an interrupted data-dir move |
+| `<data-dir>/nodus.db` | SQLite catalogue (WAL) |
+| `<data-dir>/objects/` | Content-addressed encrypted shards |
+| `<data-dir>/temp/` | In-progress atomic writes |
+
+## Related
+
+- [Relay configuration](/docs/self-hosting/configuration)
+- [Storage Node CLI](/docs/reference/cli)

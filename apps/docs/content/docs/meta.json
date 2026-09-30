@@ -1,4 +1,13 @@
 {
   "title": "Documentation",
-  "pages": ["index", "getting-started", "concepts", "guides", "mobile", "self-hosting"]
+  "pages": [
+    "index",
+    "getting-started",
+    "concepts",
+    "guides",
+    "mobile",
+    "self-hosting",
+    "reference",
+    "adr"
+  ]
 }

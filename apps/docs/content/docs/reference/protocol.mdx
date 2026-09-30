@@ -1,0 +1,49 @@
+---
+title: Protocol overview
+description: The canonical wire format package and where its pieces are documented.
+---
+
+`packages/protocol` (`@repo/protocol`) is the **source of truth** for the Nodus
+wire format. It is a pure schema/type package:
+
+- no dependency on `packages/core`, `relay-client`, or `webrtc-transport`;
+- zod runtime validation of every message (not just TypeScript types);
+- a single `parseMessage(raw)` entry point that validates the envelope,
+  dispatches to the type-specific schema, and returns a typed result or a
+  structured error — it never throws on malformed input.
+
+Rust and Go do not import the TypeScript types. They reference generated JSON
+Schema:
+
+```bash
+cd packages/protocol
+pnpm generate:schemas   # emits schemas/*.schema.json + manifest.json
+```
+
+Generated artifacts are deterministic and committed, so Rust and Go treat them
+as the canonical wire contract.
+
+## Envelope
+
+All messages share a common envelope before their type-specific payload:
+
+```json
+{
+  "type": "shard_upload",
+  "schema_version": "1.8",
+  "message_id": "uuid",
+  "payload": { "...": "..." }
+}
+```
+
+Field naming is `snake_case` on the wire; TypeScript maps to/from `camelCase`
+at the serialize boundary.
+
+## In this section
+
+<Cards>
+  <Card title="Message catalog" href="/docs/reference/message-catalog">Every wire message and its fields.</Card>
+  <Card title="Event types" href="/docs/reference/event-types">Sync event types and payloads.</Card>
+  <Card title="Schema versioning" href="/docs/reference/schema-versioning">Major/minor rules and cross-language sync.</Card>
+  <Card title="Local discovery" href="/docs/reference/local-discovery">mDNS format and the local HTTP API.</Card>
+</Cards>

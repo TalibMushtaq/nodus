@@ -1,0 +1,496 @@
+---
+title: "Message catalog"
+description: "Every Nodus wire message: envelope, control, signaling, transfer, sync, snapshot, and error payloads."
+---
+
+This is the human-readable reference for every Nodus wire message. The
+`packages/protocol` zod schemas are the source of truth; this document is a
+language-neutral counterpart maintained alongside `src/`. Machine-readable JSON
+Schema equivalents are generated from the zod schemas via `pnpm generate:schemas`
+(see `schemas/`).
+
+All messages share a common envelope before their type-specific payload:
+
+```json
+{
+  "type": "shard_upload",
+  "schema_version": "1.0",
+  "message_id": "uuid",
+  "payload": { "...": "..." }
+}
+```
+
+Field naming is `snake_case` on the wire throughout. TS consumers map to/from
+`camelCase` at the serialize/deserialize boundary.
+
+---
+
+## Control Messages
+
+### `register`
+
+Device/node identity announcement to the Relay, sent once when a device or node
+first connects. Used to establish presence and authorization.
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `account_id` | string | yes | The owning account |
+| `device_id` | string | no | Set when a device registers |
+| `node_id` | string | no | Set when a storage node registers |
+| `public_key` | string | yes | X25519 public key, hex-encoded |
+| `capabilities` | array&lt;enum&gt; | no (default `[]`) | Values: `storage`, `signaling`, `sync` |
+
+### `heartbeat`
+
+Liveness ping. Minimal payload; drives Relay-side presence (§13 Redis presence).
+A node/device is marked absent if no heartbeat arrives within the configured
+window.
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `id` | string | yes | The node or device sending the heartbeat |
+| `timestamp` | ISO 8601 string | yes | When the heartbeat was sent |
+
+### `node_auth_challenge`
+
+Relay → Node, first frame after the node opens `/ws` (§8). The nonce is an
+opaque cryptographically random value with a 30-second TTL.
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `nonce` | string | yes | Challenge to sign; single-use, 30s TTL |
+
+### `node_auth_response`
+
+Node → Relay, answering the challenge. The signature is Ed25519 over the exact
+challenge nonce bytes, made with the node's persistent identity key.
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `node_id` | string | yes | The node's stable id (hex public key) |
+| `signature` | string | yes | Hex-encoded Ed25519 signature over the nonce |
+
+### `node_auth_result`
+
+Relay → Node, the outcome of challenge-response. `message` is human-readable;
+`reason` is a stable machine-readable code the Storage Node acts on (for
+example, it prints "Storage Node is not paired. Run: `nodus node pair`" for
+`node_not_found` instead of retrying a generic failure).
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `status` | enum | yes | `ok` or `fail` |
+| `message` | string | no | Human-readable detail; not for programmatic routing |
+| `reason` | enum | no | `node_not_found` (no `storage_nodes` row) or `node_inactive` (row exists but is not `ACTIVE`, e.g. `REVOKED`). Absent on success. |
+
+---
+
+## WebRTC Signaling Messages
+
+These carry SDP/ICE payloads **verbatim** as opaque strings. The protocol layer
+does not validate SDP or candidate internals. `from_peer`/`to_peer` let the Relay
+route Path B signaling without inspecting payload contents (§5).
+
+`from_peer` and `to_peer` are each either a `device_id` or a `node_id`.
+
+### `webrtc_offer`
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `from_peer` | string | yes | Origin peer |
+| `to_peer` | string | yes | Destination peer |
+| `sdp` | string | yes | SDP offer body (opaque) |
+
+### `webrtc_answer`
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `from_peer` | string | yes | Origin peer |
+| `to_peer` | string | yes | Destination peer |
+| `sdp` | string | yes | SDP answer body (opaque) |
+
+### `webrtc_ice_candidate`
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `from_peer` | string | yes | Origin peer |
+| `to_peer` | string | yes | Destination peer |
+| `candidate` | string | yes | ICE candidate (opaque) |
+
+---
+
+## Transfer Messages
+
+### `shard_upload`
+
+Carries **metadata only** — the actual encrypted shard bytes travel over HTTP
+(`POST /buffer/upload`) or a separate binary transport, referenced by
+`transfer_id`. This avoids base64-encoding up to 8 MB per shard in JSON
+(decision #2).
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `file_id` | string | yes | Logical file identifier |
+| `version_number` | integer ≥ 1 | yes | File version this shard belongs to |
+| `shard_index` | integer ≥ 0 | yes | 0-based shard position in the file |
+| `hash` | string | yes | BLAKE3 hex digest of the encrypted ciphertext |
+| `size` | integer ≥ 0 | yes | Encrypted payload size in bytes (wire size) |
+| `transfer_id` | string | yes | Ties this metadata to the binary transfer stream |
+| `target_node` | string | no | Node that should receive the shard |
+| `source_device` | string | no | Device that initiated the upload |
+
+### `shard_ack`
+
+Acknowledges receipt/verification of a shard. Ties into the file state machine
+(§23: `NODE_RECEIVING` → `NODE_VERIFIED`).
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `file_id` | string | yes | Logical file identifier |
+| `version_number` | integer ≥ 1 | yes | File version this shard belongs to |
+| `shard_index` | integer ≥ 0 | yes | 0-based shard position |
+| `status` | enum | yes | `received`, `verified`, or `failed` |
+| `transfer_id` | string | yes | Correlates to the original `shard_upload` |
+| `error_message` | string | no | Human-readable reason when `status` is `failed` |
+
+### `pending_notify`
+
+Relay → Node notification that a buffered shard is waiting for pickup
+(Path C, §13 relay buffer lifecycle). Sent when a client uploaded a shard
+via `POST /buffer/upload` while the target node was offline. Includes a
+`fetch_token` so the node can fetch the shard bytes over HTTP. The token is
+bound to the targeted node, and redemption is authenticated with that node's
+`X-Nodus-*` request signature as well as the bearer token.
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `file_id` | string | yes | Logical file identifier |
+| `version_number` | integer ≥ 1 | yes | File version this shard belongs to |
+| `shard_index` | integer ≥ 0 | yes | 0-based shard position |
+| `buffer_id` | string | yes | Relay-assigned buffer identifier |
+| `fetch_token` | string | yes | Single-use bearer token for `GET /buffer/fetch` (10-min TTL, Redis GETDEL), bound to this node. Sent as `Authorization: Bearer <token>` alongside the node's `X-Nodus-*` signature headers; a token presented by a different node is refused with `403` |
+| `from_device` | string | yes | Device that uploaded the shard |
+| `hash` | string | yes | BLAKE3 hex digest — node verifies after fetch |
+| `size` | integer ≥ 0 | yes | Encrypted payload size in bytes — node verifies after fetch |
+
+### `tombstone_ack`
+
+Node → Relay. Reports this node's progress on a tombstoned (soft-deleted)
+entity so the Tombstone view can show per-node status. Sent after applying a
+tombstone (`deleted`) and after permanently removing the data (`purged`). The
+node id is taken from the authenticated WS connection, never the payload.
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `entity_type` | enum | yes | `file` or `folder` |
+| `entity_id` | string | yes | The tombstoned entity's ID |
+| `status` | enum | yes | `deleted` or `purged` |
+
+### `purge_tombstone`
+
+Relay → Node. Ask the node to permanently remove a tombstoned entity's
+versions/shards/objects. The node replies with `tombstone_ack{status:purged}`.
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `entity_type` | enum | yes | `file` or `folder` |
+| `entity_id` | string | yes | The entity to purge |
+
+### `restore_tombstone`
+
+Relay → Node. Undo a tombstone: the node deletes its tombstone row so retained
+data is not purged at the original retention deadline.
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `entity_type` | enum | yes | `file` or `folder` |
+| `entity_id` | string | yes | The entity to restore |
+
+### `shard_fetch`
+
+Request to retrieve a shard from a peer or the Relay buffer.
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `file_id` | string | yes | Logical file identifier |
+| `shard_index` | integer ≥ 0 | yes | 0-based shard position |
+| `transfer_id` | string | yes | Correlates the fetch to the binary delivery |
+| `source` | string | yes | `relay_buffer`, or a `node_id` |
+
+### `shard_delete`
+
+Request to delete a shard (e.g. post-transfer cleanup, or GC per §29a).
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `file_id` | string | yes | Logical file identifier |
+| `shard_index` | integer ≥ 0 | yes | 0-based shard position |
+| `reason` | string | no | Informational only; not parsed |
+
+### Design A shard stream (`shard_fetch_request` → binary frames)
+
+When the Relay must serve a browser download for a shard that lives on a
+Storage Node (no LAN host), it sends the node a `shard_fetch_request` envelope
+and the node answers with raw ciphertext **outside** the JSON envelope:
+
+```text
+Relay → Node   shard_fetch_request { request_id, object_id }
+Node  → Relay  shard_fetch_result  { request_id, object_id, status }
+Node  → Relay  <binary frame>      [u8 version=1][u16be id_len][request_id][payload]  (0..n)
+Node  → Relay  shard_fetch_done    { request_id }
+```
+
+A node may serve several requests concurrently over its single Relay socket, so
+binary frames from different fetches can interleave. Each binary frame therefore
+carries the routing `request_id` in a fixed header:
+
+| Field | Type | Notes |
+|---|---|---|
+| `version` | u8 | `1` — the framing version (`SHARD_FRAME_VERSION`) |
+| `id_len` | u16be | Length in bytes of `request_id` |
+| `request_id` | ASCII | The `shard_fetch_request.request_id` this chunk belongs to |
+| `payload` | bytes | Raw ciphertext slice (chunk size chosen by the node) |
+
+A frame whose version byte or length field is malformed, or whose `request_id`
+does not match a waiter assigned to the sending node, is dropped rather than
+misrouted. Relay and Storage Node must be upgraded together: the older
+per-connection framing is not supported (lockstep cutover).
+
+A node must not send more bytes for one `request_id` than the shard it holds.
+The Relay records the encrypted shard's length in `file_locations.size_bytes` when
+the node reports the shard stored, uses it as the `Content-Length` of the browser
+download it is serving, and stops forwarding at it — so an oversized stream is cut
+short rather than proxied. The recorded length is a claim by the sending node, so
+it can only lower the Relay's limit; the ceiling is the configured
+`MAX_SHARD_BYTES_MB` plus per-shard encryption framing. The browser therefore sees
+a short read against a declared `Content-Length`, and its own shard-hash check
+rejects the result. A node that under-declares gets its own shard truncated.
+
+---
+
+## Sync Messages
+
+### `sync_hello`
+
+Initial cursor-exchange handshake (§18). Sent when a node (or client) comes online
+to initiate incremental sync.
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `node_id` | string | yes | The sending node |
+| `cursors` | array of cursors | yes | Per-origin `{ origin_id, sequence }` |
+
+### `sync_status`
+
+Response to `sync_hello`. Each cursor adds a count so the sender can gauge how far
+behind it is.
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `node_id` | string | yes | The responding node |
+| `cursors` | array of cursors | yes | Per-origin `{ origin_id, sequence, known_count }` |
+
+### `event_batch`
+
+Wraps one or more sync events (§15). See `event-types.md` for the complete event
+schema and payload shapes. This is where the "exact sync event schema" open item
+is finalized.
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `events` | array of events | yes | Events ordered by `origin_sequence` within each origin |
+
+Both Storage Nodes and (Phase 14) authenticated **devices** may send `event_batch`.
+Both are validated server-side on the same three rules: every event's `origin_id`
+must equal the session peer id (the `device_id` or the `node_id`), its type must
+be in that peer's whitelist, and its `origin_sequence` must be strictly greater
+than the locked per-origin cursor. A batch that violates any of them is rejected
+whole and applies nothing.
+
+The two whitelists differ in one type. A device may not claim `FILE_SHARD_STORED`
+— only a node reports that it has durably stored a shard. Everything else is
+shared: the set of types that has a projection in the Relay.
+
+The per-event handling differs. A device batch is all-or-nothing down to the
+projection, because a device is interactive and can re-derive its state from the
+`last_origin_sequence` in the rejection. A node batch skips an individual
+unprojectable event and applies the rest, because a node's outbox is a durable
+ordered queue: one permanently-invalid row at the head would otherwise stall
+every later event behind it forever. Each node event runs in a savepoint, so a
+hard error in one event rolls back only that event.
+
+### `batch_ack`
+
+Acknowledges an `event_batch`. Node batches carry only `applied_event_ids`;
+device batches additionally carry the result fields.
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `batch_id` | string | no | Reserved; not currently set by the Relay |
+| `applied_event_ids` | array of strings | yes | Events applied (or already applied) |
+| `ok` | boolean | no | Device batches: false = rejected wholesale, nothing applied |
+| `reason` | string | no | Device rejection reason (`sequence_regression`, `origin_mismatch`, `event_type_not_allowed`) |
+| `last_origin_sequence` | integer ≥ 0 | no | Device batches: server cursor to re-sync a stale local counter from |
+
+### `reconcile`
+
+Physical reconciliation signal (§21). Carries a content hash / manifest reference
+rather than full file lists — the receiver compares hashes and requests a full
+snapshot only on divergence.
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `node_id` | string | yes | The reconciliation source |
+| `content_hash` | string | yes | BLAKE3 of the node's file manifest |
+| `checkpoint` | integer ≥ 0 | yes | Sequence checkpoint of this reconciliation |
+
+---
+
+## Snapshot Messages
+
+### `snapshot_begin`
+
+Metadata for a full snapshot transfer (§20). The Relay validates the signature
+against the trusted node public key before accepting chunks.
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `snapshot_id` | string | yes | Snapshot identifier |
+| `node_id` | string | yes | Source node |
+| `snapshot_sequence` | integer ≥ 1 | yes | The node's own monotonic counter for this snapshot. Must be strictly greater than the newest sequence the relay has promoted for this node, or the snapshot is refused as `stale_snapshot` — promoting an older one would roll the account back over newer state. Signature verification cannot catch a replayed snapshot, because an old one is signed by the same key over its own content hash. The relay records the promoted value in the same transaction that swaps the account's state, so a duplicated `snapshot_end` cannot move it backwards. |
+| `total_chunks` | integer ≥ 1 | yes | Number of chunks before `snapshot_end` |
+| `content_hash` | string | yes | BLAKE3 of the full snapshot payload |
+| `signature` | string | yes | Ed25519 over `content_hash` |
+| `data_schema_version` | string | yes | Version of the data *inside* the snapshot |
+| `cursors` | array of cursors | yes | Per-origin `{ origin_id, sequence }` adopted as the account's `sync_cursors` on promotion |
+
+`cursors` is a sibling of the field that is signed and is therefore **not** covered
+by the signature. The Relay validates the map itself and refuses the snapshot — at
+`snapshot_begin`, and again before any of it is written — if an entry has an empty
+`origin_id`, a negative `sequence`, a duplicated `origin_id`, or a `sequence` above
+the highest `origin_sequence` the Relay has itself accepted from that origin.
+Origins the Relay holds no events for are not bounded: after a factory reset the
+event log is empty and the node is the only remaining authority for its own state.
+A rejected map aborts the whole promotion rather than clamping, because the cursors
+decide which events replay.
+
+### `snapshot_chunk`
+
+Ordered chunk of snapshot data. Reassembled by `chunk_index`; retries reuse the
+same index for idempotency.
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `snapshot_id` | string | yes | Snapshot identifier |
+| `chunk_index` | integer ≥ 0 | yes | 0-based reassembly order |
+| `record_type` | `"file_version"` \| `"folder"` \| `"key_envelope"` \| `"tombstone"` | yes | Chunks are homogeneous |
+| `records` | array | yes | Up to `SNAPSHOT_CHUNK_MAX_RECORDS` (1000) records of `record_type` |
+
+`folder` records (`Phase 14 F1`) carry `folder_id`, `parent_folder_id`,
+`encrypted_name`, and `created_at`, and let a Relay rebuild reconstruct the
+folder tree instead of leaving files with dangling parent references.
+`key_envelope` records (`Phase 14 F2c`) carry `file_id`, `recipient_id`,
+`recipient_kind`, and the opaque `encrypted_key`, so a rebuild preserves FEK
+envelopes.
+
+### `snapshot_end`
+
+Completion marker. The Relay validates `final_hash` against the hash promised in
+`snapshot_begin` before promoting the rebuilt state.
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `snapshot_id` | string | yes | Snapshot identifier |
+| `final_hash` | string | yes | BLAKE3 of all chunk data concatenated |
+| `signature` | string | yes | Ed25519 over `final_hash` |
+
+---
+
+## Error Message
+
+A generic error/rejection envelope (decision #5). When a receiver cannot process a
+message, it responds with this instead of forcing every ack type to double as an
+error carrier.
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `correlation_id` | string | yes | The `message_id` of the message that caused the error |
+| `error_code` | enum | yes | see error codes below |
+| `error_message` | string | yes | Human-readable; not for programmatic routing |
+| `retryable` | boolean | no | Whether the sender should retry |
+
+### Error codes
+
+`validation_error`, `unknown_message_type`, `incompatible_version`,
+`not_found`, `rate_limited`, `internal_error`, `auth_failed`.
+
+Note the spelling of the last one: the wire value is `auth_failed`, not
+`auth_failure`. The relay has always sent `auth_failed`; `auth_failure` was a
+documentation error, and the `ErrorCode` enum now carries the relay's value under
+the `AUTH_FAILURE` key so the category still reads the same in code.
+
+The snapshot path additionally uses these, all of them a `retryable: false`
+rejection of `snapshot_begin`:
+
+| Code | Sent when |
+|---|---|
+| `stale_snapshot` | `snapshot_sequence` is not newer than the newest already promoted for this node. Replaying an old snapshot is refused because promoting it would roll the account back over newer state. |
+| `invalid_snapshot_sequence` | `snapshot_sequence` is not a positive integer. A node's counter starts at 1. |
+| `invalid_cursor_map` | The snapshot's cursor map is not consistent with the relay's event log (see `snapshot_begin`). |
+| `rebuild_in_progress` | Another rebuild is already streaming for this account. Retryable. |
+
+All of the above are in the `ErrorCode` enum in `packages/protocol/src/errors.ts`,
+which is closed, so a code missing from it makes a client that strictly validates
+`ErrorPayloadSchema` reject an envelope it should have understood. A relay test
+(`errorCodesEmittedByRelay` in `services/relay/internal/handler`) fails if the
+relay emits a code that enum does not list, so the two cannot drift apart. The
+storage node does not parse `error` envelopes, so it is unaffected either way.
+
+---
+
+## HTTP APIs (outside the WS envelope)
+
+A few endpoints are plain HTTP and do not use the envelope above. The
+bootstrap-pairing endpoints associate a first-time Storage Node with an account
+(§7b); the code is a one-time credential and never appears on the WebSocket.
+
+### `POST /pairing/codes` (authenticated)
+
+Mints a one-time pairing code for the signed-in account. Takes no body (the
+session cookie is the credential). Only the SHA-256 hash of the normalized code
+is stored; the plaintext is returned exactly once.
+
+`201 Created` response:
+
+| Field | Type | Notes |
+|---|---|---|
+| `code` | string | `NODUS-XXXX-XXXX`; alphabet `A-Z` minus `I`/`O` plus `2-9` |
+| `expires_at` | ISO 8601 string | 15-minute TTL |
+
+### `POST /pairing/codes/redeem` (open)
+
+Consumes a code and registers the presenting node under the issuing account, in
+one transaction (open — the code is the credential). The consume is atomic and
+single-use; a rejected registration rolls back so the code is not burned. IP
+rate-limited. The body is capped at 16 KiB. The registered Ed25519 key is
+immutable per `node_id`: re-registering with the same key is idempotent (key,
+status and `is_primary` preserved); a different key yields `node_key_mismatch`.
+The consumed row records the redeeming `node_id`.
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `code` | string | yes | The plaintext pairing code |
+| `node_id` | string | yes | Non-empty, ≤128 printable ASCII |
+| `public_key` | string | yes | Hex-encoded Ed25519 public key (32 bytes) |
+
+`200 OK` → `{ "status": "ok", "account_id": "...", "is_primary": bool }`.
+
+Failures use `{"error": "<reason>"}`:
+
+| Status | `error` |
+|---|---|
+| 404 | `code_unknown` |
+| 410 | `code_expired`, `code_revoked` |
+| 409 | `code_consumed`, `node_owned_elsewhere`, `node_key_mismatch` |
+| 400 | body/`node_id`/`public_key` validation |
+| 429 | `rate_limit_exceeded` |

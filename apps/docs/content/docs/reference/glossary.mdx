@@ -1,0 +1,52 @@
+---
+title: Glossary
+description: Terms used throughout the Nodus documentation.
+---
+
+**Account** — the root identity that owns files, devices, nodes, and keys.
+
+**BLAKE3** — the hash used for shard integrity, computed over ciphertext.
+
+**Conflicted copy** — the preserved sibling produced when two devices edit the
+same file offline.
+
+**Device** — a browser or phone client, identified by an Ed25519 key. Holds a
+signing identity and an X25519 encryption identity.
+
+**Envelope** — a file encryption key sealed to a specific recipient (device,
+node, or recovery key). The Relay stores envelopes but cannot open them.
+
+**FEK (File Encryption Key)** — the per-file key used to encrypt that file's
+shards.
+
+**mDNS** — multicast DNS service discovery, used to find Storage Nodes on the
+LAN (`_nodus._tcp`).
+
+**Node / Storage Node** — the Rust daemon that durably stores encrypted shards.
+
+**Node ID** — the hex-encoded Ed25519 public key that identifies a Storage Node.
+
+**Path A / B / C / D** — the four transfer paths: local P2P, relay signaling,
+relay buffer, and local queue.
+
+**Recovery key / phrase** — the 24-word BIP39 phrase (and its derived key) that
+recovers an account when trusted devices are lost.
+
+**Relay** — the Go service that provides auth, signaling, sync, and a temporary
+encrypted buffer.
+
+**Shard** — a fixed-size encrypted chunk of a file (default 8 MB).
+
+**Snapshot** — a full serialized copy of a node's state, used to rebuild a lost
+Relay database.
+
+**Tombstone** — the record that marks an entity as deleted so the delete
+converges, until it is purged or restored.
+
+**Transfer path** — the concrete route a shard takes between a client and a
+node.
+
+## Related
+
+- [Architecture](/docs/concepts/architecture)
+- [Data formats](/docs/reference/data-formats)

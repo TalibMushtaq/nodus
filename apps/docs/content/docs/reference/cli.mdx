@@ -1,0 +1,87 @@
+---
+title: Storage Node CLI
+description: Commands, flags, the interactive menu, and the running shell.
+---
+
+The Storage Node is a Rust binary (`nodus`). It can run interactively for setup
+and diagnostics, or non-interactively as a service.
+
+## Global flags
+
+| Flag | Purpose |
+| --- | --- |
+| `--data-dir <PATH>` | Data directory for objects + DB; overrides `NODUS_DATA_DIR` |
+| `--force-adopt` | Adopt a directory that already contains prior node data without prompting |
+| `--relay <URL>` | Relay endpoint (public origin or explicit ws/wss URL) |
+
+## Subcommands
+
+| Command | Purpose |
+| --- | --- |
+| `nodus node start` | Boot the daemon (same as a bare non-interactive invocation) |
+| `nodus node pair [--code <CODE>]` | Pair with an account using a one-time code |
+
+## Bare invocation
+
+- `nodus` with a TTY stdin → opens the interactive menu.
+- `nodus` with piped/systemd stdin → boots the daemon.
+- `nodus node start` always boots the daemon, which itself opens the interactive
+  shell if stdin is a TTY.
+
+## Interactive menu
+
+On a terminal, a bare `nodus` (after first-run setup) presents:
+
+1. Run the node
+2. Storage summary
+3. List files
+4. List folders
+5. Show status
+6. Security events
+7. Change data location
+8. Pair / re-pair this node
+9. Factory reset (delete everything)
+10. Quit
+
+On first run with no recorded Relay, the pairing wizard runs before the menu.
+
+## Running shell
+
+Once the daemon is running on a TTY, a shell accepts:
+
+| Command | Purpose |
+| --- | --- |
+| `help` / `?` | List commands |
+| `status` | Node status |
+| `storage` / `summary` | Storage summary |
+| `files` / `folders` | List ids and sizes (names are encrypted) |
+| `conflicts` | Show conflicts |
+| `devices` | Show paired devices |
+| `test` / `diag` | Diagnostics |
+| `factory-reset` / `purge` | Destroy node state |
+| `quit` / `stop` / `exit` | Stop the daemon |
+
+## Configuration
+
+Relay URL precedence is locked: CLI `--relay` → `config.toml relay_url` →
+`NODUS_RELAY_URL` → none. It never defaults to localhost.
+
+| Variable | Purpose |
+| --- | --- |
+| `NODUS_DATA_DIR` | Data directory (tilde-expanded) |
+| `NODUS_RELAY_URL` | Relay endpoint fallback |
+| `NODUS_PAIRING_CODE` | Pairing code for automation without argv exposure |
+
+`~/.nodus/config.toml` stores `data_dir` and (after successful pairing)
+`relay_url`.
+
+## Factory reset
+
+Available only interactively (menu item 8, or the shell's `factory-reset`). It
+requires typing `purge everything` and deletes the catalogue, objects, identity,
+and config. See [Factory reset](/docs/self-hosting/factory-reset).
+
+## Related
+
+- [Storage Node operations](/docs/self-hosting/storage-node-operations)
+- [Local discovery](/docs/reference/local-discovery)
