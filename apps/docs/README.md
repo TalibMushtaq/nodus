@@ -1,36 +1,44 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/create-next-app).
+# Nodus Documentation
 
-## Getting Started
+The official documentation site for [Nodus](../../README.md), built with
+[Fumadocs](https://fumadocs.dev) on Next.js.
 
-First, run the development server:
+## Development
+
+From the repository root:
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+pnpm --filter docs dev     # http://localhost:3001
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Or from `apps/docs`:
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```bash
+pnpm dev
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load Inter, a custom Google Font.
+## Content
 
-## Learn More
+All pages are MDX files under [`content/docs`](./content/docs). Each directory
+can contain a `meta.json` that controls the sidebar title and page order. The
+page tree is compiled into `lib/source.ts` at build time.
 
-To learn more about Next.js, take a look at the following resources:
+## Structure
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+| Path | Purpose |
+| --- | --- |
+| `content/docs` | Documentation content (MDX + `meta.json`) |
+| `app/(home)` | Landing page |
+| `app/docs` | Docs layout and catch-all MDX renderer |
+| `app/api/search` | Full-text search endpoint |
+| `components/mdx.tsx` | MDX component map |
+| `lib/source.ts` | Fumadocs content source |
+| `lib/layout.shared.tsx` | Shared nav/layout options |
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Build
 
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+```bash
+pnpm --filter docs build      # production build
+pnpm --filter docs lint       # eslint
+pnpm --filter docs check-types # tsc
+```

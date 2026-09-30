@@ -1,0 +1,26 @@
+---
+title: Quickstart
+description: Get a local Nodus stack running and pair your first device.
+---
+
+## Prerequisites
+
+You need Node.js and pnpm, Docker, and a terminal.
+
+## Start the Relay
+
+```bash
+cd services/relay
+docker compose up -d
+go run .
+```
+
+## Start the web client
+
+```bash
+pnpm install
+cd apps/web
+pnpm dev
+```
+
+Open http://localhost:3000.

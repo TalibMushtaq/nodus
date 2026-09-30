@@ -13,6 +13,10 @@
   },
   "dependencies": {
     "@repo/ui": "workspace:*",
+    "@types/mdx": "^2.0.14",
+    "fumadocs-core": "^16.15.17",
+    "fumadocs-mdx": "^15.4.5",
+    "fumadocs-ui": "^16.15.17",
     "next": "16.3.2",
     "react": "19.2.8",
     "react-dom": "19.2.8"
@@ -20,10 +24,13 @@
   "devDependencies": {
     "@repo/eslint-config": "workspace:*",
     "@repo/typescript-config": "workspace:*",
+    "@tailwindcss/postcss": "^4.3.3",
     "@types/node": "26.3.0",
     "@types/react": "19.2.18",
     "@types/react-dom": "19.2.5",
     "eslint": "10.9.1",
+    "postcss": "^8.5.28",
+    "tailwindcss": "^4.3.3",
     "typescript": "7.0.2"
   }
 }

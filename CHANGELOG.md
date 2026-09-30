@@ -1,5 +1,24 @@
 # Changelog
 
+## [2026-09-30] - Docs: scaffold Fumadocs documentation site in apps/docs
+
+**What changed:**
+
+- `apps/docs/package.json` / `pnpm-lock.yaml`: added `fumadocs-core`, `fumadocs-ui`, `fumadocs-mdx`, `@types/mdx` plus Tailwind 4 tooling (`tailwindcss`, `@tailwindcss/postcss`, `postcss`).
+- `apps/docs/next.config.mjs` (new, replaces `next.config.js`): wrapped with `createMDX()` from `fumadocs-mdx/next` so `content/docs` is compiled at build time.
+- `apps/docs/lib/source.ts` (new): `defineDocs` macro collection + `fumadocs-core/source` loader at `/docs`.
+- `apps/docs/app/layout.tsx`, `app/(home)/{layout,page}.tsx`, `app/docs/{layout.tsx,[[...slug]]/page.tsx}`, `app/api/search/route.ts` (new): Fumadocs root provider, landing page, docs shell, MDX renderer, and search endpoint.
+- `apps/docs/app/global.css` (new) + `postcss.config.mjs` (new): Tailwind 4, Fumadocs presets, and a `--color-fd-*` bridge to the Nodus palette.
+- `apps/docs/components/mdx.tsx`, `lib/layout.shared.tsx` (new): shared MDX component map and layout options.
+- `apps/docs/tsconfig.json`: added the `@/*` path alias; removed `baseUrl` (dropped in TypeScript 7).
+- Removed the create-next-app demo assets (`app/page.tsx`, `page.module.css`, `globals.css`, `public/*.svg`, Geist fonts).
+
+**Why:** `apps/docs` was an unused create-next-app scaffold. Nodus had no browsable documentation for users, operators, or developers.
+
+**Impact:** docs only — new site runs on port 3001 and is auto-discovered by the existing `ci-ts`/Turbo pipeline. No changes to apps, packages, or services.
+
+**Follow-ups:** content authoring follows in subsequent commits; no search index until content lands.
+
 ## [2026-09-29] - Mobile: robustness fixes for resume state, startup, and cache filenames
 
 **What changed:**
