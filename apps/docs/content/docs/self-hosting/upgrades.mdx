@@ -1,0 +1,47 @@
+---
+title: Upgrades
+description: Update the server unit and the Storage Node.
+---
+
+## Server unit
+
+```bash
+git pull
+docker compose -f deploy/docker-compose.yml --env-file deploy/.env up --build -d
+```
+
+The Relay applies database migrations automatically on startup. Migrations are
+embedded in the binary (`go:embed`) and tracked by `golang-migrate`, so a
+roll-forward deploy is safe and repeatable.
+
+<Callout type="info">
+  Startup retries the database connection for a bounded window, so a fresh
+  deploy whose PostgreSQL is still initializing comes up healthy instead of
+  degraded.
+</Callout>
+
+## Storage Node
+
+Rebuild and restart:
+
+```bash
+cd services/storage-node
+git pull
+cargo build --release
+# then restart your systemd unit
+```
+
+The node applies its own SQLite migrations on open. Existing objects and data
+remain valid across upgrades.
+
+## Compatibility
+
+The protocol uses semver versioning: a **major** bump is breaking, a **minor**
+bump is additive. Clients and services check the major version and refuse
+incompatible peers. Keep components on compatible versions; see
+[Schema versioning](/docs/reference/schema-versioning).
+
+## Related
+
+- [Backup and recovery](/docs/self-hosting/backup-and-recovery)
+- [Monitoring](/docs/self-hosting/monitoring)

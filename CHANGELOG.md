@@ -1,5 +1,18 @@
 # Changelog
 
+## [2026-09-30] - Docs: add Self-hosting section
+
+**What changed:**
+
+- `apps/docs/content/docs/self-hosting/`: added Overview, Docker quickstart, Production, Configuration, Storage Node operations, Backup and recovery, Monitoring, Upgrades, Factory reset, and Troubleshooting with a `meta.json`.
+- `content/docs/meta.json`: surfaced Self-hosting in the sidebar.
+
+**Why:** operators had no consolidated deployment, configuration, or runbook material.
+
+**Impact:** docs only; 46 static pages build.
+
+**Follow-ups:** Reference and Developer sections remain.
+
 ## [2026-09-30] - Docs: add Mobile section
 
 **What changed:**

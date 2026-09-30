@@ -1,0 +1,81 @@
+---
+title: Storage Node operations
+description: Data directory, config, the interactive shell, and running as a service.
+---
+
+The Storage Node is a long-running Rust daemon. It can be run interactively for
+setup and diagnostics, or non-interactively as a system service.
+
+## Data directory
+
+Chosen on first run (see [Run a Storage Node](/docs/getting-started/storage-node)).
+It contains:
+
+```text
+<data-dir>/
+  nodus.db           # SQLite catalogue (WAL mode)
+  objects/           # content-addressed encrypted shards
+  temp/              # in-progress atomic writes
+```
+
+SQLite runs with `foreign_keys=ON`, `journal_mode=WAL`, `busy_timeout=5000`,
+and `synchronous=FULL`.
+
+## Configuration file
+
+`~/.nodus/config.toml`:
+
+```toml
+data_dir = "/home/user/NodusBackup"
+relay_url = "https://nodus.example.com"
+```
+
+`relay_url` is only persisted after a **successful** pairing. Relay URL
+precedence is: CLI `--relay` → `config.toml` → `NODUS_RELAY_URL` → none (it
+never defaults to localhost, so a misconfigured node cannot silently pair to the
+wrong Relay).
+
+## Environment variables
+
+| Variable | Purpose |
+| --- | --- |
+| `NODUS_DATA_DIR` | Data directory (tilde-expanded) |
+| `NODUS_RELAY_URL` | Relay endpoint fallback |
+| `NODUS_PAIRING_CODE` | Pairing code for automation without argv exposure |
+
+## Run as a service
+
+Use `nodus node start` in a systemd unit. With no TTY, a bare `nodus` also boots
+the daemon directly. Point stdin at the unit's journal.
+
+```ini
+[Service]
+ExecStart=/usr/local/bin/nodus node start
+Environment=NODUS_DATA_DIR=/var/lib/nodus
+Restart=on-failure
+```
+
+## Interactive shell
+
+When the daemon runs on a TTY it exposes a shell with commands:
+
+| Command | Purpose |
+| --- | --- |
+| `status` | Node status |
+| `storage` / `summary` | Storage summary |
+| `files` / `folders` | List ids and sizes (names are encrypted) |
+| `conflicts` | Show conflicts |
+| `devices` | Show paired devices |
+| `test` / `diag` | Diagnostics |
+| `factory-reset` / `purge` | Destroy node state |
+| `quit` / `stop` / `exit` | Stop |
+
+## Moving the data directory
+
+Use **Change data location** in the menu. An interrupted move is journaled in
+`~/.nodus/migration.json` and completed on the next boot.
+
+## Related
+
+- [Storage Node CLI reference](/docs/reference/cli)
+- [Factory reset](/docs/self-hosting/factory-reset)

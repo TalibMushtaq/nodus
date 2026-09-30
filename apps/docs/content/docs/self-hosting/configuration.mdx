@@ -1,0 +1,59 @@
+---
+title: Configuration
+description: Relay and deployment environment variables.
+---
+
+The Relay is configured purely from environment variables — there is no config
+file. In the Compose unit these are supplied from `deploy/.env`.
+
+## Relay environment
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `PORT` | `8080` | HTTP listen port |
+| `DATABASE_URL` | `postgres://nodus:nodus_password@localhost:5432/nodus_relay?sslmode=disable` | PostgreSQL connection |
+| `REDIS_URL` | `redis://localhost:6379/0` | Redis connection |
+| `SESSION_COOKIE_NAME` | `nodus_session` | Session cookie name |
+| `SESSION_MAX_AGE_DAYS` | `30` | Session lifetime |
+| `SESSION_TOUCH_INTERVAL_MINUTES` | `30` | How often session expiry is extended |
+| `SESSION_COOKIE_SECURE` | `true` | Set `false` only for plain-HTTP dev |
+| `ALLOWED_ORIGINS` | `http://localhost:3000,http://127.0.0.1:3000` | Origins allowed to open the Relay WebSocket |
+| `BUFFER_DIR` | `<temp>/nodus-relay/buffer` | Transient encrypted shard buffer |
+| `BUFFER_TTL_HOURS` | `72` | How long buffered shards live |
+| `MAX_SHARD_BYTES_MB` | `32` | Largest plaintext shard buffered |
+| `TRUST_PROXY` | `false` | Trust `X-Forwarded-For` (enable behind a proxy) |
+| `EXPO_PUSH_ACCESS_TOKEN` | *(empty)* | Expo push; empty disables auth |
+| `VAPID_PUBLIC_KEY` | *(empty)* | Web Push; both keys required to enable |
+| `VAPID_PRIVATE_KEY` | *(empty)* | Web Push private key |
+| `VAPID_SUBJECT` | `mailto:admin@example.com` | VAPID contact |
+
+## Deployment environment (`deploy/.env`)
+
+| Variable | Purpose |
+| --- | --- |
+| `SITE_ADDRESS` | Public origin. `:80` for HTTP, a domain for automatic HTTPS |
+| `PUBLIC_RELAY_URL` | Origin shown to users/nodes for pairing |
+| `ALLOWED_ORIGINS` | Must exactly match the browser origin |
+| `SESSION_COOKIE_SECURE` | `true` for HTTPS, `false` for local HTTP |
+| `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | Database credentials (password required, URL-safe) |
+| `REDIS_PASSWORD` | Redis password (required, URL-safe) |
+| `BUFFER_TTL_HOURS` | Passed to the Relay |
+| `MAX_SHARD_BYTES_MB` | Passed to the Relay (must cover client shard size) |
+| `EXPO_PUSH_ACCESS_TOKEN` | Optional mobile push |
+| `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` / `VAPID_SUBJECT` | Web Push |
+| `NEXT_PUBLIC_VAPID_PUBLIC_KEY` | Build arg for the web image; must match `VAPID_PUBLIC_KEY` |
+
+<Callout type="warn">
+  `TRUST_PROXY` is intentionally absent from `.env.example`; Compose pins it to
+  `"true"` because Caddy always fronts the Relay.
+</Callout>
+
+## Client and node configuration
+
+Web, mobile, and Storage Node variables are listed in
+[Reference → Configuration](/docs/reference/configuration).
+
+## Related
+
+- [Production deployment](/docs/self-hosting/production)
+- [Factory reset](/docs/self-hosting/factory-reset)

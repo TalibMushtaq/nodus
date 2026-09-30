@@ -1,0 +1,61 @@
+---
+title: Troubleshooting
+description: Common issues with routing, WebSockets, LAN discovery, and TLS.
+---
+
+## The browser cannot connect to the Relay (`/ws` rejected)
+
+`ALLOWED_ORIGINS` must exactly match the browser origin (scheme + host + port).
+In local HTTP runs the defaults allow both `http://localhost` and
+`http://127.0.0.1`, but always open the site at the same host you put in
+`PUBLIC_RELAY_URL` / `ALLOWED_ORIGINS`.
+
+## Auth cookies not sticking locally
+
+For plain-HTTP local development, set `SESSION_COOKIE_SECURE=false` on the
+Relay. The web client only marks cookies `Secure` in production.
+
+## Mobile or CLI cannot reach the Relay
+
+Non-browser clients call the Relay origin directly. Ensure `PUBLIC_RELAY_URL`
+points at the same origin you exposed, and that the Relay route matchers in the
+Caddyfile apply (they cover `/auth/*`, `/devices/*`, `/nodes*`, `/pairing/*`,
+`/buffer/*`, `/ws`, `/health`, `/rebuild`, and more).
+
+## "Local transfer unavailable" on mobile
+
+Path A needs the local-network permission, mDNS to find `_nodus._tcp`, and
+WebRTC — all foreground-only (ADR-0004). If denied or unavailable, the app falls
+back to Relay paths. Grant local-network permission, or use a manual host probe.
+
+## Mixed content blocks direct P2P in the browser
+
+Serving the web app over HTTPS while a node is only reachable over cleartext
+HTTP prevents direct P2P. The UI shows a banner and falls back to the Relay
+buffer path. Use TLS for nodes, or access the app over HTTP on a trusted LAN.
+
+## Pairing code rejected
+
+- Codes are one-time and expire — mint a fresh one.
+- Pairing to a non-loopback host requires HTTPS/WSS; plain HTTP is refused.
+- Verify the node's `--relay` URL matches the account's Relay.
+
+## Storage Node won't start
+
+- Check the data directory is writable and `~/.nodus/identity/` exists or can be
+  created.
+- A stale `~/.nodus/migration.json` indicates an interrupted data-dir move; the
+  node completes it on boot.
+- Confirm SQLite can take its lock (`busy_timeout` is 5s).
+
+## Factory reset refuses to run
+
+Another client is still connected to the database. Close it, or pass
+`--factory-reset-force` if the only connection is yours. A rejected
+`BUFFER_DIR` is deliberate — pick a dedicated directory such as
+`/var/lib/nodus/buffer`.
+
+## Related
+
+- [Configuration](/docs/self-hosting/configuration)
+- [Monitoring](/docs/self-hosting/monitoring)

@@ -1,0 +1,59 @@
+---
+title: Docker quickstart
+description: Bring up the full server unit locally over HTTP.
+---
+
+## Requirements
+
+- Docker Engine + Compose v2
+- Ports 80 (and 443 for production)
+
+## Start the stack
+
+```bash
+cp deploy/.env.example deploy/.env
+docker compose -f deploy/docker-compose.yml --env-file deploy/.env up --build -d
+```
+
+Verify the health endpoint:
+
+```bash
+curl -fsS http://localhost/health     # {"status":"ok",...}
+```
+
+Then open http://localhost, register an account, and use
+**Devices → “+ Add Storage Node”**. Run the printed command on a Storage Node:
+
+```bash
+nodus node pair --relay http://localhost --code NODUS-XXXX-XXXX
+```
+
+## What comes up
+
+The Compose file starts Caddy, the web app, the Relay, PostgreSQL, and Redis.
+All services have health checks; migrations run automatically when the Relay
+starts.
+
+## Logs and teardown
+
+```bash
+docker compose -f deploy/docker-compose.yml logs -f relay web caddy
+docker compose -f deploy/docker-compose.yml down          # stop
+docker compose -f deploy/docker-compose.yml down -v       # wipe volumes (destructive)
+```
+
+## Verify routing by hand
+
+```bash
+# Relay-owned (proxied straight through):
+curl -fsS http://localhost/health
+curl -i  http://localhost/nodes                       # 401 JSON when signed out
+
+# Next-owned (pages):
+curl -fsS http://localhost/api/health
+curl -i  http://localhost/devices                     # HTML; redirects to /auth
+```
+
+## Next
+
+For a real domain with TLS, continue to [Production](/docs/self-hosting/production).

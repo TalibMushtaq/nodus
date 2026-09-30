@@ -1,0 +1,15 @@
+{
+  "title": "Self-hosting",
+  "pages": [
+    "overview",
+    "docker-quickstart",
+    "production",
+    "configuration",
+    "storage-node-operations",
+    "backup-and-recovery",
+    "monitoring",
+    "upgrades",
+    "factory-reset",
+    "troubleshooting"
+  ]
+}

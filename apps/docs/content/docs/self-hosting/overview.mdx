@@ -1,0 +1,44 @@
+---
+title: Self-hosting overview
+description: The single-origin server unit, and where Storage Nodes fit.
+---
+
+A self-hosted Nodus deployment is one public origin that serves the web app and
+the Relay, backed by PostgreSQL and Redis, fronted by Caddy for TLS and routing.
+
+```text
+Caddy (:80/:443)
+  ├─ /ws, /health, /rebuild                              -> relay:8080
+  ├─ /auth/*, /devices/*, /nodes*, /pairing/*, /buffer/* -> relay:8080
+  └─ everything else (pages, /api/*, …)                  -> web:3000
+```
+
+The Relay owns every path a non-browser client calls directly, so the Storage
+Node CLI and the mobile app work through the single origin. Two paths are served
+by Next.js because they are pages: bare `/devices` and bare `/auth`.
+
+Next.js route handlers reach the Relay internally at `RELAY_URL=http://relay:8080`,
+so the browser only ever talks to one origin — which also means WebSocket
+authentication has a predictable `Origin`.
+
+## What runs where
+
+| Service | Image / build | State |
+| --- | --- | --- |
+| `caddy` | `caddy:2-alpine` | TLS certs, config volumes |
+| `web` | `deploy/Dockerfile.web` | stateless |
+| `relay` | `deploy/Dockerfile.relay` | buffer volume |
+| `postgres` | `postgres:17-alpine` | `postgres_data` volume |
+| `redis` | `redis:7-alpine` | `redis_data` volume |
+
+## Storage Nodes
+
+Storage Nodes are **separate machines** that connect to this origin — never an
+internal address. Deploy and operate them per
+[Storage Node operations](/docs/self-hosting/storage-node-operations).
+
+## Next steps
+
+- [Docker quickstart](/docs/self-hosting/docker-quickstart)
+- [Production deployment](/docs/self-hosting/production)
+- [Configuration reference](/docs/self-hosting/configuration)

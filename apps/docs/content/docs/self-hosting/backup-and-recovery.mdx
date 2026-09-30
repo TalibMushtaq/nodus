@@ -1,0 +1,49 @@
+---
+title: Backup and recovery
+description: What to back up, and how to rebuild a lost Relay.
+---
+
+## What is durable
+
+| Data | Where | Back up? |
+| --- | --- | --- |
+| Accounts, devices, nodes, envelopes, events | Relay PostgreSQL (`postgres_data` volume) | Yes |
+| Relay buffer, sessions, nonces | Relay Redis / `buffer_data` | No — transient |
+| Files, catalogue, node identity | Storage Node data dir + `~/.nodus` | Yes (this is the source of truth) |
+| TLS certs | Caddy volumes | Optional (reissued automatically) |
+
+The Relay's PostgreSQL volume holds all durable server metadata. The Relay
+buffer and Redis are transient by design.
+
+## Backing up
+
+- **PostgreSQL:** snapshot the `postgres_data` volume, or `pg_dump` the
+  `nodus_relay` database.
+- **Storage Node:** back up the whole data directory **and** `~/.nodus/`
+  (identity + config). Losing the identity means the node must re-pair with a
+  new `node_id`.
+
+## Rebuilding a lost Relay
+
+The Relay is not the source of truth. A Storage Node holds a full snapshot and
+can rebuild a new Relay database:
+
+```bash
+curl -X POST https://your-relay.example/rebuild \  # session-authenticated
+  -H "content-type: application/json"
+```
+
+This initiates a full snapshot (`snapshot_begin` / `snapshot_chunk` /
+`snapshot_end`) from the primary node. Because the Relay only ever stored
+ciphertext and opaque envelopes, the rebuild restores exactly what it needs.
+
+## Recovering an account
+
+Account recovery is separate and covered in
+[Recovery](/docs/guides/recovery) and
+[ADR-0002](/docs/adr/0002-recovery-mechanism).
+
+## Related
+
+- [Monitoring](/docs/self-hosting/monitoring)
+- [Upgrades](/docs/self-hosting/upgrades)

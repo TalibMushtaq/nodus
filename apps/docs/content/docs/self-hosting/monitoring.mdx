@@ -1,0 +1,43 @@
+---
+title: Monitoring and logs
+description: Health checks, logs, and what to watch.
+---
+
+## Health check
+
+The Relay exposes `GET /health`, which reports PostgreSQL and Redis status:
+
+```bash
+curl -fsS https://your-relay.example/health   # {"status":"ok",...}
+```
+
+The Compose unit uses this endpoint as the Relay's healthcheck, and the web
+service checks `/api/health`. Caddy routes both.
+
+## Logs
+
+```bash
+docker compose -f deploy/docker-compose.yml logs -f relay web caddy
+```
+
+## Metrics to watch
+
+| Signal | Why |
+| --- | --- |
+| Relay `/health` | Detect Postgres/Redis outages |
+| Relay error logs | Failed auth, WS rejections, buffer errors |
+| PostgreSQL disk | Durable metadata growth |
+| Buffer volume size | Path C buffering backlog |
+| Storage Node `status` | Node health and reachability |
+
+## WebSocket auth failures
+
+If the browser cannot open `/ws`, the Relay rejects it when `ALLOWED_ORIGINS`
+does not match the page origin. Check both `ALLOWED_ORIGINS` and the host you
+opened in the browser. Close code `4001` means the session was rejected and the
+client signs out.
+
+## Related
+
+- [Configuration](/docs/self-hosting/configuration)
+- [Troubleshooting](/docs/self-hosting/troubleshooting)
