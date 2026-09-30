@@ -1,0 +1,33 @@
+---
+title: Background sync
+description: How the mobile app drains queued uploads when it is not in the foreground.
+---
+
+When the app is backgrounded or offline, uploads that could not reach a node are
+persisted to a local SQLite queue (Path D). A periodic background task drains
+that queue.
+
+## The task
+
+- Registered with `expo-background-task` before the app mounts
+  (`src/background/sync.ts`).
+- Runs at a minimum interval of 15 minutes.
+- Drains queued shards using **Path C only** (Relay buffer).
+- Stops on the first failure and resumes on the next run.
+
+## Why Path C only
+
+Background execution cannot reliably use LAN mDNS, WebRTC, or UI, so the task
+deliberately limits itself to the Relay buffer path (ADR-0004). If the Relay is
+unreachable, the shard simply stays queued.
+
+## Interaction with foreground sync
+
+When the app returns to the foreground, the full transfer manager runs again and
+may use Path A or B for outstanding work. The queue is the same store in both
+cases, so nothing is lost across the transition.
+
+## Related
+
+- [Transfer paths](/docs/concepts/transfer-paths)
+- [ADR-0004: Mobile local discovery](/docs/adr/0004-mobile-local-discovery)

@@ -1,0 +1,39 @@
+---
+title: Push notifications (mobile)
+description: Expo push tokens, categories, and tap handling.
+---
+
+Mobile push uses Expo Notifications, registered against the Relay.
+
+## Setup
+
+- The app acquires an Expo push token and creates an Android notification
+  channel on sign-in.
+- It requests the notification permission and registers the token with the Relay,
+  along with category preferences.
+- Without `EXPO_PUBLIC_EAS_PROJECT_ID`, registration is skipped silently.
+- On sign-out the token is removed from the Relay.
+
+## Categories
+
+| Category | Notifies about |
+| --- | --- |
+| `conflicts` | New conflicts needing resolution |
+| `deviceOffline` | A node or device went offline |
+| `syncComplete` | A backup/sync finished |
+
+## Delivery
+
+The Relay sends notifications through Expo using `EXPO_PUSH_ACCESS_TOKEN`.
+Tapping a notification opens the **Activity** tab.
+
+## Requirements
+
+The Relay must be configured with `EXPO_PUSH_ACCESS_TOKEN`, and the build must
+include Firebase/`google-services.json` for the Android channel. See
+[Configuration](/docs/reference/configuration).
+
+## Related
+
+- [Notifications](/docs/guides/notifications)
+- [Install and build](/docs/mobile/install)

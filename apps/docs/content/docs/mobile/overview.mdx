@@ -1,0 +1,51 @@
+---
+title: Mobile overview
+description: Screens, navigation, and local-network discovery in the mobile client.
+---
+
+The mobile client is a React Native / Expo app. It shares all portable logic
+with the web client through `packages/sdk`, and adds native capabilities: mDNS
+discovery, WebRTC data channels, background tasks, and push notifications.
+
+## Navigation
+
+A root stack swaps between signed-out and signed-in states, then a five-tab
+bottom navigator:
+
+| Tab | Screens |
+| --- | --- |
+| **Files** | Files, Conflicts, File detail |
+| **Downloads** | Downloads |
+| **Devices** | Devices, Pairing, Node detail, Device detail |
+| **Activity** | Activity |
+| **Settings** | Settings, Security, Trash |
+
+## Local discovery
+
+Mobile finds Storage Nodes on the LAN using:
+
+1. **mDNS** — browses the `_nodus._tcp` service and parses TXT records
+   (`node_id`, `v`, `pk_fp`).
+2. **Bounded `/24` sweep** — a fallback probe of `/nodus/discovery` on the local
+   subnet.
+3. **Manual host** — type an IP or hostname and probe it directly.
+
+Discovery is foreground-only (ADR-0004). If the local-network permission is
+denied or no node is found, the app surfaces an explicit "local transfer
+unavailable" notice and falls back to the Relay paths.
+
+<Callout type="info">
+  Trust is never established from the discovery record alone. Pairing always
+  completes with a signed challenge-response.
+</Callout>
+
+## Feature parity with web
+
+Files, folders, downloads, conflicts, devices, activity, security, trash, and
+settings all exist on mobile. Uploads are encrypted and sharded client-side
+before they leave the device, exactly as on web.
+
+## Related
+
+- [Install and build](/docs/mobile/install)
+- [ADR-0004: Mobile local discovery](/docs/adr/0004-mobile-local-discovery)

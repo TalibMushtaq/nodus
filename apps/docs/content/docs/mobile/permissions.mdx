@@ -1,0 +1,40 @@
+---
+title: Permissions
+description: Every permission the mobile app requests, and why.
+---
+
+## Android
+
+| Permission | Why |
+| --- | --- |
+| `INTERNET` | Relay HTTP/WebSocket and local node traffic |
+| `ACCESS_NETWORK_STATE` | Connectivity checks (offline recovery, activity fallback) |
+| `ACCESS_WIFI_STATE` | Wi-Fi state for LAN discovery |
+| `CHANGE_WIFI_MULTICAST_STATE` | mDNS multicast on the local network |
+| `NEARBY_WIFI_DEVICES` | Android 13+ device/Wi-Fi discovery |
+| `POST_NOTIFICATIONS` | Conflict, device-offline, and sync-complete push |
+| `READ_EXTERNAL_STORAGE` / `WRITE_EXTERNAL_STORAGE` | Download/file access on API ≤ 32 only |
+| `SYSTEM_ALERT_WINDOW`, `VIBRATE` | Debug/dev-client only |
+
+## iOS
+
+| Key | Why |
+| --- | --- |
+| `NSLocalNetworkUsageDescription` | Discover and pair Storage Nodes on the LAN |
+| `NSBonjourServices: ["_nodus._tcp"]` | mDNS browse |
+| `NSAppTransportSecurity.NSAllowsLocalNetworking` | Cleartext to LAN nodes |
+
+## Cleartext policy
+
+Remote hosts require TLS. Cleartext HTTP is allowed only for loopback and
+RFC1918 private ranges, enforced twice:
+
+- in the app (`src/adapters.ts` validates `EXPO_PUBLIC_RELAY_URL`), and
+- at the OS layer via a generated `network_security_config.xml`.
+
+Debug builds temporarily allow all cleartext.
+
+## Related
+
+- [Install and build](/docs/mobile/install)
+- [Security](/docs/guides/security)

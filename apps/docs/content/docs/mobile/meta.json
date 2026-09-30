@@ -1,0 +1,4 @@
+{
+  "title": "Mobile",
+  "pages": ["overview", "install", "permissions", "background-sync", "push-notifications"]
+}

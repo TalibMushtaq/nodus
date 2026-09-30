@@ -1,5 +1,18 @@
 # Changelog
 
+## [2026-09-30] - Docs: add Mobile section
+
+**What changed:**
+
+- `apps/docs/content/docs/mobile/`: added Overview, Install and build, Permissions, Background sync, and Push notifications with a `meta.json`.
+- `content/docs/meta.json`: surfaced Mobile in the sidebar.
+
+**Why:** the mobile client has distinct setup, permissions, and background behaviour that web docs do not cover.
+
+**Impact:** docs only; 36 static pages build.
+
+**Follow-ups:** Self-hosting, Reference, and Developer sections remain.
+
 ## [2026-09-30] - Docs: add end-user Guides
 
 **What changed:**
