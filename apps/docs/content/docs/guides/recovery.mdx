@@ -1,0 +1,41 @@
+---
+title: Recovery
+description: Recover an account with your phrase, offline via a node, or rotate the key.
+---
+
+If you lose your only trusted device, the recovery phrase is how you get back
+in. See [Recovery](/docs/concepts/recovery) for the mechanism;
+[ADR-0002](/docs/adr/0002-recovery-mechanism) for the decision.
+
+## Recover with the phrase
+
+**Online (Relay reachable):**
+
+1. On the auth screen choose **Recover**.
+2. Enter the 24-word phrase.
+3. The client requests a signed challenge, signs it locally, and submits it.
+4. The Relay verifies the signature and issues a session.
+
+**Offline (Storage Node on the LAN):**
+
+1. Ensure a paired Storage Node is reachable on the local network.
+2. Start recovery as above; the client falls back to the node's
+   challenge-response endpoint.
+3. On success, envelopes are unlocked locally — no Internet needed.
+
+## Reveal the phrase again
+
+On the **Security** page you can reveal and copy the stored phrase, but only
+after re-entering your account password. The phrase is sealed at rest on the
+device.
+
+## Rotate the recovery key
+
+If the phrase may have been exposed, regenerate it. Rotation derives a new
+recovery key and re-seals key envelopes to it. Do this from **Security** in
+either client.
+
+## Related
+
+- [ADR-0002: Recovery mechanism](/docs/adr/0002-recovery-mechanism)
+- [Security](/docs/guides/security)

@@ -1,0 +1,41 @@
+---
+title: Notifications
+description: Browser push, mobile push, and per-category preferences.
+---
+
+Nodus can notify you about conflicts, offline nodes, and completed backups.
+
+## Browser notifications (web)
+
+- **Settings → Notifications** or the notifications panel requests permission.
+- With `NEXT_PUBLIC_VAPID_PUBLIC_KEY` configured, the client registers a
+  `PushSubscription` with the Relay (`POST /devices/web-push`).
+- If the VAPID key is unset, the opt-in is hidden.
+
+Categories you can toggle:
+
+- transfers
+- conflicts
+- node offline
+- backup complete
+
+A test notification is available to confirm delivery.
+
+## Mobile push
+
+- The app registers an Expo push token and an Android channel.
+- Categories (`conflicts`, `deviceOffline`, `syncComplete`) are stored with the
+  token.
+- Tapping a notification opens the **Activity** tab.
+- Without `EXPO_PUBLIC_EAS_PROJECT_ID`, push registration is skipped silently.
+
+## Requirements
+
+Push delivery requires the Relay to be configured with the relevant secrets:
+`VAPID_PUBLIC_KEY`/`VAPID_PRIVATE_KEY`/`VAPID_SUBJECT` for web,
+`EXPO_PUSH_ACCESS_TOKEN` for mobile. See
+[Configuration](/docs/reference/configuration).
+
+## Related
+
+- [Push notifications deep dive](/docs/mobile/push-notifications)

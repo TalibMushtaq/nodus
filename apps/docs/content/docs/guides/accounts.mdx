@@ -1,0 +1,60 @@
+---
+title: Accounts and sessions
+description: Register, sign in, recover, change your password, and end sessions.
+---
+
+Nodus accounts are created against a Relay. Authentication uses Argon2id
+password hashing and opaque, server-side sessions delivered as an HttpOnly
+cookie (web) or stored in the OS keychain (mobile). There are no JWTs and no
+tokens exposed to client-side JavaScript.
+
+## Create an account
+
+1. Open `/auth` in the web client (or the sign-in screen in the mobile app).
+2. Choose **Create account**, pick an email and password.
+3. The client derives a **24-word recovery phrase**, shows it once, and requires
+   you to confirm you have saved it.
+4. Only the recovery public key is enrolled — the phrase itself is never stored
+   server-side.
+
+<Callout type="warn">
+  Store the recovery phrase somewhere safe and offline. It is the only way to
+  recover the account if all trusted devices are lost.
+</Callout>
+
+## Sign in
+
+Enter your email and password. On success the Relay issues a session; the web
+client proxies it into a hardened cookie (HttpOnly, `SameSite=Lax`, `Secure` in
+production).
+
+## Recover an account
+
+If you can reach the Relay:
+
+1. Choose **Recover** on the auth screen.
+2. Request a recovery challenge and sign it with the recovery key.
+3. The Relay verifies the signature and issues a new session.
+
+If the Internet is unavailable but a paired Storage Node is on the LAN, recovery
+can be performed locally against the node. See
+[Recovery](/docs/guides/recovery).
+
+## Change your password
+
+**Settings → Change password** re-verifies your current password and rotates
+the session.
+
+## Sign out
+
+- **Sign out** ends the current session.
+- **Sign out all devices** (Settings, or Security) revokes every other session
+  while keeping the caller signed in.
+
+A revoked or expired session is rejected by the Relay WebSocket with close code
+`4001`, which signs the client out cleanly.
+
+## Related
+
+- [Recovery guide](/docs/guides/recovery)
+- [Security guide](/docs/guides/security)

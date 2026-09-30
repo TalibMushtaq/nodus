@@ -1,0 +1,52 @@
+---
+title: Syncing
+description: How changes reach your other devices, and how to read sync status.
+---
+
+Sync is continuous and incremental. You rarely need to do anything — but it
+helps to know what the indicators mean.
+
+## What triggers a sync
+
+Uploads, downloads, renames, moves, deletes, restores, and folder changes all
+produce sync events. They travel to the Storage Node directly over the LAN when
+possible, or through the Relay otherwise.
+
+## Statuses
+
+| Status | Meaning |
+| --- | --- |
+| **Synced** | Every node holds the current version |
+| **Pending** | A change is queued or in flight |
+| **Conflict** | Competing versions need resolution |
+| **Offline** | The node is unreachable |
+| **Local-only** | Not yet committed to a node |
+
+## Reading the path indicator
+
+Each transfer is labelled with the [transfer path](/docs/concepts/transfer-paths)
+it used: Local P2P, Relay, Relay buffer, or Queued. A banner warns when direct
+P2P is unavailable (for example, mixed-content browsers) and explains the
+Relay-buffer fallback.
+
+## Sync preferences
+
+**Settings → Sync** lets you adjust:
+
+- auto-sync on/off,
+- maximum nodes to fan out to,
+- shard size,
+- parallel downloads.
+
+These are stored per client.
+
+## When sync is slow
+
+- Both peers not on the LAN: the Relay path (B) is used instead of direct P2P (A).
+- Node offline: shards buffer on the Relay (C) and deliver on reconnect.
+- Relay and node both offline: changes queue locally (D).
+
+## Related
+
+- [Transfer paths](/docs/concepts/transfer-paths)
+- [Sync and conflicts](/docs/concepts/sync-and-conflicts)

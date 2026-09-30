@@ -1,0 +1,51 @@
+---
+title: Files and folders
+description: Upload, download, organise, and share files across clients.
+---
+
+The **Backups** page in the web client (the **Files** tab on mobile) is the file
+manager. Names are encrypted end-to-end, so the Storage Node stores files by id
+and size only.
+
+## Upload
+
+- Web: click **Upload** or drag files onto the page.
+- Mobile: open **Files** and tap **+**.
+
+Uploads run as a sequential queue with byte-level progress and automatic retry
+(exponential backoff). Large files are sharded and encrypted client-side before
+any bytes leave the device.
+
+## Download
+
+- Web: open a file and choose **Download**.
+- Mobile: tap a file; it is decrypted to the cache and handed to the OS share
+  sheet.
+
+Downloads verify each shard's BLAKE3 hash and show the transport used (Local P2P
+or Relay). A folder can be downloaded as a ZIP.
+
+## Organise
+
+- **Folders** — create, rename, move, and browse with a breadcrumb. Folder names
+  are encrypted and folder keys are sealed in envelopes like files.
+- **Move / rename** — via the row context menu; renames are sync events.
+- **Search and sort** — client-side over the local catalogue.
+- **Views** — list or grid; filter by status.
+- **Previews** — image thumbnails and previews.
+
+## Multi-select
+
+On mobile, long-press to enter multi-select for bulk **move** and **delete**.
+
+## Sharing
+
+A downloaded or exported file is a normal plaintext file; you share it with your
+operating system's share sheet. Nodus itself never uploads plaintext to a third
+party.
+
+## Related
+
+- [Syncing](/docs/guides/syncing)
+- [Trash and tombstones](/docs/guides/trash-and-tombstones)
+- [Sharding and objects](/docs/concepts/sharding-and-objects)

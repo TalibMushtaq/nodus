@@ -1,0 +1,64 @@
+---
+title: Devices and pairing
+description: Pair browsers and phones with Storage Nodes, add a node, re-pair, and revoke.
+---
+
+Devices don't trust each other by default. A client must be **paired** with a
+Storage Node before it can read or write files there, and pairing is confirmed
+with a signed challenge-response — never by trusting a discovery record alone.
+
+## Add a Storage Node
+
+A Storage Node is bootstrapped with a one-time code:
+
+1. In the web client, open **Devices** and click **“+ Add Storage Node”**.
+2. The dialog mints a one-time `NODUS-XXXX-XXXX` code and shows the exact
+   command to run, with a countdown to expiry.
+3. On the Storage Node host, run the command:
+
+   ```bash
+   nodus node pair --relay https://your-relay.example --code NODUS-XXXX-XXXX
+   ```
+
+4. The web client polls the node catalog and detects the new node.
+
+<Callout type="info">
+  The pairing command uses `PUBLIC_RELAY_URL`, which the operator must set. If
+  it is unset, the “+ Add Storage Node” action is disabled.
+</Callout>
+
+## Pair this browser with a node
+
+1. Open `/pair`.
+2. Select a node and issue a **device-bound pairing token**.
+3. The client discovers the node — via the `nodus://pair` deep link, mDNS, or a
+   manual host — then establishes trust with a challenge-response.
+4. The node is recorded locally as trusted; later uploads reuse it silently.
+
+`/pair` can also probe a manual IP using the node's `/nodus/discovery`
+advertisement, verifying the advertised `node_id` matches the pending token.
+
+## Pair the mobile app
+
+The mobile Pairing screen offers the same two flows — add a new node, or pair
+with an existing one — plus LAN discovery using mDNS (`_nodus._tcp`) and a
+fallback bounded `/24` sweep. See
+[Mobile local discovery](/docs/mobile/overview).
+
+## Manage devices
+
+On the **Devices** page you can:
+
+- rename a node or device;
+- **ping** a node or device to probe reachability;
+- **re-pair** (re-authenticate) a device;
+- **revoke** a device.
+
+Revoking a device kills its sessions and removes its key envelopes, so it can no
+longer decrypt newly shared files. See
+[Security](/docs/guides/security).
+
+## Related
+
+- [ADR-0004: Mobile local discovery](/docs/adr/0004-mobile-local-discovery)
+- [ADR-0006: Self-hosted node bootstrap pairing](/docs/adr/0006-self-hosted-node-bootstrap-pairing)

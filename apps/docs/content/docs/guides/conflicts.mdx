@@ -1,0 +1,40 @@
+---
+title: Conflicts
+description: Resolve competing offline edits without losing either version.
+---
+
+When two devices change the same file while disconnected, Nodus preserves both
+versions instead of overwriting one. This is a deliberate design choice
+(ADR-0003).
+
+## How a conflict appears
+
+The losing side is saved as a **conflicted copy** — the original name with a
+conflict suffix — and the file is flagged. A non-blocking banner and, if push is
+enabled, a notification point you at the **Conflicts** inbox.
+
+## Resolve a conflict
+
+Open **Conflicts** and pick an action:
+
+| Action | Result |
+| --- | --- |
+| **Keep v1** | Keep the first version; the other is discarded |
+| **Keep latest** | Keep the newer version |
+| **Keep both** | Retain both as separate files |
+| **Mark resolved** | Acknowledge without changing files (mobile) |
+
+Resolution is itself a sync event, so the decision propagates to every node and
+device.
+
+## Avoiding conflicts
+
+- Let one device finish syncing before editing the same file on another.
+- Keep at least one node online so changes commit quickly.
+- The conflict model is intentionally conservative: it favours keeping data over
+  a clean history.
+
+## Related
+
+- [ADR-0003: Conflict resolution UX](/docs/adr/0003-conflict-resolution-ux)
+- [Sync and conflicts](/docs/concepts/sync-and-conflicts)

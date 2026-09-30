@@ -1,0 +1,43 @@
+---
+title: Security
+description: Recovery key, key-envelope coverage, encrypted backups, and device revocation.
+---
+
+The **Security** page is the control centre for your account's cryptographic
+state. It is available in both the web and mobile clients.
+
+## Recovery key card
+
+- Reveal the recovery phrase (password-gated) and copy it.
+- Regenerate the recovery key and re-seal envelopes to it.
+- In the mobile app, an **unlock** action restores access using the phrase.
+
+## Key-envelope coverage
+
+Every authorized device, node, and the recovery key should hold an envelope for
+each file. The coverage table shows per-recipient counts so you can spot gaps.
+
+- Newly registered devices are back-filled automatically (`EnvelopeBackfill`).
+- The **encrypted backup export** downloads all envelopes as ciphertext — useful
+  for offline safekeeping. The Relay stores envelopes but cannot open them.
+
+## Device revocation
+
+Revoking a device:
+
+1. kills its sessions, and
+2. removes its key envelopes, so it cannot decrypt newly shared files.
+
+Do this from **Security** or **Devices**. If you revoke the device you are using,
+you are signed out.
+
+## Password and sessions
+
+The same page links to changing your password and signing out all other
+devices.
+
+## Related
+
+- [Encryption and keys](/docs/concepts/encryption-and-keys)
+- [ADR-0001: Key hierarchy](/docs/adr/0001-key-hierarchy)
+- [ADR-0008: Non-extractable device keys](/docs/adr/0008-non-extractable-device-keys)

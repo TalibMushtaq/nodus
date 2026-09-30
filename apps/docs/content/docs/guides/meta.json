@@ -1,0 +1,16 @@
+{
+  "title": "Guides",
+  "pages": [
+    "accounts",
+    "devices-and-pairing",
+    "files-and-folders",
+    "syncing",
+    "conflicts",
+    "trash-and-tombstones",
+    "recovery",
+    "security",
+    "notifications",
+    "downloads-and-activity",
+    "settings"
+  ]
+}

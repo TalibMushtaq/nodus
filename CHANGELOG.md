@@ -1,5 +1,18 @@
 # Changelog
 
+## [2026-09-30] - Docs: add end-user Guides
+
+**What changed:**
+
+- `apps/docs/content/docs/guides/`: added Accounts and sessions, Devices and pairing, Files and folders, Syncing, Conflicts, Trash and tombstones, Recovery, Security, Notifications, Downloads and activity, and Settings, each with a `meta.json` ordering.
+- `content/docs/meta.json`: surfaced the Guides section in the sidebar.
+
+**Why:** end users had no task-oriented instructions for the shipped features.
+
+**Impact:** docs only; site now builds 31 static pages.
+
+**Follow-ups:** Mobile, Self-hosting, Reference, and Developer sections remain.
+
 ## [2026-09-30] - Docs: author Introduction, Getting Started, and Core Concepts
 
 **What changed:**

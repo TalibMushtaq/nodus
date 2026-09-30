@@ -1,0 +1,32 @@
+---
+title: Downloads and activity
+description: Track transfers, retry failures, and review account history.
+---
+
+## Downloads
+
+The **Downloads** page (web) and **Downloads** tab (mobile) show:
+
+- active downloads with shard progress, transport, and ETA;
+- failed or cancelled downloads that can be retried;
+- download history from the transfer log.
+
+Downloads prefer WebRTC, then the node's LAN HTTP endpoint, then the Relay
+shard endpoint. The transport actually used is recorded and displayed.
+
+## Activity
+
+The **Activity** page is an account-wide feed sourced from the Relay's
+`sync_events`, falling back to a paired node over the LAN when the Relay is
+unreachable.
+
+Events include uploads, downloads, deletes, restores, renames, and failures.
+Filter with the chips at the top, and **Clear** to reset the local view.
+
+On mobile, Activity also shows live upload progress and a device-local sync
+history.
+
+## Related
+
+- [Files and folders](/docs/guides/files-and-folders)
+- [Event types reference](/docs/reference/event-types)

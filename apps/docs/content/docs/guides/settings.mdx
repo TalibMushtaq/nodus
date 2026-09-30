@@ -1,0 +1,41 @@
+---
+title: Settings
+description: Theme, notifications, sync, password, and the danger zone.
+---
+
+Settings are split between account-wide actions and per-client preferences.
+Nodus stores client preferences locally; account actions go through the Relay.
+
+## Appearance
+
+- **Theme** — light or dark, following the system by default. Both clients
+  support a designed dark mode.
+
+## Sync
+
+- **Auto-sync** — commit changes automatically when a path is available.
+- **Max nodes** — how many nodes to fan out to.
+- **Shard size** — must stay within the client and Relay bounds.
+- **Parallel downloads** — download concurrency (adaptive).
+
+## Notifications
+
+Per-category toggles for transfers, conflicts, node offline, and backup
+complete. See [Notifications](/docs/guides/notifications).
+
+## Account
+
+- **Change password**
+- **Sign out all other devices**
+- Link to **Security** and **Trash**
+
+## Danger zone
+
+A local reset clears account-scoped local material on this client (encryption
+memory, cached file keys, decrypted previews, revealed phrase) while keeping the
+device identity. This is a client-side reset, not an account deletion.
+
+<Callout type="warn">
+  To destroy a Storage Node or Relay entirely, use their respective
+  **factory reset** procedures — see [Factory reset](/docs/self-hosting/factory-reset).
+</Callout>

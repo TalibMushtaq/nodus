@@ -1,0 +1,34 @@
+---
+title: Trash and tombstones
+description: Soft-delete, restore, and permanently purge files and folders.
+---
+
+Deleting in Nodus is soft by default. A delete writes a **tombstone** so the
+action converges across nodes, and the item remains recoverable until it is
+purged.
+
+## Restore or purge
+
+Open **Tombstone** in the web client (the **Trash** screen on mobile):
+
+- each row shows the item and, where relevant, per-node status and days until
+  automatic purge;
+- **Restore** undoes the soft delete;
+- **Delete forever** (purge) removes the entity and its objects permanently,
+  across the Relay and nodes.
+
+<Callout type="warn">
+  Purge is destructive and cannot be undone. Prefer letting the retention window
+  elapse if you are unsure.
+</Callout>
+
+## Retention
+
+Tombstones are retained for a configurable window before automatic purge. See
+[Garbage collection](/docs/concepts/garbage-collection) and
+[ADR-0005](/docs/adr/0005-garbage-collection-policy).
+
+## Related
+
+- [Garbage collection](/docs/concepts/garbage-collection)
+- [Files and folders](/docs/guides/files-and-folders)
