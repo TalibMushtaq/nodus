@@ -1,26 +1,70 @@
 ---
 title: Quickstart
-description: Get a local Nodus stack running and pair your first device.
+description: Run Nodus locally — Relay, web client, and a Storage Node — and pair your first device.
 ---
 
-## Prerequisites
+This page gets a complete Nodus stack running on one machine for evaluation.
+For production self-hosting see [Self-hosting](/docs/self-hosting/overview).
 
-You need Node.js and pnpm, Docker, and a terminal.
+## 1. Start the Relay and its dependencies
 
-## Start the Relay
+The Relay needs PostgreSQL and Redis, which are provided by Docker Compose:
 
 ```bash
 cd services/relay
-docker compose up -d
+docker compose up -d    # Postgres 17 + Redis 7 (health-checked)
 go run .
 ```
 
-## Start the web client
+The Relay listens on `:8080` by default and runs database migrations
+automatically on startup. For plain-HTTP local development, set
+`SESSION_COOKIE_SECURE=false`.
+
+## 2. Run the web client
 
 ```bash
 pnpm install
 cd apps/web
-pnpm dev
+pnpm dev                # http://localhost:3000
 ```
 
-Open http://localhost:3000.
+Point the web app at the local Relay with `RELAY_URL` (it defaults to
+`http://localhost:8080`). Open http://localhost:3000 and create an account at
+`/auth`.
+
+## 3. Run a Storage Node
+
+```bash
+cd services/storage-node
+cargo run -- --data-dir ~/NodusBackup
+```
+
+On first run the interactive CLI asks for the **Relay URL** and a **pairing
+code**. Mint a code in the web app under **Devices → “+ Add Storage Node”**,
+paste it in, and the node pairs and starts.
+
+Alternatively, pair non-interactively:
+
+```bash
+nodus node pair --relay http://localhost:8080 --code NODUS-XXXX-XXXX
+```
+
+## 4. Upload your first file
+
+In the web client, open **Backups**, then upload a file (button or drag-and-drop).
+Watch the path indicator: on the same machine this is a direct local transfer
+(Path A). See [Transfer paths](/docs/concepts/transfer-paths) for what each
+indicator means.
+
+## Where things are stored
+
+| Component | State |
+| --- | --- |
+| Relay | PostgreSQL + Redis + a transient shard buffer (`BUFFER_DIR`) |
+| Storage Node | `nodus.db` (SQLite), `objects/` (encrypted shards), `~/.nodus/identity/` |
+
+## Next steps
+
+- [Run the mobile app](/docs/getting-started/mobile-app)
+- [Pair devices and nodes in detail](/docs/guides/devices-and-pairing)
+- [Understand the security model](/docs/concepts/encryption-and-keys)

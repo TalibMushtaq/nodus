@@ -4,6 +4,7 @@ import { Tab, Tabs } from "fumadocs-ui/components/tabs";
 import { Callout } from "fumadocs-ui/components/callout";
 import { File, Files, Folder } from "fumadocs-ui/components/files";
 import { Accordion, Accordions } from "fumadocs-ui/components/accordion";
+import { Card, Cards } from "fumadocs-ui/components/card";
 import type { MDXComponents } from "mdx/types";
 
 // Central MDX component map. Registering the Fumadocs components here (rather
@@ -22,6 +23,8 @@ export function getMDXComponents(components?: MDXComponents) {
     Folder,
     Accordion,
     Accordions,
+    Card,
+    Cards,
     ...components,
   } satisfies MDXComponents;
 }

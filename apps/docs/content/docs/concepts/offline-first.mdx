@@ -1,0 +1,48 @@
+---
+title: Offline-first model
+description: How Nodus keeps working when the Internet, the Relay, or a node is unavailable.
+---
+
+The core design principle is simple:
+
+> Internet is an enhancement, not a dependency.
+
+Every failure mode has a defined fallback, so the system degrades instead of
+breaking.
+
+```text
+Internet available:     Client <-> Relay <-> Storage Node
+Internet unavailable:   Client <-> Storage Node
+Storage Node offline:   Client -> Relay Buffer -> Storage Node
+Relay corrupted:        Storage Node -> Snapshot/Rebuild -> New Relay DB
+```
+
+## What works offline
+
+| Situation | Behaviour |
+| --- | --- |
+| No Internet, same LAN | Direct LAN transfers (Path A) over WebRTC continue. |
+| Storage Node offline | Encrypted shards are buffered on the Relay (Path C) and delivered when the node returns. |
+| Relay offline | Clients queue changes locally (Path D) until the node or Relay is reachable. |
+| Both offline | Everything queues locally; sync resumes later. |
+| Relay database lost | The Relay is rebuilt from a Storage Node snapshot. |
+
+## Why this is safe
+
+The Relay never sees plaintext. Buffered shards are ciphertext, integrity
+protected with BLAKE3 and encrypted with AES-256-GCM. Authorization data —
+file encryption keys — travel as encrypted key envelopes that only the intended
+device or node can open.
+
+## Trade-offs
+
+- Offline work is eventually consistent, not immediately consistent. Conflicting
+  edits are preserved and surfaced rather than overwritten — see
+  [Sync and conflicts](/docs/concepts/sync-and-conflicts).
+- Local discovery is foreground-only on mobile (ADR-0004); background drains
+  use the Relay buffer path only.
+
+## Related
+
+- [Transfer paths](/docs/concepts/transfer-paths)
+- [Recovery](/docs/concepts/recovery)

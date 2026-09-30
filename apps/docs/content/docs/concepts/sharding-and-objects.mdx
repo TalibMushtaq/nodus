@@ -1,0 +1,47 @@
+---
+title: Sharding and objects
+description: How files are split, hashed, and stored on a Storage Node.
+---
+
+A file never moves as a single blob. It is split into fixed-size shards,
+encrypted, and hashed, so transfers can resume and objects can be
+de-duplicated.
+
+## Sharding
+
+- Default shard size is **8 MB** (`SHARD_SIZE_BYTES`), configurable within
+  bounds (`MIN`/`MAX`).
+- Splitting and reconstruction live in `packages/core` and are shared by all
+  clients.
+- Each shard carries metadata: shard index, `file_id`, hash, and size.
+
+## Integrity
+
+Each shard is hashed with **BLAKE3** over its ciphertext (not its plaintext).
+Because the hash is computed over ciphertext, the Storage Node can verify
+integrity without ever holding the file key.
+
+## The object store
+
+The Storage Node stores shards in a flat, content-addressed layout:
+
+```text
+<data-dir>/
+  objects/<64-char lowercase hex BLAKE3>
+  temp/<id>                     # in-progress atomic writes
+```
+
+Writes are atomic: a shard is written to `temp/` then renamed into `objects/`.
+A shard's address is its hash, so identical ciphertext is naturally
+de-duplicated and any corruption is detectable.
+
+## Encryption
+
+Shards are encrypted with AES-256-GCM under a per-file key, with a unique nonce
+per shard. The authentication tag is appended to the ciphertext. See
+[Encryption and keys](/docs/concepts/encryption-and-keys).
+
+## Related
+
+- [Encryption and keys](/docs/concepts/encryption-and-keys)
+- [Garbage collection](/docs/concepts/garbage-collection)

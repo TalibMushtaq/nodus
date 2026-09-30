@@ -1,5 +1,20 @@
 # Changelog
 
+## [2026-09-30] - Docs: author Introduction, Getting Started, and Core Concepts
+
+**What changed:**
+
+- `apps/docs/content/docs/index.mdx`: expanded the Introduction with component overview, architecture diagram, and cards.
+- `content/docs/meta.json`, `content/docs/getting-started/`: added Prerequisites, Quickstart, Run the web client, Run the mobile app, Run a Storage Node, and Your first upload.
+- `content/docs/concepts/`: added Architecture, Offline-first model, Transfer paths, Sharding and objects, Encryption and keys, Sync and conflicts, Recovery, and Garbage collection.
+- `apps/docs/components/mdx.tsx`: registered Fumadocs `Cards`/`Card` for landing-style page links.
+
+**Why:** the site had only a placeholder page and no navigable documentation.
+
+**Impact:** docs only; 20 pages now build statically. Cross-links to Guides, Mobile, Self-hosting, Reference, and ADR sections 404 until those sections land in later commits.
+
+**Follow-ups:** author the Guides, Mobile, Self-hosting, Reference, and Developer sections.
+
 ## [2026-09-30] - Docs: scaffold Fumadocs documentation site in apps/docs
 
 **What changed:**

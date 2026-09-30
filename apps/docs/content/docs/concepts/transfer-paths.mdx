@@ -1,0 +1,61 @@
+---
+title: Transfer paths
+description: The four paths Nodus uses to move shards, and how it chooses between them.
+---
+
+Nodus picks the best available path automatically and falls back as conditions
+change. The `packages/transfer-manager` package owns path selection, fan-out,
+and repair.
+
+## The four paths
+
+### Path A — Direct local P2P
+
+Local signaling plus WebRTC, with no Relay involved. Both peers must be on the
+same network. This is the fastest and most private path, and the preferred one.
+
+### Path B — Relay-mediated signaling
+
+The Relay carries SDP/ICE signaling only; the file data still flows
+peer-to-peer. Used when peers are not on the same LAN but both have Internet.
+
+### Path C — Buffer-and-relay
+
+The encrypted shard is uploaded to the Relay's transient buffer and delivered
+asynchronously when the Storage Node comes back online. This is the path used
+by mobile background sync.
+
+### Path D — Local queue
+
+If neither the Storage Node nor the Relay is reachable, the shard is persisted
+to a local queue and retried later.
+
+## Fallback chain
+
+```text
+A (local P2P) -> B (relay signaling) -> C (buffer) -> D (local queue)
+```
+
+The manager caches the last working path per peer to avoid re-probing on every
+transfer, and backs off exponentially when a path fails.
+
+## What the UI shows
+
+| Indicator | Path |
+| --- | --- |
+| Local P2P | A |
+| Relay | B |
+| Relay buffer | C |
+| Queued | D |
+
+## Constraints
+
+- Path A is foreground-only on mobile; it requires local-network permission and
+  WebRTC (so it is unavailable on mixed-content or unsupported browsers).
+- Path B requires WebRTC on both peers.
+- Path C requires the Relay reachable and the shard within `MAX_SHARD_BYTES_MB`.
+
+## Related
+
+- [Transfer Manager spec](/docs/reference/protocol)
+- [Offline-first model](/docs/concepts/offline-first)

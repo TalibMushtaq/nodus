@@ -1,0 +1,13 @@
+{
+  "title": "Core Concepts",
+  "pages": [
+    "architecture",
+    "offline-first",
+    "transfer-paths",
+    "sharding-and-objects",
+    "encryption-and-keys",
+    "sync-and-conflicts",
+    "recovery",
+    "garbage-collection"
+  ]
+}

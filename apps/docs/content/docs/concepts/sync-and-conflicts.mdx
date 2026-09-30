@@ -1,0 +1,50 @@
+---
+title: Sync and conflicts
+description: How changes propagate, and why Nodus never silently overwrites offline edits.
+---
+
+Nodus synchronizes through append-only **sync events**. Each component tracks a
+cursor into the event stream, so it can resume incrementally after being
+offline.
+
+## Sync events
+
+Every meaningful change — uploads, renames, deletes, restores, folder
+mutations — becomes a sync event. Events carry a unique id and a
+`schema_version`, and are delivered over the Relay WebSocket or, when both
+parties are on the LAN, directly to the Storage Node.
+
+- The Storage Node keeps a local outbox and cursors.
+- The Relay records events so other devices can catch up.
+- Clients batch events (`event_batch`) to reduce round-trips.
+
+See the [event types reference](/docs/reference/event-types).
+
+## Convergent, not last-write-wins
+
+If two devices edit the same file offline, Nodus does not pick an arbitrary
+winner. Both versions are preserved as a conflict (ADR-0003). The losing side
+appears as a **conflicted copy**, and the conflict surfaces in a dedicated
+inbox.
+
+## Resolving a conflict
+
+Open **Conflicts** in the web client (or the mobile Conflicts screen) and
+choose:
+
+- **Keep v1** — keep the first version
+- **Keep latest** — keep the newer version
+- **Keep both** — retain both as separate files
+- **Mark resolved** — acknowledge without changing files
+
+## Tombstones
+
+Deletes are soft: a **tombstone** marks an entity as deleted before it is purged.
+Tombstones propagate like any other event, so deletes converge across nodes, and
+they can be restored from the **Tombstone** view. See
+[Garbage collection](/docs/concepts/garbage-collection).
+
+## Related
+
+- [ADR-0003: Conflict resolution UX](/docs/adr/0003-conflict-resolution-ux)
+- [Guides: Conflicts](/docs/guides/conflicts)

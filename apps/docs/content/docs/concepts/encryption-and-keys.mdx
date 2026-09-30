@@ -1,0 +1,59 @@
+---
+title: Encryption and keys
+description: The key hierarchy, file encryption keys, envelopes, and the recovery key.
+---
+
+Nodus is end-to-end encrypted. The storage layer only ever sees ciphertext and
+opaque key envelopes.
+
+## Key hierarchy
+
+The hierarchy is defined in [ADR-0001](/docs/adr/0001-key-hierarchy):
+
+- **Account key** — the root of trust, established at registration.
+- **Device keys** — each browser or phone holds an Ed25519 signing identity and
+  an X25519 encryption identity.
+- **Storage Node keys** — each node has a persistent Ed25519 identity used for
+  authentication and request signing.
+
+Device keys are held in the platform's secure storage and are **non-extractable**
+(ADR-0008) wherever the platform supports it: the private key does not leave the
+hardware-backed store.
+
+## File encryption keys (FEKs)
+
+Each file has its own **file encryption key**, used to encrypt that file's
+shards with AES-256-GCM (a unique nonce per shard). The FEK is never sent to the
+Relay in the clear.
+
+## Key envelopes
+
+To grant a device or node access to a file, the FEK is sealed into an **envelope**
+addressed to that recipient's X25519 public key (an X25519 + HKDF sealed box).
+The Relay stores envelopes but cannot open them.
+
+- One envelope per authorized device, per node, and for the recovery key.
+- When a new device registers, existing files are re-sealed to it
+  (`EnvelopeBackfill`).
+- Revoking a device removes its envelopes and kills its sessions; the
+  [Security page](/docs/guides/security) shows coverage.
+
+## Recovery key
+
+Registration derives a **24-word recovery phrase**. Only its public key is
+enrolled; the phrase itself is shown once and never stored server-side. It can
+recover the account and open envelopes when a trusted device is lost — see
+[Recovery](/docs/concepts/recovery).
+
+## What the Relay sees
+
+| It sees | It never sees |
+| --- | --- |
+| Encrypted shards (ciphertext) | Plaintext file contents |
+| Encrypted envelopes | File encryption keys |
+| Account/device/node metadata | Device private keys |
+
+## Related
+
+- [ADR-0001: Key hierarchy](/docs/adr/0001-key-hierarchy)
+- [ADR-0008: Non-extractable device keys](/docs/adr/0008-non-extractable-device-keys)

@@ -1,0 +1,67 @@
+---
+title: Run a Storage Node
+description: First-run setup, the interactive CLI, and non-interactive pairing.
+---
+
+The Storage Node is the Rust daemon that holds your files. It stores an SQLite
+catalogue, a content-addressed object store, and its cryptographic identity.
+
+## First run
+
+```bash
+cd services/storage-node
+cargo run                                   # interactive CLI
+cargo run -- --data-dir ~/NodusBackup       # or export NODUS_DATA_DIR=~/NodusBackup
+```
+
+On a terminal with no existing config, a bare `nodus`:
+
+1. Prompts for the **Relay URL**.
+2. Prompts for a **pairing code** — mint one in the web app under
+   **Devices → “+ Add Storage Node”**.
+3. Presents a menu: run the node, view the storage summary, list files/folders,
+   show status, or pair/re-pair.
+
+Without `--data-dir`, the first run prompts for a data directory and defaults to
+`~/NodusBackup`.
+
+## Non-interactive / service use
+
+When stdin is not a TTY (systemd, pipes), a bare `nodus` boots the daemon
+directly. You can also be explicit:
+
+```bash
+nodus node start                                  # always boot the daemon
+nodus node pair --relay http://host --code CODE   # pair without prompting
+```
+
+## Where data lives
+
+```text
+~/NodusBackup/            # data dir (chosen on first run)
+  nodus.db                # SQLite catalogue (+ -wal, -shm)
+  objects/                # encrypted shards, named by BLAKE3 hash
+  temp/                   # in-progress atomic writes
+
+~/.nodus/
+  config.toml             # data_dir + relay_url
+  identity/               # Ed25519 node key + node_id
+  migration.json          # journal for an interrupted data-dir move
+```
+
+## Identity and pairing
+
+The node generates a persistent Ed25519 keypair and derives a stable `node_id`.
+Bootstrap pairing redeems a one-time code at the Relay's
+`/pairing/codes/redeem`; the code is never logged or persisted. See
+[Devices and pairing](/docs/guides/devices-and-pairing).
+
+<Callout type="warn">
+  A pairing code to a non-loopback host must use HTTPS/WSS — the code is a
+  bootstrap credential. Plain HTTP is refused except on loopback.
+</Callout>
+
+## Next steps
+
+- [Storage Node CLI reference](/docs/reference/cli)
+- [Storage Node operations](/docs/self-hosting/storage-node-operations)

@@ -1,0 +1,58 @@
+---
+title: Run the web client
+description: Start the Next.js web app and connect it to a Relay.
+---
+
+The web client is a Next.js App Router application in `apps/web`. It talks to
+the Relay through server-side route handlers under `/api/*`, so the browser
+never holds a bearer token — the session is an HttpOnly cookie.
+
+## Start it
+
+```bash
+cd apps/web
+pnpm dev        # http://localhost:3000
+```
+
+For a production-style build:
+
+```bash
+pnpm build && pnpm start
+```
+
+## Configure it
+
+Environment variables are read from `apps/web/.env.local` (see
+`.env.example`):
+
+| Variable | Scope | Purpose |
+| --- | --- | --- |
+| `RELAY_URL` | server-only | Internal Relay base URL used by route handlers. Default `http://localhost:8080`. |
+| `PUBLIC_RELAY_URL` | server-only | Public origin shown to users in the Storage Node pairing command (e.g. `https://nodus.example.com`). Required for the “+ Add Storage Node” dialog. |
+| `NEXT_PUBLIC_RELAY_URL` | browser | WebSocket origin for the Relay. Leave unset in a single-origin deployment; set it only for split dev (`:3000` + `:8080`). |
+| `NEXT_PUBLIC_VAPID_PUBLIC_KEY` | browser | VAPID public key for browser push. Must match the Relay; unset disables the opt-in. |
+
+<Callout type="warn">
+  Do not set `NEXT_PUBLIC_RELAY_URL` in production single-origin deployments.
+  The browser should connect to this origin's `/ws`.
+</Callout>
+
+## Routes overview
+
+| Route | Purpose |
+| --- | --- |
+| `/auth` | Sign in, create an account, or recover with a phrase |
+| `/pair` | Pair this browser with a Storage Node (incl. LAN discovery) |
+| `/overview` | Topology, stat cards, recent files/activity |
+| `/files` (Backups) | Upload, download, folders, rename, move, delete |
+| `/downloads` | Active, failed, and historical downloads |
+| `/activity` | Account-wide activity feed |
+| `/conflicts` | Conflict inbox (ADR-0003) |
+| `/devices` | Storage nodes + client devices |
+| `/security` | Recovery key, key envelopes, device revocation |
+| `/settings` | Theme, notifications, sync preferences, password |
+| `/tombstones` | Soft-deleted files/folders |
+
+## Next step
+
+Pair a browser: [Devices and pairing](/docs/guides/devices-and-pairing).

@@ -1,0 +1,73 @@
+---
+title: Architecture
+description: The four components, their boundaries, and how data flows between them.
+---
+
+Nodus is a single monorepo containing four independently deployable components
+that communicate through one explicit protocol contract.
+
+```text
+                    protocol (packages/protocol)
+                            |
+        +-------------------+-------------------+
+        |                   |                   |
+        v                   v                   v
+   Web Client         Mobile Client       Storage Node
+  (Next.js)          (React Native)         (Rust)
+        |                   |                   |
+        +---------+---------+                   |
+                  |                             |
+                  v                             |
+             Relay (Go) <-----------------------+
+         PostgreSQL · Redis
+```
+
+## Components
+
+### Web client — `apps/web`
+
+A Next.js App Router application. Browser calls go to server-side route
+handlers under `/api/*` that proxy the Relay and hold the HttpOnly session
+cookie, so no token is exposed to JavaScript. It renders the dashboard
+(files, downloads, conflicts, devices, activity, security, settings) from a
+shared design system in `packages/ui`.
+
+### Mobile client — `apps/mobile`
+
+A React Native / Expo app. Unlike the web client it talks to the Relay
+directly using an opaque session ID stored in the OS keychain, and it performs
+mDNS discovery to find Storage Nodes on the local network.
+
+### Storage Node — `services/storage-node`
+
+A Rust daemon with an embedded SQLite database and a content-addressed object
+store. It holds the authoritative copy of your files, serves them over the LAN,
+and can provide a full snapshot to rebuild a lost Relay database.
+
+### Relay — `services/relay`
+
+A Go service backed by PostgreSQL (durable metadata) and Redis (sessions,
+nonces, transient tokens). It owns authentication, presence, WebSocket
+signaling, cross-network sync, and a temporary encrypted shard buffer. It never
+holds plaintext file contents or keys.
+
+## Boundaries
+
+The `packages/protocol` package is the shared contract. Rust and Go do not
+import the TypeScript types; they reference generated JSON Schema artifacts.
+Clients share portable logic through the TypeScript SDK (`packages/sdk`), which
+injects platform differences (storage, connectivity, HTTP, WebRTC) through
+adapter interfaces.
+
+## Data plane vs control plane
+
+| Plane | Carries | Components |
+| --- | --- | --- |
+| **Data** | Encrypted shards | Clients ↔ Storage Node (LAN), Relay buffer |
+| **Control** | Auth, presence, signaling, sync events, envelopes | Clients ↔ Relay, Storage Node ↔ Relay |
+
+## Related
+
+- [Offline-first model](/docs/concepts/offline-first)
+- [Transfer paths](/docs/concepts/transfer-paths)
+- [Protocol reference](/docs/reference/protocol)

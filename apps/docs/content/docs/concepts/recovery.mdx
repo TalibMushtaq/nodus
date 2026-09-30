@@ -1,0 +1,52 @@
+---
+title: Recovery
+description: How account recovery works, online and offline, and how to rotate the recovery key.
+---
+
+Nodus is recoverable by design. There are three related mechanisms: the recovery
+phrase, Relay-side recovery, and full Relay rebuild from a Storage Node.
+[ADR-0002](/docs/adr/0002-recovery-mechanism) defines the account recovery
+mechanism.
+
+## The recovery phrase
+
+At registration the client derives a **24-word recovery phrase**. The phrase is:
+
+- shown exactly once, and must be confirmed as saved;
+- never stored in plaintext server-side — only its derived public key is
+  enrolled;
+- usable to recover the account and unlock envelopes if the only trusted device
+  is lost.
+
+## Online recovery
+
+If you can reach the Relay, recovery uses a signed challenge:
+
+1. The client requests a recovery challenge from `/auth/recovery/challenge`.
+2. The client signs the nonce with the recovery key and submits it to
+   `/auth/recovery`.
+3. On success the Relay issues a fresh session.
+
+## Offline recovery via a Storage Node
+
+If the Internet is unavailable but a paired Storage Node is on the LAN, the
+client performs a challenge-response against the node and unlocks its envelopes
+locally — no Internet required. This is the local-only recovery path from
+ADR-0002.
+
+## Rotating the recovery key
+
+The recovery key can be regenerated (for example after it is exposed). Rotation
+re-seals key envelopes to the new recovery key. This is available on the
+Security page in both clients.
+
+## Rebuilding a lost Relay
+
+The Relay's metadata is not the source of truth. A Storage Node holds a full
+snapshot and can rebuild a new Relay database via `POST /rebuild`. This is why a
+Relay database loss is recoverable rather than catastrophic.
+
+## Related
+
+- [ADR-0002: Recovery mechanism](/docs/adr/0002-recovery-mechanism)
+- [Guides: Recovery](/docs/guides/recovery)

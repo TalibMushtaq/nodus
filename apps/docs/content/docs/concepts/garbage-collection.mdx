@@ -1,0 +1,39 @@
+---
+title: Garbage collection
+description: Retention of versions, tombstones, and orphaned objects.
+---
+
+Because Nodus keeps immutable versions, tombstones, and content-addressed
+objects, storage would grow forever without a policy. The default policy is
+defined in [ADR-0005](/docs/adr/0005-garbage-collection-policy) and is
+configurable per account.
+
+## What accumulates
+
+| Kind | Why it exists | Collected when |
+| --- | --- | --- |
+| File versions | Version history | Beyond the version-count/age limit |
+| Tombstones | Soft deletes, so deletes converge | After the tombstone window |
+| Orphaned objects | A shard no live version references | After the orphan grace period |
+
+## Defaults
+
+- A bounded number of versions per file (and/or a maximum age).
+- A tombstone window before permanent purge.
+- An orphan grace period before unreferenced objects are removed.
+
+Exact numbers live in the ADR; they can be tuned per account.
+
+## Manual control
+
+You don't have to wait for GC:
+
+- **Tombstone** view — restore a soft-deleted item, or purge it permanently.
+- **Files** — delete a version.
+
+Purge is destructive and propagates to nodes.
+
+## Related
+
+- [ADR-0005: Garbage collection policy](/docs/adr/0005-garbage-collection-policy)
+- [Trash and tombstones](/docs/guides/trash-and-tombstones)

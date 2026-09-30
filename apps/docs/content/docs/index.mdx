@@ -1,20 +1,83 @@
 ---
 title: Introduction
-description: What Nodus is and how this documentation is organised.
+description: What Nodus is, why it exists, and how this documentation is organised.
 ---
 
-## What is Nodus?
-
-Nodus is a hybrid, offline-first peer-to-peer storage system. Files live
+**Nodus** is a hybrid, offline-first peer-to-peer storage system. Files live
 primarily on a Storage Node you control, sync directly between your own devices
 over the local network, and use the Internet only as an enhancement — never a
 hard dependency.
 
-This site is the official documentation. Use the sidebar to browse the guides,
-self-hosting instructions, and reference material.
+Nodus is a single monorepo containing four deployable components:
 
-## Where to start
+| Component | Directory | Stack | Role |
+| --- | --- | --- | --- |
+| **Web client** | `apps/web` | Next.js + `packages/ui` (Tailwind v4) | Browser UI, session auth, uploads/downloads |
+| **Mobile client** | `apps/mobile` | React Native / Expo | Native app, LAN discovery, background sync |
+| **Storage Node** | `services/storage-node` | Rust, SQLite | Durable local storage + object store |
+| **Relay** | `services/relay` | Go, PostgreSQL, Redis | Auth, signaling, sync, temporary buffer |
 
-- New to Nodus? Read the [Quickstart](/docs/getting-started/quickstart).
-- Running your own server? See [Self-hosting](/docs/self-hosting/overview).
-- Building on Nodus? See the [Developer guides](/docs/developers/monorepo).
+## Why Nodus
+
+Most cloud storage treats the Internet — and a central server — as the source
+of truth. Nodus flips that:
+
+- **Local-network-first.** Your devices talk directly to your Storage Node over
+  Wi-Fi or wired LAN. No Internet is required for day-to-day sync.
+- **Internet as enhancement, not dependency.** A Relay provides signaling,
+  cross-network sync, and temporary buffering when devices aren't on the same
+  network — but it never holds plaintext file contents or keys.
+- **Recoverable by design.** If the Relay's database is lost, it can be fully
+  rebuilt from snapshots held by your Storage Node(s).
+- **Convergent, not "last write wins".** Independently made offline changes
+  reconcile without an arbitrary winner overwriting the other.
+
+## How it fits together
+
+```text
+                         INTERNET
+                            |
+                            v
+                 +----------------------+
+                 |    Go Relay / API    |
+                 | PostgreSQL · Redis   |
+                 | Temporary Buffer     |
+                 +----------+-----------+
+                            |
+                       Sync Protocol
+                            |
+                        Wi-Fi / LAN
+                            |
+                 +----------v-----------+
+                 |   Rust Storage Node  |
+                 | SQLite · Object Store|
+                 +----------+-----------+
+                            |
+                     Local WebRTC
+                            |
+                 +----------v-----------+
+                 |   Web / Mobile Client|
+                 +----------------------+
+```
+
+Files are split into 8 MB shards, encrypted client-side with AES-256-GCM (a
+unique nonce per shard), and integrity-checked with BLAKE3. The Relay only ever
+sees encrypted bytes and encrypted key envelopes — never plaintext file keys or
+shard contents.
+
+## Where to go next
+
+<Cards>
+  <Card title="Getting Started" href="/docs/getting-started/prerequisites">
+    Install the tooling, run the stack locally, and pair your first device.
+  </Card>
+  <Card title="Core Concepts" href="/docs/concepts/architecture">
+    Architecture, transfer paths, encryption, sync, and recovery.
+  </Card>
+  <Card title="Self-hosting" href="/docs/self-hosting/overview">
+    Deploy a single-origin server unit with TLS and run your own Relay.
+  </Card>
+  <Card title="Reference" href="/docs/reference/cli">
+    CLI, Relay API, protocol messages, and configuration.
+  </Card>
+</Cards>

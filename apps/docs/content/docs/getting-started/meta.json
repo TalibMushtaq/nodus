@@ -1,4 +1,11 @@
 {
   "title": "Getting Started",
-  "pages": ["quickstart"]
+  "pages": [
+    "prerequisites",
+    "quickstart",
+    "web-client",
+    "mobile-app",
+    "storage-node",
+    "first-upload"
+  ]
 }

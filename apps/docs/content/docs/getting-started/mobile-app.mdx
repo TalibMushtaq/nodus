@@ -1,0 +1,46 @@
+---
+title: Run the mobile app
+description: Build and run the React Native / Expo mobile client.
+---
+
+The mobile client lives in `apps/mobile`. It is a React Native / Expo app that
+needs a **custom development build** — not Expo Go — because it uses mDNS
+(`react-native-zeroconf`) and WebRTC (`react-native-webrtc`), neither of which
+run in the managed Go client.
+
+## Configure it
+
+Create `apps/mobile/.env` from `.env.example`:
+
+| Variable | Purpose |
+| --- | --- |
+| `EXPO_PUBLIC_RELAY_URL` | Relay origin. Non-local values must be `https://`/`wss://`; cleartext is allowed only for loopback and the Android emulator alias `10.0.2.2`. |
+| `EXPO_PUBLIC_EAS_PROJECT_ID` | EAS project id used to mint Expo push tokens. Unset disables push registration. |
+
+## Build and run
+
+```bash
+cd apps/mobile
+npm run android      # expo run:android (native build)
+npm run ios          # expo run:ios
+npm run build        # expo export --platform android
+```
+
+Development, preview, and production build profiles are defined in `eas.json`.
+
+<Callout type="warn">
+  The Android release build currently signs with the debug keystore in
+  `android/app/build.gradle`. Configure a real keystore before shipping.
+</Callout>
+
+## Permissions
+
+The app requests Android `INTERNET`, Wi-Fi/multicast permissions for mDNS
+discovery, and `POST_NOTIFICATIONS`. On iOS it declares
+`NSLocalNetworkUsageDescription`, the `_nodus._tcp` Bonjour service, and local
+networking in App Transport Security. See
+[Mobile permissions](/docs/mobile/permissions) for the full rationale.
+
+## Next step
+
+[Install and build the mobile app](/docs/mobile/install) has the full guide.

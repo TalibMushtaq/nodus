@@ -1,0 +1,50 @@
+---
+title: Your first upload
+description: Upload a file, watch its transfer path, and download it again.
+---
+
+With a Relay and a Storage Node running and a client paired, uploading is a
+single action. This page walks through what happens underneath so the status
+indicators make sense.
+
+## Upload
+
+In the web client, open **Backups** and either click **Upload** or drag files
+onto the page. In the mobile app, open **Files** and use the **+** action.
+
+The client:
+
+1. Splits the file into 8 MB shards.
+2. Encrypts each shard with AES-256-GCM under a per-file encryption key (FEK).
+3. Seals the FEK into a key envelope for every authorized device and Storage
+   Node, plus the recovery key.
+4. Moves the encrypted shards to the target Storage Node using the best
+   available [transfer path](/docs/concepts/transfer-paths).
+
+## Watch the path
+
+The UI shows a path indicator for each transfer:
+
+| Indicator | Meaning |
+| --- | --- |
+| **Local P2P** | Path A — direct LAN WebRTC, no Relay |
+| **Relay** | Path B — Relay signaling, direct peer data |
+| **Relay buffer** | Path C — encrypted shard parked on the Relay |
+| **Queued** | Path D — stored locally until a path is available |
+
+## Download
+
+Open the file and choose **Download** (web) or tap it (mobile). The client
+fetches the shards, verifies each against its BLAKE3 hash, decrypts, and
+reassembles the original file.
+
+## Verify sync
+
+- **Overview** shows node/device topology and online counts.
+- **Activity** lists uploads, downloads, renames, deletes, and failures.
+- **Devices** shows each Storage Node and whether it is reachable.
+
+## Next
+
+- [Transfer paths explained](/docs/concepts/transfer-paths)
+- [Files and folders guide](/docs/guides/files-and-folders)

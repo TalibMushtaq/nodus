@@ -1,0 +1,49 @@
+---
+title: Prerequisites
+description: The tooling you need before running or developing Nodus.
+---
+
+Nodus mixes three language ecosystems in one repository. You only need the
+toolchains for the parts you intend to run.
+
+## Required by task
+
+| Tool | Version | Needed for |
+| --- | --- | --- |
+| Node.js + pnpm | Node ≥ 20, pnpm 11 | Web client, TypeScript packages, docs |
+| Rust | stable toolchain + `cargo` | Storage Node |
+| Go | ≥ 1.22 | Relay |
+| Docker | Compose v2 | PostgreSQL + Redis for the Relay |
+
+<Callout type="info">
+  The repository pins exact toolchains where it matters: `package.json` sets
+  `engines.node`, `rust-toolchain.toml` pins the Rust channel, and
+  `services/relay/go.mod` sets the Go version.
+</Callout>
+
+## Install the JavaScript workspace
+
+From the repository root:
+
+```bash
+make install-hooks   # gofmt/rustfmt/clippy pre-push hooks
+pnpm install         # apps/* and packages/*
+```
+
+`make install-hooks` copies `scripts/pre-push` into `.git/hooks/`, which runs
+`gofmt` checks, `cargo fmt --check`, and `cargo clippy -D warnings` before you
+push.
+
+## Verify your setup
+
+```bash
+pnpm test        # TypeScript, Go, and Rust test suites
+```
+
+`pnpm test` requires Node/pnpm, Go, and Cargo all on your `PATH`. Relay tests
+that need external services are skipped unless you provide
+`TEST_DATABASE_URL` / `TEST_REDIS_URL` (see [Testing](/docs/developers/testing)).
+
+## Next step
+
+Ready? Continue to the [Quickstart](/docs/getting-started/quickstart).
