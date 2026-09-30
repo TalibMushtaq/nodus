@@ -1,0 +1,76 @@
+---
+title: Contributing
+description: Conventions for commits, formatting, documentation, and PRs.
+---
+
+## Setup
+
+```bash
+make install-hooks
+pnpm install
+```
+
+## Commit messages
+
+The repository uses Conventional Commit scopes, matching the area you change:
+
+```text
+feat(mobile): add multi-select bulk move
+fix(mobile): guard corrupt resume rows
+docs: add self-hosting guide
+ci(rust): pin clippy toolchain
+```
+
+Keep the subject imperative and specific; put the why in the body.
+
+## Formatting and linting
+
+| Area | Tool |
+| --- | --- |
+| TS/TSX/MD | Prettier (`pnpm format`) |
+| ESLint | `pnpm lint` |
+| Go | `gofmt` / `go vet` |
+| Rust | `cargo fmt` / `cargo clippy -D warnings` |
+
+The pre-push hook enforces the Go and Rust checks automatically.
+
+## Documentation
+
+Every code change should keep documentation current:
+
+- Add inline comments above non-trivial changes that explain **why**, not what.
+- Add an entry to `CHANGELOG.md` (newest at top) using the format:
+
+```markdown
+## [YYYY-MM-DD] - Short Title
+**What changed:** ...
+**Why:** ...
+**Impact:** ...
+**Follow-ups:** ...
+```
+
+- Update user- or operator-facing docs in `apps/docs/content/docs/` when
+  behaviour or configuration changes, and the canonical engineering docs under
+  `docs/` when a decision changes.
+
+## Protocol changes
+
+Any wire-protocol change must:
+
+1. Update the zod schema in `packages/protocol` (source of truth).
+2. Regenerate JSON Schema (`pnpm generate:schemas`).
+3. Update the message catalog / event types docs.
+4. Mirror the change in the Rust and Go implementations, respecting the
+   major/minor compatibility rules.
+
+See [Schema versioning](/docs/reference/schema-versioning).
+
+## Adding a docs page
+
+Create an MDX file under `apps/docs/content/docs/`, add it to the nearest
+`meta.json`, and run `pnpm --filter docs build` to verify.
+
+## Related
+
+- [Testing](/docs/developers/testing)
+- [CI](/docs/developers/ci)

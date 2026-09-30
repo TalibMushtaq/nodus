@@ -1,0 +1,69 @@
+---
+title: Monorepo layout
+description: How the repository is organised and how components communicate.
+---
+
+Nodus is a single Git monorepo containing three language ecosystems. Keeping
+protocol, client, and service changes in one tree makes atomic commits and a
+single CI entry point possible; components still deploy separately.
+
+```text
+nodus/
+├─ apps/
+│  ├─ web/                 # Next.js web client
+│  ├─ mobile/              # React Native / Expo mobile client
+│  └─ docs/                # This documentation site (Fumadocs)
+├─ packages/
+│  ├─ core/                # Domain logic: sharding, crypto
+│  ├─ protocol/            # Canonical wire schemas (zod, JSON Schema)
+│  ├─ sdk/                 # Shared client implementation
+│  ├─ relay-client/        # NodeClient + Relay WebSocket client
+│  ├─ webrtc-transport/    # WebRTC abstraction
+│  ├─ transfer-manager/    # Cross-path transfer orchestration
+│  ├─ ui/                  # Shared design system (Tailwind v4)
+│  ├─ config/              # Shared TS tooling (eslint/ts configs)
+│  ├─ eslint-config/
+│  └─ typescript-config/
+├─ services/
+│  ├─ relay/               # Go Relay
+│  └─ storage-node/        # Rust Storage Node
+├─ deploy/                 # Single-origin compose unit + Caddy
+├─ scripts/                # Hooks, e2e harnesses, benchmarks
+├─ docs/                   # Canonical engineering docs + ADRs
+├─ pnpm-workspace.yaml
+└─ turbo.json
+```
+
+## Tooling
+
+- **TypeScript** apps and packages are managed by pnpm workspaces + Turborepo.
+- **Rust** and **Go** live under `services/` but sit **outside** the
+  pnpm/Turborepo workspace, with their own native tooling.
+
+## Boundaries
+
+Components communicate through explicit protocol contracts, not by reaching into
+each other's internals. Language boundaries (TS ↔ Rust ↔ Go) enforce this, and
+`packages/protocol` is the shared contract.
+
+```text
+                        protocol
+                           |
+          +----------------+----------------+
+          v                v                v
+        Web            Mobile            Rust
+          |                |                |
+          +----------------+----------------+
+                           |
+                           v
+                         Relay
+```
+
+Web and Mobile share TypeScript through `packages/sdk`; Rust and Go are
+independent implementations of the same protocol.
+
+## Related
+
+- [Local development](/docs/developers/local-development)
+- [Packages](/docs/developers/packages)
+- [Protocol overview](/docs/reference/protocol)

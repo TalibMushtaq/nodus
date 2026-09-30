@@ -1,0 +1,50 @@
+---
+title: Testing
+description: TypeScript, Go, and Rust suites, integration fixtures, and e2e harnesses.
+---
+
+## Run everything
+
+```bash
+pnpm test        # test:ts && test:go && test:rust
+```
+
+This requires Node/pnpm, Go, and Cargo on your `PATH`.
+
+| Script | Runs |
+| --- | --- |
+| `pnpm test:ts` | `turbo run test` across TypeScript packages/apps |
+| `pnpm test:go` | `go -C services/relay test ./...` |
+| `pnpm test:rust` | `cargo test --manifest-path services/storage-node/Cargo.toml` |
+
+## Integration tests (Relay)
+
+Relay tests that require external services are **skipped by default**. Start the
+Compose dependencies and provide the URLs to include them:
+
+```bash
+docker compose -f services/relay/docker-compose.yml up -d
+TEST_DATABASE_URL='postgres://nodus:nodus_password@localhost:5432/nodus_relay?sslmode=disable' \
+  TEST_REDIS_URL='redis://localhost:6379/0' \
+  pnpm test
+```
+
+A disposable fixture stack is also defined in
+`services/relay/docker-compose.test.yml` and driven by
+`services/relay/scripts/test-integration.sh`.
+
+## End-to-end harnesses
+
+| Script | Covers |
+| --- | --- |
+| `scripts/e2e-bootstrap-pairing.sh` | Bootstrap pairing lifecycle over Caddy (mint → pair → listed → WS auth → reconnect, plus negatives) |
+| `scripts/e2e-path-c.sh` | Wire-level Path C: real TypeScript uploader → Next proxy → Relay buffer → Rust node fetch/verify/store → second device download/decrypt |
+| `scripts/benchmark-webrtc/` | WebRTC negotiation timing benchmark |
+
+The e2e workflows build the Rust node and TS packages, start the Compose unit,
+and run these against it.
+
+## Related
+
+- [CI](/docs/developers/ci)
+- [Local development](/docs/developers/local-development)

@@ -1,0 +1,12 @@
+{
+  "title": "Developers",
+  "pages": [
+    "monorepo",
+    "local-development",
+    "packages",
+    "sdk",
+    "testing",
+    "ci",
+    "contributing"
+  ]
+}

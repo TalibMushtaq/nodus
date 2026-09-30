@@ -1,0 +1,51 @@
+---
+title: CI
+description: The GitHub Actions workflows and what each runs.
+---
+
+CI is split by changed path so a Rust-only change does not run the TypeScript
+pipeline, and vice versa.
+
+## `ci-ts.yml`
+
+Triggers on `apps/**`, `packages/**`, workspace/turbo/lockfile changes, and on
+PRs to `main`.
+
+- `lint-build-test` — `pnpm install`, `turbo lint`, `turbo build`, `turbo test`.
+- `mobile` — builds `--filter=mobile...`, then mobile lint / check-types / test /
+  build.
+
+## `ci-go.yml`
+
+Triggers on `services/relay/**`.
+
+- `lint-build-test` — `go vet`, `gofmt`, build, test.
+- `vuln-scan` — `govulncheck`.
+- `integration-test` — `./scripts/test-integration.sh`.
+
+## `ci-rust.yml`
+
+Triggers on `services/storage-node/**`.
+
+- `lint-build-test` — `cargo fmt --check`, clippy `-D warnings`, build, test.
+- `audit` — rustsec `audit-check` with a pinned ignore list.
+
+## `e2e.yml`
+
+Not a required PR check. Runs on `workflow_dispatch`, a nightly schedule, and on
+PRs touching `deploy/**`, `scripts/e2e-*`, `services/**`, `apps/**`, or
+`packages/**`.
+
+It builds the Rust node and TS packages, starts the Compose unit, waits for
+Relay health, then runs the bootstrap-pairing and Path C end-to-end harnesses,
+dumping logs on failure.
+
+## Local pre-push
+
+`make install-hooks` installs `scripts/pre-push`, which runs gofmt checks,
+`cargo fmt --check`, and `cargo clippy -D warnings` before you push.
+
+## Related
+
+- [Testing](/docs/developers/testing)
+- [Contributing](/docs/developers/contributing)

@@ -1,0 +1,65 @@
+---
+title: Packages
+description: Every TypeScript package, its purpose, and its entry points.
+---
+
+Dependency graph: `sdk` → `{core, protocol, relay-client, transfer-manager,
+webrtc-transport}`; `transfer-manager` → `{core, protocol, relay-client,
+webrtc-transport}`; `webrtc-transport` → `{protocol, relay-client}`;
+`relay-client` → `{core, protocol}`. Each builds to `dist/` via `tsc`.
+
+## `@repo/core`
+
+Pure, platform-agnostic domain and crypto logic. No React/Next/Expo/RN
+dependencies; `Uint8Array` only.
+
+- Domain types: `EncryptedShard`, `FileId`, `KeyEnvelope`, `Shard`, etc.
+- Sharding: `SHARD_SIZE_BYTES`, `splitIntoShards`, `reconstructFromShards`.
+- Crypto: `encryptShard`, `decryptShard`, `hashShard`,
+  `generateFileEncryptionKey`, `sealFekForRecipient`, `openFekEnvelope`,
+  Ed25519↔X25519 helpers.
+
+See [Data formats](/docs/reference/data-formats).
+
+## `@repo/protocol`
+
+Canonical wire protocol: zod schemas plus generated JSON Schema read by Go and
+Rust. See [Protocol overview](/docs/reference/protocol).
+
+## `@repo/sdk`
+
+The single client implementation shared by web and native, with platform
+differences injected through adapter interfaces. See
+[SDK](/docs/developers/sdk).
+
+## `@repo/relay-client`
+
+A thin client for a Storage Node's local HTTP listener and the Relay WebSocket:
+`NodeClient`, `fetchAdvertisement`, `parsePairingUrl`, `RelayWsClient`, device
+identity helpers.
+
+## `@repo/webrtc-transport`
+
+A WebRTC abstraction: peer connection, data channels, shard transfer, and both
+local (Path A) and Relay (Path B) signaling.
+
+## `@repo/transfer-manager`
+
+Cross-path transfer orchestration: path selection, fallback chain, path caching,
+local queue, concurrency pool, and repair. See the
+[Transfer Manager spec](/docs/reference/transfer-manager-spec).
+
+## `@repo/ui`
+
+Shared design system (Tailwind v4, CSS-first) ported from the Figma prototype.
+Web-only; `tokens.css` is the single source of theme tokens.
+
+## Tooling packages
+
+`@repo/eslint-config` and `@repo/typescript-config` hold shared lint and
+TypeScript configuration.
+
+## Related
+
+- [SDK](/docs/developers/sdk)
+- [Monorepo layout](/docs/developers/monorepo)

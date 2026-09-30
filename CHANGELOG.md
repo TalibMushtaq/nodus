@@ -1,5 +1,18 @@
 # Changelog
 
+## [2026-09-30] - Docs: add Developer section
+
+**What changed:**
+
+- `apps/docs/content/docs/developers/`: added Monorepo layout, Local development, Packages, SDK, Testing, CI, and Contributing with a `meta.json`.
+- `content/docs/meta.json`: surfaced Developers in the sidebar.
+
+**Why:** contributors had no single reference for the monorepo structure, package boundaries, SDK adapters, test commands, and CI workflows.
+
+**Impact:** docs only; 77 static pages build.
+
+**Follow-ups:** none.
+
 ## [2026-09-30] - Docs: add Reference section and port canonical docs
 
 **What changed:**

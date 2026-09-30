@@ -1,0 +1,57 @@
+---
+title: SDK
+description: The shared client implementation and its adapter contracts.
+---
+
+`packages/sdk` (`@repo/sdk`) is the **single client implementation** shared by
+the web and mobile apps. It holds platform-agnostic services and injects
+platform behaviour through adapter interfaces, so the correctness-sensitive
+transfer/envelope/catalogue logic exists once.
+
+See [ADR-0007](/docs/adr/0007-mobile-native-and-sdk) for the rationale.
+
+## Adapters
+
+Platform differences are supplied by each app as one adapter set. The public
+adapter contracts re-exported today are:
+
+| Adapter | Responsibility |
+| --- | --- |
+| `RelayHttp` | HTTP to the Relay (the web app proxies through Next; mobile calls directly) |
+| `SecureStore` | Key/value secure storage (IndexedDB / keychain) |
+| `Connectivity` | Online/offline and local-network state |
+
+ADR-0007 also describes the broader surface (`LocalStore`, `FileSource`/
+`FileSink`, `WebRtcFactory`, `WebSocketFactory`, `CryptoRuntime`,
+`PlatformCapabilities`) that the SDK builds on internally.
+
+## What it exposes
+
+Grouped by area (high level):
+
+- **Device identity** — `getOrCreateDeviceIdentity`, encryption identity
+  helpers, WebCrypto Ed25519 signer (`createDeviceSigner`).
+- **Auth** — `createAuthClient` and session/device types.
+- **Transfer glue** — `createAttemptPath`, `createSignedRelayChannel`,
+  `PersistentWebRtcSession`, `WebRtcSessionCache`.
+- **Upload** — `uploadFile`, `measurePlaintext`, progress types, concurrency
+  constants.
+- **Download** — `downloadFile`, adaptive concurrency (`DownloadLimiter`,
+  `ThroughputSampler`, `AdaptiveConcurrencyController`).
+- **Envelopes** — seal/open FEKs, folder keys, `collectRecipients`, envelope
+  events.
+- **Catalog/files/conflicts/folders/recovery** — event builders,
+  `listConflicts`, `toCatalogEntry`, `createRecoveryClient`, `resealRecoveryKeys`,
+  `createFolderMutations`.
+- **Utilities** — formatting, connectivity, zip helpers.
+
+## Types
+
+The package ships TypeScript declarations at `packages/sdk/dist/*.d.ts`, which
+are the authoritative API surface.
+
+## Related
+
+- [Packages](/docs/developers/packages)
+- [ADR-0007: Mobile native build & SDK](/docs/adr/0007-mobile-native-and-sdk)
+- [ADR-0008: Non-extractable device keys](/docs/adr/0008-non-extractable-device-keys)

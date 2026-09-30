@@ -1,0 +1,55 @@
+---
+title: Local development
+description: Install, run the stack, and the common workspace scripts.
+---
+
+## Install
+
+```bash
+make install-hooks      # gofmt/rustfmt/clippy pre-push hooks
+pnpm install            # apps/* and packages/*
+```
+
+See [Prerequisites](/docs/getting-started/prerequisites) for toolchain versions.
+
+## Run the stack
+
+```bash
+# Relay + Postgres + Redis
+cd services/relay && docker compose up -d && go run .
+
+# Web client
+pnpm dev                # runs relay + web together from the repo root
+# or: pnpm --filter web dev
+```
+
+The web client runs on `:3000`; the Relay on `:8080`.
+
+## Workspace scripts
+
+| Script | Purpose |
+| --- | --- |
+| `pnpm build` | Build all TypeScript packages/apps (Turbo) |
+| `pnpm dev` | Run the Relay + web client concurrently |
+| `pnpm lint` | Lint all packages (Turbo) |
+| `pnpm format` | Prettier over `**/*.{ts,tsx,md}` |
+| `pnpm check-types` | Typecheck all packages (Turbo) |
+| `pnpm test` | TypeScript + Go + Rust test suites |
+
+## Service commands
+
+```bash
+go -C services/relay test ./...                                   # Relay
+cargo test --manifest-path services/storage-node/Cargo.toml       # Storage Node
+```
+
+## Toolchains
+
+- `rust-toolchain.toml` pins the Rust channel (with `rustfmt`/`clippy`).
+- `services/relay/go.mod` sets the Go version.
+- `package.json` sets `engines.node` and `packageManager: pnpm`.
+
+## Related
+
+- [Testing](/docs/developers/testing)
+- [CI](/docs/developers/ci)
