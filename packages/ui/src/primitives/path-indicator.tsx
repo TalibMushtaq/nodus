@@ -60,6 +60,10 @@ const configs: Record<TransferPath, { label: string; color: string; icon: ReactN
 
 export function PathIndicator({ path }: { path: TransferPath }) {
   const cfg = configs[path];
+  // `path` arrives from persisted/remote activity records whose value is only
+  // loosely typed on the wire. An unrecognized vocabulary must not dereference
+  // an undefined config and take the whole Activity page down with it.
+  if (!cfg) return null;
   return (
     <span
       className="inline-flex items-center gap-1 text-xs font-mono font-semibold px-2 py-0.5 rounded-full"

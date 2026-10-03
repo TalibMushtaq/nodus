@@ -174,12 +174,23 @@ export function idbClear(store: WebStore): Promise<undefined> {
  * `device_keys` is likewise kept: it holds the device's non-extractable signing
  * key, which is identity, not content. Clearing it while the public identity
  * remained would leave a device that can no longer authenticate.
+ *
+ * `keepSyncState` preserves the per-origin `origin_sequence` counters. They are
+ * device-scoped, not account-scoped, and must stay monotonic: the Relay rejects
+ * an event at or below the cursor it already accepted from this device, and the
+ * web client does not re-derive the counter from `batch_ack.last_origin_sequence`.
+ * Wiping it here would therefore wedge the device out of sync until a factory
+ * reset. Callers clearing account content (logout / account switch) pass it.
  */
-export async function clearLocalDatabase(options?: { forgetRecovery?: boolean }): Promise<void> {
+export async function clearLocalDatabase(options?: {
+  forgetRecovery?: boolean;
+  keepSyncState?: boolean;
+}): Promise<void> {
   const failed: WebStore[] = [];
   for (const store of WEB_STORES) {
     if (store === STORE_DEVICE_KEYS) continue;
     if (store === STORE_RECOVERY && !options?.forgetRecovery) continue;
+    if (store === STORE_SYNC_STATE && options?.keepSyncState) continue;
     try {
       await idbClear(store);
     } catch {

@@ -4,6 +4,7 @@ import type { RelayNode, RelayDevice } from "../pairing";
 import type { FileEntryView } from "../file-view";
 import type { TombstoneItem } from "../tombstones";
 import type { TransferLogEntry } from "../transfer-log";
+import { normalizeActivityPath } from "../activity-path";
 import {
   activityLabel,
   activityPathFromTransfer,
@@ -200,6 +201,20 @@ describe("activityPathFromTransfer", () => {
     // Path D is on-device queueing, not the Relay buffer.
     expect(activityPathFromTransfer("local_queue")).toBe("queued");
     expect(activityPathFromTransfer(undefined)).toBeUndefined();
+  });
+});
+
+describe("normalizeActivityPath", () => {
+  it("passes the web vocabulary through and translates the mobile one", () => {
+    expect(normalizeActivityPath("buffered")).toBe("buffered");
+    expect(normalizeActivityPath("local_signaling")).toBe("local");
+    expect(normalizeActivityPath("buffer_relay")).toBe("buffered");
+  });
+
+  it("drops absent or unrecognized values instead of yielding a bad key", () => {
+    expect(normalizeActivityPath(null)).toBeUndefined();
+    expect(normalizeActivityPath(undefined)).toBeUndefined();
+    expect(normalizeActivityPath("bogus")).toBeUndefined();
   });
 });
 

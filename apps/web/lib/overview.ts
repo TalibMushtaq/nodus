@@ -4,9 +4,12 @@
 
 import { isNodeOnline, type RelayNode, type RelayDevice } from "./pairing";
 import type { FileEntryView } from "./file-view";
-import type { ActivityPath, TransferLogEntry } from "./transfer-log";
+import type { TransferLogEntry } from "./transfer-log";
 import type { TombstoneItem } from "./tombstones";
-import type { TransferPath } from "@repo/transfer-manager";
+
+// Re-exported from its pure home so existing importers (Files view, tests) keep
+// resolving it here.
+export { activityPathFromTransfer } from "./activity-path";
 
 /**
  * How long after its last heartbeat a client device is still considered online.
@@ -148,26 +151,4 @@ export function activityLabel(entry: TransferLogEntry): string {
   if (entry.outcome === "failed") return labels.failed;
   if (entry.outcome === "in-progress") return labels.progress;
   return labels.complete;
-}
-
-/**
- * Translate the transfer-manager's internal path to the UI's PathIndicator
- * vocabulary. `local_queue` (Path D) is "queued", not "buffered": the bytes sit
- * in this device's persistent queue and have not reached the Relay buffer at
- * all. Collapsing the two made Activity claim a file was Relay-buffered while
- * the Files table (correctly) showed it as local-only.
- */
-export function activityPathFromTransfer(path: TransferPath | undefined): ActivityPath | undefined {
-  switch (path) {
-    case "local_signaling":
-      return "local";
-    case "relay_signaling":
-      return "relay";
-    case "buffer_relay":
-      return "buffered";
-    case "local_queue":
-      return "queued";
-    default:
-      return undefined;
-  }
 }

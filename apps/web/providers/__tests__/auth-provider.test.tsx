@@ -44,6 +44,14 @@ vi.mock("../../lib/keys", () => ({
   clearFileKeys: vi.fn().mockResolvedValue(undefined),
 }));
 
+// Account scoping also clears real IndexedDB stores; mock it so the provider's
+// session transitions stay microtask-flushed. The real clearing is covered by
+// lib/__tests__/account-scope.test.ts.
+vi.mock("../../lib/account-scope", () => ({
+  claimAccountScope: vi.fn().mockResolvedValue(undefined),
+  releaseAccountScope: vi.fn().mockResolvedValue(undefined),
+}));
+
 // Logout dynamically imports preview.ts to revoke decrypted image URLs; mock it
 // so the dynamic import resolves without loading the real download stack.
 vi.mock("../../lib/preview", () => ({
@@ -51,6 +59,7 @@ vi.mock("../../lib/preview", () => ({
 }));
 
 import { login, register, logout, fetchSession } from "../../lib/auth-client";
+import { claimAccountScope, releaseAccountScope } from "../../lib/account-scope";
 import { clearFileKeys } from "../../lib/keys";
 import { clearRecoveryPhrase } from "../../lib/recovery";
 import { clearEncryptionMemory } from "../../lib/device";
@@ -120,6 +129,8 @@ describe("AuthProvider", () => {
 
     expect(screen.getByTestId("status")).toHaveTextContent("authenticated");
     expect(screen.getByTestId("session")).toHaveTextContent("acct-123");
+    // The local stores are reconciled to the account before it is surfaced.
+    expect(claimAccountScope).toHaveBeenCalledWith("acct-123");
   });
 
   it("login updates status to authenticated", async () => {
@@ -197,6 +208,7 @@ describe("AuthProvider", () => {
     expect(clearEncryptionMemory).toHaveBeenCalled();
     expect(clearRecoveryPhrase).toHaveBeenCalledWith("acct-123");
     expect(revokeAllPreviews).toHaveBeenCalled();
+    expect(releaseAccountScope).toHaveBeenCalled();
   });
 
   it("login returns error on failure", async () => {

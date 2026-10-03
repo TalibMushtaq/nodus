@@ -6,6 +6,7 @@ import {
   TRANSFER_LOG_LIMIT,
   clearTransfers,
   finishTransfer,
+  importRemoteActivities,
   listTransfers,
   logTransferAction,
   startTransfer,
@@ -71,6 +72,35 @@ describe("transfer log", () => {
     const rows = await listTransfers();
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ kind: "delete", outcome: "complete", detail: "Permanently deleted" });
+  });
+
+  it("normalizes the free-form path on remote records", async () => {
+    await importRemoteActivities([
+      {
+        activity_id: "a1",
+        kind: "download",
+        outcome: "complete",
+        file_id: null,
+        path: "local_signaling",
+        detail: null,
+        created_at: "2026-09-01T00:00:00Z",
+        device_id: "d1",
+      },
+      {
+        activity_id: "a2",
+        kind: "upload",
+        outcome: "complete",
+        file_id: null,
+        path: "bogus",
+        detail: null,
+        created_at: "2026-09-01T00:00:00Z",
+        device_id: "d1",
+      },
+    ]);
+
+    const rows = await listTransfers();
+    expect(rows.find((row) => row.id === "a1")?.path).toBe("local");
+    expect(rows.find((row) => row.id === "a2")?.path).toBeUndefined();
   });
 
   it("caps the log and evicts the oldest entries", async () => {

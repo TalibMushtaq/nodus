@@ -5,6 +5,7 @@ import type { ReactNode } from "react";
 import type { DevicePublicIdentity, DeviceSigner } from "@repo/sdk";
 
 import { fetchSession, login, register, logout } from "../lib/auth-client";
+import { claimAccountScope, releaseAccountScope } from "../lib/account-scope";
 import { clearEncryptionMemory, getOrCreateDevice, getOrCreateEncryptionIdentity } from "../lib/device";
 import { clearFileKeys } from "../lib/keys";
 import { clearRecoveryPhrase } from "../lib/recovery";
@@ -75,13 +76,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const refresh = useCallback(async () => {
     const sess = await fetchSession();
+    // Reconcile the local content stores to this account before exposing the
+    // session, so a different account never reads the previous one's rows.
+    if (sess) await claimAccountScope(sess.account_id).catch(() => undefined);
     setSession(sess);
     setStatus(sess ? "authenticated" : "unauthenticated");
   }, []);
 
   useEffect(() => {
     let cancelled = false;
-    fetchSession().then((sess) => {
+    fetchSession().then(async (sess) => {
+      if (cancelled) return;
+      if (sess) await claimAccountScope(sess.account_id).catch(() => undefined);
       if (cancelled) return;
       setSession(sess);
       setStatus(sess ? "authenticated" : "unauthenticated");
@@ -111,9 +117,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (!res.ok) {
       return { ok: false, error: res.error };
     }
-    setSession(res.session ?? null);
+    const next = res.session ?? null;
+    if (next) await claimAccountScope(next.account_id).catch(() => undefined);
+    setSession(next);
     setStatus("authenticated");
-    return { ok: true, session: res.session ?? null };
+    return { ok: true, session: next };
   }, []);
 
   const handleRegister = useCallback(
@@ -130,9 +138,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (!res.ok) {
         return { ok: false, error: res.error };
       }
-      setSession(res.session ?? null);
+      const next = res.session ?? null;
+      if (next) await claimAccountScope(next.account_id).catch(() => undefined);
+      setSession(next);
       setStatus("authenticated");
-      return { ok: true, session: res.session ?? null };
+      return { ok: true, session: next };
     },
     [],
   );
@@ -173,6 +183,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         revokeAllPreviews();
       } catch {
         // Best-effort.
+      }
+      // Drop the account's local content (catalog, activity log, keys) so the
+      // next sign-in on this browser starts clean. The device identity and the
+      // sequence counter are kept — see clearLocalDatabase's keepSyncState.
+      try {
+        await releaseAccountScope();
+      } catch {
+        // Best-effort: a failed wipe must not block logout.
       }
       setSession(null);
       setStatus("unauthenticated");

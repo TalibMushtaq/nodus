@@ -1,5 +1,46 @@
 # Changelog
 
+## [2026-10-03] - Web: scope local content to the signed-in account
+
+**What changed:**
+
+- New `apps/web/lib/account-scope.ts`: `claimAccountScope(accountId)` clears the local content stores before an authenticated session is surfaced when a different (or unknown) account owns them; `releaseAccountScope()` clears them on logout.
+- `apps/web/providers/auth-provider.tsx`: calls `claimAccountScope` on the initial session fetch, `refresh`, `login`, and `register`, and `releaseAccountScope` in the logout `finally`.
+- `apps/web/lib/db.ts`: `clearLocalDatabase` gains a `keepSyncState` option; `apps/web/lib/transfer-log.ts` gains `resetTransferLog` (clears rows **and** the Clear cutoff, unlike `clearTransfers`).
+- Tests: new `lib/__tests__/account-scope.test.ts`; `auth-provider.test.tsx` mocks the scope module and asserts the calls.
+
+**Why:** the browser's IndexedDB persisted the activity log — which stores **decrypted file names** — and the catalog across accounts. After a Relay database reset, signing in as a new user on the same browser still showed the previous account's activities. Logout wiped keys but never the stores themselves, so this was a plaintext privacy leak, not just a stale cache.
+
+**Impact:** web only. Account content (catalog, folders, file keys, trusted nodes, activity, transfer queue) is cleared on account change and logout. The device identity (`device_keys`) and the monotonic `sync_state` sequence counters are preserved: they are device-scoped, and wiping `sync_state` would wedge the device out of sync because the Relay rejects a sequence at or below the cursor it already accepted and the web client never re-derives it from `batch_ack.last_origin_sequence`. `pnpm --filter web test` 339 passed; web lint and type check pass.
+
+**Follow-ups:** mobile still keeps its SQLite `transfer_log` across sign-out (`resetSensitiveState` clears only in-memory activity), so the same leak exists there; apply the equivalent scoping.
+
+## [2026-10-03] - Web: normalize remotely-logged activity paths
+
+**What changed:**
+
+- Added `apps/web/lib/activity-path.ts` holding the `ActivityPath` type, the transfer-manager→UI `activityPathFromTransfer` mapping (moved out of `lib/overview.ts`, which now re-exports it), and a new `normalizeActivityPath`.
+- `apps/web/lib/transfer-log.ts`: `importRemoteActivities` now runs `record.path` through `normalizeActivityPath` instead of casting the free-form wire string straight to `ActivityPath`.
+- `packages/ui/src/primitives/path-indicator.tsx`: `PathIndicator` returns `null` when handed a path outside its vocabulary rather than dereferencing an undefined config.
+
+**Why:** the mobile app persists the transfer-manager vocabulary (`local_signaling`, `buffer_relay`, …) into `ACTIVITY_LOGGED.path`, but the web stored it under the UI vocabulary after a blind `as ActivityPath` cast. When such an entry reached the Activity page, `configs[path]` was `undefined` and reading `cfg.color` crashed the whole page.
+
+**Impact:** web + `@repo/ui`. Remote entries now render the correct path chip (or none for unknown values); `activityPathFromTransfer` retains its `lib/overview` export. `pnpm --filter web test` 335 passed; web/ui lint and type checks pass.
+
+**Follow-ups:** mobile still logs the transfer-manager vocabulary; the web boundary now tolerates it, but the protocol could pin a single shared vocabulary.
+
+## [2026-10-03] - Web: allow eval() in the development CSP
+
+**What changed:**
+
+- `apps/web/next.config.js`: `script-src` now appends `'unsafe-eval'` when `process.env.NODE_ENV !== "production"`, via a new `isDev`/`scriptSrc` pair; the production policy is unchanged.
+
+**Why:** the strict CSP added for the client-side key-storage threat model had no `'unsafe-eval'`, so React/Turbopack's dev-mode callstack reconstruction (`eval()`) was blocked and spewed a console error. Production React never uses `eval()`, so the allowance is scoped to development only.
+
+**Impact:** web dev and deploy. Dev consoles are clean; the built production CSP still lacks `'unsafe-eval'`.
+
+**Follow-ups:** none.
+
 ## [2026-09-30] - Docs: link the docs site from the root README
 
 **What changed:**

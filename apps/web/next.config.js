@@ -1,3 +1,4 @@
+/* global process */
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -6,14 +7,21 @@ const dirname = path.dirname(fileURLToPath(import.meta.url));
 // Content-Security-Policy for the single-origin app. `script-src` keeps
 // 'unsafe-inline' because the App Router emits inline hydration scripts and the
 // theme shim in app/layout.tsx is an inline script; external scripts are still
-// blocked, so an injected <script src=…> cannot load. `connect-src` covers the
-// same-origin /api + /ws gateway, an explicit dev Relay URL, LAN node
+// blocked, so an injected <script src=…> cannot load. 'unsafe-eval' is added
+// only outside production: React/Turbopack in dev mode call eval() to rebuild
+// cross-environment callstacks, which a strict CSP otherwise blocks. Production
+// React never evaluates code, so the deployed policy stays eval-free. `connect-src`
+// covers the same-origin /api + /ws gateway, an explicit dev Relay URL, LAN node
 // signaling (http/ws on :9378), and STUN for WebRTC path establishment.
 // `img-src blob:` is required for decrypted file previews (object URLs);
 // `object-src 'none'` + `frame-ancestors 'none'` block plugin/frame abuse.
+const isDev = process.env.NODE_ENV !== "production";
+const scriptSrc = isDev
+  ? "script-src 'self' 'unsafe-inline' 'unsafe-eval'"
+  : "script-src 'self' 'unsafe-inline'";
 const contentSecurityPolicy = [
   "default-src 'self'",
-  "script-src 'self' 'unsafe-inline'",
+  scriptSrc,
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' blob: data:",
   "font-src 'self' data:",

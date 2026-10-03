@@ -9,6 +9,7 @@
 
 import { STORE_TRANSFER_LOG, idbClear, idbDelete, idbGetAll, idbPut } from "./db";
 import { notifyLocal } from "./local-notifications";
+import { normalizeActivityPath, type ActivityPath } from "./activity-path";
 import type { ActivityRecord } from "@repo/protocol";
 
 // Mirrors the protocol `ActivityKind` so entries pulled from other devices
@@ -24,14 +25,9 @@ export type TransferKind =
   | "conflict";
 export type TransferOutcome = "in-progress" | "complete" | "failed";
 
-/**
- * How the bytes moved, in the UI's shared transfer-path vocabulary
- * (`@repo/ui` PathIndicator). Stored with the entry because it cannot be
- * reconstructed later from the catalog: a file that landed via the Relay
- * buffer looks identical to one that went local P2P once it is NODE_STORED.
- * Maps from the transfer-manager's `TransferPath` at write time.
- */
-export type ActivityPath = "local" | "relay" | "buffered" | "queued" | "offline";
+// Re-exported so the store keeps a single import surface; the vocabulary and
+// its mappings live in the pure `activity-path` module.
+export type { ActivityPath };
 
 export interface TransferLogEntry {
   /** uuid — the store's primary key and the event's `activity_id`. */
@@ -222,7 +218,9 @@ export async function importRemoteActivities(records: ActivityRecord[]): Promise
       fileName: "",
       outcome: record.outcome,
       detail: record.detail ?? undefined,
-      path: (record.path as ActivityPath | null) ?? undefined,
+      // `record.path` is free-form on the wire; normalize it so a record logged
+      // by the mobile app (transfer-manager vocabulary) cannot crash PathIndicator.
+      path: normalizeActivityPath(record.path),
       at: record.created_at,
       deviceId: record.device_id,
       synced: true,
@@ -238,6 +236,20 @@ export async function importRemoteActivities(records: ActivityRecord[]): Promise
 export async function clearTransfers(): Promise<void> {
   if (typeof window !== "undefined") {
     window.localStorage.setItem(CLEARED_AT_KEY, String(Date.now()));
+  }
+  await idbClear(STORE_TRANSFER_LOG);
+}
+
+/**
+ * Wipe every local activity row *and* the Clear cutoff. Unlike `clearTransfers`,
+ * which records a cutoff so synced rows stay hidden, this leaves no trace: it
+ * is for when the local store changes hands (logout, or a different account
+ * signing in on the same browser). The rows carry decrypted file names, so they
+ * must not survive the account that produced them.
+ */
+export async function resetTransferLog(): Promise<void> {
+  if (typeof window !== "undefined") {
+    window.localStorage.removeItem(CLEARED_AT_KEY);
   }
   await idbClear(STORE_TRANSFER_LOG);
 }
