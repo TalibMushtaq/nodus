@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/TalibMushtaq/nodus/services/relay/internal/auth"
@@ -301,15 +302,27 @@ func maybeFinalizePurge(ctx context.Context, pool *db.Pool, buf *buffer.Buffer, 
 		return err
 	}
 	if len(nodes) > 0 {
+		// Build the owning-node set as a VALUES-like derived table so nodes with
+		// no tombstone_node_status row still count as pending via the LEFT JOIN.
+		// SQLite has no unnest and cannot bind a slice as a single parameter.
+		selects := make([]string, len(nodes))
+		args := make([]any, 0, len(nodes)+3)
+		for i, n := range nodes {
+			if i == 0 {
+				selects[i] = "SELECT ? AS node_id"
+			} else {
+				selects[i] = "UNION ALL SELECT ?"
+			}
+			args = append(args, n)
+		}
+		args = append(args, accountID, entityType, entityID)
 		var pending int
 		if err := pool.QueryRow(ctx, `
-			SELECT COUNT(*) FROM (
-				SELECT unnest($3::text[]) AS node_id
-			) owning
+			SELECT COUNT(*) FROM (`+strings.Join(selects, " ")+`) owning
 			LEFT JOIN tombstone_node_status s
-			  ON s.account_id=$1 AND s.entity_type=$2 AND s.entity_id=$4 AND s.node_id = owning.node_id
+			  ON s.account_id=? AND s.entity_type=? AND s.entity_id=? AND s.node_id = owning.node_id
 			WHERE s.purged_at IS NULL
-		`, accountID, entityType, nodes, entityID).Scan(&pending); err != nil {
+		`, args...).Scan(&pending); err != nil {
 			return err
 		}
 		if pending > 0 {

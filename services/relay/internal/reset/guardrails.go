@@ -1,14 +1,11 @@
 package reset
 
 import (
-	"context"
 	"fmt"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
-
-	"github.com/jackc/pgx/v5"
 
 	"github.com/TalibMushtaq/nodus/services/relay/internal/config"
 )
@@ -140,73 +137,16 @@ func resolveExistingPrefix(path string) (string, error) {
 	}
 }
 
-// checkNoLiveConnections refuses to drop the schema while anything else is
-// connected to the same database. The package documentation already required the
-// operator to stop the Relay first; this enforces it instead of trusting the
-// operator to have remembered, because dropping the schema under a live server
-// leaves that server erroring against missing tables. Force skips the check for
-// the operator who knows the remaining connection is theirs.
-func checkNoLiveConnections(ctx context.Context, conn *pgx.Conn, force bool) error {
-	if force {
-		return nil
-	}
-	rows, err := conn.Query(ctx, `
-		SELECT pid, coalesce(application_name, ''), coalesce(client_addr::text, 'local')
-		FROM pg_stat_activity
-		WHERE datname = current_database() AND pid <> pg_backend_pid()
-		ORDER BY pid`)
-	if err != nil {
-		return fmt.Errorf("checking for live connections: %w", err)
-	}
-	defer rows.Close()
-
-	var others []string
-	for rows.Next() {
-		var (
-			pid  int32
-			app  string
-			addr string
-		)
-		if err := rows.Scan(&pid, &app, &addr); err != nil {
-			return fmt.Errorf("reading live connections: %w", err)
-		}
-		others = append(others, fmt.Sprintf("pid %d (%s from %s)", pid, app, addr))
-	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("reading live connections: %w", err)
-	}
-	if len(others) > 0 {
-		return fmt.Errorf("refusing to reset: %d other connection(s) are still attached to this database (%s); "+
-			"stop the Relay first, or re-run with -factory-reset-force if you are certain",
-			len(others), strings.Join(others, ", "))
-	}
-	return nil
-}
-
 // DescribeTarget renders exactly what the reset is about to destroy, with
 // credentials stripped. The confirmation prompt shows this so an operator whose
-// environment points at the wrong host, database, Redis index, or buffer path
+// environment points at the wrong database file, Redis index, or buffer path
 // sees the mistake before anything is deleted.
 func DescribeTarget(cfg *config.Config) string {
 	var b strings.Builder
-	b.WriteString("[relay]   - postgres: " + safePostgresTarget(cfg.DatabaseURL) + "\n")
+	b.WriteString("[relay]   - sqlite:   " + cfg.DBPath + "\n")
 	b.WriteString("[relay]   - redis:    " + safeRedisTarget(cfg.RedisURL) + "\n")
 	b.WriteString("[relay]   - buffer:   " + cfg.BufferDir + "\n")
 	return b.String()
-}
-
-// safePostgresTarget reduces a DATABASE_URL to host:port/database, dropping the
-// user and password so the confirmation prompt can be pasted into a bug report.
-func safePostgresTarget(raw string) string {
-	parsed, err := url.Parse(raw)
-	if err != nil || parsed.Host == "" {
-		return "unparseable DATABASE_URL (refusing to show it verbatim)"
-	}
-	name := strings.TrimPrefix(parsed.Path, "/")
-	if name == "" {
-		name = "(default)"
-	}
-	return parsed.Host + "/" + name
 }
 
 // safeRedisTarget reduces a REDIS_URL to host:port and the database index, which

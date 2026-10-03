@@ -154,7 +154,7 @@ func insertStorageNode(
 ) (NodeResponse, error) {
 	const query = `
 		INSERT INTO storage_nodes (node_id, account_id, public_key, capabilities, status, is_primary)
-		VALUES ($1, $2, $3, $4::jsonb, 'ACTIVE',
+		VALUES ($1, $2, $3, $4, 'ACTIVE',
 		        CASE WHEN $5 THEN NOT EXISTS (SELECT 1 FROM storage_nodes WHERE account_id = $2)
 		             ELSE false END)
 		RETURNING node_id, account_id, public_key, capabilities, status, is_primary, last_seen_at, created_at, display_name, used_bytes, total_bytes

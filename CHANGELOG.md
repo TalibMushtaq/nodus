@@ -1,5 +1,21 @@
 # Changelog
 
+## [2026-10-03] - Relay: switch storage from PostgreSQL to SQLite
+
+**What changed:**
+
+- `db.Open` now opens the SQLite pool (`DB_PATH`, default `${TMPDIR}/nodus-relay/relay.db`); the schema is a single STRICT baseline with INTEGER unix-millis timestamps. A registered `now()` scalar and `unixepoch('subsec')` column defaults keep existing `NOW()` clauses and defaulted inserts working.
+- The `db` wrapper bridges values at the boundary: `time.Time` binds as millis, `[]byte`/`json.RawMessage` as TEXT, and INTEGER columns scan back into `time.Time`. `Placeholders(n)` expands `= ANY($1)` lists into `IN (...)`, and `Tx.Begin` remains a SAVEPOINT.
+- Locking redesign: `FOR UPDATE`/`SKIP LOCKED` and `pg_advisory_xact_lock` are removed (single-writer transactions replace them); the rebuild swap uses `BeginForeignKeysOff` instead of dropping and re-adding constraints; the reset uses a process lock on the database file instead of `pg_stat_activity`.
+- Query ports: `GREATEST`→scalar `MAX`, `DELETE ... USING`/aliased `DELETE` rewritten, `OFFSET`→`LIMIT -1 OFFSET`, `INTERVAL`/`::jsonb`/`::timestamptz` removed, `gen_random_uuid()` replaced by Go-generated UUIDs, and `unnest($n::text[])` replaced by an expanded derived table.
+- Health reports a `sqlite` key backed by a real `SELECT 1`. Integration tests now use per-test file databases via `testutil.OpenTestDB` and run without PostgreSQL; reset and tombstone tests were rewritten for the single-writer model.
+
+**Why:** the relay is deployed as a single instance for self-hosting; SQLite removes a database service and volume while keeping the storage behind the `db` abstraction.
+
+**Impact:** `services/relay` and `deploy`. Full relay suite passes on SQLite. Behavior differences: writers are globally serialized; busy conditions surface as `db.ErrBusy`; type enforcement depends on STRICT; timestamps are DB-defaulted rather than Go-supplied; single-instance only, enforced by a file lock.
+
+**Follow-ups:** remove the dead PostgreSQL migration runner and pgx/lib/pq dependencies; update docker-compose and docs.
+
 ## [2026-10-03] - Relay: add the SQLite driver, pools, and baseline schema
 
 **What changed:**

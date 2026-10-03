@@ -209,9 +209,9 @@ func TestVerifyPairingSessionRejectsExpired(t *testing.T) {
 	expiredToken := uuid.NewString()
 	_, err := h.pool.Exec(h.ctx,
 		`INSERT INTO pairing_sessions
-		     (account_id, node_id, device_id, device_public_key, token, expires_at)
-		 VALUES ($1, $2, $3, $4, $5, NOW() - interval '1 minute')`,
-		h.accountID, h.nodeID, h.deviceID, h.deviceKey, expiredToken)
+		     (id, account_id, node_id, device_id, device_public_key, token, expires_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, now() - 60000)`,
+		uuid.NewString(), h.accountID, h.nodeID, h.deviceID, h.deviceKey, expiredToken)
 	require.NoError(t, err)
 
 	rr := h.verifySession(t, expiredToken)

@@ -44,7 +44,7 @@ func TestSweepStuckInTransitRevertsToRelayBuffered(t *testing.T) {
 	for shardIndex, status := range []string{"NODE_RECEIVING", "NODE_VERIFIED", "NODE_STORED"} {
 		if _, err := pool.Exec(ctx, `
 			INSERT INTO file_locations (file_id, version_number, shard_index, node_id, status, buffer_id, hash, size_bytes, updated_at)
-			VALUES ('file-sweep', 1, $1, 'node-sweep', $2, $3, 'hash', 10, NOW() - INTERVAL '2 hours')
+			VALUES ('file-sweep', 1, $1, 'node-sweep', $2, $3, 'hash', 10, now() - 7200000)
 		`, shardIndex, status, fmt.Sprintf("buf-%d", shardIndex)); err != nil {
 			t.Fatalf("seed location for %s: %v", status, err)
 		}

@@ -2,7 +2,7 @@ package testutil
 
 import (
 	"context"
-	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -11,23 +11,17 @@ import (
 	"github.com/TalibMushtaq/nodus/services/relay/internal/db"
 )
 
-// OpenTestDB returns a migrated database for integration tests and skips the
-// test when TEST_DATABASE_URL is unset.
+// OpenTestDB returns a freshly migrated, file-backed SQLite database for one
+// test and removes it on cleanup.
 //
-// This is the single seam the storage backend is swapped behind. During the
-// PostgreSQL phase it opens the TEST_DATABASE_URL fixture shared by the suite;
-// the SQLite phase changes only this function to create a fresh file-backed
-// database per test, so the individual tests do not need to know which backend
-// they run against.
+// A file, not :memory:, because each database/sql connection to :memory: gets
+// its own separate database, so the writer/reader pool split would silently
+// diverge. t.TempDir() gives every test isolation without a shared fixture.
 func OpenTestDB(t testing.TB) (*db.Pool, context.Context) {
 	t.Helper()
-	url := os.Getenv("TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("TEST_DATABASE_URL not set; skipping integration test")
-	}
 	ctx := context.Background()
-	require.NoError(t, db.RunMigrations(url))
-	pool, err := db.Open(ctx, &config.Config{DatabaseURL: url})
+	path := filepath.Join(t.TempDir(), "relay.db")
+	pool, err := db.Open(ctx, &config.Config{DBPath: path})
 	require.NoError(t, err)
 	t.Cleanup(pool.Close)
 	return pool, ctx

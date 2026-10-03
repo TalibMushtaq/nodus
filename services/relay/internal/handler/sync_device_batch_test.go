@@ -169,7 +169,7 @@ func TestApplyDeviceBatchConcurrentBatchesSerialize(t *testing.T) {
 	ctx := context.Background()
 
 	// Seed the cursor so both racers target the same next sequence. Without the
-	// FOR UPDATE lock both could read last=0 and both ack ok.
+	// lock both could read last=0 and both ack ok.
 	seed, _ := f.fileCreated(1)
 	require.True(t, ackOK(applyDeviceBatch(ctx, f.pool, f.account, f.device, []SyncEventItem{seed})))
 

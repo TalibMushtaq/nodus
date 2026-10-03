@@ -36,7 +36,7 @@ func TestFinalizeTombstonePurgeDeletesBufferFiles(t *testing.T) {
 	require.NoError(t, err)
 	_, err = pool.Exec(ctx, `INSERT INTO file_locations (file_id, version_number, shard_index, node_id, status, buffer_id) VALUES ($1, 1, 0, $2, 'RELAY_BUFFERED', $3)`, file, node, bufferID)
 	require.NoError(t, err)
-	_, err = pool.Exec(ctx, `INSERT INTO tombstones (account_id, entity_type, entity_id, deleted_at, purge_after) VALUES ($1, 'file', $2, NOW(), NOW() + INTERVAL '90 days')`, account, file)
+	_, err = pool.Exec(ctx, `INSERT INTO tombstones (account_id, entity_type, entity_id, deleted_at, purge_after) VALUES ($1, 'file', $2, NOW(), now() + 7776000000)`, account, file)
 	require.NoError(t, err)
 
 	require.NoError(t, buf.Store(bufferID, []byte("encrypted shard")))

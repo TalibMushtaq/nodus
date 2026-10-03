@@ -114,19 +114,23 @@ func UpdateRecoveryKey(pool *db.Pool) http.HandlerFunc {
 		// recipient_id pin means only the previous key's coverage is removed.
 		if oldKey != nil && *oldKey != req.RecoveryPublicKey {
 			if _, err := tx.Exec(r.Context(), `
-				DELETE FROM key_envelopes ke
-				USING files f
-				WHERE ke.file_id = f.file_id AND f.account_id = $1
-				  AND ke.recipient_kind = 'recovery' AND ke.recipient_id = $2
+				DELETE FROM key_envelopes
+				WHERE recipient_kind = 'recovery' AND recipient_id = $2
+				  AND EXISTS (
+					SELECT 1 FROM files f
+					WHERE f.file_id = key_envelopes.file_id AND f.account_id = $1
+				  )
 			`, accountID, *oldKey); err != nil {
 				respondError(w, http.StatusInternalServerError, "failed to clear old recovery envelopes")
 				return
 			}
 			if _, err := tx.Exec(r.Context(), `
-				DELETE FROM folder_key_envelopes fe
-				USING folders fo
-				WHERE fe.folder_id = fo.folder_id AND fo.account_id = $1
-				  AND fe.recipient_kind = 'recovery' AND fe.recipient_id = $2
+				DELETE FROM folder_key_envelopes
+				WHERE recipient_kind = 'recovery' AND recipient_id = $2
+				  AND EXISTS (
+					SELECT 1 FROM folders fo
+					WHERE fo.folder_id = folder_key_envelopes.folder_id AND fo.account_id = $1
+				  )
 			`, accountID, *oldKey); err != nil {
 				respondError(w, http.StatusInternalServerError, "failed to clear old folder recovery envelopes")
 				return
@@ -333,7 +337,7 @@ func Recover(pool *db.Pool, store auth.SessionStore, cfg *config.Config, recover
 			usedAt           *time.Time
 		)
 		err = tx.QueryRow(r.Context(),
-			"SELECT account_id, expires_at, used_at FROM recovery_challenges WHERE nonce = $1 FOR UPDATE", req.Nonce,
+			"SELECT account_id, expires_at, used_at FROM recovery_challenges WHERE nonce = $1", req.Nonce,
 		).Scan(&challengeAccount, &expiresAt, &usedAt)
 		if err != nil {
 			if errors.Is(err, db.ErrNotFound) {

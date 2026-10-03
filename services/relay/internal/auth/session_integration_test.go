@@ -116,7 +116,7 @@ func TestSessionLookupExpired(t *testing.T) {
 	require.NoError(t, err)
 
 	_, err = h.pool.Exec(h.ctx,
-		`UPDATE sessions SET expires_at = NOW() - INTERVAL '1 hour' WHERE session_hash = $1`,
+		`UPDATE sessions SET expires_at = now() - 3600000 WHERE session_hash = $1`,
 		auth.HashSession(rawID))
 	require.NoError(t, err)
 
@@ -199,7 +199,7 @@ func TestSessionCapRevokesOldest(t *testing.T) {
 		if i == 0 {
 			// Age the first session so it is the oldest created_at.
 			_, err := h.pool.Exec(h.ctx,
-				`UPDATE sessions SET created_at = NOW() - INTERVAL '1 hour' WHERE session_hash = $1`,
+				`UPDATE sessions SET created_at = now() - 3600000 WHERE session_hash = $1`,
 				auth.HashSession(raw))
 			require.NoError(t, err)
 		}
@@ -256,7 +256,7 @@ func TestSessionTouchThrottle(t *testing.T) {
 	// Force last_used_at far enough in the past (49m) that a touch with a 30m
 	// threshold must bump it.
 	_, err = h.pool.Exec(h.ctx,
-		`UPDATE sessions SET last_used_at = NOW() - INTERVAL '49 minutes' WHERE session_hash = $1`,
+		`UPDATE sessions SET last_used_at = now() - 2940000 WHERE session_hash = $1`,
 		auth.HashSession(rawID))
 	require.NoError(t, err)
 	require.NoError(t, h.store.TouchSession(h.ctx, rawID))
@@ -264,7 +264,7 @@ func TestSessionTouchThrottle(t *testing.T) {
 
 	// Now 10 minutes old — under the 30m threshold — touch must be a no-op.
 	_, err = h.pool.Exec(h.ctx,
-		`UPDATE sessions SET last_used_at = NOW() - INTERVAL '10 minutes' WHERE session_hash = $1`,
+		`UPDATE sessions SET last_used_at = now() - 600000 WHERE session_hash = $1`,
 		auth.HashSession(rawID))
 	require.NoError(t, err)
 	before := h.lastUsedAt(t, rawID)

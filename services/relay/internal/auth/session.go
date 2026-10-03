@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/TalibMushtaq/nodus/services/relay/internal/config"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/db"
 )
@@ -76,9 +78,9 @@ func (s *PGSessionStore) CreateSession(ctx context.Context, accountID, deviceID 
 	defer tx.Rollback(ctx) // nolint:errcheck
 
 	if _, err := tx.Exec(ctx, `
-		INSERT INTO sessions (session_hash, account_id, device_id, expires_at, last_used_at)
-		VALUES ($1, $2, $3, $4, $5)
-	`, HashSession(rawID), accountID, deviceID, expiresAt, now); err != nil {
+		INSERT INTO sessions (session_id, session_hash, account_id, device_id, expires_at, last_used_at)
+		VALUES ($1, $2, $3, $4, $5, $6)
+	`, uuid.NewString(), HashSession(rawID), accountID, deviceID, expiresAt, now); err != nil {
 		return "", fmt.Errorf("inserting session: %w", err)
 	}
 
@@ -90,7 +92,7 @@ func (s *PGSessionStore) CreateSession(ctx context.Context, accountID, deviceID 
 		  AND session_hash IN (
 			SELECT session_hash FROM sessions
 			WHERE account_id = $2 AND revoked_at IS NULL
-			ORDER BY created_at DESC OFFSET $3
+			ORDER BY created_at DESC LIMIT -1 OFFSET $3
 		  )
 	`, now, accountID, MaxActiveSessionsPerAccount); err != nil {
 		return "", fmt.Errorf("enforcing session cap: %w", err)
@@ -212,9 +214,9 @@ func (s *PGSessionStore) RotateSession(ctx context.Context, oldRawID, accountID,
 	defer tx.Rollback(ctx) // nolint:errcheck
 
 	if _, err := tx.Exec(ctx, `
-		INSERT INTO sessions (session_hash, account_id, device_id, expires_at, last_used_at)
-		VALUES ($1, $2, $3, $4, $5)
-	`, HashSession(newRawID), accountID, deviceID, expiresAt, now); err != nil {
+		INSERT INTO sessions (session_id, session_hash, account_id, device_id, expires_at, last_used_at)
+		VALUES ($1, $2, $3, $4, $5, $6)
+	`, uuid.NewString(), HashSession(newRawID), accountID, deviceID, expiresAt, now); err != nil {
 		return "", fmt.Errorf("inserting rotated session: %w", err)
 	}
 

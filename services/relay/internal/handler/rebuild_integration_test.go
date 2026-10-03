@@ -74,7 +74,7 @@ func TestPromoteRebuildIntegration(t *testing.T) {
 		`, accountID)
 		mustExec(t, pool, `
 			INSERT INTO sync_events (event_id, account_id, origin_id, origin_sequence, event_type, payload, timestamp)
-			VALUES ('evt-live', $1, 'origin-live', 1, 'file_version', '{}'::jsonb, NOW())
+			VALUES ('evt-live', $1, 'origin-live', 1, 'file_version', '{}', NOW())
 		`, accountID)
 		// A key envelope referencing a file that will not survive the rebuild.
 		mustExec(t, pool, `
@@ -166,17 +166,9 @@ func TestPromoteRebuildIntegration(t *testing.T) {
 			`SELECT COUNT(*) FROM key_envelopes WHERE file_id=$1 AND recipient_id='recipient-new' AND recipient_kind='device'`, fileB).Scan(&stagedKE))
 		require.Equal(t, 1, stagedKE)
 
-		// 7. FKs are restored with explicit names and enforce the deletions
-		//    that used to cascade.
-		var fkCount int
-		require.NoError(t, pool.QueryRow(ctx, `
-			SELECT COUNT(*) FROM pg_constraint
-			WHERE contype='f'
-			  AND (conname LIKE 'fk_file_locations_file_version%'
-			    OR conname LIKE 'fk_file_versions_file%'
-			    OR conname LIKE 'fk_key_envelopes_file%')
-		`).Scan(&fkCount))
-		require.Equal(t, 3, fkCount, "all three cascade FKs must be present after promotion")
+		// 7. The cascade FKs are part of the baseline and are never dropped by
+		//    promotion on SQLite, so the functional check below is the proof:
+		//    a versionless file_location must be rejected.
 
 		// FK actually enforced: inserting a versionless file_location must fail.
 		_, fkErr := pool.Exec(ctx, `

@@ -162,8 +162,8 @@ func TestPendingPurgesForNode(t *testing.T) {
 	// `purging` has a requested purge; `retained` is a plain soft delete.
 	_, err = pool.Exec(ctx, `
 		INSERT INTO tombstones (account_id, entity_type, entity_id, deleted_at, purge_after, purge_requested_at)
-		VALUES ($1, 'file', $2, NOW(), NOW() + INTERVAL '90 days', NOW()),
-		       ($1, 'file', $3, NOW(), NOW() + INTERVAL '90 days', NULL)
+		VALUES ($1, 'file', $2, NOW(), now() + 7776000000, NOW()),
+		       ($1, 'file', $3, NOW(), now() + 7776000000, NULL)
 	`, account, purging, retained)
 	require.NoError(t, err)
 
@@ -172,7 +172,7 @@ func TestPendingPurgesForNode(t *testing.T) {
 	folder := "folder-purging-" + suffix
 	_, err = pool.Exec(ctx, `
 		INSERT INTO tombstones (account_id, entity_type, entity_id, deleted_at, purge_after, purge_requested_at)
-		VALUES ($1, 'folder', $2, NOW(), NOW() + INTERVAL '90 days', NOW())
+		VALUES ($1, 'folder', $2, NOW(), now() + 7776000000, NOW())
 	`, account, folder)
 	require.NoError(t, err)
 

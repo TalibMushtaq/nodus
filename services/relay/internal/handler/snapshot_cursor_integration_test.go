@@ -42,7 +42,7 @@ func cursorFixture(t *testing.T, logOrigin string, logHigh int64) (ctx context.C
 		for seq := int64(1); seq <= logHigh; seq++ {
 			mustExec(t, pool, `
 				INSERT INTO sync_events (event_id, account_id, origin_id, origin_sequence, event_type, payload, timestamp)
-				VALUES ($1, $2, $3, $4, 'FILE_MODIFIED', '{}'::jsonb, NOW())`,
+				VALUES ($1, $2, $3, $4, 'FILE_MODIFIED', '{}', NOW())`,
 				fmt.Sprintf("evt-%s-%d", s, seq), account, logOrigin, seq)
 		}
 	}
@@ -182,7 +182,7 @@ func TestSnapshotCursorValidationIsAccountScoped(t *testing.T) {
 	for seq := int64(1); seq <= 50; seq++ {
 		mustExec(t, pool, `
 			INSERT INTO sync_events (event_id, account_id, origin_id, origin_sequence, event_type, payload, timestamp)
-			VALUES ($1, $2, 'd1', $3, 'FILE_MODIFIED', '{}'::jsonb, NOW())`,
+			VALUES ($1, $2, 'd1', $3, 'FILE_MODIFIED', '{}', NOW())`,
 			fmt.Sprintf("evt-other-%d", seq), other, seq)
 	}
 	t.Cleanup(func() {

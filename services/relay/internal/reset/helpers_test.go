@@ -14,14 +14,14 @@ import (
 // without leaking the credentials.
 func testConfig() *config.Config {
 	return &config.Config{
-		DatabaseURL: "postgres://relayadmin:supersecret@127.0.0.1:5432/nodus_relay?sslmode=disable",
-		RedisURL:    "redis://:redispass@127.0.0.1:6379/3",
-		BufferDir:   filepath.Join("/var/lib/nodus", "buffer"),
+		DBPath:    filepath.Join("/var/lib/nodus", "relay.db"),
+		RedisURL:  "redis://:redispass@127.0.0.1:6379/3",
+		BufferDir: filepath.Join("/var/lib/nodus", "buffer"),
 	}
 }
 
 func TestTestConfigPointsAtDistinctTargets(t *testing.T) {
 	cfg := testConfig()
-	require.NotEqual(t, cfg.DatabaseURL, cfg.RedisURL)
+	require.NotEqual(t, cfg.DBPath, cfg.RedisURL)
 	require.Equal(t, "/var/lib/nodus/buffer", cfg.BufferDir)
 }

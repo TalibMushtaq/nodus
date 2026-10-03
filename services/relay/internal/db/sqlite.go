@@ -3,9 +3,15 @@ package db
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"embed"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"sync"
+	"syscall"
+	"time"
 
 	"github.com/golang-migrate/migrate/v4"
 	migratesqlite "github.com/golang-migrate/migrate/v4/database/sqlite"
@@ -15,6 +21,28 @@ import (
 
 //go:embed sqlite_migrations/*.sql
 var sqliteMigrationsFS embed.FS
+
+// The connection pool uses a custom modernc driver so a now() scalar returning
+// UTC unix milliseconds is available on every connection. The schema stores
+// timestamps as INTEGER millis, so this lets existing NOW() clauses keep
+// working instead of threading a Go time parameter through every query. It is
+// registered once under its own name, leaving the default "sqlite" driver the
+// migration runner uses untouched.
+var (
+	sqliteDriverOnce sync.Once
+	sqliteDriverName = "nodus_sqlite"
+)
+
+func sqliteDriver() string {
+	sqliteDriverOnce.Do(func() {
+		d := &sqlite.Driver{}
+		d.MustRegisterScalarFunction("now", 0, func(_ *sqlite.FunctionContext, _ []driver.Value) (driver.Value, error) {
+			return time.Now().UTC().UnixMilli(), nil
+		})
+		sql.Register(sqliteDriverName, d)
+	})
+	return sqliteDriverName
+}
 
 // SQLite pragmas are per-connection, and database/sql pools connections. They
 // are therefore set in the DSN so the modernc driver applies them to every new
@@ -70,27 +98,62 @@ func RunSQLiteMigrations(path string) error {
 	return nil
 }
 
+// AcquireDBLock takes the exclusive relay lock for dbPath. It fails when
+// another process (the running relay) already holds it. This enforces the
+// single-writer installation requirement and lets the factory reset refuse to
+// delete the database out from under a live process.
+func AcquireDBLock(dbPath string) (release func(), err error) {
+	f, err := os.OpenFile(dbPath+".lock", os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	return func() {
+		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		_ = f.Close()
+	}, nil
+}
+
 // openSQLite opens the writer/reader pool pair for path and runs the baseline
 // migrations. It is wired into Open in the cutover; kept separate so the SQLite
 // path is testable before the service switches over.
 func openSQLite(ctx context.Context, path string) (*Pool, error) {
+	// SQLite creates the file but not its directory; a fresh deploy points
+	// DB_PATH at a directory the image creates, but a dev path may not exist.
+	if dir := filepath.Dir(path); dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return nil, fmt.Errorf("creating sqlite directory: %w", err)
+		}
+	}
+	// One relay per database file, enforced by an exclusive lock held for the
+	// pool's lifetime.
+	unlock, err := AcquireDBLock(path)
+	if err != nil {
+		return nil, fmt.Errorf("another relay instance holds %s: %w", path, err)
+	}
 	if err := RunSQLiteMigrations(path); err != nil {
+		unlock()
 		return nil, fmt.Errorf("running migrations: %w", err)
 	}
 
 	// One writer connection: SQLite allows a single writer, so capping the pool
 	// makes the serialization explicit and rules out write-write deadlocks.
-	writer, err := sql.Open("sqlite", sqliteDSN(path, true))
+	writer, err := sql.Open(sqliteDriver(), sqliteDSN(path, true))
 	if err != nil {
+		unlock()
 		return nil, fmt.Errorf("opening sqlite writer: %w", err)
 	}
 	writer.SetMaxOpenConns(1)
 	writer.SetMaxIdleConns(1)
 	writer.SetConnMaxLifetime(0)
 
-	reader, err := sql.Open("sqlite", sqliteDSN(path, false))
+	reader, err := sql.Open(sqliteDriver(), sqliteDSN(path, false))
 	if err != nil {
 		writer.Close()
+		unlock()
 		return nil, fmt.Errorf("opening sqlite reader: %w", err)
 	}
 	reader.SetMaxOpenConns(8)
@@ -102,15 +165,17 @@ func openSQLite(ctx context.Context, path string) (*Pool, error) {
 	if err := writer.PingContext(pingCtx); err != nil {
 		writer.Close()
 		reader.Close()
+		unlock()
 		return nil, fmt.Errorf("pinging sqlite: %w", err)
 	}
 	if err := reader.PingContext(pingCtx); err != nil {
 		writer.Close()
 		reader.Close()
+		unlock()
 		return nil, fmt.Errorf("pinging sqlite reader: %w", err)
 	}
 
-	return &Pool{writer: writer, reader: reader}, nil
+	return &Pool{writer: writer, reader: reader, unlock: unlock}, nil
 }
 
 // translateSQLite maps modernc result codes to the driver-neutral sentinels.

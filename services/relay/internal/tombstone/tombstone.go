@@ -107,7 +107,6 @@ func pruneBatch(ctx context.Context, pool *db.Pool) (int, error) {
 		WHERE purge_after <= NOW()
 		ORDER BY purge_after
 		LIMIT $1
-		FOR UPDATE SKIP LOCKED
 	`, pruneBatchSize)
 	if err != nil {
 		return 0, err
@@ -163,17 +162,17 @@ func pruneBatch(ctx context.Context, pool *db.Pool) (int, error) {
 			return 0, err
 		}
 		for _, q := range []string{
-			`DELETE FROM file_locations WHERE file_id = ANY($1)`,
-			`DELETE FROM file_versions WHERE file_id = ANY($1)`,
-			`DELETE FROM key_envelopes WHERE file_id = ANY($1)`,
+			`DELETE FROM file_locations WHERE file_id IN (` + db.Placeholders(len(owned)) + `)`,
+			`DELETE FROM file_versions WHERE file_id IN (` + db.Placeholders(len(owned)) + `)`,
+			`DELETE FROM key_envelopes WHERE file_id IN (` + db.Placeholders(len(owned)) + `)`,
 		} {
-			if _, err := tx.Exec(ctx, q, owned); err != nil {
+			if _, err := tx.Exec(ctx, q, stringsToAny(owned)...); err != nil {
 				return 0, err
 			}
 		}
 		if _, err := tx.Exec(ctx,
-			`DELETE FROM files WHERE file_id = ANY($1) AND account_id = ANY($2)`,
-			owned, accounts); err != nil {
+			`DELETE FROM files WHERE file_id IN (`+db.Placeholders(len(owned))+`) AND account_id IN (`+db.Placeholders(len(accounts))+`)`,
+			stringsToAny(owned, accounts)...); err != nil {
 			return 0, err
 		}
 	}
@@ -183,15 +182,15 @@ func pruneBatch(ctx context.Context, pool *db.Pool) (int, error) {
 			return 0, err
 		}
 		if _, err := tx.Exec(ctx,
-			`DELETE FROM folders WHERE folder_id = ANY($1) AND account_id = ANY($2)`,
-			owned, accounts); err != nil {
+			`DELETE FROM folders WHERE folder_id IN (`+db.Placeholders(len(owned))+`) AND account_id IN (`+db.Placeholders(len(accounts))+`)`,
+			stringsToAny(owned, accounts)...); err != nil {
 			return 0, err
 		}
 	}
 	if _, err := tx.Exec(ctx, `
 		DELETE FROM tombstone_node_status
-		WHERE entity_type = ANY($1) AND entity_id = ANY($2) AND account_id = ANY($3)
-	`, entityTypes, entityIDs, accounts); err != nil {
+		WHERE entity_type IN (`+db.Placeholders(len(entityTypes))+`) AND entity_id IN (`+db.Placeholders(len(entityIDs))+`) AND account_id IN (`+db.Placeholders(len(accounts))+`)
+	`, stringsToAny(entityTypes, entityIDs, accounts)...); err != nil {
 		return 0, err
 	}
 	// The tombstone goes last, and in the same transaction, so the row that
@@ -199,8 +198,8 @@ func pruneBatch(ctx context.Context, pool *db.Pool) (int, error) {
 	tag, err := tx.Exec(ctx, `
 		DELETE FROM tombstones
 		WHERE purge_after <= NOW()
-		  AND account_id = ANY($1) AND entity_type = ANY($2) AND entity_id = ANY($3)
-	`, accounts, entityTypes, entityIDs)
+		  AND account_id IN (`+db.Placeholders(len(accounts))+`) AND entity_type IN (`+db.Placeholders(len(entityTypes))+`) AND entity_id IN (`+db.Placeholders(len(entityIDs))+`)
+	`, stringsToAny(accounts, entityTypes, entityIDs)...)
 	if err != nil {
 		return 0, err
 	}
@@ -210,13 +209,26 @@ func pruneBatch(ctx context.Context, pool *db.Pool) (int, error) {
 	return int(tag.RowsAffected()), nil
 }
 
+// stringsToAny flattens string slices into the variadic arg list for an IN
+// query built from db.Placeholders.
+func stringsToAny(lists ...[]string) []any {
+	var out []any
+	for _, list := range lists {
+		for _, v := range list {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
 // ownedIDs returns the subset of ids that the claiming accounts actually hold in
 // table. `table` and `column` are internal constants at every call site, never
 // caller input, which is what makes the string concatenation safe.
 func ownedIDs(ctx context.Context, tx db.Tx, table, column string, ids, accounts []string) ([]string, error) {
 	rows, err := tx.Query(ctx, fmt.Sprintf(
-		`SELECT %s FROM %s WHERE %s = ANY($1) AND account_id = ANY($2)`, column, table, column),
-		ids, accounts)
+		`SELECT %s FROM %s WHERE %s IN (%s) AND account_id IN (%s)`,
+		column, table, column, db.Placeholders(len(ids)), db.Placeholders(len(accounts))),
+		stringsToAny(ids, accounts)...)
 	if err != nil {
 		return nil, err
 	}

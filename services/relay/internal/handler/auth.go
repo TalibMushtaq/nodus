@@ -113,7 +113,9 @@ func Register(pool *db.Pool, store auth.SessionStore, cfg *config.Config) http.H
 
 		_, err = tx.Exec(r.Context(), query, accountID, req.Email, hashedPassword, req.RecoveryPublicKey)
 		if err != nil {
-			if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
+			// Driver-neutral: the wrapper maps unique constraint failures to
+			// ErrUniqueViolation, so this works on SQLite and PostgreSQL alike.
+			if errors.Is(err, db.ErrUniqueViolation) {
 				respondError(w, http.StatusConflict, "an account with this email already exists")
 				return
 			}

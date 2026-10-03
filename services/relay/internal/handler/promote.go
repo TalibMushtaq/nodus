@@ -24,7 +24,10 @@ import (
 //     DELETE statements cannot cascade into them. On-disk buffer files are never
 //     touched by a rebuild.
 func promoteRebuild(ctx context.Context, pool *db.Pool, sess *rebuildSession) error {
-	tx, err := pool.Begin(ctx)
+	// Foreign keys are disabled for this transaction so the account-row DELETEs
+	// below cannot cascade into file_locations (buffer entries, §22) or
+	// key_envelopes before they are replaced from staging. See BeginForeignKeysOff.
+	tx, err := pool.BeginForeignKeysOff(ctx)
 	if err != nil {
 		return fmt.Errorf("begin promotion tx: %w", err)
 	}
@@ -44,7 +47,7 @@ func promoteRebuild(ctx context.Context, pool *db.Pool, sess *rebuildSession) er
 	//    durably promoted for this node.
 	var promoted int64
 	if err := tx.QueryRow(ctx,
-		`SELECT last_promoted_snapshot_sequence FROM storage_nodes WHERE node_id = $1 FOR UPDATE`,
+		`SELECT last_promoted_snapshot_sequence FROM storage_nodes WHERE node_id = $1`,
 		sess.nodeID).Scan(&promoted); err != nil {
 		return fmt.Errorf("read promoted snapshot watermark: %w", err)
 	}
@@ -54,23 +57,9 @@ func promoteRebuild(ctx context.Context, pool *db.Pool, sess *rebuildSession) er
 			sess.snapshotID, sess.snapshotSequence, promoted)
 	}
 
-	// 1. Drop the cascading FKs so the account-row DELETEs below cannot cascade
-	//    into file_locations (buffer entries, §22) or key_envelopes.
-	if err := dropFkViaRel(ctx, tx, "file_locations", "file_versions"); err != nil {
-		return fmt.Errorf("drop file_locations->file_versions FK: %w", err)
-	}
-	if err := dropFkViaRel(ctx, tx, "file_versions", "files"); err != nil {
-		return fmt.Errorf("drop file_versions->files FK: %w", err)
-	}
-	if err := dropFkViaRel(ctx, tx, "key_envelopes", "files"); err != nil {
-		return fmt.Errorf("drop key_envelopes->files FK: %w", err)
-	}
-	// Folder-key envelopes cascade from folders; drop that FK too so the
-	// account-wide folder DELETE below cannot erase them before we replace them
-	// from staging.
-	if err := dropFkViaRel(ctx, tx, "folder_key_envelopes", "folders"); err != nil {
-		return fmt.Errorf("drop folder_key_envelopes->folders FK: %w", err)
-	}
+	// 1. Foreign-key enforcement is already off for this transaction (see the
+	//    BeginForeignKeysOff call above), so the account-row DELETEs below cannot
+	//    cascade into file_locations (buffer entries, §22) or key_envelopes.
 
 	// Confirm staging data (defensive; a failed session must not reach here).
 	var stagedFiles, stagedFolders, stagedEnvelopes, stagedFolderEnvelopes, stagedVersions, stagedTombstones, stagedActivities int64
@@ -209,7 +198,7 @@ func promoteRebuild(ctx context.Context, pool *db.Pool, sess *rebuildSession) er
 	// path does, or the NOT NULL constraint rejects the promote.
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO tombstones (account_id, entity_type, entity_id, deleted_at, purge_after)
-		SELECT account_id, entity_type, entity_id, deleted_at, deleted_at + INTERVAL '90 days'
+		SELECT account_id, entity_type, entity_id, deleted_at, deleted_at + 7776000000
 		FROM rebuild_tombstones
 		WHERE account_id = $1
 	`, acct); err != nil {
@@ -254,49 +243,29 @@ func promoteRebuild(ctx context.Context, pool *db.Pool, sess *rebuildSession) er
 	//    remains the sole owner of buffer cleanup. Key envelopes for files that
 	//    no longer exist are removed likewise.
 	if _, err := tx.Exec(ctx, `
-		DELETE FROM file_locations fl
+		DELETE FROM file_locations
 		WHERE NOT EXISTS (
 			SELECT 1 FROM file_versions v
-			WHERE v.file_id = fl.file_id AND v.version_number = fl.version_number
+			WHERE v.file_id = file_locations.file_id AND v.version_number = file_locations.version_number
 		)
 	`); err != nil {
 		return fmt.Errorf("prune orphaned file_locations: %w", err)
 	}
 	if _, err := tx.Exec(ctx, `
-		DELETE FROM key_envelopes ke
-		WHERE NOT EXISTS (SELECT 1 FROM files f WHERE f.file_id = ke.file_id)
+		DELETE FROM key_envelopes
+		WHERE NOT EXISTS (SELECT 1 FROM files f WHERE f.file_id = key_envelopes.file_id)
 	`); err != nil {
 		return fmt.Errorf("prune orphaned key_envelopes: %w", err)
 	}
 	if _, err := tx.Exec(ctx, `
-		DELETE FROM folder_key_envelopes fe
-		WHERE NOT EXISTS (SELECT 1 FROM folders f WHERE f.folder_id = fe.folder_id)
+		DELETE FROM folder_key_envelopes
+		WHERE NOT EXISTS (SELECT 1 FROM folders f WHERE f.folder_id = folder_key_envelopes.folder_id)
 	`); err != nil {
 		return fmt.Errorf("prune orphaned folder_key_envelopes: %w", err)
 	}
 
-	// 6. Restore the cascade FKs with explicit names so future DELETE/UPDATE
-	//    behaviour is preserved.
-	if err := addFkViaRel(ctx, tx, "file_locations", "file_versions",
-		"(file_id, version_number) REFERENCES file_versions (file_id, version_number) ON DELETE CASCADE",
-		"fk_file_locations_file_version"); err != nil {
-		return fmt.Errorf("restore file_locations FK: %w", err)
-	}
-	if err := addFkViaRel(ctx, tx, "file_versions", "files",
-		"(file_id) REFERENCES files (file_id) ON DELETE CASCADE",
-		"fk_file_versions_file"); err != nil {
-		return fmt.Errorf("restore file_versions FK: %w", err)
-	}
-	if err := addFkViaRel(ctx, tx, "key_envelopes", "files",
-		"(file_id) REFERENCES files (file_id) ON DELETE CASCADE",
-		"fk_key_envelopes_file"); err != nil {
-		return fmt.Errorf("restore key_envelopes FK: %w", err)
-	}
-	if err := addFkViaRel(ctx, tx, "folder_key_envelopes", "folders",
-		"(folder_id) REFERENCES folders (folder_id) ON DELETE CASCADE",
-		"fk_folder_key_envelopes_folder"); err != nil {
-		return fmt.Errorf("restore folder_key_envelopes FK: %w", err)
-	}
+	// 6. The cascade FKs were never dropped (enforcement was disabled for this
+	//    transaction), so nothing needs restoring.
 
 	// 7. Record the watermark inside this transaction, before the commit.
 	//
@@ -429,31 +398,7 @@ func cleanupStagedData(ctx context.Context, pool *db.Pool, accountID string) {
 	}
 }
 
-// dropFkViaRel drops any FK constraint on `child` that references `parent`,
-// regardless of its auto-generated name (the initial migration left them
-// unnamed, so Postgres picked the default <child>_<col>_fkey names).
-func dropFkViaRel(ctx context.Context, tx db.Tx, child, parent string) error {
-	var conname string
-	err := tx.QueryRow(ctx, `
-		SELECT conname FROM pg_constraint
-		WHERE conrelid = to_regclass($1)::oid
-		  AND contype = 'f'
-		  AND confrelid = to_regclass($2)::oid
-		LIMIT 1
-	`, child, parent).Scan(&conname)
-	if err != nil {
-		// No such constraint — nothing to drop.
-		return nil
-	}
-	_, err = tx.Exec(ctx, fmt.Sprintf(`ALTER TABLE %s DROP CONSTRAINT "%s"`, child, conname))
-	return err
-}
-
-// addFkViaRel re-adds an explicitly-named FK constraint.
-func addFkViaRel(ctx context.Context, tx db.Tx, child, parent, definition, conName string) error {
-	sql := fmt.Sprintf(`ALTER TABLE %s ADD CONSTRAINT %s FOREIGN KEY %s`, child, conName, definition)
-	if _, err := tx.Exec(ctx, sql); err != nil {
-		return err
-	}
-	return nil
-}
+// dropFkViaRel and addFkViaRel were PostgreSQL-specific: they manipulated
+// pg_constraint and ALTER TABLE ... ADD/DROP CONSTRAINT, which SQLite does not
+// support. The rebuild now disables foreign-key enforcement for its transaction
+// instead (db.Pool.BeginForeignKeysOff).

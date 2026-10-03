@@ -108,9 +108,9 @@ func CreatePairingSession(pool *db.Pool, wsHub *hub.Hub) http.HandlerFunc {
 		expiresAt := time.Now().Add(pairingTokenTTL)
 		_, err = pool.Exec(r.Context(),
 			`INSERT INTO pairing_sessions
-			     (account_id, node_id, device_id, device_public_key, token, expires_at)
-			 VALUES ($1, $2, $3, $4, $5, $6)`,
-			accountID, req.NodeID, req.DeviceID, devicePublicKey, token, expiresAt,
+			     (id, account_id, node_id, device_id, device_public_key, token, expires_at)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+			uuid.NewString(), accountID, req.NodeID, req.DeviceID, devicePublicKey, token, expiresAt,
 		)
 		if err != nil {
 			respondError(w, http.StatusInternalServerError, "failed to create pairing session")

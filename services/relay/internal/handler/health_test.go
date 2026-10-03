@@ -29,8 +29,8 @@ func TestHealthHandlerNilServices(t *testing.T) {
 	if res.Status != "ok" {
 		t.Fatalf("expected status 'ok', got '%s'", res.Status)
 	}
-	if res.Services["postgres"] != "not configured" {
-		t.Fatalf("expected postgres not configured, got %s", res.Services["postgres"])
+	if res.Services["sqlite"] != "not configured" {
+		t.Fatalf("expected sqlite not configured, got %s", res.Services["sqlite"])
 	}
 	if res.Services["redis"] != "not configured" {
 		t.Fatalf("expected redis not configured, got %s", res.Services["redis"])

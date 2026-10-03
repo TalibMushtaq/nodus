@@ -124,29 +124,18 @@ func TestResolveExistingPrefix(t *testing.T) {
 }
 
 // TestDescribeTargetRedactsCredentials is the guardrail on the guardrails: the
-// confirmation prompt shows the operator exactly which server they are about to
+// confirmation prompt shows the operator exactly which targets they are about to
 // destroy, and that output must be safe to paste into a bug report.
 func TestDescribeTargetRedactsCredentials(t *testing.T) {
 	cfg := testConfig()
 
 	out := DescribeTarget(cfg)
-	require.Contains(t, out, "127.0.0.1:5432/nodus_relay", "the database name must be shown")
+	require.Contains(t, out, cfg.DBPath, "the database path must be shown")
 	require.Contains(t, out, "127.0.0.1:6379 db 3", "the Redis index must be shown")
 	require.Contains(t, out, cfg.BufferDir, "the buffer path must be shown")
 
-	require.NotContains(t, out, "supersecret", "the database password must never be printed")
 	require.NotContains(t, out, "redispass", "the Redis password must never be printed")
-	require.NotContains(t, out, "relayadmin", "the database user must not be printed")
-	require.NotContains(t, out, cfg.DatabaseURL, "the raw URL must not be echoed")
 	require.NotContains(t, out, cfg.RedisURL, "the raw URL must not be echoed")
-}
-
-// TestSafePostgresTarget covers the default-database case, where omitting the
-// database name in the URL means the server's own default rather than "".
-func TestSafePostgresTarget(t *testing.T) {
-	require.Equal(t, "db.example:5432/nodus", safePostgresTarget("postgres://u:p@db.example:5432/nodus?sslmode=require"))
-	require.Equal(t, "db.example:5432/(default)", safePostgresTarget("postgres://u:p@db.example:5432"))
-	require.Contains(t, safePostgresTarget("::not a url::"), "unparseable")
 }
 
 // TestSafeRedisTargetDefaultsToIndexZero documents that a URL with no explicit

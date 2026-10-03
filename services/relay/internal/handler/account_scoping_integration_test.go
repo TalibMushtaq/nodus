@@ -140,7 +140,7 @@ func TestFinalizeTombstonePurgeDoesNotCrossAccounts(t *testing.T) {
 	// entity_id succeeds — that is the entry point, not the fix.
 	_, err = pool.Exec(ctx, `
 		INSERT INTO tombstones (account_id, entity_type, entity_id, deleted_at, purge_after)
-		VALUES ($1, 'file', $2, NOW(), NOW() + INTERVAL '90 days')`, attacker, victim.file)
+		VALUES ($1, 'file', $2, NOW(), now() + 7776000000)`, attacker, victim.file)
 	require.NoError(t, err, "attacker tombstone insert is account-scoped and should succeed")
 
 	// The purge runs as the attacker and must be a complete no-op.
@@ -237,7 +237,7 @@ func TestPendingPurgesForNodeIsAccountScoped(t *testing.T) {
 	require.NoError(t, err)
 	_, err = pool.Exec(ctx, `
 		INSERT INTO tombstones (account_id, entity_type, entity_id, deleted_at, purge_after, purge_requested_at)
-		VALUES ($1, 'file', $2, NOW(), NOW() + INTERVAL '90 days', NOW())`, attacker, victim.file)
+		VALUES ($1, 'file', $2, NOW(), now() + 7776000000, NOW())`, attacker, victim.file)
 	require.NoError(t, err)
 
 	entities, err := pendingPurgesForNode(ctx, pool, attacker, victim.node)
@@ -266,7 +266,7 @@ func TestListTombstoneJoinDoesNotLeakForeignName(t *testing.T) {
 	require.NoError(t, err)
 	_, err = pool.Exec(ctx, `
 		INSERT INTO tombstones (account_id, entity_type, entity_id, deleted_at, purge_after)
-		VALUES ($1, 'file', $2, NOW(), NOW() + INTERVAL '90 days')`, attacker, victim.file)
+		VALUES ($1, 'file', $2, NOW(), now() + 7776000000)`, attacker, victim.file)
 	require.NoError(t, err)
 
 	// Reuse the handler's own query so the test fails if the join regresses.

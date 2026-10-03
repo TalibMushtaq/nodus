@@ -5,16 +5,18 @@
 --   text / uuid / jsonb            -> TEXT
 --   integer / bigint / boolean     -> INTEGER
 --   timestamp with time zone       -> INTEGER (unix milliseconds, UTC)
--- Timestamps are application-generated: no column uses NOW(). Tables are
--- STRICT so a value of the wrong type fails instead of being coerced, which
--- recovers the type enforcement the bundle of SQLite defaults would otherwise
--- lose.
+-- Timestamp columns default to unixepoch('subsec') * 1000, so an INSERT that
+-- omits a timestamp behaves like the PostgreSQL DEFAULT now(). Queries that use
+-- NOW() are served by a now() scalar the driver registers (see sqlite.go).
+-- Tables are STRICT so a value of the wrong type fails instead of being
+-- coerced, which recovers the type enforcement the bundle of SQLite defaults
+-- would otherwise lose.
 
 CREATE TABLE accounts (
     account_id          TEXT    NOT NULL PRIMARY KEY,
     email               TEXT    NOT NULL UNIQUE,
     password_hash       TEXT    NOT NULL,
-    created_at          INTEGER NOT NULL,
+    created_at          INTEGER NOT NULL DEFAULT (CAST(unixepoch('subsec') * 1000 AS INTEGER)),
     recovery_public_key TEXT
 ) STRICT;
 
@@ -25,7 +27,7 @@ CREATE TABLE storage_nodes (
     capabilities                   TEXT    NOT NULL DEFAULT '[]',
     status                         TEXT    NOT NULL DEFAULT 'ACTIVE',
     last_seen_at                   INTEGER,
-    created_at                     INTEGER NOT NULL,
+    created_at                     INTEGER NOT NULL DEFAULT (CAST(unixepoch('subsec') * 1000 AS INTEGER)),
     is_primary                     INTEGER NOT NULL DEFAULT 0,
     display_name                   TEXT,
     used_bytes                     INTEGER NOT NULL DEFAULT 0,
@@ -40,7 +42,7 @@ CREATE TABLE devices (
     account_id           TEXT    NOT NULL REFERENCES accounts(account_id) ON DELETE CASCADE,
     public_key           TEXT    NOT NULL,
     status               TEXT    NOT NULL DEFAULT 'ACTIVE',
-    created_at           INTEGER NOT NULL,
+    created_at           INTEGER NOT NULL DEFAULT (CAST(unixepoch('subsec') * 1000 AS INTEGER)),
     revoked_at           INTEGER,
     display_name         TEXT,
     last_seen_at         INTEGER,
@@ -58,8 +60,8 @@ CREATE TABLE folders (
     account_id       TEXT    NOT NULL REFERENCES accounts(account_id) ON DELETE CASCADE,
     parent_folder_id TEXT,
     encrypted_name   TEXT,
-    created_at       INTEGER NOT NULL,
-    updated_at       INTEGER NOT NULL
+    created_at       INTEGER NOT NULL DEFAULT (CAST(unixepoch('subsec') * 1000 AS INTEGER)),
+    updated_at       INTEGER NOT NULL DEFAULT (CAST(unixepoch('subsec') * 1000 AS INTEGER))
 ) STRICT;
 CREATE INDEX idx_folders_account ON folders(account_id);
 
@@ -68,8 +70,8 @@ CREATE TABLE files (
     account_id       TEXT    NOT NULL REFERENCES accounts(account_id) ON DELETE CASCADE,
     parent_folder_id TEXT,
     encrypted_name   TEXT,
-    created_at       INTEGER NOT NULL,
-    updated_at       INTEGER NOT NULL,
+    created_at       INTEGER NOT NULL DEFAULT (CAST(unixepoch('subsec') * 1000 AS INTEGER)),
+    updated_at       INTEGER NOT NULL DEFAULT (CAST(unixepoch('subsec') * 1000 AS INTEGER)),
     preferred_version INTEGER
 ) STRICT;
 CREATE INDEX idx_files_account ON files(account_id);
@@ -81,7 +83,7 @@ CREATE TABLE file_versions (
     conflict_status   TEXT    NOT NULL DEFAULT 'none' CHECK (conflict_status IN ('none', 'flagged', 'resolved')),
     version_hash      TEXT    NOT NULL,
     shard_count       INTEGER NOT NULL,
-    created_at        INTEGER NOT NULL,
+    created_at        INTEGER NOT NULL DEFAULT (CAST(unixepoch('subsec') * 1000 AS INTEGER)),
     conflicted_name   TEXT,
     PRIMARY KEY (file_id, version_number)
 ) STRICT;
@@ -103,7 +105,7 @@ CREATE TABLE file_locations (
     node_id        TEXT    NOT NULL REFERENCES storage_nodes(node_id) ON DELETE CASCADE,
     status         TEXT    NOT NULL DEFAULT 'RELAY_BUFFERED',
     buffer_id      TEXT,
-    updated_at     INTEGER NOT NULL,
+    updated_at     INTEGER NOT NULL DEFAULT (CAST(unixepoch('subsec') * 1000 AS INTEGER)),
     hash           TEXT,
     size_bytes     INTEGER,
     source_device  TEXT,
@@ -117,7 +119,7 @@ CREATE TABLE folder_key_envelopes (
     recipient_id   TEXT    NOT NULL,
     recipient_kind TEXT    NOT NULL CHECK (recipient_kind IN ('device', 'node', 'recovery')),
     encrypted_key  TEXT    NOT NULL,
-    created_at     INTEGER NOT NULL,
+    created_at     INTEGER NOT NULL DEFAULT (CAST(unixepoch('subsec') * 1000 AS INTEGER)),
     PRIMARY KEY (folder_id, recipient_id)
 ) STRICT;
 CREATE INDEX idx_folder_key_envelopes_recipient ON folder_key_envelopes(recipient_id);
@@ -126,7 +128,7 @@ CREATE TABLE key_envelopes (
     file_id        TEXT    NOT NULL REFERENCES files(file_id) ON DELETE CASCADE,
     recipient_id   TEXT    NOT NULL,
     encrypted_key  TEXT    NOT NULL,
-    created_at     INTEGER NOT NULL,
+    created_at     INTEGER NOT NULL DEFAULT (CAST(unixepoch('subsec') * 1000 AS INTEGER)),
     recipient_kind TEXT    NOT NULL DEFAULT 'device' CHECK (recipient_kind IN ('device', 'node', 'recovery')),
     PRIMARY KEY (file_id, recipient_id)
 ) STRICT;
@@ -136,7 +138,7 @@ CREATE TABLE pairing_codes (
     account_id TEXT    NOT NULL REFERENCES accounts(account_id) ON DELETE CASCADE,
     status     TEXT    NOT NULL DEFAULT 'PENDING',
     node_id    TEXT    REFERENCES storage_nodes(node_id) ON DELETE SET NULL,
-    created_at INTEGER NOT NULL,
+    created_at INTEGER NOT NULL DEFAULT (CAST(unixepoch('subsec') * 1000 AS INTEGER)),
     expires_at INTEGER NOT NULL,
     consumed_at INTEGER
 ) STRICT;
@@ -150,7 +152,7 @@ CREATE TABLE pairing_sessions (
     device_public_key TEXT    NOT NULL,
     token             TEXT    NOT NULL UNIQUE,
     status            TEXT    NOT NULL DEFAULT 'ACTIVE',
-    created_at        INTEGER NOT NULL,
+    created_at        INTEGER NOT NULL DEFAULT (CAST(unixepoch('subsec') * 1000 AS INTEGER)),
     consumed_at       INTEGER,
     expires_at        INTEGER NOT NULL
 ) STRICT;
@@ -165,8 +167,8 @@ CREATE TABLE push_tokens (
     notify_conflicts      INTEGER NOT NULL DEFAULT 1,
     notify_device_offline INTEGER NOT NULL DEFAULT 1,
     notify_sync_complete  INTEGER NOT NULL DEFAULT 1,
-    created_at            INTEGER NOT NULL,
-    updated_at            INTEGER NOT NULL
+    created_at            INTEGER NOT NULL DEFAULT (CAST(unixepoch('subsec') * 1000 AS INTEGER)),
+    updated_at            INTEGER NOT NULL DEFAULT (CAST(unixepoch('subsec') * 1000 AS INTEGER))
 ) STRICT;
 CREATE INDEX idx_push_tokens_account ON push_tokens(account_id);
 
@@ -175,8 +177,8 @@ CREATE TABLE rebuild_files (
     account_id       TEXT    NOT NULL REFERENCES accounts(account_id) ON DELETE CASCADE,
     parent_folder_id TEXT,
     encrypted_name   TEXT,
-    created_at       INTEGER NOT NULL,
-    updated_at       INTEGER NOT NULL,
+    created_at       INTEGER NOT NULL DEFAULT (CAST(unixepoch('subsec') * 1000 AS INTEGER)),
+    updated_at       INTEGER NOT NULL DEFAULT (CAST(unixepoch('subsec') * 1000 AS INTEGER)),
     PRIMARY KEY (account_id, file_id)
 ) STRICT;
 CREATE INDEX idx_rebuild_files_account ON rebuild_files(account_id);
@@ -189,7 +191,7 @@ CREATE TABLE rebuild_file_versions (
     conflict_status   TEXT    NOT NULL DEFAULT 'none' CHECK (conflict_status IN ('none', 'flagged', 'resolved')),
     version_hash      TEXT    NOT NULL,
     shard_count       INTEGER NOT NULL,
-    created_at        INTEGER NOT NULL,
+    created_at        INTEGER NOT NULL DEFAULT (CAST(unixepoch('subsec') * 1000 AS INTEGER)),
     conflicted_name   TEXT,
     PRIMARY KEY (account_id, file_id, version_number)
 ) STRICT;
@@ -209,7 +211,7 @@ CREATE TABLE rebuild_folders (
     folder_id        TEXT    NOT NULL,
     parent_folder_id TEXT,
     encrypted_name   TEXT,
-    created_at       INTEGER NOT NULL,
+    created_at       INTEGER NOT NULL DEFAULT (CAST(unixepoch('subsec') * 1000 AS INTEGER)),
     PRIMARY KEY (account_id, folder_id)
 ) STRICT;
 
@@ -219,7 +221,7 @@ CREATE TABLE rebuild_folder_key_envelopes (
     recipient_id   TEXT    NOT NULL,
     recipient_kind TEXT    NOT NULL CHECK (recipient_kind IN ('device', 'node', 'recovery')),
     encrypted_key  TEXT    NOT NULL,
-    created_at     INTEGER NOT NULL,
+    created_at     INTEGER NOT NULL DEFAULT (CAST(unixepoch('subsec') * 1000 AS INTEGER)),
     PRIMARY KEY (account_id, folder_id, recipient_id)
 ) STRICT;
 
@@ -229,7 +231,7 @@ CREATE TABLE rebuild_key_envelopes (
     recipient_id   TEXT    NOT NULL,
     recipient_kind TEXT    NOT NULL CHECK (recipient_kind IN ('device', 'node', 'recovery')),
     encrypted_key  TEXT    NOT NULL,
-    created_at     INTEGER NOT NULL,
+    created_at     INTEGER NOT NULL DEFAULT (CAST(unixepoch('subsec') * 1000 AS INTEGER)),
     PRIMARY KEY (account_id, file_id, recipient_id)
 ) STRICT;
 
@@ -250,7 +252,7 @@ CREATE TABLE rebuild_activities (
     file_id     TEXT,
     path        TEXT,
     detail      TEXT,
-    created_at  INTEGER NOT NULL,
+    created_at  INTEGER NOT NULL DEFAULT (CAST(unixepoch('subsec') * 1000 AS INTEGER)),
     PRIMARY KEY (account_id, activity_id)
 ) STRICT;
 
@@ -260,7 +262,7 @@ CREATE TABLE rebuild_requests (
     node_id      TEXT    NOT NULL REFERENCES storage_nodes(node_id) ON DELETE CASCADE,
     reason       TEXT    NOT NULL DEFAULT 'admin',
     status       TEXT    NOT NULL DEFAULT 'pending',
-    created_at   INTEGER NOT NULL,
+    created_at   INTEGER NOT NULL DEFAULT (CAST(unixepoch('subsec') * 1000 AS INTEGER)),
     delivered_at INTEGER
 ) STRICT;
 CREATE INDEX idx_rebuild_requests_account ON rebuild_requests(account_id, status);
@@ -270,7 +272,7 @@ CREATE TABLE recovery_challenges (
     account_id TEXT    NOT NULL REFERENCES accounts(account_id) ON DELETE CASCADE,
     expires_at INTEGER NOT NULL,
     used_at    INTEGER,
-    created_at INTEGER NOT NULL
+    created_at INTEGER NOT NULL DEFAULT (CAST(unixepoch('subsec') * 1000 AS INTEGER))
 ) STRICT;
 CREATE INDEX idx_recovery_challenges_account ON recovery_challenges(account_id);
 
@@ -279,9 +281,9 @@ CREATE TABLE sessions (
     session_hash TEXT    NOT NULL UNIQUE,
     account_id   TEXT    NOT NULL REFERENCES accounts(account_id) ON DELETE CASCADE,
     device_id    TEXT    NOT NULL REFERENCES devices(device_id) ON DELETE CASCADE,
-    created_at   INTEGER NOT NULL,
+    created_at   INTEGER NOT NULL DEFAULT (CAST(unixepoch('subsec') * 1000 AS INTEGER)),
     expires_at   INTEGER NOT NULL,
-    last_used_at INTEGER NOT NULL,
+    last_used_at INTEGER NOT NULL DEFAULT (CAST(unixepoch('subsec') * 1000 AS INTEGER)),
     revoked_at   INTEGER
 ) STRICT;
 CREATE INDEX idx_sessions_account ON sessions(account_id);
@@ -291,7 +293,7 @@ CREATE TABLE sync_cursors (
     account_id    TEXT    NOT NULL,
     peer_id       TEXT    NOT NULL,
     last_sequence INTEGER NOT NULL,
-    updated_at    INTEGER NOT NULL,
+    updated_at    INTEGER NOT NULL DEFAULT (CAST(unixepoch('subsec') * 1000 AS INTEGER)),
     PRIMARY KEY (account_id, peer_id)
 ) STRICT;
 
@@ -312,7 +314,7 @@ CREATE TABLE sync_notices (
     account_id     TEXT    NOT NULL REFERENCES accounts(account_id) ON DELETE CASCADE,
     file_id        TEXT    NOT NULL,
     version_number INTEGER NOT NULL,
-    notified_at    INTEGER NOT NULL,
+    notified_at    INTEGER NOT NULL DEFAULT (CAST(unixepoch('subsec') * 1000 AS INTEGER)),
     PRIMARY KEY (account_id, file_id, version_number)
 ) STRICT;
 
@@ -345,8 +347,8 @@ CREATE TABLE web_push_subscriptions (
     notify_conflicts      INTEGER NOT NULL DEFAULT 1,
     notify_device_offline INTEGER NOT NULL DEFAULT 1,
     notify_sync_complete  INTEGER NOT NULL DEFAULT 1,
-    created_at            INTEGER NOT NULL,
-    updated_at            INTEGER NOT NULL
+    created_at            INTEGER NOT NULL DEFAULT (CAST(unixepoch('subsec') * 1000 AS INTEGER)),
+    updated_at            INTEGER NOT NULL DEFAULT (CAST(unixepoch('subsec') * 1000 AS INTEGER))
 ) STRICT;
 CREATE INDEX idx_web_push_account ON web_push_subscriptions(account_id);
 
@@ -359,7 +361,7 @@ CREATE TABLE activities (
     file_id     TEXT,
     path        TEXT,
     detail      TEXT,
-    created_at  INTEGER NOT NULL,
+    created_at  INTEGER NOT NULL DEFAULT (CAST(unixepoch('subsec') * 1000 AS INTEGER)),
     PRIMARY KEY (account_id, activity_id)
 ) STRICT;
 CREATE INDEX idx_activities_account_created ON activities(account_id, created_at DESC);
@@ -367,6 +369,6 @@ CREATE INDEX idx_activities_account_created ON activities(account_id, created_at
 CREATE TABLE conflict_notices (
     account_id  TEXT    NOT NULL REFERENCES accounts(account_id) ON DELETE CASCADE,
     file_id     TEXT    NOT NULL,
-    notified_at INTEGER NOT NULL,
+    notified_at INTEGER NOT NULL DEFAULT (CAST(unixepoch('subsec') * 1000 AS INTEGER)),
     PRIMARY KEY (account_id, file_id)
 ) STRICT;

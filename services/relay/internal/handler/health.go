@@ -24,16 +24,19 @@ func Health(pool *db.Pool, redisClient *rdb.Client) http.HandlerFunc {
 		services := make(map[string]string)
 		allOK := true
 
-		// Check PostgreSQL
+		// Check SQLite with a real query, not just a pool ping: a pool can be
+		// open while the file is unreadable, and the deploy healthcheck greps
+		// for this status.
 		if pool != nil {
-			if err := pool.Ping(ctx); err != nil {
-				services["postgres"] = "unhealthy: " + err.Error()
+			var one int
+			if err := pool.QueryRow(ctx, `SELECT 1`).Scan(&one); err != nil {
+				services["sqlite"] = "unhealthy: " + err.Error()
 				allOK = false
 			} else {
-				services["postgres"] = "healthy"
+				services["sqlite"] = "healthy"
 			}
 		} else {
-			services["postgres"] = "not configured"
+			services["sqlite"] = "not configured"
 		}
 
 		// Check Redis

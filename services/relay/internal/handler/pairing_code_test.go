@@ -298,7 +298,7 @@ func TestRedeemPairingCodeExpired(t *testing.T) {
 	hash := hashCode(normalizeCode(code))
 	_, err := pool.Exec(context.Background(),
 		`INSERT INTO pairing_codes (code_hash, account_id, status, expires_at)
-		 VALUES ($1, $2, 'PENDING', NOW() - interval '1 minute')`, hash, accountID)
+		 VALUES ($1, $2, 'PENDING', now() - 60000)`, hash, accountID)
 	require.NoError(t, err)
 
 	pubKey := "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899"
@@ -526,7 +526,7 @@ func TestRedeemPairingCodeRevoked(t *testing.T) {
 	code := uuid.NewString()
 	_, err := pool.Exec(context.Background(),
 		`INSERT INTO pairing_codes (code_hash, account_id, status, expires_at)
-		 VALUES ($1, $2, 'REVOKED', NOW() + interval '5 minutes')`,
+		 VALUES ($1, $2, 'REVOKED', now() + 300000)`,
 		hashCode(normalizeCode(code)), accountID)
 	require.NoError(t, err)
 

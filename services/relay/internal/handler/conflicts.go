@@ -58,12 +58,9 @@ func ResolveConflict(pool *db.Pool, h *hub.Hub) http.HandlerFunc {
 		}
 		defer tx.Rollback(ctx) //nolint:errcheck
 
-		// Serialize per account so the relay-origin sequence cannot race.
-		if _, err := tx.Exec(ctx,
-			`SELECT pg_advisory_xact_lock(hashtext($1))`, "relay-events:"+accountID); err != nil {
-			respondError(w, http.StatusInternalServerError, "failed to lock")
-			return
-		}
+		// Per-account serialization of the relay-origin sequence is provided by
+		// the single-writer transaction: the writer pool has one connection and
+		// BEGIN IMMEDIATE, so no two conflicting transactions overlap.
 
 		// A chosen version must exist and belong to this account before it can
 		// become the file's preferred version.

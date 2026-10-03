@@ -3,7 +3,7 @@ package tombstone
 import (
 	"context"
 	"fmt"
-	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -11,18 +11,22 @@ import (
 
 	"github.com/TalibMushtaq/nodus/services/relay/internal/config"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/db"
-	"github.com/TalibMushtaq/nodus/services/relay/internal/testutil"
 )
 
 type pruneEnv struct {
 	pool *db.Pool
 	ctx  context.Context
+	path string
 }
 
 func setupPrune(t *testing.T) *pruneEnv {
 	t.Helper()
-	pool, ctx := testutil.OpenTestDB(t)
-	return &pruneEnv{pool: pool, ctx: ctx}
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "relay.db")
+	pool, err := db.Open(ctx, &config.Config{DBPath: path})
+	require.NoError(t, err)
+	t.Cleanup(pool.Close)
+	return &pruneEnv{pool: pool, ctx: ctx, path: path}
 }
 
 // account returns a fresh account id, isolated from other tests' rows.
@@ -140,35 +144,32 @@ func TestPruneDeletesTheEntityToo(t *testing.T) {
 // single transaction over the whole backlog means any row another transaction
 // happens to hold blocks every other purge behind it and nothing commits at all
 // — one locked row stalled all 19 other purges.
-func TestPruneSkipsRowsAnotherTransactionHolds(t *testing.T) {
+// TestPruneProgressesWhileAnotherReaderHoldsASnapshot pins the SQLite model
+// that replaced PostgreSQL's FOR UPDATE SKIP LOCKED: a reader holding a
+// snapshot does not block the single writer, so a sweep never stalls behind an
+// unrelated long-running read. (Writer-vs-writer contention is serialized and
+// covered by the busy-behavior tests.)
+func TestPruneProgressesWhileAnotherReaderHoldsASnapshot(t *testing.T) {
 	e := setupPrune(t)
 	acct := e.account(t)
 	expired := time.Now().UTC().Add(-time.Hour)
 
 	const total = 20
-	held := "file-held"
 	for i := range total {
-		id := fmt.Sprintf("file-locked-%d", i)
-		if i == 0 {
-			id = held
-		}
-		e.tombstone(t, acct, "file", id, time.Now().UTC().Add(-200*24*time.Hour), expired)
+		e.tombstone(t, acct, "file", fmt.Sprintf("file-locked-%d", i),
+			time.Now().UTC().Add(-200*24*time.Hour), expired)
 	}
 
-	// A second connection holds a row lock on one tombstone, as a concurrent
-	// sweep or any long-running transaction on the table would.
-	other, err := db.Open(e.ctx, &config.Config{DatabaseURL: os.Getenv("TEST_DATABASE_URL")})
-	require.NoError(t, err)
-	t.Cleanup(other.Close)
-	otx, err := other.Begin(e.ctx)
+	// The same pool opens a read snapshot on its reader connection and keeps it
+	// open while the writer sweeps.
+	otx, err := e.pool.BeginRead(e.ctx)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = otx.Rollback(context.Background()) })
-	_, err = otx.Exec(e.ctx, `SELECT 1 FROM tombstones WHERE account_id = $1 AND entity_id = $2 FOR UPDATE`, acct, held)
-	require.NoError(t, err)
 
-	// The sweep must finish anyway. If it blocks, this is the failure: a prune
-	// that cannot make progress because of an unrelated transaction is a prune
-	// that never runs.
+	var one int
+	require.NoError(t, otx.QueryRow(e.ctx, `SELECT 1 FROM tombstones WHERE account_id = $1 LIMIT 1`, acct).Scan(&one))
+
+	// The sweep must finish anyway: a reader cannot hold the write lock.
 	done := make(chan struct {
 		purged int
 		err    error
@@ -184,21 +185,12 @@ func TestPruneSkipsRowsAnotherTransactionHolds(t *testing.T) {
 	select {
 	case result := <-done:
 		require.NoError(t, result.err)
-		require.Equal(t, total-1, result.purged,
-			"every tombstone except the locked one should have been purged")
+		require.Equal(t, total, result.purged, "the sweep must not block behind a reader")
 	case <-time.After(10 * time.Second):
-		t.Fatal("the prune blocked behind an unrelated row lock instead of skipping it")
+		t.Fatal("the prune blocked behind an unrelated reader")
 	}
-
-	require.Equal(t, 1, e.countTombstones(t, acct), "only the locked tombstone should remain")
-
-	// Once the lock is released the held row is picked up by a later sweep, so
-	// skipping it costs nothing but a delay.
-	require.NoError(t, otx.Rollback(e.ctx))
-	purged, err := pruneExpiredTombstones(e.ctx, e.pool)
-	require.NoError(t, err)
-	require.Equal(t, 1, purged)
 	require.Zero(t, e.countTombstones(t, acct))
+	require.NoError(t, otx.Rollback(e.ctx))
 }
 
 // TestPruneWorksThroughABacklogLargerThanOneBatch covers the batching itself: a

@@ -699,7 +699,6 @@ func applyNodeBatch(
 	if err := tx.QueryRow(ctx, `
 		SELECT last_sequence FROM sync_cursors
 		WHERE account_id = $1 AND peer_id = $2
-		FOR UPDATE
 	`, accountID, nodeID).Scan(&lastSeq); err != nil {
 		log.Printf("[sync] lock node cursor: %v", err)
 		return failure("internal_error", 0)
@@ -805,7 +804,6 @@ func applyDeviceBatch(
 	if err := tx.QueryRow(ctx, `
 		SELECT last_sequence FROM sync_cursors
 		WHERE account_id = $1 AND peer_id = $2
-		FOR UPDATE
 	`, accountID, deviceID).Scan(&lastSeq); err != nil {
 		log.Printf("[sync] lock device cursor: %v", err)
 		return failure("internal_error", 0)
@@ -1012,7 +1010,7 @@ func applySingleEventTx(
 			// delete timestamp exactly like the file-tombstone path below.
 			if _, err := tx.Exec(ctx, `
 				INSERT INTO tombstones (account_id, entity_type, entity_id, deleted_at, purge_after)
-				VALUES ($1, 'folder', $2, $3, $3::timestamptz + INTERVAL '90 days')
+				VALUES ($1, 'folder', $2, $3, $3 + 7776000000)
 				ON CONFLICT (account_id, entity_type, entity_id) DO NOTHING
 			`, accountID, data.FolderID, t); err != nil {
 				return false
@@ -1205,7 +1203,7 @@ func applySingleEventTx(
 			// original deadline so a restore+delete cycle cannot extend it.
 			if _, err := tx.Exec(ctx, `
 				INSERT INTO tombstones (account_id, entity_type, entity_id, deleted_at, purge_after)
-				VALUES ($1, $2, $3, $4, $4::timestamptz + INTERVAL '90 days')
+				VALUES ($1, $2, $3, $4, $4 + 7776000000)
 				ON CONFLICT (account_id, entity_type, entity_id) DO NOTHING
 			`, accountID, tData.EntityType, tData.EntityID, t); err != nil {
 				return false
@@ -1373,7 +1371,7 @@ func applySingleEventTx(
 		INSERT INTO sync_cursors (account_id, peer_id, last_sequence, updated_at)
 		VALUES ($1, $2, $3, NOW())
 		ON CONFLICT (account_id, peer_id) DO UPDATE SET
-			last_sequence = GREATEST(sync_cursors.last_sequence, EXCLUDED.last_sequence),
+			last_sequence = MAX(sync_cursors.last_sequence, EXCLUDED.last_sequence),
 			updated_at = NOW()
 	`, accountID, item.OriginID, item.OriginSequence); err != nil {
 		return false
