@@ -96,14 +96,19 @@ func translate(err error) error {
 			return fmt.Errorf("%w: %s", ErrForeignKey, pgErr.Message)
 		}
 	}
-	return err
+	return translateSQLite(err)
 }
 
-// Pool owns the backing connection pool and is the concrete DB handed to the
+// Pool owns the backing connection pools and is the concrete DB handed to the
 // service. Callers keep taking *Pool; the method set is what makes the backend
 // swappable.
+//
+// There are two handles because SQLite has a single writer: the writer pool is
+// capped at one connection so every write serializes, while reads can use a
+// separate connection. PostgreSQL uses the same *sql.DB for both.
 type Pool struct {
-	db *sql.DB
+	writer *sql.DB
+	reader *sql.DB
 }
 
 // Compile-time confirmation that *Pool satisfies the service-facing DB.
@@ -136,11 +141,11 @@ func Open(ctx context.Context, cfg *config.Config) (*Pool, error) {
 		return nil, fmt.Errorf("pinging postgres: %w", err)
 	}
 
-	return &Pool{db: pool}, nil
+	return &Pool{writer: pool, reader: pool}, nil
 }
 
 func (p *Pool) Exec(ctx context.Context, query string, args ...any) (CommandTag, error) {
-	res, err := p.db.ExecContext(ctx, query, args...)
+	res, err := p.writer.ExecContext(ctx, query, args...)
 	if err != nil {
 		return nil, translate(err)
 	}
@@ -148,7 +153,7 @@ func (p *Pool) Exec(ctx context.Context, query string, args ...any) (CommandTag,
 }
 
 func (p *Pool) Query(ctx context.Context, query string, args ...any) (Rows, error) {
-	rows, err := p.db.QueryContext(ctx, query, args...)
+	rows, err := p.reader.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, translate(err)
 	}
@@ -156,11 +161,11 @@ func (p *Pool) Query(ctx context.Context, query string, args ...any) (Rows, erro
 }
 
 func (p *Pool) QueryRow(ctx context.Context, query string, args ...any) Row {
-	return sqlRow{p.db.QueryRowContext(ctx, query, args...)}
+	return sqlRow{p.reader.QueryRowContext(ctx, query, args...)}
 }
 
 func (p *Pool) Begin(ctx context.Context) (Tx, error) {
-	tx, err := p.db.BeginTx(ctx, nil)
+	tx, err := p.writer.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, translate(err)
 	}
@@ -169,11 +174,14 @@ func (p *Pool) Begin(ctx context.Context) (Tx, error) {
 }
 
 func (p *Pool) Ping(ctx context.Context) error {
-	return p.db.PingContext(ctx)
+	return p.writer.PingContext(ctx)
 }
 
 func (p *Pool) Close() {
-	_ = p.db.Close()
+	_ = p.writer.Close()
+	if p.reader != p.writer {
+		_ = p.reader.Close()
+	}
 }
 
 // WithTx runs fn inside a transaction, rolling back on error or panic and

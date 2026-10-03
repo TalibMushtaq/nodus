@@ -1,5 +1,20 @@
 # Changelog
 
+## [2026-10-03] - Relay: add the SQLite driver, pools, and baseline schema
+
+**What changed:**
+
+- New `services/relay/internal/db/sqlite.go`: `openSQLite` (writer pool capped at one connection with `_txlock=immediate`, reader pool for reads), DSN-embedded pragmas (`foreign_keys`, `busy_timeout`, WAL, `synchronous(NORMAL)`), a `RunSQLiteMigrations` runner, and SQLite result-code translation.
+- New `internal/db/sqlite_migrations/0001_baseline.{up,down}.sql`: a clean STRICT schema with timestamps as INTEGER unix milliseconds, JSON/UUID as TEXT, and `AUTOINCREMENT` on the former `BIGSERIAL`.
+- `internal/db/db.go`: `Pool` now holds separate writer/reader handles; PostgreSQL points both at the same `*sql.DB`.
+- Tests cover baseline application and idempotency, pragmas on every pooled reader connection, savepoint rollback-and-continue, and foreign-key enforcement.
+
+**Why:** phase 4 of the PostgreSQL-to-SQLite migration. It is additive and not yet wired into `Open`, so the Postgres path is unchanged.
+
+**Impact:** adds the `modernc.org/sqlite` dependency. Full Postgres integration suite and the new SQLite unit tests pass.
+
+**Follow-ups:** the cutover switches `Open` to `openSQLite` and rewrites the inline SQL.
+
 ## [2026-10-03] - Relay: back the database abstraction with database/sql
 
 **What changed:**
