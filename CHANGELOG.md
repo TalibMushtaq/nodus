@@ -1,5 +1,17 @@
 # Changelog
 
+## [2026-10-03] - Relay: characterize sync duplicate suppression and cursor serialization
+
+**What changed:**
+
+- New `services/relay/internal/handler/sync_characterization_test.go` pins the invariants the existing sync tests did not cover: a replay below the stored cursor is rejected as `sequence_regression` without re-projecting or re-journaling; an already-journaled `event_id` arriving under a fresh origin sequence is acknowledged but not re-projected; concurrent node batches and concurrent first-time device batches for the same peer serialize to a single winner; the cursor upsert leaves exactly one row.
+
+**Why:** the relay's storage layer is being migrated from PostgreSQL to SQLite, where the `FOR UPDATE` cursor lock is replaced by an immediate write transaction. These tests pin the concurrency and duplicate-suppression behavior against the current PostgreSQL implementation first, so the migration cannot silently weaken it.
+
+**Impact:** test-only, `services/relay/internal/handler`. The tests self-skip unless `TEST_DATABASE_URL` is set; run via `services/relay/scripts/test-integration.sh`.
+
+**Follow-ups:** none.
+
 ## [2026-10-03] - Web: scope local content to the signed-in account
 
 **What changed:**
