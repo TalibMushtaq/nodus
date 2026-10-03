@@ -1,5 +1,17 @@
 # Changelog
 
+## [2026-10-03] - Relay: back the database abstraction with database/sql
+
+**What changed:**
+
+- `services/relay/internal/db/db.go`: replaced the pgxpool-backed `Pool` with `database/sql` opened through the pgx stdlib driver. `Tx.Begin` now issues real `SAVEPOINT`/`RELEASE`/`ROLLBACK TO` statements, since `database/sql` has no nested transaction. Error translation matches `sql.ErrNoRows` as well as `pgconn.PgError`.
+
+**Why:** `database/sql` is the interface the SQLite driver will plug into; moving to it while still on PostgreSQL isolates the driver swap from the later query rewrite.
+
+**Impact:** `services/relay` internals. Behavior unchanged; full Postgres integration suite passes, including the node-batch savepoint path and the tombstone `ANY()` purge.
+
+**Follow-ups:** the binary no longer imports pgxpool; `go mod tidy` keeps pgx for the stdlib driver and `pgconn` error codes.
+
 ## [2026-10-03] - Relay: centralize integration-test database setup
 
 **What changed:**

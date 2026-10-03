@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"database/sql"
 	"embed"
 	"errors"
 	"fmt"
@@ -11,9 +12,8 @@ import (
 	"github.com/golang-migrate/migrate/v4"
 	_ "github.com/golang-migrate/migrate/v4/database/postgres"
 	"github.com/golang-migrate/migrate/v4/source/iofs"
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/jackc/pgx/v5/pgxpool"
+	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
 //go:embed migrations/*.sql
@@ -23,8 +23,9 @@ var migrationsFS embed.FS
 // repository layer. The service keeps writing SQL inline; what changes is that
 // the types in the signatures are ours, not the driver's, so the storage
 // backend can move from PostgreSQL to SQLite without touching every call site a
-// second time. Ecosystem types (pgx today, database/sql tomorrow) satisfy these
-// interfaces directly, which is what keeps the wrappers small.
+// second time. database/sql types do not satisfy these interfaces directly
+// (Close/RowsAffected signatures differ, and there is no nested transaction), so
+// the small wrappers below adapt them.
 
 // CommandTag is the result of an Exec: at least the affected-row count.
 type CommandTag interface {
@@ -45,9 +46,10 @@ type Rows interface {
 	Close()
 }
 
-// Tx is one transaction. Begin returns a nested transaction (a savepoint in
-// both PostgreSQL and SQLite) so a failing statement can be rolled back without
-// poisoning the enclosing transaction.
+// Tx is one transaction. Begin returns a nested transaction (a savepoint) so a
+// failing statement can be rolled back without poisoning the enclosing
+// transaction. database/sql has no nested transaction, so the savepoint is
+// issued explicitly.
 type Tx interface {
 	Exec(ctx context.Context, query string, args ...any) (CommandTag, error)
 	Query(ctx context.Context, query string, args ...any) (Rows, error)
@@ -82,7 +84,7 @@ func translate(err error) error {
 	if err == nil {
 		return nil
 	}
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, sql.ErrNoRows) {
 		return ErrNotFound
 	}
 	var pgErr *pgconn.PgError
@@ -101,7 +103,7 @@ func translate(err error) error {
 // service. Callers keep taking *Pool; the method set is what makes the backend
 // swappable.
 type Pool struct {
-	pool *pgxpool.Pool
+	db *sql.DB
 }
 
 // Compile-time confirmation that *Pool satisfies the service-facing DB.
@@ -114,64 +116,64 @@ func Open(ctx context.Context, cfg *config.Config) (*Pool, error) {
 		return nil, fmt.Errorf("running migrations: %w", err)
 	}
 
-	// 2. Open pgx pool
-	poolConfig, err := pgxpool.ParseConfig(cfg.DatabaseURL)
+	// 2. Open the database/sql pool through the pgx stdlib driver.
+	pool, err := sql.Open("pgx", cfg.DatabaseURL)
 	if err != nil {
 		return nil, fmt.Errorf("parsing db config: %w", err)
 	}
 
-	poolConfig.MaxConns = 25
-	poolConfig.MinConns = 2
-	poolConfig.MaxConnLifetime = 1 * time.Hour
-	poolConfig.MaxConnIdleTime = 30 * time.Minute
-
-	pool, err := pgxpool.NewWithConfig(ctx, poolConfig)
-	if err != nil {
-		return nil, fmt.Errorf("connecting to postgres: %w", err)
-	}
+	pool.SetMaxOpenConns(25)
+	pool.SetMaxIdleConns(2)
+	pool.SetConnMaxLifetime(1 * time.Hour)
+	pool.SetConnMaxIdleTime(30 * time.Minute)
 
 	// Ping database to ensure connectivity
 	pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	if err := pool.Ping(pingCtx); err != nil {
+	if err := pool.PingContext(pingCtx); err != nil {
 		pool.Close()
 		return nil, fmt.Errorf("pinging postgres: %w", err)
 	}
 
-	return &Pool{pool: pool}, nil
+	return &Pool{db: pool}, nil
 }
 
 func (p *Pool) Exec(ctx context.Context, query string, args ...any) (CommandTag, error) {
-	return p.pool.Exec(ctx, query, args...)
+	res, err := p.db.ExecContext(ctx, query, args...)
+	if err != nil {
+		return nil, translate(err)
+	}
+	return sqlResult{res}, nil
 }
 
 func (p *Pool) Query(ctx context.Context, query string, args ...any) (Rows, error) {
-	rows, err := p.pool.Query(ctx, query, args...)
+	rows, err := p.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, translate(err)
 	}
-	return rowsWrapper{rows}, nil
+	return sqlRows{rows}, nil
 }
 
 func (p *Pool) QueryRow(ctx context.Context, query string, args ...any) Row {
-	return rowWrapper{p.pool.QueryRow(ctx, query, args...)}
+	return sqlRow{p.db.QueryRowContext(ctx, query, args...)}
 }
 
 func (p *Pool) Begin(ctx context.Context) (Tx, error) {
-	tx, err := p.pool.Begin(ctx)
+	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, translate(err)
 	}
-	return txWrapper{tx}, nil
+	seq := 0
+	return &sqlTx{tx: tx, seq: &seq}, nil
 }
 
 func (p *Pool) Ping(ctx context.Context) error {
-	return p.pool.Ping(ctx)
+	return p.db.PingContext(ctx)
 }
 
 func (p *Pool) Close() {
-	p.pool.Close()
+	_ = p.db.Close()
 }
 
 // WithTx runs fn inside a transaction, rolling back on error or panic and
@@ -195,57 +197,96 @@ func WithTx(ctx context.Context, pool *Pool, fn func(Tx) error) (err error) {
 	return tx.Commit(ctx)
 }
 
-// rowWrapper translates the driver's no-rows sentinel on Scan.
-type rowWrapper struct {
-	row pgx.Row
+// sqlResult adapts sql.Result to CommandTag.
+type sqlResult struct {
+	res sql.Result
 }
 
-func (w rowWrapper) Scan(dest ...any) error {
+func (r sqlResult) RowsAffected() int64 {
+	n, _ := r.res.RowsAffected()
+	return n
+}
+
+// sqlRow translates the driver's no-rows sentinel on Scan.
+type sqlRow struct {
+	row *sql.Row
+}
+
+func (w sqlRow) Scan(dest ...any) error {
 	return translate(w.row.Scan(dest...))
 }
 
-// rowsWrapper passes iteration through and translates Scan/Err.
-type rowsWrapper struct {
-	rows pgx.Rows
+// sqlRows passes iteration through and translates Scan/Err.
+type sqlRows struct {
+	rows *sql.Rows
 }
 
-func (w rowsWrapper) Next() bool             { return w.rows.Next() }
-func (w rowsWrapper) Scan(dest ...any) error { return translate(w.rows.Scan(dest...)) }
-func (w rowsWrapper) Err() error             { return translate(w.rows.Err()) }
-func (w rowsWrapper) Close()                 { w.rows.Close() }
+func (w sqlRows) Next() bool             { return w.rows.Next() }
+func (w sqlRows) Scan(dest ...any) error { return translate(w.rows.Scan(dest...)) }
+func (w sqlRows) Err() error             { return translate(w.rows.Err()) }
+func (w sqlRows) Close()                 { _ = w.rows.Close() }
 
-// txWrapper adapts pgx.Tx to Tx and translates driver errors.
-type txWrapper struct {
-	tx pgx.Tx
+// sqlTx adapts *sql.Tx to Tx and implements nested transactions as SAVEPOINTs.
+// A root transaction shares one counter with its savepoints so names stay
+// unique; a savepoint commits with RELEASE and rolls back with ROLLBACK TO
+// followed by RELEASE, since ROLLBACK TO does not pop the savepoint.
+type sqlTx struct {
+	tx  *sql.Tx
+	sp  string
+	seq *int
 }
 
-func (w txWrapper) Exec(ctx context.Context, query string, args ...any) (CommandTag, error) {
-	return w.tx.Exec(ctx, query, args...)
-}
-
-func (w txWrapper) Query(ctx context.Context, query string, args ...any) (Rows, error) {
-	rows, err := w.tx.Query(ctx, query, args...)
+func (t *sqlTx) Exec(ctx context.Context, query string, args ...any) (CommandTag, error) {
+	res, err := t.tx.ExecContext(ctx, query, args...)
 	if err != nil {
 		return nil, translate(err)
 	}
-	return rowsWrapper{rows}, nil
+	return sqlResult{res}, nil
 }
 
-func (w txWrapper) QueryRow(ctx context.Context, query string, args ...any) Row {
-	return rowWrapper{w.tx.QueryRow(ctx, query, args...)}
-}
-
-// Begin opens a savepoint via pgx's nested transaction.
-func (w txWrapper) Begin(ctx context.Context) (Tx, error) {
-	tx, err := w.tx.Begin(ctx)
+func (t *sqlTx) Query(ctx context.Context, query string, args ...any) (Rows, error) {
+	rows, err := t.tx.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, translate(err)
 	}
-	return txWrapper{tx}, nil
+	return sqlRows{rows}, nil
 }
 
-func (w txWrapper) Commit(ctx context.Context) error   { return translate(w.tx.Commit(ctx)) }
-func (w txWrapper) Rollback(ctx context.Context) error { return translate(w.tx.Rollback(ctx)) }
+func (t *sqlTx) QueryRow(ctx context.Context, query string, args ...any) Row {
+	return sqlRow{t.tx.QueryRowContext(ctx, query, args...)}
+}
+
+func (t *sqlTx) Begin(ctx context.Context) (Tx, error) {
+	name := fmt.Sprintf("sp_%d", *t.seq)
+	*t.seq++
+	if _, err := t.tx.ExecContext(ctx, "SAVEPOINT "+name); err != nil {
+		return nil, translate(err)
+	}
+	return &sqlTx{tx: t.tx, sp: name, seq: t.seq}, nil
+}
+
+func (t *sqlTx) Commit(ctx context.Context) error {
+	if t.sp != "" {
+		if _, err := t.tx.ExecContext(ctx, "RELEASE SAVEPOINT "+t.sp); err != nil {
+			return translate(err)
+		}
+		return nil
+	}
+	return translate(t.tx.Commit())
+}
+
+func (t *sqlTx) Rollback(ctx context.Context) error {
+	if t.sp != "" {
+		if _, err := t.tx.ExecContext(ctx, "ROLLBACK TO SAVEPOINT "+t.sp); err != nil {
+			return translate(err)
+		}
+		if _, err := t.tx.ExecContext(ctx, "RELEASE SAVEPOINT "+t.sp); err != nil {
+			return translate(err)
+		}
+		return nil
+	}
+	return translate(t.tx.Rollback())
+}
 
 // RunMigrations executes embedded SQL migrations against the target database.
 func RunMigrations(databaseURL string) error {
