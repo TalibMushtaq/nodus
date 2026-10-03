@@ -3,7 +3,6 @@ package db
 import (
 	"context"
 	"database/sql"
-	"embed"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,14 +10,7 @@ import (
 	"time"
 
 	"github.com/TalibMushtaq/nodus/services/relay/internal/config"
-	"github.com/golang-migrate/migrate/v4"
-	_ "github.com/golang-migrate/migrate/v4/database/postgres"
-	"github.com/golang-migrate/migrate/v4/source/iofs"
-	"github.com/jackc/pgx/v5/pgconn"
 )
-
-//go:embed migrations/*.sql
-var migrationsFS embed.FS
 
 // The abstraction below is intentionally a thin wrapper rather than a
 // repository layer. The service keeps writing SQL inline; what changes is that
@@ -71,7 +63,7 @@ type DB interface {
 }
 
 // Driver-neutral error sentinels. The service layer must never see
-// pgconn.PgError or a SQLite result code; it matches on these instead.
+// a SQLite result code; it matches on these instead.
 var (
 	ErrNotFound        = errors.New("db: not found")
 	ErrUniqueViolation = errors.New("db: unique violation")
@@ -87,15 +79,6 @@ func translate(err error) error {
 	}
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrNotFound
-	}
-	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) {
-		switch pgErr.Code {
-		case "23505":
-			return fmt.Errorf("%w: %s", ErrUniqueViolation, pgErr.Message)
-		case "23503":
-			return fmt.Errorf("%w: %s", ErrForeignKey, pgErr.Message)
-		}
 	}
 	return translateSQLite(err)
 }
@@ -417,24 +400,4 @@ func (t *sqlTx) restoreForeignKeys(ctx context.Context) {
 	_, _ = t.conn.ExecContext(ctx, "PRAGMA foreign_keys=ON")
 	_ = t.conn.Close()
 	t.conn = nil
-}
-
-// RunMigrations executes embedded SQL migrations against the target database.
-func RunMigrations(databaseURL string) error {
-	driver, err := iofs.New(migrationsFS, "migrations")
-	if err != nil {
-		return fmt.Errorf("creating iofs driver: %w", err)
-	}
-
-	m, err := migrate.NewWithSourceInstance("iofs", driver, databaseURL)
-	if err != nil {
-		return fmt.Errorf("creating migrate instance: %w", err)
-	}
-	defer m.Close()
-
-	if err := m.Up(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
-		return err
-	}
-
-	return nil
 }

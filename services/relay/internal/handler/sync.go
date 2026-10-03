@@ -1143,10 +1143,10 @@ func applySingleEventTx(
 			versionNumber := data.VersionNumber
 			var occupantParent *int
 			var occupantHash string
-			// pgx wraps its no-rows sentinel (db.ErrNotFound is a proxyError
-			// around sql.ErrNoRows), so a `case sql.ErrNoRows:` switch would never
-			// match a vacant slot and every fresh FILE_VERSION_ADDED would be
-			// rejected. errors.Is unwraps the proxy.
+			// The db wrapper maps no-rows to db.ErrNotFound, so a
+			// `case sql.ErrNoRows:` switch would never match a vacant slot and
+			// every fresh FILE_VERSION_ADDED would be rejected. errors.Is unwraps
+			// the sentinel.
 			err := tx.QueryRow(ctx, `
 				SELECT parent_version_id, version_hash FROM file_versions
 				WHERE file_id = $1 AND version_number = $2

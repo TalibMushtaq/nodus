@@ -13,9 +13,6 @@ type Config struct {
 	// Server
 	ListenAddr string
 
-	// PostgreSQL (legacy; superseded by DBPath and removed in the reset step).
-	DatabaseURL string
-
 	// DBPath is the SQLite database file backing the relay.
 	DBPath string
 
@@ -72,7 +69,6 @@ func Load() (*Config, error) {
 		listenAddr = ":" + listenAddr
 	}
 
-	dbURL := getEnv("DATABASE_URL", "postgres://nodus:nodus_password@localhost:5432/nodus_relay?sslmode=disable")
 	defaultDBPath := filepath.Join(os.TempDir(), "nodus-relay", "relay.db")
 	dbPath := getEnv("DB_PATH", defaultDBPath)
 	redisURL := getEnv("REDIS_URL", "redis://localhost:6379/0")
@@ -122,7 +118,6 @@ func Load() (*Config, error) {
 
 	cfg := &Config{
 		ListenAddr:           listenAddr,
-		DatabaseURL:          dbURL,
 		DBPath:               dbPath,
 		RedisURL:             redisURL,
 		SessionCookieName:    sessionCookieName,

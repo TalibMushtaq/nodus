@@ -1,5 +1,18 @@
 # Changelog
 
+## [2026-10-03] - Relay: remove the dead PostgreSQL path
+
+**What changed:**
+
+- Deleted the embedded PostgreSQL migration set (`services/relay/internal/db/migrations/`) and the `db.RunMigrations` runner; the SQLite baseline is now the only schema.
+- Removed the `DatabaseURL` config field and the pgx/pgconn branch of the error translation. `go.mod` no longer requires `pgx`, `lib/pq`, `puddle`, `pgpassfile`, or `pgservicefile`.
+
+**Why:** after the cutover nothing referenced the PostgreSQL code or its dependencies.
+
+**Impact:** smaller dependency graph and binary. The full relay suite still passes.
+
+**Follow-ups:** none.
+
 ## [2026-10-03] - Relay: switch storage from PostgreSQL to SQLite
 
 **What changed:**

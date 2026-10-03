@@ -14,11 +14,11 @@ import (
 // upload announce path. It reproduces exactly the events a web uploader sends
 // when it puts a new file into a folder: [FILE_CREATED, FILE_VERSION_ADDED].
 //
-// Regression: `file_versions` has no row for a fresh version, and pgx wraps its
-// no-rows sentinel (pgx.ErrNoRows is a *proxyError around sql.ErrNoRows), so a
-// `switch err; err == sql.ErrNoRows` occupancy check never matched a vacant slot
-// and every announce batch was rejected wholesale with reason "rejected".
-// Fixed by switching the check to errors.Is(err, pgx.ErrNoRows).
+// Regression: `file_versions` has no row for a fresh version, and the db
+// wrapper maps no-rows to db.ErrNotFound, so a `switch err; err == sql.ErrNoRows`
+// occupancy check never matched a vacant slot and every announce batch was
+// rejected wholesale with reason "rejected".
+// Fixed by switching the check to errors.Is(err, db.ErrNotFound).
 func TestApplyDeviceBatchFileVersionAnnounce(t *testing.T) {
 	f := newDeviceBatchFixture(t)
 	ctx := context.Background()

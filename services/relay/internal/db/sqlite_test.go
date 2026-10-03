@@ -11,7 +11,8 @@ import (
 // The SQLite path is additive until the cutover, so these white-box tests
 // exercise openSQLite directly: the baseline schema applies, the pragmas hold
 // on every pooled connection (not just the first), and the savepoint wrapper
-// gives the same rollback-and-continue semantics as pgx's nested transaction.
+// gives the same rollback-and-continue semantics as the former nested
+// transaction.
 
 func newSQLitePool(t *testing.T) *Pool {
 	t.Helper()
