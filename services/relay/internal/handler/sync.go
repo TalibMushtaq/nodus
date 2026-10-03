@@ -17,7 +17,6 @@ import (
 	"github.com/TalibMushtaq/nodus/services/relay/internal/push"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/rdb"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 )
 
 type NodeAuthChallengePayload struct {
@@ -879,7 +878,7 @@ func applySingleEvent(
 // not be acknowledged (foreign file, projection failure, insert error).
 func applySingleEventTx(
 	ctx context.Context,
-	tx pgx.Tx,
+	tx db.Tx,
 	accountID string,
 	item SyncEventItem,
 ) bool {
@@ -1146,7 +1145,7 @@ func applySingleEventTx(
 			versionNumber := data.VersionNumber
 			var occupantParent *int
 			var occupantHash string
-			// pgx wraps its no-rows sentinel (pgx.ErrNoRows is a proxyError
+			// pgx wraps its no-rows sentinel (db.ErrNotFound is a proxyError
 			// around sql.ErrNoRows), so a `case sql.ErrNoRows:` switch would never
 			// match a vacant slot and every fresh FILE_VERSION_ADDED would be
 			// rejected. errors.Is unwraps the proxy.
@@ -1154,7 +1153,7 @@ func applySingleEventTx(
 				SELECT parent_version_id, version_hash FROM file_versions
 				WHERE file_id = $1 AND version_number = $2
 			`, data.FileID, data.VersionNumber).Scan(&occupantParent, &occupantHash)
-			if errors.Is(err, pgx.ErrNoRows) {
+			if errors.Is(err, db.ErrNotFound) {
 				// Vacant slot: insert at the claimed number.
 			} else if err != nil {
 				return false
@@ -1385,7 +1384,7 @@ func applySingleEventTx(
 
 // entityTombstoned reports whether a live tombstone exists for the entity.
 // Used to reject resurrection by a long-offline device until a restore.
-func entityTombstoned(ctx context.Context, tx pgx.Tx, accountID, entityType, entityID string) (bool, error) {
+func entityTombstoned(ctx context.Context, tx db.Tx, accountID, entityType, entityID string) (bool, error) {
 	var tombstoned bool
 	err := tx.QueryRow(ctx, `
 		SELECT EXISTS(
@@ -1400,7 +1399,7 @@ func entityTombstoned(ctx context.Context, tx pgx.Tx, accountID, entityType, ent
 // types that project into files/file_versions. File IDs are globally unique in
 // the live schema, so accepting another account's ID would either mutate its
 // projection or leave an acknowledged event with no projection at all.
-func eventReferencesForeignFile(ctx context.Context, tx pgx.Tx, accountID string, item SyncEventItem) (bool, error) {
+func eventReferencesForeignFile(ctx context.Context, tx db.Tx, accountID string, item SyncEventItem) (bool, error) {
 	// Folder events are checked against the folders table; file events against
 	// files. folder_id is globally unique, so a create targeting another
 	// account's folder must be rejected rather than silently no-op'd later.

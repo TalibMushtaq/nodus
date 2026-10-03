@@ -11,8 +11,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/TalibMushtaq/nodus/services/relay/internal/auth"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/config"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/db"
@@ -206,7 +204,7 @@ func RecoveryChallenge(pool *db.Pool, cfg *config.Config, recoveryLimiter *rateL
 			"SELECT account_id, recovery_public_key FROM accounts WHERE email = $1", email,
 		).Scan(&accountID, &recoveryPublicKey)
 		if err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
+			if errors.Is(err, db.ErrNotFound) {
 				respondError(w, http.StatusUnauthorized, "recovery_unavailable")
 				return
 			}
@@ -338,7 +336,7 @@ func Recover(pool *db.Pool, store auth.SessionStore, cfg *config.Config, recover
 			"SELECT account_id, expires_at, used_at FROM recovery_challenges WHERE nonce = $1 FOR UPDATE", req.Nonce,
 		).Scan(&challengeAccount, &expiresAt, &usedAt)
 		if err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
+			if errors.Is(err, db.ErrNotFound) {
 				respondError(w, http.StatusUnauthorized, "invalid_or_expired_challenge")
 				return
 			}

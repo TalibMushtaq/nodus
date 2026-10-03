@@ -7,8 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/TalibMushtaq/nodus/services/relay/internal/auth"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/config"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/db"
@@ -179,7 +177,7 @@ func Login(pool *db.Pool, store auth.SessionStore, cfg *config.Config) http.Hand
 		query := `SELECT account_id, password_hash, recovery_public_key FROM accounts WHERE email = $1`
 		err := pool.QueryRow(r.Context(), query, req.Email).Scan(&accountID, &passwordHash, &recoveryPublicKey)
 		if err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
+			if errors.Is(err, db.ErrNotFound) {
 				respondError(w, http.StatusUnauthorized, "invalid email or password")
 				return
 			}

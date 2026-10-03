@@ -6,8 +6,6 @@ import (
 	"log"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/TalibMushtaq/nodus/services/relay/internal/db"
 )
 
@@ -215,7 +213,7 @@ func pruneBatch(ctx context.Context, pool *db.Pool) (int, error) {
 // ownedIDs returns the subset of ids that the claiming accounts actually hold in
 // table. `table` and `column` are internal constants at every call site, never
 // caller input, which is what makes the string concatenation safe.
-func ownedIDs(ctx context.Context, tx pgx.Tx, table, column string, ids, accounts []string) ([]string, error) {
+func ownedIDs(ctx context.Context, tx db.Tx, table, column string, ids, accounts []string) ([]string, error) {
 	rows, err := tx.Query(ctx, fmt.Sprintf(
 		`SELECT %s FROM %s WHERE %s = ANY($1) AND account_id = ANY($2)`, column, table, column),
 		ids, accounts)

@@ -9,8 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/TalibMushtaq/nodus/services/relay/internal/auth"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/db"
 	"golang.org/x/crypto/curve25519"
@@ -38,7 +36,7 @@ func normalizeEncryptionPublicKey(key string) (string, bool) {
 }
 
 type dbQuerier interface {
-	QueryRow(context.Context, string, ...any) pgx.Row
+	QueryRow(context.Context, string, ...any) db.Row
 }
 
 // DeviceInfo is the display-only platform metadata a client reports at
@@ -161,7 +159,7 @@ func upsertDeviceForAccount(q dbQuerier, r *http.Request, deviceID, publicKey, e
 		&appVersion,
 		&userAgent,
 	)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, db.ErrNotFound) {
 		return nil, errDeviceOwnedElsewhere
 	}
 	if err != nil {

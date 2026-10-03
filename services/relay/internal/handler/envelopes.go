@@ -6,7 +6,6 @@ import (
 
 	"github.com/TalibMushtaq/nodus/services/relay/internal/auth"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/db"
-	"github.com/jackc/pgx/v5"
 )
 
 // validRecipientKind reports whether an envelope's recipient_kind is one the
@@ -268,7 +267,7 @@ func ExportEnvelopes(pool *db.Pool) http.HandlerFunc {
 	}
 }
 
-func respondFolderEnvelopes(w http.ResponseWriter, rows pgx.Rows) {
+func respondFolderEnvelopes(w http.ResponseWriter, rows db.Rows) {
 	envelopes := make([]FolderKeyEnvelopeResponse, 0)
 	for rows.Next() {
 		var env FolderKeyEnvelopeResponse

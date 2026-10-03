@@ -6,7 +6,6 @@ import (
 	"log"
 
 	"github.com/TalibMushtaq/nodus/services/relay/internal/db"
-	"github.com/jackc/pgx/v5"
 )
 
 // ── promoteRebuild ─────────────────────────────────────────────────
@@ -433,7 +432,7 @@ func cleanupStagedData(ctx context.Context, pool *db.Pool, accountID string) {
 // dropFkViaRel drops any FK constraint on `child` that references `parent`,
 // regardless of its auto-generated name (the initial migration left them
 // unnamed, so Postgres picked the default <child>_<col>_fkey names).
-func dropFkViaRel(ctx context.Context, tx pgx.Tx, child, parent string) error {
+func dropFkViaRel(ctx context.Context, tx db.Tx, child, parent string) error {
 	var conname string
 	err := tx.QueryRow(ctx, `
 		SELECT conname FROM pg_constraint
@@ -451,7 +450,7 @@ func dropFkViaRel(ctx context.Context, tx pgx.Tx, child, parent string) error {
 }
 
 // addFkViaRel re-adds an explicitly-named FK constraint.
-func addFkViaRel(ctx context.Context, tx pgx.Tx, child, parent, definition, conName string) error {
+func addFkViaRel(ctx context.Context, tx db.Tx, child, parent, definition, conName string) error {
 	sql := fmt.Sprintf(`ALTER TABLE %s ADD CONSTRAINT %s FOREIGN KEY %s`, child, conName, definition)
 	if _, err := tx.Exec(ctx, sql); err != nil {
 		return err

@@ -1,5 +1,18 @@
 # Changelog
 
+## [2026-10-03] - Relay: add a driver-neutral database abstraction
+
+**What changed:**
+
+- `services/relay/internal/db/db.go`: new `DB`, `Tx`, `Row`, `Rows`, and `CommandTag` interfaces, a `WithTx` helper, and driver-neutral sentinels (`ErrNotFound`, `ErrUniqueViolation`, `ErrForeignKey`, `ErrBusy`) with a `translate` function that maps driver errors. `*db.Pool` now implements the interfaces over pgx.
+- Replaced `pgx.Tx`/`pgx.Row`/`pgx.Rows`/`pgx.ErrNoRows` at call sites with the corresponding `db` types and `db.ErrNotFound` across 13 files; `node_registration.go` gains the `db` import.
+
+**Why:** the storage backend is moving from PostgreSQL to SQLite. Putting the service behind our own types keeps driver-specific errors and pgx types out of handler code, so the backend swap does not require touching every call site again.
+
+**Impact:** `services/relay` internals only; behavior is unchanged and the Postgres integration suite passes.
+
+**Follow-ups:** the remaining `pgxpool` implementation moves to `database/sql` in the next step.
+
 ## [2026-10-03] - Relay: characterize sync duplicate suppression and cursor serialization
 
 **What changed:**

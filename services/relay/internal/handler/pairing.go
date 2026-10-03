@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 
 	"github.com/TalibMushtaq/nodus/services/relay/internal/auth"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/config"
@@ -94,7 +93,7 @@ func CreatePairingSession(pool *db.Pool, wsHub *hub.Hub) http.HandlerFunc {
 			 WHERE device_id = $1 AND account_id = $2 AND status = 'ACTIVE'`,
 			req.DeviceID, accountID,
 		).Scan(&devicePublicKey)
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, db.ErrNotFound) {
 			respondError(w, http.StatusNotFound, "device not found for this account")
 			return
 		}
@@ -194,7 +193,7 @@ func VerifyPairingSession(pool *db.Pool, cfg *config.Config, rClient *rdb.Client
 			 RETURNING account_id, node_id, device_public_key, expires_at`,
 			body.Token,
 		).Scan(&accountID, &nodeID, &devicePublicKey, &expiresAt)
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, db.ErrNotFound) {
 			respondJSON(w, http.StatusOK, map[string]interface{}{"valid": false})
 			return
 		}
@@ -238,7 +237,7 @@ func VerifyNodeURL(pool *db.Pool, cfg *config.Config, rClient *rdb.Client) http.
 			`SELECT node_id FROM storage_nodes WHERE node_id = $1 AND status = 'ACTIVE'`,
 			nodeID,
 		).Scan(&found)
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, db.ErrNotFound) {
 			respondJSON(w, http.StatusOK, map[string]interface{}{"valid": false, "node_id": nodeID})
 			return
 		}

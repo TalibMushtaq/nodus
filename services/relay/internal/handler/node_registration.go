@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 
-	"github.com/jackc/pgx/v5"
+	"github.com/TalibMushtaq/nodus/services/relay/internal/db"
 )
 
 // nodeRegistrationOutcome classifies the result of a Storage Node registration
@@ -64,7 +64,7 @@ const storageNodeSelectByID = `
 // as a non-primary node.
 func registerStorageNode(
 	ctx context.Context,
-	tx pgx.Tx,
+	tx db.Tx,
 	accountID, nodeID, publicKey, capabilities string,
 ) (NodeResponse, nodeRegistrationOutcome, error) {
 	existing, found, err := lookupStorageNode(ctx, tx, nodeID)
@@ -132,9 +132,9 @@ func classifyExistingNode(existing NodeResponse, accountID, publicKey string) (N
 }
 
 // lookupStorageNode returns the stored node and whether it exists.
-func lookupStorageNode(ctx context.Context, tx pgx.Tx, nodeID string) (NodeResponse, bool, error) {
+func lookupStorageNode(ctx context.Context, tx db.Tx, nodeID string) (NodeResponse, bool, error) {
 	node, err := scanStorageNode(tx.QueryRow(ctx, storageNodeSelectByID, nodeID))
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, db.ErrNotFound) {
 		return NodeResponse{}, false, nil
 	}
 	if err != nil {
@@ -148,7 +148,7 @@ func lookupStorageNode(ctx context.Context, tx pgx.Tx, nodeID string) (NodeRespo
 // subject to the partial unique index, which is the authoritative guard.
 func insertStorageNode(
 	ctx context.Context,
-	tx pgx.Tx,
+	tx db.Tx,
 	accountID, nodeID, publicKey, capabilities string,
 	allowPrimary bool,
 ) (NodeResponse, error) {
@@ -165,7 +165,7 @@ func insertStorageNode(
 // scanStorageNode reads the canonical storage_nodes projection into a
 // NodeResponse. Kept in one place so the SELECT and RETURNING column orders
 // cannot drift apart.
-func scanStorageNode(row pgx.Row) (NodeResponse, error) {
+func scanStorageNode(row db.Row) (NodeResponse, error) {
 	var (
 		node    NodeResponse
 		capsRaw []byte

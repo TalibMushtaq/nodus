@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/TalibMushtaq/nodus/services/relay/internal/config"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/db"
 )
@@ -121,7 +119,7 @@ func (s *PGSessionStore) LookupSession(ctx context.Context, rawID string) (*Sess
 		JOIN devices dev ON dev.device_id = sess.device_id
 		WHERE sess.session_hash = $1
 	`, HashSession(rawID)).Scan(&sess.AccountID, &sess.DeviceID, &sess.ExpiresAt, &sess.LastUsedAt, &revoked, &devState)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, db.ErrNotFound) {
 		return nil, ErrSessionInvalid
 	}
 	if err != nil {
@@ -185,7 +183,7 @@ func (s *PGSessionStore) NodeIdentity(ctx context.Context, nodeID string) (strin
 		SELECT account_id, public_key FROM storage_nodes
 		WHERE node_id = $1 AND status = 'ACTIVE'
 	`, nodeID).Scan(&accountID, &publicKey)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, db.ErrNotFound) {
 		return "", "", ErrNodeUnauthorized
 	}
 	if err != nil {

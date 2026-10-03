@@ -12,8 +12,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/TalibMushtaq/nodus/services/relay/internal/auth"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/buffer"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/config"
@@ -661,7 +659,7 @@ func serveBufferedShard(
 		ORDER BY fl.updated_at DESC
 		LIMIT 1
 	`, objectID, accountID).Scan(&bufferID)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, db.ErrNotFound) {
 		return false
 	}
 	if err != nil {

@@ -6,8 +6,6 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/TalibMushtaq/nodus/services/relay/internal/auth"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/db"
 )
@@ -64,7 +62,7 @@ func RenameNode(pool *db.Pool) http.HandlerFunc {
 			WHERE node_id = $2 AND account_id = $3
 			RETURNING node_id, display_name
 		`, name, nodeID, accountID).Scan(&updatedID, &displayName)
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, db.ErrNotFound) {
 			respondError(w, http.StatusNotFound, "node not found")
 			return
 		}
@@ -109,7 +107,7 @@ func RenameDevice(pool *db.Pool) http.HandlerFunc {
 			WHERE device_id = $2 AND account_id = $3
 			RETURNING device_id, display_name
 		`, name, deviceID, accountID).Scan(&updatedID, &displayName)
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, db.ErrNotFound) {
 			respondError(w, http.StatusNotFound, "device not found")
 			return
 		}

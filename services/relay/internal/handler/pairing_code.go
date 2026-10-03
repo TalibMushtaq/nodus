@@ -9,8 +9,6 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/TalibMushtaq/nodus/services/relay/internal/auth"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/config"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/db"
@@ -158,7 +156,7 @@ func RedeemPairingCode(pool *db.Pool, cfg *config.Config, rClient *rdb.Client) h
 			codeHash,
 		).Scan(&accountID)
 
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, db.ErrNotFound) {
 			// Distinguish unknown vs expired vs consumed vs revoked via a re-read.
 			var (
 				existingStatus string
@@ -167,7 +165,7 @@ func RedeemPairingCode(pool *db.Pool, cfg *config.Config, rClient *rdb.Client) h
 			rerr := tx.QueryRow(r.Context(),
 				`SELECT status, expires_at FROM pairing_codes WHERE code_hash = $1`, codeHash,
 			).Scan(&existingStatus, &expiresAt)
-			if errors.Is(rerr, pgx.ErrNoRows) {
+			if errors.Is(rerr, db.ErrNotFound) {
 				respondError(w, http.StatusNotFound, "code_unknown")
 				return
 			}
