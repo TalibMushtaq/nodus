@@ -3,13 +3,12 @@ package handler
 import (
 	"context"
 	"fmt"
-	"os"
 	"testing"
 	"time"
 
 	"github.com/TalibMushtaq/nodus/services/relay/internal/buffer"
-	"github.com/TalibMushtaq/nodus/services/relay/internal/config"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/db"
+	"github.com/TalibMushtaq/nodus/services/relay/internal/testutil"
 	"github.com/stretchr/testify/require"
 )
 
@@ -116,15 +115,7 @@ func (f foreignAccountFixture) requireIntact(t *testing.T, pool *db.Pool, buf *b
 
 func setupIsolationTest(t *testing.T) (*db.Pool, *buffer.Buffer) {
 	t.Helper()
-	url := os.Getenv("TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("TEST_DATABASE_URL not set; skipping integration test")
-	}
-	ctx := context.Background()
-	require.NoError(t, db.RunMigrations(url))
-	pool, err := db.Open(ctx, &config.Config{DatabaseURL: url})
-	require.NoError(t, err)
-	t.Cleanup(pool.Close)
+	pool, _ := testutil.OpenTestDB(t)
 
 	buf, err := buffer.New(t.TempDir())
 	require.NoError(t, err)

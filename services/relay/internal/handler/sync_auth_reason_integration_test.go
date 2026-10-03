@@ -7,15 +7,14 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"os"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/TalibMushtaq/nodus/services/relay/internal/config"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/db"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/hub"
+	"github.com/TalibMushtaq/nodus/services/relay/internal/testutil"
 )
 
 // runNodeAuth drives HandleNodeAuthResponse with an unauthenticated client
@@ -53,16 +52,10 @@ func runNodeAuth(t *testing.T, ctx context.Context, pool *db.Pool, h *hub.Hub, n
 // caller decides whether a storage_nodes row exists (paired vs unpaired).
 func setupNodeAuthHarness(t *testing.T) (context.Context, *db.Pool, *hub.Hub, string) {
 	t.Helper()
-	url := os.Getenv("TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("TEST_DATABASE_URL not set; skipping integration test")
-	}
-	ctx, cancel := context.WithCancel(context.Background())
+	pool, ctx := testutil.OpenTestDB(t)
+	var err error
+	ctx, cancel := context.WithCancel(ctx)
 	t.Cleanup(cancel)
-	require.NoError(t, db.RunMigrations(url))
-	pool, err := db.Open(ctx, &config.Config{DatabaseURL: url})
-	require.NoError(t, err)
-	t.Cleanup(pool.Close)
 
 	h := hub.New(nil)
 	go h.Run(ctx)

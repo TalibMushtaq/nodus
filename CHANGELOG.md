@@ -1,5 +1,18 @@
 # Changelog
 
+## [2026-10-03] - Relay: centralize integration-test database setup
+
+**What changed:**
+
+- New `services/relay/internal/testutil/db.go` with `OpenTestDB(t)`, returning a migrated pool and context or skipping when `TEST_DATABASE_URL` is unset.
+- Migrated the integration fixtures in `internal/auth`, `internal/handler`, `internal/buffer`, and `internal/tombstone` onto it, removing the repeated env-check, `RunMigrations`, `Open`, and cleanup block. `internal/reset` and the second-connection probe in `tombstone_test.go` keep raw pgx because they assert PostgreSQL-specific behavior.
+
+**Why:** the storage backend is moving to SQLite, where each test should get a fresh temp file. Funnelling setup through one function means the backend swap changes one place instead of twenty-four.
+
+**Impact:** test-only. Behavior unchanged; full Postgres integration suite passes.
+
+**Follow-ups:** the reset and tombstone raw-pgx tests are rewritten in the cutover.
+
 ## [2026-10-03] - Relay: add a driver-neutral database abstraction
 
 **What changed:**

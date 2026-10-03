@@ -1,14 +1,11 @@
 package buffer
 
 import (
-	"context"
 	"fmt"
-	"os"
 	"testing"
 	"time"
 
-	"github.com/TalibMushtaq/nodus/services/relay/internal/config"
-	"github.com/TalibMushtaq/nodus/services/relay/internal/db"
+	"github.com/TalibMushtaq/nodus/services/relay/internal/testutil"
 )
 
 // TestSweepStuckInTransitRevertsToRelayBuffered verifies the recovery sweep
@@ -17,19 +14,7 @@ import (
 // delivery re-notifies the node. Without this the shard would be stranded in a
 // state neither delivery nor the TTL sweep ever touches.
 func TestSweepStuckInTransitRevertsToRelayBuffered(t *testing.T) {
-	url := os.Getenv("TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("TEST_DATABASE_URL not set; skipping integration test")
-	}
-	ctx := context.Background()
-	if err := db.RunMigrations(url); err != nil {
-		t.Fatalf("run migrations: %v", err)
-	}
-	pool, err := db.Open(ctx, &config.Config{DatabaseURL: url})
-	if err != nil {
-		t.Fatalf("open pool: %v", err)
-	}
-	defer pool.Close()
+	pool, ctx := testutil.OpenTestDB(t)
 
 	seed := []struct {
 		q    string

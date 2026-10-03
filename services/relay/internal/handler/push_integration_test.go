@@ -5,15 +5,13 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/TalibMushtaq/nodus/services/relay/internal/auth"
-	"github.com/TalibMushtaq/nodus/services/relay/internal/config"
-	"github.com/TalibMushtaq/nodus/services/relay/internal/db"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/push"
+	"github.com/TalibMushtaq/nodus/services/relay/internal/testutil"
 	"github.com/stretchr/testify/require"
 )
 
@@ -31,15 +29,8 @@ func authContext(account, device string) context.Context {
 }
 
 func TestRegisterPushTokenAndAlertConflictsOnce(t *testing.T) {
-	url := os.Getenv("TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("TEST_DATABASE_URL not set; skipping integration test")
-	}
-	ctx := context.Background()
-	require.NoError(t, db.RunMigrations(url))
-	pool, err := db.Open(ctx, &config.Config{DatabaseURL: url})
-	require.NoError(t, err)
-	t.Cleanup(pool.Close)
+	pool, ctx := testutil.OpenTestDB(t)
+	var err error
 
 	suffix := fmt.Sprint(time.Now().UnixNano())
 	account, device, file := "acct-push-"+suffix, "dev-push-"+suffix, "file-push-"+suffix
@@ -92,15 +83,8 @@ func TestRegisterPushTokenAndAlertConflictsOnce(t *testing.T) {
 }
 
 func TestConflictAlertHonoursOptOut(t *testing.T) {
-	url := os.Getenv("TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("TEST_DATABASE_URL not set; skipping integration test")
-	}
-	ctx := context.Background()
-	require.NoError(t, db.RunMigrations(url))
-	pool, err := db.Open(ctx, &config.Config{DatabaseURL: url})
-	require.NoError(t, err)
-	t.Cleanup(pool.Close)
+	pool, ctx := testutil.OpenTestDB(t)
+	var err error
 
 	suffix := fmt.Sprint(time.Now().UnixNano())
 	account, device, file := "acct-pushoff-"+suffix, "dev-pushoff-"+suffix, "file-pushoff-"+suffix
@@ -145,15 +129,8 @@ func (r *recordingWebSender) SendWeb(
 }
 
 func TestConflictAlertAlsoReachesWebSubscriptions(t *testing.T) {
-	url := os.Getenv("TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("TEST_DATABASE_URL not set; skipping integration test")
-	}
-	ctx := context.Background()
-	require.NoError(t, db.RunMigrations(url))
-	pool, err := db.Open(ctx, &config.Config{DatabaseURL: url})
-	require.NoError(t, err)
-	t.Cleanup(pool.Close)
+	pool, ctx := testutil.OpenTestDB(t)
+	var err error
 
 	suffix := fmt.Sprint(time.Now().UnixNano())
 	account, file := "acct-webpush-"+suffix, "file-webpush-"+suffix
@@ -182,15 +159,8 @@ func TestConflictAlertAlsoReachesWebSubscriptions(t *testing.T) {
 }
 
 func TestSyncCompleteAlertFiresOnceWhenAllShardsStored(t *testing.T) {
-	url := os.Getenv("TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("TEST_DATABASE_URL not set; skipping integration test")
-	}
-	ctx := context.Background()
-	require.NoError(t, db.RunMigrations(url))
-	pool, err := db.Open(ctx, &config.Config{DatabaseURL: url})
-	require.NoError(t, err)
-	t.Cleanup(pool.Close)
+	pool, ctx := testutil.OpenTestDB(t)
+	var err error
 
 	suffix := fmt.Sprint(time.Now().UnixNano())
 	account := "acct-sync-" + suffix
@@ -255,17 +225,8 @@ func TestSyncCompleteAlertFiresOnceWhenAllShardsStored(t *testing.T) {
 // one a browser really hands over, so a filter that quietly refused ordinary
 // subscriptions would be worse than no filter at all.
 func TestRegisterWebPushRejectsInternalEndpoint(t *testing.T) {
-	url := os.Getenv("TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("TEST_DATABASE_URL not set; skipping integration test")
-	}
-	ctx := context.Background()
-	if err := db.RunMigrations(url); err != nil {
-		t.Fatalf("run migrations: %v", err)
-	}
-	pool, err := db.Open(ctx, &config.Config{DatabaseURL: url})
-	require.NoError(t, err)
-	t.Cleanup(pool.Close)
+	pool, ctx := testutil.OpenTestDB(t)
+	var err error
 
 	account := "acct-webpush-ssrf-" + fmt.Sprint(time.Now().UnixNano())
 	_, err = pool.Exec(ctx, `INSERT INTO accounts (account_id, email, password_hash) VALUES ($1, $2, 'hash')`,

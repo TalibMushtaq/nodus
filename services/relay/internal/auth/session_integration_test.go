@@ -3,7 +3,6 @@ package auth_test
 import (
 	"context"
 	"errors"
-	"os"
 	"testing"
 	"time"
 
@@ -12,6 +11,7 @@ import (
 	"github.com/TalibMushtaq/nodus/services/relay/internal/auth"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/config"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/db"
+	"github.com/TalibMushtaq/nodus/services/relay/internal/testutil"
 )
 
 // sessionHarness binds a live Postgres pool + seeded account/device rows.
@@ -27,21 +27,9 @@ type sessionHarness struct {
 
 func setupSessionHarness(t *testing.T) *sessionHarness {
 	t.Helper()
-	url := os.Getenv("TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("TEST_DATABASE_URL not set; skipping integration test")
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
+	pool, ctx := testutil.OpenTestDB(t)
+	ctx, cancel := context.WithCancel(ctx)
 	t.Cleanup(cancel)
-	if err := db.RunMigrations(url); err != nil {
-		t.Fatalf("run migrations: %v", err)
-	}
-	pool, err := db.Open(ctx, &config.Config{DatabaseURL: url})
-	if err != nil {
-		t.Fatalf("open pool: %v", err)
-	}
-	t.Cleanup(pool.Close)
 
 	cfg := &config.Config{
 		SessionCookieName:    "nodus_session",

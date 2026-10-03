@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -18,6 +17,7 @@ import (
 	"github.com/TalibMushtaq/nodus/services/relay/internal/config"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/db"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/hub"
+	"github.com/TalibMushtaq/nodus/services/relay/internal/testutil"
 )
 
 // pairingHarness bundles the live Postgres resources and seeded fixture rows
@@ -36,21 +36,9 @@ type pairingHarness struct {
 
 func setupPairingHarness(t *testing.T) *pairingHarness {
 	t.Helper()
-	url := os.Getenv("TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("TEST_DATABASE_URL not set; skipping integration test")
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
+	pool, ctx := testutil.OpenTestDB(t)
+	ctx, cancel := context.WithCancel(ctx)
 	t.Cleanup(cancel)
-	if err := db.RunMigrations(url); err != nil {
-		t.Fatalf("run migrations: %v", err)
-	}
-	pool, err := db.Open(ctx, &config.Config{DatabaseURL: url})
-	if err != nil {
-		t.Fatalf("open pool: %v", err)
-	}
-	t.Cleanup(pool.Close)
 
 	h := &pairingHarness{
 		ctx:       ctx,

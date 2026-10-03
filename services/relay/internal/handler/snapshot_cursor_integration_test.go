@@ -3,14 +3,13 @@ package handler
 import (
 	"context"
 	"fmt"
-	"os"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require" //nolint:depguard
 
-	"github.com/TalibMushtaq/nodus/services/relay/internal/config"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/db"
+	"github.com/TalibMushtaq/nodus/services/relay/internal/testutil"
 )
 
 // The cursor map in a snapshot's BEGIN payload is not covered by the node's
@@ -23,39 +22,31 @@ import (
 // `sync_events` log whose high-water mark is `logHigh` for origin `logOrigin`.
 func cursorFixture(t *testing.T, logOrigin string, logHigh int64) (ctx context.Context, pool *db.Pool, account, node string) {
 	t.Helper()
-	url := os.Getenv("TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("TEST_DATABASE_URL not set; skipping integration test")
-	}
-	ctx = context.Background()
-	require.NoError(t, db.RunMigrations(url))
-	p, err := db.Open(ctx, &config.Config{DatabaseURL: url})
-	require.NoError(t, err)
-	t.Cleanup(p.Close)
+	pool, ctx = testutil.OpenTestDB(t)
 
 	s := fmt.Sprint(time.Now().UnixNano())
 	account, node = "acct-cur-"+s, "node-cur-"+s
 	cleanup := []string{"rebuild_files", "sync_events", "sync_cursors", "files", "storage_nodes", "accounts"}
 	for _, table := range cleanup {
-		mustExec(t, p, fmt.Sprintf(`DELETE FROM %s WHERE account_id=$1`, table), account)
+		mustExec(t, pool, fmt.Sprintf(`DELETE FROM %s WHERE account_id=$1`, table), account)
 	}
-	mustExec(t, p, `INSERT INTO accounts (account_id, email, password_hash) VALUES ($1,$2,'x')`,
+	mustExec(t, pool, `INSERT INTO accounts (account_id, email, password_hash) VALUES ($1,$2,'x')`,
 		account, account+"@test.dev")
-	mustExec(t, p, `INSERT INTO storage_nodes (node_id, account_id, public_key, is_primary) VALUES ($1,$2,'pk',true)`,
+	mustExec(t, pool, `INSERT INTO storage_nodes (node_id, account_id, public_key, is_primary) VALUES ($1,$2,'pk',true)`,
 		node, account)
 	// One staged file, so a successful promotion has something to install.
-	mustExec(t, p, `INSERT INTO rebuild_files (file_id, account_id, encrypted_name) VALUES ($1,$2,'snap')`,
+	mustExec(t, pool, `INSERT INTO rebuild_files (file_id, account_id, encrypted_name) VALUES ($1,$2,'snap')`,
 		"file-"+s, account)
 
 	if logOrigin != "" {
 		for seq := int64(1); seq <= logHigh; seq++ {
-			mustExec(t, p, `
+			mustExec(t, pool, `
 				INSERT INTO sync_events (event_id, account_id, origin_id, origin_sequence, event_type, payload, timestamp)
 				VALUES ($1, $2, $3, $4, 'FILE_MODIFIED', '{}'::jsonb, NOW())`,
 				fmt.Sprintf("evt-%s-%d", s, seq), account, logOrigin, seq)
 		}
 	}
-	return ctx, p, account, node
+	return ctx, pool, account, node
 }
 
 func cursorOf(t *testing.T, ctx context.Context, pool *db.Pool, account, peer string) (int64, bool) {

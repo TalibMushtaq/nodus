@@ -6,27 +6,18 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/TalibMushtaq/nodus/services/relay/internal/auth"
-	"github.com/TalibMushtaq/nodus/services/relay/internal/config"
-	"github.com/TalibMushtaq/nodus/services/relay/internal/db"
+	"github.com/TalibMushtaq/nodus/services/relay/internal/testutil"
 	"github.com/stretchr/testify/require"
 )
 
 func TestResolveConflictMarksFlaggedVersionsResolved(t *testing.T) {
-	url := os.Getenv("TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("TEST_DATABASE_URL not set; skipping integration test")
-	}
-	ctx := context.Background()
-	require.NoError(t, db.RunMigrations(url))
-	pool, err := db.Open(ctx, &config.Config{DatabaseURL: url})
-	require.NoError(t, err)
-	t.Cleanup(pool.Close)
+	pool, ctx := testutil.OpenTestDB(t)
+	var err error
 
 	suffix := fmt.Sprint(time.Now().UnixNano())
 	account, file := "acct-conflict-"+suffix, "file-conflict-"+suffix
@@ -68,15 +59,8 @@ func TestResolveConflictMarksFlaggedVersionsResolved(t *testing.T) {
 // A keep_version choice records the file's preferred version and is carried on
 // the emitted event, while both sides of the conflict are still acknowledged.
 func TestResolveConflictRecordsPreferredVersion(t *testing.T) {
-	url := os.Getenv("TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("TEST_DATABASE_URL not set; skipping integration test")
-	}
-	ctx := context.Background()
-	require.NoError(t, db.RunMigrations(url))
-	pool, err := db.Open(ctx, &config.Config{DatabaseURL: url})
-	require.NoError(t, err)
-	t.Cleanup(pool.Close)
+	pool, ctx := testutil.OpenTestDB(t)
+	var err error
 
 	suffix := fmt.Sprint(time.Now().UnixNano())
 	account, file := "acct-keep-"+suffix, "file-keep-"+suffix
@@ -127,15 +111,8 @@ func TestResolveConflictRecordsPreferredVersion(t *testing.T) {
 // A keep_version that is not a version of the caller's file is rejected and
 // changes nothing.
 func TestResolveConflictRejectsUnknownVersion(t *testing.T) {
-	url := os.Getenv("TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("TEST_DATABASE_URL not set; skipping integration test")
-	}
-	ctx := context.Background()
-	require.NoError(t, db.RunMigrations(url))
-	pool, err := db.Open(ctx, &config.Config{DatabaseURL: url})
-	require.NoError(t, err)
-	t.Cleanup(pool.Close)
+	pool, ctx := testutil.OpenTestDB(t)
+	var err error
 
 	suffix := fmt.Sprint(time.Now().UnixNano())
 	account, file := "acct-badkeep-"+suffix, "file-badkeep-"+suffix
@@ -164,15 +141,8 @@ func TestResolveConflictRejectsUnknownVersion(t *testing.T) {
 }
 
 func TestPendingPurgesForNode(t *testing.T) {
-	url := os.Getenv("TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("TEST_DATABASE_URL not set; skipping integration test")
-	}
-	ctx := context.Background()
-	require.NoError(t, db.RunMigrations(url))
-	pool, err := db.Open(ctx, &config.Config{DatabaseURL: url})
-	require.NoError(t, err)
-	t.Cleanup(pool.Close)
+	pool, ctx := testutil.OpenTestDB(t)
+	var err error
 
 	suffix := fmt.Sprint(time.Now().UnixNano())
 	account, node := "acct-pp-"+suffix, "node-pp-"+suffix

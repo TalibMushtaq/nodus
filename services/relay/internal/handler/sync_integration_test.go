@@ -1,27 +1,17 @@
 package handler
 
 import (
-	"context"
 	"fmt"
-	"os"
 	"testing"
 	"time"
 
-	"github.com/TalibMushtaq/nodus/services/relay/internal/config"
-	"github.com/TalibMushtaq/nodus/services/relay/internal/db"
+	"github.com/TalibMushtaq/nodus/services/relay/internal/testutil"
 	"github.com/stretchr/testify/require"
 )
 
 func TestApplySingleEventForeignFileDoesNotJournalEvent(t *testing.T) {
-	url := os.Getenv("TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("TEST_DATABASE_URL not set; skipping integration test")
-	}
-	ctx := context.Background()
-	require.NoError(t, db.RunMigrations(url))
-	pool, err := db.Open(ctx, &config.Config{DatabaseURL: url})
-	require.NoError(t, err)
-	t.Cleanup(pool.Close)
+	pool, ctx := testutil.OpenTestDB(t)
+	var err error
 
 	suffix := fmt.Sprint(time.Now().UnixNano())
 	ownerID, senderID, fileID, eventID := "owner-"+suffix, "sender-"+suffix, "file-"+suffix, "event-"+suffix
@@ -43,15 +33,8 @@ func TestApplySingleEventForeignFileDoesNotJournalEvent(t *testing.T) {
 }
 
 func TestApplySingleEventConflictResolved(t *testing.T) {
-	url := os.Getenv("TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("TEST_DATABASE_URL not set; skipping integration test")
-	}
-	ctx := context.Background()
-	require.NoError(t, db.RunMigrations(url))
-	pool, err := db.Open(ctx, &config.Config{DatabaseURL: url})
-	require.NoError(t, err)
-	t.Cleanup(pool.Close)
+	pool, ctx := testutil.OpenTestDB(t)
+	var err error
 
 	suffix := fmt.Sprint(time.Now().UnixNano())
 	account, file, eventID := "acct-cr-"+suffix, "file-cr-"+suffix, "event-cr-"+suffix
@@ -82,15 +65,8 @@ func TestApplySingleEventConflictResolved(t *testing.T) {
 // location, otherwise the shard exists on disk but the catalog (and therefore
 // every download) cannot see it.
 func TestApplySingleEventFileShardStoredProjectsLocation(t *testing.T) {
-	url := os.Getenv("TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("TEST_DATABASE_URL not set; skipping integration test")
-	}
-	ctx := context.Background()
-	require.NoError(t, db.RunMigrations(url))
-	pool, err := db.Open(ctx, &config.Config{DatabaseURL: url})
-	require.NoError(t, err)
-	t.Cleanup(pool.Close)
+	pool, ctx := testutil.OpenTestDB(t)
+	var err error
 
 	suffix := fmt.Sprint(time.Now().UnixNano())
 	account := "acct-ss-" + suffix

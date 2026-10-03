@@ -2,11 +2,10 @@ package handler
 
 import (
 	"context"
-	"os"
 	"testing"
 
-	"github.com/TalibMushtaq/nodus/services/relay/internal/config"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/db"
+	"github.com/TalibMushtaq/nodus/services/relay/internal/testutil"
 	"github.com/stretchr/testify/require" //nolint:depguard
 )
 
@@ -22,20 +21,7 @@ func mustExec(t *testing.T, pool *db.Pool, sql string, args ...any) {
 // the §22 guarantee: a rebuild must never cascade-delete Relay-buffer entries,
 // plus FK re-establishment after the per-account swap.
 func TestPromoteRebuildIntegration(t *testing.T) {
-	url := os.Getenv("TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("TEST_DATABASE_URL not set; skipping integration test")
-	}
-
-	ctx := context.Background()
-	if err := db.RunMigrations(url); err != nil {
-		t.Fatalf("run migrations: %v", err)
-	}
-	pool, err := db.Open(ctx, &config.Config{DatabaseURL: url})
-	if err != nil {
-		t.Fatalf("open pool: %v", err)
-	}
-	t.Cleanup(pool.Close)
+	pool, ctx := testutil.OpenTestDB(t)
 
 	accountID := "acct-integration"
 	nodeID := "node-primary"

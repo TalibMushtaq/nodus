@@ -1,32 +1,19 @@
 package handler
 
 import (
-	"context"
 	"fmt"
-	"os"
 	"testing"
 	"time"
 
+	"github.com/TalibMushtaq/nodus/services/relay/internal/testutil"
 	"github.com/stretchr/testify/require"
-
-	"github.com/TalibMushtaq/nodus/services/relay/internal/config"
-	"github.com/TalibMushtaq/nodus/services/relay/internal/db"
 )
 
 // TestFetchPeerNodesIntegration asserts the trust-anchor source: on successful
 // node auth the Relay hands back the account's other ACTIVE nodes with their
 // public keys, excluding the authenticating node itself and any non-ACTIVE row.
 func TestFetchPeerNodesIntegration(t *testing.T) {
-	url := os.Getenv("TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("TEST_DATABASE_URL not set; skipping integration test")
-	}
-
-	ctx := context.Background()
-	require.NoError(t, db.RunMigrations(url))
-	pool, err := db.Open(ctx, &config.Config{DatabaseURL: url})
-	require.NoError(t, err)
-	t.Cleanup(pool.Close)
+	pool, ctx := testutil.OpenTestDB(t)
 
 	u := fmt.Sprintf("%d", time.Now().UnixNano())
 	account := "acct-peers-" + u

@@ -4,14 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/TalibMushtaq/nodus/services/relay/internal/config"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/db"
+	"github.com/TalibMushtaq/nodus/services/relay/internal/testutil"
 )
 
 // A Storage Node was a privileged peer: its batches skipped the origin binding,
@@ -22,28 +21,21 @@ import (
 // nodeBatchFixture seeds an account, one node, and one file/version pair for it.
 func nodeBatchFixture(t *testing.T) (ctx context.Context, pool *db.Pool, account, node, file string) {
 	t.Helper()
-	url := os.Getenv("TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("TEST_DATABASE_URL not set; skipping integration test")
-	}
-	ctx = context.Background()
-	require.NoError(t, db.RunMigrations(url))
-	p, err := db.Open(ctx, &config.Config{DatabaseURL: url})
-	require.NoError(t, err)
-	t.Cleanup(p.Close)
+	pool, ctx = testutil.OpenTestDB(t)
+	var err error
 
 	suffix := fmt.Sprint(time.Now().UnixNano())
 	account, node, file = "acct-nb-"+suffix, "node-nb-"+suffix, "file-nb-"+suffix
-	_, err = p.Exec(ctx, `INSERT INTO accounts (account_id, email, password_hash) VALUES ($1, $2, 'hash')`,
+	_, err = pool.Exec(ctx, `INSERT INTO accounts (account_id, email, password_hash) VALUES ($1, $2, 'hash')`,
 		account, account+"@test.local")
 	require.NoError(t, err)
-	_, err = p.Exec(ctx, `INSERT INTO storage_nodes (node_id, account_id, public_key) VALUES ($1, $2, 'pk')`, node, account)
+	_, err = pool.Exec(ctx, `INSERT INTO storage_nodes (node_id, account_id, public_key) VALUES ($1, $2, 'pk')`, node, account)
 	require.NoError(t, err)
-	_, err = p.Exec(ctx, `INSERT INTO files (file_id, account_id) VALUES ($1, $2)`, file, account)
+	_, err = pool.Exec(ctx, `INSERT INTO files (file_id, account_id) VALUES ($1, $2)`, file, account)
 	require.NoError(t, err)
-	_, err = p.Exec(ctx, `INSERT INTO file_versions (file_id, version_number, version_hash, shard_count) VALUES ($1, 1, 'vh', 1)`, file)
+	_, err = pool.Exec(ctx, `INSERT INTO file_versions (file_id, version_number, version_hash, shard_count) VALUES ($1, 1, 'vh', 1)`, file)
 	require.NoError(t, err)
-	return ctx, p, account, node, file
+	return ctx, pool, account, node, file
 }
 
 func shardStoredEvent(eventID, node, file string, seq int64) SyncEventItem {

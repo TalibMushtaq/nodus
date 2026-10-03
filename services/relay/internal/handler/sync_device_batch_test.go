@@ -3,13 +3,12 @@ package handler
 import (
 	"context"
 	"fmt"
-	"os"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/TalibMushtaq/nodus/services/relay/internal/config"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/db"
+	"github.com/TalibMushtaq/nodus/services/relay/internal/testutil"
 	"github.com/stretchr/testify/require"
 )
 
@@ -70,15 +69,8 @@ type deviceBatchFixture struct {
 
 func newDeviceBatchFixture(t *testing.T) *deviceBatchFixture {
 	t.Helper()
-	url := os.Getenv("TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("TEST_DATABASE_URL not set; skipping integration test")
-	}
-	ctx := context.Background()
-	require.NoError(t, db.RunMigrations(url))
-	pool, err := db.Open(ctx, &config.Config{DatabaseURL: url})
-	require.NoError(t, err)
-	t.Cleanup(pool.Close)
+	pool, ctx := testutil.OpenTestDB(t)
+	var err error
 
 	suffix := fmt.Sprint(time.Now().UnixNano())
 	account := "acct-dev-" + suffix

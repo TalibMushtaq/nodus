@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
-	"os"
 	"testing"
 	"time"
 
@@ -17,6 +16,7 @@ import (
 	"github.com/TalibMushtaq/nodus/services/relay/internal/auth"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/config"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/db"
+	"github.com/TalibMushtaq/nodus/services/relay/internal/testutil"
 )
 
 // authHarness spins up the §2 auth routes (register/login/session/logout plus
@@ -51,18 +51,7 @@ func setupAuthHarness(t *testing.T) *authHarness {
 // rather than standing up a second server.
 func setupAuthHarnessWithRoutes(t *testing.T, extra func(mux *http.ServeMux, pool *db.Pool, store auth.SessionStore, cfg *config.Config)) *authHarness {
 	t.Helper()
-	url := os.Getenv("TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("TEST_DATABASE_URL not set; skipping integration test")
-	}
-
-	ctx := context.Background()
-	if err := db.RunMigrations(url); err != nil {
-		t.Fatalf("run migrations: %v", err)
-	}
-	pool, err := db.Open(ctx, &config.Config{DatabaseURL: url})
-	require.NoError(t, err)
-	t.Cleanup(pool.Close)
+	pool, ctx := testutil.OpenTestDB(t)
 
 	cfg := &config.Config{
 		SessionCookieName:    "nodus_session",
@@ -325,16 +314,7 @@ func TestAuthSessionCookieFlags(t *testing.T) {
 // SESSION_COOKIE_SECURE=true (production mode). A separate server is spun up
 // with Secure=true to validate the cookie attribute end to end.
 func TestAuthSessionCookieSecureFlag(t *testing.T) {
-	url := os.Getenv("TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("TEST_DATABASE_URL not set; skipping integration test")
-	}
-
-	ctx := context.Background()
-	require.NoError(t, db.RunMigrations(url))
-	pool, err := db.Open(ctx, &config.Config{DatabaseURL: url})
-	require.NoError(t, err)
-	t.Cleanup(pool.Close)
+	pool, _ := testutil.OpenTestDB(t)
 
 	cfg := &config.Config{
 		SessionCookieName:    "nodus_session",

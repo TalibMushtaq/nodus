@@ -8,7 +8,6 @@ import (
 	"hash/fnv"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"regexp"
 	"strings"
 	"testing"
@@ -20,6 +19,7 @@ import (
 	"github.com/TalibMushtaq/nodus/services/relay/internal/auth"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/config"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/db"
+	"github.com/TalibMushtaq/nodus/services/relay/internal/testutil"
 )
 
 // ---------- Unit tests (no DB) ----------
@@ -93,19 +93,13 @@ func TestHashCodeDiffersForDifferentInputs(t *testing.T) {
 
 func createPairingCodeHarness(t *testing.T) (*db.Pool, string) {
 	t.Helper()
-	url := os.Getenv("TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("TEST_DATABASE_URL not set; skipping integration test")
-	}
+	pool, ctx := testutil.OpenTestDB(t)
+	var err error
 	// The redeem rate limiter is a process-global (no Redis). Reset it so a
 	// draining test (TestRedeemPairingCodeRateLimit) or an IP-seed collision
 	// cannot leak a depleted bucket into an unrelated test.
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(ctx)
 	t.Cleanup(cancel)
-	require.NoError(t, db.RunMigrations(url), "run migrations")
-	pool, err := db.Open(ctx, &config.Config{DatabaseURL: url})
-	require.NoError(t, err, "open pool")
-	t.Cleanup(pool.Close)
 
 	// Fresh account per test so is_primary/first-node logic is deterministic
 	// regardless of test order or leftover rows in a reused test database.

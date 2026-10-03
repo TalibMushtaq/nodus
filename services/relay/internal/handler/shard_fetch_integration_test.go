@@ -6,15 +6,13 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"testing"
 	"time"
 
 	"github.com/TalibMushtaq/nodus/services/relay/internal/auth"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/buffer"
-	"github.com/TalibMushtaq/nodus/services/relay/internal/config"
-	"github.com/TalibMushtaq/nodus/services/relay/internal/db"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/hub"
+	"github.com/TalibMushtaq/nodus/services/relay/internal/testutil"
 	"github.com/stretchr/testify/require"
 )
 
@@ -22,15 +20,8 @@ import (
 // common failure modes with a live pool and zero connected nodes: unknown
 // shard, another tenant's shard, and shards that are only relay-buffered.
 func TestFetchShardScopesToAccountsNodeStoredShards(t *testing.T) {
-	url := os.Getenv("TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("TEST_DATABASE_URL not set; skipping integration test")
-	}
-	ctx := context.Background()
-	require.NoError(t, db.RunMigrations(url))
-	pool, err := db.Open(ctx, &config.Config{DatabaseURL: url})
-	require.NoError(t, err)
-	t.Cleanup(pool.Close)
+	pool, ctx := testutil.OpenTestDB(t)
+	var err error
 
 	suffix := fmt.Sprint(time.Now().UnixNano())
 	acctA, acctB := "acct-a-"+suffix, "acct-b-"+suffix
@@ -96,20 +87,12 @@ func TestFetchShardScopesToAccountsNodeStoredShards(t *testing.T) {
 }
 
 func TestFetchShardRejectsUnknownAndMalformed(t *testing.T) {
-	url := os.Getenv("TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("TEST_DATABASE_URL not set; skipping integration test")
-	}
-	context_ := context.Background()
-	require.NoError(t, db.RunMigrations(url))
-	pool, err := db.Open(context_, &config.Config{DatabaseURL: url})
-	require.NoError(t, err)
-	t.Cleanup(pool.Close)
+	pool, ctx := testutil.OpenTestDB(t)
 
 	suffix := fmt.Sprint(time.Now().UnixNano())
 	acct := "acct-unknown-" + suffix
 
-	runCtx, stop := context.WithCancel(context_)
+	runCtx, stop := context.WithCancel(ctx)
 	h := hub.New(nil)
 	go h.Run(runCtx)
 	t.Cleanup(stop)
@@ -140,15 +123,8 @@ func TestFetchShardRejectsUnknownAndMalformed(t *testing.T) {
 }
 
 func TestFetchShardEndToEndViaVirtualNode(t *testing.T) {
-	url := os.Getenv("TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("TEST_DATABASE_URL not set; skipping integration test")
-	}
-	ctx := context.Background()
-	require.NoError(t, db.RunMigrations(url))
-	pool, err := db.Open(ctx, &config.Config{DatabaseURL: url})
-	require.NoError(t, err)
-	t.Cleanup(pool.Close)
+	pool, ctx := testutil.OpenTestDB(t)
+	var err error
 
 	suffix := fmt.Sprint(time.Now().UnixNano())
 	acct, node := "acct-e2e-"+suffix, "node-e2e-"+suffix
@@ -226,15 +202,8 @@ func TestFetchShardEndToEndViaVirtualNode(t *testing.T) {
 // A shard the Relay is still holding (no node pickup yet) must be downloadable
 // from the buffer, and reading it must not disturb its delivery state.
 func TestFetchShardServesRelayBufferedShard(t *testing.T) {
-	url := os.Getenv("TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("TEST_DATABASE_URL not set; skipping integration test")
-	}
-	ctx := context.Background()
-	require.NoError(t, db.RunMigrations(url))
-	pool, err := db.Open(ctx, &config.Config{DatabaseURL: url})
-	require.NoError(t, err)
-	t.Cleanup(pool.Close)
+	pool, ctx := testutil.OpenTestDB(t)
+	var err error
 
 	buf, err := buffer.New(t.TempDir())
 	require.NoError(t, err)
@@ -294,15 +263,8 @@ func TestFetchShardServesRelayBufferedShard(t *testing.T) {
 // must be able to tell the transfer was cut short rather than seeing a
 // short-but-plausible shard.
 func TestFetchShardStopsAnOversizedNodeStream(t *testing.T) {
-	url := os.Getenv("TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("TEST_DATABASE_URL not set; skipping integration test")
-	}
-	ctx := context.Background()
-	require.NoError(t, db.RunMigrations(url))
-	pool, err := db.Open(ctx, &config.Config{DatabaseURL: url})
-	require.NoError(t, err)
-	t.Cleanup(pool.Close)
+	pool, ctx := testutil.OpenTestDB(t)
+	var err error
 
 	suffix := fmt.Sprint(time.Now().UnixNano())
 	acct, node := "acct-oversize-"+suffix, "node-oversize-"+suffix
@@ -393,15 +355,8 @@ func TestFetchShardStopsAnOversizedNodeStream(t *testing.T) {
 // a shard that could not be served — a client that treats them the same will
 // either give up on a shard that exists or hammer a relay that is merely busy.
 func TestFetchShardShedsWhenAtCapacity(t *testing.T) {
-	url := os.Getenv("TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("TEST_DATABASE_URL not set; skipping integration test")
-	}
-	ctx := context.Background()
-	require.NoError(t, db.RunMigrations(url))
-	pool, err := db.Open(ctx, &config.Config{DatabaseURL: url})
-	require.NoError(t, err)
-	t.Cleanup(pool.Close)
+	pool, ctx := testutil.OpenTestDB(t)
+	var err error
 
 	suffix := fmt.Sprint(time.Now().UnixNano())
 	acct, node := "acct-capacity-"+suffix, "node-capacity-"+suffix

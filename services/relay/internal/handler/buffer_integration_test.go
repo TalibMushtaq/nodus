@@ -17,6 +17,7 @@ import (
 	"github.com/TalibMushtaq/nodus/services/relay/internal/db"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/hub"
 	"github.com/TalibMushtaq/nodus/services/relay/internal/rdb"
+	"github.com/TalibMushtaq/nodus/services/relay/internal/testutil"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 )
@@ -37,20 +38,7 @@ type bufferHarness struct {
 
 func setupBufferHarness(t testing.TB) *bufferHarness {
 	t.Helper()
-	url := os.Getenv("TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("TEST_DATABASE_URL not set; skipping integration test")
-	}
-
-	ctx := context.Background()
-	if err := db.RunMigrations(url); err != nil {
-		t.Fatalf("run migrations: %v", err)
-	}
-	pool, err := db.Open(ctx, &config.Config{DatabaseURL: url})
-	if err != nil {
-		t.Fatalf("open pool: %v", err)
-	}
-	t.Cleanup(pool.Close)
+	pool, ctx := testutil.OpenTestDB(t)
 
 	h := &bufferHarness{
 		ctx:       ctx,
