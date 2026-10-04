@@ -1,8 +1,8 @@
 # Deploying the Nodus server unit
 
-One public origin serving the Next.js web app and the Go Relay, backed by
-PostgreSQL and Redis, fronted by Caddy (TLS + routing). Storage Nodes are
-separate machines that connect to this origin — never to an internal address.
+One public origin serving the Next.js web app and the Go Relay, backed by a
+local SQLite database and Redis, fronted by Caddy (TLS + routing). Storage Nodes
+are separate machines that connect to this origin — never to an internal address.
 
 ```
 Caddy (:80/:443)
@@ -51,13 +51,12 @@ nodus node pair --relay http://localhost --code NODUS-XXXX-XXXX
    PUBLIC_RELAY_URL=https://nodus.example.com
    ALLOWED_ORIGINS=https://nodus.example.com
    SESSION_COOKIE_SECURE=true
-   POSTGRES_PASSWORD=<strong-secret>
    REDIS_PASSWORD=<strong-secret>
    ```
-   Both are required: `docker compose up` refuses to start without them rather
-   than falling back to a default. They must be URL-safe (no `@`, `:`, `/`, `#`
-   or whitespace) because compose interpolates them into `DATABASE_URL` and
-   `REDIS_URL` without encoding.
+   `REDIS_PASSWORD` is required: `docker compose up` refuses to start without it
+   rather than falling back to a default. It must be URL-safe (no `@`, `:`, `/`,
+   `#` or whitespace) because compose interpolates it into `REDIS_URL` without
+   encoding. There is no database password: the relay uses a local SQLite file.
 3. `docker compose -f deploy/docker-compose.yml --env-file deploy/.env up --build -d`
 
 Caddy obtains/renews the certificate automatically. The Relay's `ALLOWED_ORIGINS`
@@ -75,9 +74,14 @@ host you put in `PUBLIC_RELAY_URL`/`ALLOWED_ORIGINS`.
 - **Logs:** `docker compose -f deploy/docker-compose.yml logs -f relay web caddy`
 - **Update:** `git pull && docker compose -f deploy/docker-compose.yml --env-file deploy/.env up --build -d`
 - **Teardown:** `docker compose -f deploy/docker-compose.yml down` (add `-v` to
-  wipe Postgres/Redis/buffer/Caddy volumes — destructive).
-- **Backups:** the `postgres_data` volume holds all durable state; the Relay
-  buffer and Redis are transient.
+  wipe the Redis, relay (database + buffer), and Caddy volumes — destructive).
+- **Backups:** the `relay_data` volume holds the SQLite database
+  (`/var/lib/nodus/relay.db`), which is all durable state; the buffer and Redis
+  are transient. Back it up with `VACUUM INTO 'backup.db'`, the SQLite backup
+  API, or Litestream. **Never `cp` a live database file** — a copy taken while
+  writes are in flight can be corrupt. Restore by stopping the relay, replacing
+  the file (with its `-wal`/`-shm` sidecars removed), and starting it again.
+- Run **exactly one relay replica**: the database file is locked by the process.
 - Migrations run automatically when the Relay starts.
 
 ## Verifying the routing by hand

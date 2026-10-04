@@ -1,37 +1,18 @@
 name: nodus
 
 # Combined single-origin server unit: Caddy (TLS + routing) in front of the
-# Next.js web app and the Go Relay, backed by PostgreSQL and Redis. Bring it up
-# with:
+# Next.js web app and the Go Relay, backed by a local SQLite database and Redis.
+# Bring it up with:
 #
 #   cp deploy/.env.example deploy/.env
 #   docker compose -f deploy/docker-compose.yml --env-file deploy/.env up --build -d
 #
 # Storage Nodes run on separate machines and connect through the public origin.
+#
+# The Relay is single-instance: its SQLite file is locked by the process, so do
+# not scale the relay service beyond one replica.
 
 services:
-  postgres:
-    image: postgres:17-alpine
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER:-nodus}
-      # Required, with no fallback. This used to default to "nodus_password",
-      # which meant a deployment that copied .env.example and pointed
-      # SITE_ADDRESS at a public domain came up on a guessable database
-      # password — silently, because the default was doing what it was told.
-      # Failing at `docker compose up` is the better outcome.
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deploy/.env (see deploy/.env.example)}
-      POSTGRES_DB: ${POSTGRES_DB:-nodus_relay}
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      # -h 127.0.0.1 forces a TCP check: initdb's temporary server is
-      # socket-only, so a socket check could pass before the real server listens.
-      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U ${POSTGRES_USER:-nodus} -d ${POSTGRES_DB:-nodus_relay}"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-
   redis:
     image: redis:7-alpine
     restart: unless-stopped
@@ -58,15 +39,14 @@ services:
       dockerfile: deploy/Dockerfile.relay
     restart: unless-stopped
     depends_on:
-      postgres:
-        condition: service_healthy
       redis:
         condition: service_healthy
     environment:
       PORT: "8080"
-      # Both passwords are interpolated into a URL, so they must be URL-safe:
-      # no "@", ":", "/", "#" or whitespace. Compose does not encode them.
-      DATABASE_URL: postgres://${POSTGRES_USER:-nodus}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deploy/.env}@postgres:5432/${POSTGRES_DB:-nodus_relay}?sslmode=disable
+      # SQLite database file. The parent directory must be on a local
+      # filesystem (WAL sidecar files are created next to it); do not put it on
+      # NFS/SMB.
+      DB_PATH: /var/lib/nodus/relay.db
       REDIS_URL: redis://:${REDIS_PASSWORD:?set REDIS_PASSWORD in deploy/.env}@redis:6379/0
       # Browser WS origin(s) allowed to authenticate; must equal the public
       # origin. Defaults to both local spellings so the quickstart works whether
@@ -88,12 +68,15 @@ services:
       VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
       VAPID_SUBJECT: ${VAPID_SUBJECT:-mailto:admin@example.com}
     volumes:
-      - buffer_data:/var/lib/nodus/buffer
+      # One directory holds the SQLite database and its -wal/-shm sidecars plus
+      # the shard buffer. Mount the directory, never the .db file on its own:
+      # the sidecars must live beside it, and on a local filesystem.
+      - relay_data:/var/lib/nodus
     healthcheck:
       # Require both dependencies to be genuinely connected: /health returns a
-      # 200 with "status":"ok" only when Postgres and Redis both ping, whereas a
-      # bare status check (or a Postgres-only grep) would mark a partially
-      # degraded Relay healthy.
+      # 200 with "status":"ok" only when SQLite answers a real SELECT 1 and
+      # Redis pings, whereas a bare status check would mark a partially degraded
+      # Relay healthy.
       test:
         - CMD-SHELL
         - wget -qO- http://localhost:8080/health | grep -q '"status":"ok"'
@@ -152,8 +135,7 @@ services:
       - caddy_config:/config
 
 volumes:
-  postgres_data:
   redis_data:
-  buffer_data:
+  relay_data:
   caddy_data:
   caddy_config:

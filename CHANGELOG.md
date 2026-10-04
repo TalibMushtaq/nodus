@@ -1,5 +1,18 @@
 # Changelog
 
+## [2026-10-03] - Deploy: drop PostgreSQL from the server unit
+
+**What changed:**
+
+- `deploy/docker-compose.yml`: removed the `postgres` service and `postgres_data` volume; the relay now takes `DB_PATH=/var/lib/nodus/relay.db` and mounts the `relay_data` volume at `/var/lib/nodus` (database, WAL sidecars, and buffer together). `.env.example` and `deploy/README.md` no longer mention PostgreSQL credentials and document `VACUUM INTO`/Litestream backups and the single-replica requirement.
+- `services/relay/docker-compose.test.yml` and `scripts/test-integration.sh`: the fixture is Redis only, since the relay database is a per-test SQLite file.
+
+**Why:** the relay no longer needs a database service, so the deployment should not run one.
+
+**Impact:** deployments must set `REDIS_PASSWORD` and no longer set `POSTGRES_*`. The `relay_data` volume replaces `postgres_data`/`buffer_data`. Compose config validates and the full suite passes via the updated fixture.
+
+**Follow-ups:** update the root README and implementation-plan references.
+
 ## [2026-10-03] - Relay: remove the dead PostgreSQL path
 
 **What changed:**
