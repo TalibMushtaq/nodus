@@ -89,7 +89,7 @@ func TestHashCodeDiffersForDifferentInputs(t *testing.T) {
 	require.NotEqual(t, a, b)
 }
 
-// ---------- Integration tests (live Postgres) ----------
+// ---------- Integration tests (live SQLite database) ----------
 
 func createPairingCodeHarness(t *testing.T) (*db.Pool, string) {
 	t.Helper()

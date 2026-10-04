@@ -16,8 +16,8 @@ func mustExec(t *testing.T, pool *db.Pool, sql string, args ...any) {
 	require.NoError(t, err)
 }
 
-// This integration test exercises the Phase 9 promotion against a real Postgres.
-// It requires TEST_DATABASE_URL to be set (run the migrations first). It covers
+// This integration test exercises the Phase 9 promotion against a real SQLite database.
+// It runs against a per-test SQLite database (migrations applied by the helper). It covers
 // the §22 guarantee: a rebuild must never cascade-delete Relay-buffer entries,
 // plus FK re-establishment after the per-account swap.
 func TestPromoteRebuildIntegration(t *testing.T) {

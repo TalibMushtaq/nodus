@@ -203,8 +203,8 @@ func TestNodeBatchSkipsUnprojectableEventWithoutWedging(t *testing.T) {
 }
 
 // TestNodeBatchSurvivesHardErrorInOneEvent proves the per-event savepoint works:
-// a statement error in Postgres aborts the enclosing transaction, so without the
-// savepoint one poisoned event would take down every later event in the batch.
+// one poisoned event must not take down every later event in the batch, so each
+// runs in its own savepoint that can be rolled back in isolation.
 func TestNodeBatchSurvivesHardErrorInOneEvent(t *testing.T) {
 	ctx, pool, account, node, file := nodeBatchFixture(t)
 

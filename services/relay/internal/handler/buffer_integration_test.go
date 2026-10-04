@@ -24,7 +24,7 @@ import (
 
 // bufferHarness bundles the live resources the Phase 10 handler tests need.
 // The upload and fetch handlers exercise the full Path C slicing against real
-// Postgres (+ optional Redis for tokens).
+// SQLite (+ optional Redis for tokens).
 type bufferHarness struct {
 	ctx       context.Context
 	pool      *db.Pool

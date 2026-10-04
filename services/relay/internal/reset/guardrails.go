@@ -11,7 +11,7 @@ import (
 )
 
 // This file holds the guardrails for the factory reset. `reset.Run` destroys
-// the Postgres schema, a Redis database index, and a directory on disk, and it
+// the SQLite database, a Redis database index, and a directory on disk, and it
 // takes all three targets from the environment. Without checks, a single
 // mistyped BUFFER_DIR pointed at `/` or `$HOME` deletes that tree, and a reset
 // run against a database the Relay is still serving drops the schema underneath

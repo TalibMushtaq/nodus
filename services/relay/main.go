@@ -46,7 +46,7 @@ func openDatabase(ctx context.Context, cfg *config.Config) *db.Pool {
 //
 // The prompt names the concrete targets (host, database, Redis index, buffer
 // path) because all three come from the environment: an operator who has
-// DATABASE_URL or REDIS_URL pointed at the wrong place should see that before
+// DB_PATH or REDIS_URL pointed at the wrong place should see that before
 // anything is deleted. Credentials are never printed.
 func confirmFactoryReset(cfg *config.Config) bool {
 	log.Println("[relay] FACTORY RESET will permanently delete:")

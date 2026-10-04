@@ -11,7 +11,7 @@ import (
 // Sustained Path C load: every shard of one version is uploaded concurrently
 // and must land as RELAY_BUFFERED with no loss or corruption of the shard
 // status rows. Integration-only — `setupBufferHarness` skips unless
-// TEST_DATABASE_URL is set (TS and Postgres are the real dependencies under
+// the database is a per-test SQLite file (Redis is the external dependency under
 // load, so a mock would not exercise anything meaningful).
 func TestBufferUploadSustainedLoad(t *testing.T) {
 	h := setupBufferHarness(t)
@@ -60,11 +60,9 @@ func TestBufferUploadSustainedLoad(t *testing.T) {
 }
 
 // BenchmarkBufferUpload measures one Path C shard upload end to end (handler +
-// cache/DB work + buffer write) against real Postgres. Run with:
+// cache/DB work + buffer write) against a per-test SQLite database. Run with:
 //
-//	TEST_DATABASE_URL=... go test ./internal/handler -run '^$' -bench BenchmarkBufferUpload
-//
-// It skips without TEST_DATABASE_URL, like the other integration tests.
+//	go test ./internal/handler -run '^$' -bench BenchmarkBufferUpload
 func BenchmarkBufferUpload(b *testing.B) {
 	h := setupBufferHarness(b)
 

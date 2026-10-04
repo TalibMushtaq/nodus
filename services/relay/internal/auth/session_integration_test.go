@@ -14,7 +14,7 @@ import (
 	"github.com/TalibMushtaq/nodus/services/relay/internal/testutil"
 )
 
-// sessionHarness binds a live Postgres pool + seeded account/device rows.
+// sessionHarness binds a live SQLite pool + seeded account/device rows.
 // Every field stays from one CreateSession unless noted otherwise.
 type sessionHarness struct {
 	ctx       context.Context

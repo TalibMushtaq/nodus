@@ -725,9 +725,8 @@ func applyNodeBatch(
 	appliedIDs := make([]string, 0, len(events))
 	for _, item := range events {
 		// A savepoint per event: a hard error (constraint violation, bad payload)
-		// marks the enclosing transaction aborted in Postgres, which would take
-		// every later event in the batch down with it. Rolling back to the
-		// savepoint confines the damage to the one event that caused it.
+		// must not take every later event in the batch down with it. Rolling back
+		// to the savepoint confines the damage to the one event that caused it.
 		eventTx, err := tx.Begin(ctx)
 		if err != nil {
 			log.Printf("[sync] begin event savepoint %s: %v", item.EventID, err)

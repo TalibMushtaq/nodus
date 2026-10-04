@@ -251,7 +251,7 @@ func BufferUpload(pool *db.Pool, rClient *rdb.Client, buf *buffer.Buffer, h *hub
 		if rClient != nil {
 			if err := rClient.AddPendingBuffer(r.Context(), md.TargetNode, bufferID); err != nil {
 				log.Printf("[buffer-upload] warn: failed to add pending buffer %s for node=%s in Redis "+
-					"(shard is safe in Postgres; will be delivered on reconnect via DB query): %v",
+					"(shard is safe in the database; will be delivered on reconnect via DB query): %v",
 					bufferID, md.TargetNode, err)
 			}
 		}

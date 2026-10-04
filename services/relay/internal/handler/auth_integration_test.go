@@ -20,7 +20,7 @@ import (
 )
 
 // authHarness spins up the §2 auth routes (register/login/session/logout plus
-// device revocation) against a live Postgres and an HTTP server with a cookie
+// device revocation) against a live SQLite database and an HTTP server with a cookie
 // jar, so the full session-cookie lifecycle is exercised end to end.
 type authHarness struct {
 	ctx    context.Context

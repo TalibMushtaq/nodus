@@ -156,7 +156,7 @@ func CreatePairingSession(pool *db.Pool, wsHub *hub.Hub) http.HandlerFunc {
 func VerifyPairingSession(pool *db.Pool, cfg *config.Config, rClient *rdb.Client) http.HandlerFunc {
 	// 10 burst / 2 per second. The token is a UUIDv4 and single-use, so this is
 	// not about guessing it — it is that the handler runs an UPDATE against
-	// Postgres on every unauthenticated call, and without a ceiling anyone can
+	// the database on every unauthenticated call, and without a ceiling anyone can
 	// drive that write rate.
 	pairingVerifyLimiter := newRateLimiter(rClient, "pairing_verify", 10, 2)
 	return func(w http.ResponseWriter, r *http.Request) {

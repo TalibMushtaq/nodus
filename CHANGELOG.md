@@ -1,5 +1,17 @@
 # Changelog
 
+## [2026-10-03] - Relay: correct stale PostgreSQL references in comments
+
+**What changed:**
+
+- Updated comments and one log message across `main.go`, `sync.go`, the sync/node-batch tests, the pairing/buffer/rebuild test harnesses, and `reset/guardrails.go` that still described the Relay store as PostgreSQL. The per-event savepoint is now documented as isolation that is retained on both backends rather than a PostgreSQL abort requirement.
+
+**Why:** after the cutover the code no longer uses PostgreSQL, so the comments were misleading.
+
+**Impact:** comments and one log string only; no behavior change. `go vet` and the full suite pass.
+
+**Follow-ups:** none.
+
 ## [2026-10-03] - Docs: describe the SQLite-backed relay
 
 **What changed:**

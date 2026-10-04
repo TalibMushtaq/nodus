@@ -20,7 +20,7 @@ import (
 	"github.com/TalibMushtaq/nodus/services/relay/internal/testutil"
 )
 
-// pairingHarness bundles the live Postgres resources and seeded fixture rows
+// pairingHarness bundles the live SQLite resources and seeded fixture rows
 // the pairing handlers need. CreatePairingSession requires a node + registered
 // device belonging to the account; VerifyPairingSession only needs the table.
 type pairingHarness struct {
@@ -242,7 +242,7 @@ func TestVerifyPairingSessionRejectsUnknownToken(t *testing.T) {
 //
 // Neither secret is brute-forceable — a pairing token is a UUIDv4 and a node id
 // is a UUID — so this is not about guessing. It is that each request reaches
-// Postgres. /pairing/sessions/verify runs an UPDATE ... WHERE token = $1 on
+// the database. /pairing/sessions/verify runs an UPDATE ... WHERE token = $1 on
 // every call, so an unauthenticated caller drives write queries at a rate the
 // relay never bounded, and /nodes/verify is an unauthenticated existence oracle
 // over storage_nodes that answers for any id presented.
