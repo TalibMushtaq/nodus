@@ -1,7 +1,7 @@
 name: e2e
 
 # Cross-stack live E2E against the single-origin deploy unit (Next.js + Go Relay
-# + PostgreSQL + Redis behind Caddy) with a real Rust Storage Node. This is
+# + SQLite + Redis behind Caddy) with a real Rust Storage Node. This is
 # deliberately NOT a required PR check: it builds the Rust node and both Docker
 # images, so it is slow and can be flaky on shared runners. Run it nightly, on
 # demand, or on PRs that touch the pieces it exercises.

@@ -41,7 +41,10 @@ mint() { curl -fsS -b "$1" -X POST "$BASE/api/pairing/codes" -H 'content-type: a
   | python3 -c 'import sys,json;print(json.load(sys.stdin)["code"])'; }
 # Extract the raw cookie value from a Netscape cookie jar.
 cookie_val() { awk '$6 == "nodus_session" { print $7 }' "$1"; }
-psqlq() { $COMPOSE exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc "$1"' sh "$1"; }
+# Query the relay's SQLite database through its container (see the relay
+# Dockerfile, which ships the sqlite3 CLI). A short busy timeout waits out a
+# concurrent relay write instead of failing.
+sqliteq() { $COMPOSE exec -T relay sqlite3 -cmd '.timeout 5000' /var/lib/nodus/relay.db "$1"; }
 # Derive {device_id, public_key} for a seed via the harness.
 identity_field() { pnpm --filter e2e-path-c run print-identity -- --seed "$1" 2>/dev/null | tail -1 \
   | python3 -c "import sys,json;print(json.load(sys.stdin)['$2'])"; }
@@ -146,14 +149,14 @@ NODE_PID=$!
 for _ in $(seq 1 20); do curl -fsS "$NODE_LOCAL/nodus/discovery" >/dev/null 2>&1 && break; sleep 1; done
 stored="0"
 for _ in $(seq 1 30); do
-  # `|| true` keeps a transient psql error from aborting under `set -e`; the
+  # `|| true` keeps a transient query error from aborting under `set -e`; the
   # check below reports the final state either way.
-  stored=$(psqlq "SELECT count(*) FROM file_locations WHERE file_id='$FILE_ID' AND status='NODE_STORED'" || true)
+  stored=$(sqliteq "SELECT count(*) FROM file_locations WHERE file_id='$FILE_ID' AND status='NODE_STORED'" || true)
   [ "$stored" = "2" ] && break
   sleep 1
 done
 check "both shards NODE_STORED" "$stored" "2"
-check "no RELAY_BUFFERED rows remain" "$(psqlq "SELECT count(*) FROM file_locations WHERE file_id='$FILE_ID' AND status='RELAY_BUFFERED'")" "0"
+check "no RELAY_BUFFERED rows remain" "$(sqliteq "SELECT count(*) FROM file_locations WHERE file_id='$FILE_ID' AND status='RELAY_BUFFERED'")" "0"
 
 echo "===== Device B pairs locally, downloads, decrypts ====="
 TOKEN=$(curl -fsS -b "$JAR" -X POST "$BASE/api/pairing/sessions" -H 'content-type: application/json' \

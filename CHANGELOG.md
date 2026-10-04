@@ -1,5 +1,19 @@
 # Changelog
 
+## [2026-10-03] - E2E: point the deploy-compose harness at the SQLite relay
+
+**What changed:**
+
+- `deploy/Dockerfile.relay` now installs the `sqlite3` CLI so the harness (and operators) can inspect the database in-container.
+- `scripts/e2e-bootstrap-pairing.sh` and `scripts/e2e-path-c.sh`: the SQL helper runs `sqlite3` against `/var/lib/nodus/relay.db` in the relay container instead of `psql` in a postgres container; the expiry seed uses `unixepoch('subsec') * 1000` millis; the health wait greps `"sqlite":"healthy"`; `is_primary` is asserted as `1`.
+- `.github/workflows/e2e.yml` comment updated.
+
+**Why:** the deploy unit no longer runs PostgreSQL, so the E2E harness had no database to query.
+
+**Impact:** E2E harness only. Both scripts pass `bash -n`; the `sqlite3` query path was smoke-tested against the running relay container.
+
+**Follow-ups:** the nightly/manual E2E workflow should be re-run on a runner to confirm end to end.
+
 ## [2026-10-03] - Relay: skip Redis tests without a fixture; cover busy and not-found
 
 **What changed:**

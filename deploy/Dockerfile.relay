@@ -13,7 +13,9 @@ COPY services/relay/ ./
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/relay .
 
 FROM alpine:3.20
-RUN apk add --no-cache ca-certificates tzdata \
+# sqlite is included so operators (and the e2e harness) can inspect the
+# database with the sqlite3 CLI without a second image.
+RUN apk add --no-cache ca-certificates tzdata sqlite \
     && adduser -D -u 10001 nodus \
     && mkdir -p /var/lib/nodus/buffer \
     && chown -R nodus:nodus /var/lib/nodus

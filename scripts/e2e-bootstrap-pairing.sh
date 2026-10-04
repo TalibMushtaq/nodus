@@ -42,9 +42,10 @@ has_node() { curl -fsS -b "$1" "$BASE/api/nodes" | python3 -c 'import sys,json
 nid=sys.argv[1]; ns=json.load(sys.stdin)
 print("yes" if any(n["node_id"]==nid for n in ns) else "no")' "$2"; }
 hash_code() { python3 -c 'import hashlib,sys;print(hashlib.sha256(sys.argv[1].replace("-","").upper().encode()).hexdigest())' "$1"; }
-# Run SQL through the container so POSTGRES_USER/POSTGRES_DB come from the
-# compose env rather than hardcoded values that a custom deploy/.env would break.
-psqlq() { $COMPOSE exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc "$1"' sh "$1"; }
+# Run SQL against the relay's SQLite database through its container. The relay
+# image ships the sqlite3 CLI for exactly this kind of inspection. A short busy
+# timeout lets the query wait out a concurrent relay write instead of failing.
+sqliteq() { $COMPOSE exec -T relay sqlite3 -cmd '.timeout 5000' /var/lib/nodus/relay.db "$1"; }
 auth_count() { $COMPOSE logs relay 2>&1 | grep -c "node $1 successfully authenticated" || true; }
 
 STAMP=$(date +%s)
@@ -74,7 +75,7 @@ check "consumed reason" "$(python3 -c 'import json;print(json.load(open("/tmp/s1
 
 echo "===== Scenario 3: expired code ====="
 CODE_EXP=$(mint "$JA")
-psqlq "UPDATE pairing_codes SET expires_at = NOW() - interval '1 minute' WHERE code_hash = '$(hash_code "$CODE_EXP")'" >/dev/null
+sqliteq "UPDATE pairing_codes SET expires_at = CAST(unixepoch('subsec') * 1000 AS INTEGER) - 60000 WHERE code_hash = '$(hash_code "$CODE_EXP")'" >/dev/null
 st=$(redeem "$CODE_EXP" "node-exp-$STAMP"); check "expired redeem returns 410" "$st" "410"
 check "expired reason" "$(python3 -c 'import json;print(json.load(open("/tmp/s10-rb")).get("error"))')" "code_expired"
 
@@ -102,8 +103,8 @@ any5xx=$(grep -ohE '5[0-9][0-9]' /tmp/s10-conc-* | wc -l)
 check "exactly one winner" "$wins" "1"
 check "seven rejected (409/429)" "$rejected" "7"
 check "no server errors" "$any5xx" "0"
-check "exactly one node row registered" "$(psqlq "SELECT count(*) FROM storage_nodes WHERE node_id LIKE 'node-conc-$STAMP-%'")" "1"
-check "code consumed once" "$(psqlq "SELECT status FROM pairing_codes WHERE code_hash='$(hash_code "$CODE_C")'")" "CONSUMED"
+check "exactly one node row registered" "$(sqliteq "SELECT count(*) FROM storage_nodes WHERE node_id LIKE 'node-conc-$STAMP-%'")" "1"
+check "code consumed once" "$(sqliteq "SELECT status FROM pairing_codes WHERE code_hash='$(hash_code "$CODE_C")'")" "CONSUMED"
 
 echo "===== Scenario 6: restart resilience ====="
 CODE_D=$(mint "$JA")
@@ -111,8 +112,8 @@ $COMPOSE stop relay >/dev/null 2>&1
 st_down=$(redeem "$CODE_D" "node-rr-$STAMP")
 check "redeem while relay down fails" "$([ "$st_down" != "200" ] && echo yes || echo no)" "yes"
 $COMPOSE start relay >/dev/null 2>&1
-for _ in $(seq 1 30); do curl -s "$BASE/health" | grep -q '"postgres":"healthy"' && break; sleep 2; done
-check "relay healthy after restart" "$(curl -s "$BASE/health" | grep -c '"postgres":"healthy"')" "1"
+for _ in $(seq 1 30); do curl -s "$BASE/health" | grep -q '"sqlite":"healthy"' && break; sleep 2; done
+check "relay healthy after restart" "$(curl -s "$BASE/health" | grep -c '"sqlite":"healthy"')" "1"
 st_retry=$(redeem "$CODE_D" "node-rr2-$STAMP"); check "retry after restart succeeds" "$st_retry" "200"
 st_again=$(redeem "$CODE_D" "node-rr2-$STAMP"); check "consumed still fails after restart" "$st_again" "409"
 env -u NODUS_RELAY_URL HOME="$TMP" timeout 8 "$BIN" node start >/tmp/s10-reconnect.log 2>&1
@@ -123,7 +124,7 @@ CODE_E=$(mint "$JA")
 env -u NODUS_RELAY_URL HOME="$TMP" timeout 12 "$BIN" node pair --data-dir "$TMP/data" --relay http://127.0.0.1 --code "$CODE_E" >/tmp/s10-repair.log 2>&1
 check "same-account re-pair is idempotent" "$(grep -c "account id: $ACCT_A" /tmp/s10-repair.log)" "1"
 check "relay_url updated to new origin" "$(grep -c 'relay_url = "http://127.0.0.1"' "$TMP/.nodus/config.toml")" "1"
-check "same-key re-pair preserves primary" "$(psqlq "SELECT is_primary FROM storage_nodes WHERE node_id='$NODE_ID'")" "t"
+check "same-key re-pair preserves primary" "$(sqliteq "SELECT is_primary FROM storage_nodes WHERE node_id='$NODE_ID'")" "1"
 
 echo "===== Scenario 8: changed-key re-pair rejected (node_key_mismatch) ====="
 # Register a synthetic node with a known key, then attempt to re-register the
@@ -136,8 +137,8 @@ CODE_K2=$(mint "$JA")
 st=$(redeem_key "$CODE_K2" "$KEY_NODE" "$(printf 'cd%.0s' {1..32})")
 check "changed-key redeem returns 409" "$st" "409"
 check "node_key_mismatch reason" "$(python3 -c 'import json;print(json.load(open("/tmp/s10-rb")).get("error"))')" "node_key_mismatch"
-check "registered key unchanged" "$(psqlq "SELECT public_key FROM storage_nodes WHERE node_id='$KEY_NODE'")" "$(printf 'ab%.0s' {1..32})"
-check "rejected key code not burned" "$(psqlq "SELECT status FROM pairing_codes WHERE code_hash='$(hash_code "$CODE_K2")'")" "PENDING"
+check "registered key unchanged" "$(sqliteq "SELECT public_key FROM storage_nodes WHERE node_id='$KEY_NODE'")" "$(printf 'ab%.0s' {1..32})"
+check "rejected key code not burned" "$(sqliteq "SELECT status FROM pairing_codes WHERE code_hash='$(hash_code "$CODE_K2")'")" "PENDING"
 
 echo "===== Scenario 9: concurrent first-node single primary ====="
 # Two simultaneous first-node redeems for a brand-new account must leave
@@ -152,7 +153,7 @@ for spec in "$CODE_P1 node-p1-$STAMP" "$CODE_P2 node-p2-$STAMP"; do
       -d "{\"code\":\"$1\",\"node_id\":\"$2\",\"public_key\":\"$(printf 'ab%.0s' {1..32})\"}" ) &
 done; wait
 ACCT_C=$(acct "$JC")
-check "exactly one primary for account C" "$(psqlq "SELECT count(*) FROM storage_nodes WHERE account_id='$ACCT_C' AND is_primary")" "1"
+check "exactly one primary for account C" "$(sqliteq "SELECT count(*) FROM storage_nodes WHERE account_id='$ACCT_C' AND is_primary")" "1"
 
 echo "===== SUMMARY: $PASS passed, $FAIL failed ====="
 rm -rf "$TMP"
