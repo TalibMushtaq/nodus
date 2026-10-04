@@ -1,5 +1,18 @@
 # Changelog
 
+## [2026-10-03] - Relay: add a concurrent multi-device SQLite stress test
+
+**What changed:**
+
+- New `services/relay/internal/handler/sync_stress_test.go`: eight devices apply twelve sequential `FILE_CREATED` events each, concurrently, against one file-backed SQLite database. It asserts every batch applies, the file and journal row counts equal the total event count (no duplicates or loss), and each device's cursor lands on its final sequence.
+- The existing concurrency characterization tests and this stress test pass under `go test -race` (CGO enabled).
+
+**Why:** the PostgreSQL row locks that serialized cursor updates are gone; this exercises the single-writer `BEGIN IMMEDIATE` transaction that replaced them under real contention.
+
+**Impact:** test-only. Full relay suite passes with and without `-race`.
+
+**Follow-ups:** none.
+
 ## [2026-10-03] - Deploy: drop PostgreSQL from the server unit
 
 **What changed:**
