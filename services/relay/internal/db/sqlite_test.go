@@ -2,7 +2,9 @@ package db
 
 import (
 	"context"
+	"database/sql"
 	"path/filepath"
+	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -141,4 +143,61 @@ func TestSQLiteForeignKeyEnforced(t *testing.T) {
 		"dev-orphan", "no-such-account", "pk", 0)
 	require.Error(t, err)
 	require.ErrorIs(t, err, ErrForeignKey)
+}
+
+// TestSQLiteBusyIsRetryable pins the mapping the service relies on: a write that
+// cannot take the single writer lock returns ErrBusy rather than blocking
+// forever, and the next attempt succeeds once the competing transaction ends.
+// It uses a short busy_timeout so the test is fast; production uses 5000ms.
+func TestSQLiteBusyIsRetryable(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping lock-contention test in -short mode")
+	}
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "relay.db")
+	require.NoError(t, RunSQLiteMigrations(path))
+
+	// A raw connection (not a Pool, so it does not take the relay file lock)
+	// holds the write lock with BEGIN IMMEDIATE.
+	raw, err := openRawSQLite(path, 1)
+	require.NoError(t, err)
+	defer raw.Close()
+	tx, err := raw.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = tx.Rollback() })
+
+	// A pool with a tiny busy_timeout so the test does not wait the production
+	// five seconds.
+	writer, err := openRawSQLite(path, 100)
+	require.NoError(t, err)
+	pool := &Pool{writer: writer, reader: writer}
+	defer pool.Close()
+
+	_, err = pool.Exec(ctx, `INSERT INTO accounts (account_id, email, password_hash, created_at) VALUES ($1,$2,$3,$4)`,
+		"acct-busy", "busy@test.local", "h", 0)
+	require.Error(t, err)
+	require.ErrorIs(t, err, ErrBusy, "a held write lock must surface as a retryable ErrBusy")
+
+	// Releasing the competing transaction lets the same write succeed.
+	require.NoError(t, tx.Rollback())
+	_, err = pool.Exec(ctx, `INSERT INTO accounts (account_id, email, password_hash, created_at) VALUES ($1,$2,$3,$4)`,
+		"acct-busy", "busy@test.local", "h", 0)
+	require.NoError(t, err)
+}
+
+// openRawSQLite opens a bare *sql.DB with the given busy_timeout (ms) and
+// _txlock=immediate so BEGIN takes the write lock up front.
+func openRawSQLite(path string, busyMS int) (*sql.DB, error) {
+	dsn := "file:" + path + "?_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_pragma=busy_timeout(" +
+		strconv.Itoa(busyMS) + ")&_txlock=immediate"
+	return sql.Open("sqlite", dsn)
+}
+
+// TestSQLiteNotFoundMapping pins the no-rows sentinel the service matches on.
+func TestSQLiteNotFoundMapping(t *testing.T) {
+	pool := newSQLitePool(t)
+	ctx := context.Background()
+	var id string
+	err := pool.QueryRow(ctx, `SELECT account_id FROM accounts WHERE account_id = $1`, "nope").Scan(&id)
+	require.ErrorIs(t, err, ErrNotFound)
 }

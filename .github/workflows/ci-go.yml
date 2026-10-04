@@ -62,8 +62,8 @@ jobs:
 
       # Scans the call graph, not just go.sum: a vulnerable module we never
       # actually call is noise, and a vulnerable module we do call is the
-      # signal. This is why the Relay's pgx SQL-injection advisory
-      # (GO-2026-5004) was caught despite no direct pgx API misuse.
+      # signal. A transitive advisory we did not call directly was caught here
+      # before, which is the behavior this job exists to keep.
       - name: govulncheck
         run: govulncheck ./...
         working-directory: services/relay
@@ -78,9 +78,9 @@ jobs:
         with:
           go-version: "1.27.0"
 
-      # The suite's integration tests self-skip unless TEST_DATABASE_URL is
-      # set, so a plain `go test` in lint-build-test silently never exercises
-      # the database or Redis paths. This job runs them for real against
-      # disposable fixtures on non-conflicting ports.
+      # The database is a per-test SQLite file, but the Redis-dependent tests
+      # self-skip without TEST_REDIS_URL, so a plain `go test` in
+      # lint-build-test never exercises them. This job brings up a disposable
+      # Redis on a non-conflicting port and runs the full suite against it.
       - run: ./scripts/test-integration.sh -count=1
         working-directory: services/relay

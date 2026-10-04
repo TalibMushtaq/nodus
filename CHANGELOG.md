@@ -1,5 +1,19 @@
 # Changelog
 
+## [2026-10-03] - Relay: skip Redis tests without a fixture; cover busy and not-found
+
+**What changed:**
+
+- `services/relay/internal/handler/buffer_integration_test.go`: the fetch-token tests now call a `requireRedis` helper that skips (rather than fails) when `TEST_REDIS_URL` is unset, so plain `go test ./...` is green without a Redis service; the integration job still runs them with Redis.
+- `services/relay/internal/db/sqlite_test.go`: added `TestSQLiteBusyIsRetryable` (a competing write lock yields `db.ErrBusy`, and the write succeeds after release) and `TestSQLiteNotFoundMapping`.
+- `.github/workflows/ci-go.yml`: comments updated to describe the SQLite/Redis test split.
+
+**Why:** with SQLite, integration tests no longer skip on a missing database, so the previously-skipped Redis tests ran in the fast CI job and failed without Redis.
+
+**Impact:** test and CI only. `go test ./...` passes with and without Redis; `-race` passes with the fixture.
+
+**Follow-ups:** none.
+
 ## [2026-10-03] - Relay: finish removing PostgreSQL from comments
 
 **What changed:**

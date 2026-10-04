@@ -174,7 +174,7 @@ func TestBufferUploadThenFetchE2E(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &resp))
 	require.NotEmpty(t, resp.BufferID)
 
-	require.NotNil(t, h.rClient, "Redis required to mint fetch tokens for this test")
+	requireRedis(t, h)
 	token := "tok-e2e-" + uuid.NewString()
 	require.NoError(t, h.rClient.SetFetchToken(h.ctx, token, h.nodeID, resp.BufferID, time.Minute))
 
@@ -199,7 +199,7 @@ func TestBufferUploadThenFetchE2E(t *testing.T) {
 // rather than ignored so an un-upgraded node is told what to change.
 func TestBufferFetchRejectsTokenInQueryString(t *testing.T) {
 	h := setupBufferHarness(t)
-	require.NotNil(t, h.rClient, "Redis required to mint fetch tokens for this test")
+	requireRedis(t, h)
 
 	token := "tok-query-" + uuid.NewString()
 	bufferID := "buf-query-" + uuid.NewString()
@@ -224,7 +224,7 @@ func TestBufferFetchRejectsTokenInQueryString(t *testing.T) {
 // credential wrong: none at all, and a header without the Bearer scheme.
 func TestBufferFetchRequiresABearerHeader(t *testing.T) {
 	h := setupBufferHarness(t)
-	require.NotNil(t, h.rClient, "Redis required to mint fetch tokens for this test")
+	requireRedis(t, h)
 	const tokenOnly = "tok-bare-abc123"
 
 	for name, header := range map[string]string{
@@ -255,7 +255,7 @@ func TestBufferFetchRequiresABearerHeader(t *testing.T) {
 // RequireNodeAuth established.
 func TestBufferFetchRefusesTokenIssuedToAnotherNode(t *testing.T) {
 	h := setupBufferHarness(t)
-	require.NotNil(t, h.rClient, "Redis required to mint fetch tokens for this test")
+	requireRedis(t, h)
 
 	body := []byte("encrypted-shard-bytes")
 	md := uploadMetadata{FileID: h.fileID, VersionNumber: 1, ShardIndex: 0, Size: int64(len(body)), TransferID: "t-bind", TargetNode: h.nodeID, SourceDevice: "dev-1"}
@@ -309,7 +309,7 @@ func TestBufferFetchRefusesTokenIssuedToAnotherNode(t *testing.T) {
 // check would depend on the stored binding also being empty.
 func TestBufferFetchRefusesRequestWithoutNodeIdentity(t *testing.T) {
 	h := setupBufferHarness(t)
-	require.NotNil(t, h.rClient, "Redis required to mint fetch tokens for this test")
+	requireRedis(t, h)
 
 	token := "tok-nobody-" + uuid.NewString()
 	require.NoError(t, h.rClient.SetFetchToken(h.ctx, token, h.nodeID, "buf-nobody", time.Minute))
@@ -325,7 +325,7 @@ func TestBufferFetchRefusesRequestWithoutNodeIdentity(t *testing.T) {
 // reconnecting and being re-notified, and a 500 reads as the Relay being down.
 func TestBufferFetchRefusesUnboundLegacyToken(t *testing.T) {
 	h := setupBufferHarness(t)
-	require.NotNil(t, h.rClient, "Redis required to mint fetch tokens for this test")
+	requireRedis(t, h)
 
 	token := "tok-legacy-" + uuid.NewString()
 	// Write the pre-binding value shape directly.
@@ -340,7 +340,7 @@ func TestBufferFetchRefusesUnboundLegacyToken(t *testing.T) {
 // working one that nobody can be prevented from redeeming.
 func TestIssueFetchTokenRefusesUnboundCall(t *testing.T) {
 	h := setupBufferHarness(t)
-	require.NotNil(t, h.rClient, "Redis required to mint fetch tokens for this test")
+	requireRedis(t, h)
 
 	require.Empty(t, issueFetchToken(h.ctx, h.rClient, "", "buf-unbound"),
 		"a token with no target node is exactly the token this change removes")
@@ -528,4 +528,14 @@ found:
 	require.Equal(t, 200, fetchRR.Code)
 	require.Equal(t, body, fetchRR.Body.Bytes())
 	require.Equal(t, "NODE_RECEIVING", h.shardStatus(t, fileID, 1, 0))
+}
+
+// requireRedis skips a test that needs Redis to mint fetch tokens when
+// TEST_REDIS_URL is unset, so the default `go test ./...` stays green without a
+// Redis service. The integration job runs them with TEST_REDIS_URL set.
+func requireRedis(t *testing.T, h *bufferHarness) {
+	t.Helper()
+	if h.rClient == nil {
+		t.Skip("TEST_REDIS_URL not set; skipping Redis-dependent buffer test")
+	}
 }
