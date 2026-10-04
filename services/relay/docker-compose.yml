@@ -1,22 +1,6 @@
+# Local dev fixture for the Relay. The relay's database is a SQLite file
+# (DB_PATH, default under the system temp dir), so only Redis is needed here.
 services:
-  postgres:
-    image: postgres:17-alpine
-    container_name: nodus-relay-postgres
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: nodus
-      POSTGRES_PASSWORD: nodus_password
-      POSTGRES_DB: nodus_relay
-    ports:
-      - "5432:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U nodus -d nodus_relay"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-
   redis:
     image: redis:7-alpine
     container_name: nodus-relay-redis
@@ -32,5 +16,4 @@ services:
       retries: 5
 
 volumes:
-  postgres_data:
   redis_data:

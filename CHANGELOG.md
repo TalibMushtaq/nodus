@@ -1,5 +1,19 @@
 # Changelog
 
+## [2026-10-03] - Docs: describe the SQLite-backed relay
+
+**What changed:**
+
+- Root `README.md`: relay stack, architecture diagram, dev fixture command, `DB_PATH` env, factory-reset behavior, and the test-fixture instructions now reflect SQLite (Redis only).
+- `nodus_implementation_plan.md` gains an implementation note marking the PostgreSQL-era text as historical; `docs/architecture/phase18-validation.md` is updated for the renamed scenario.
+- `services/relay/docker-compose.yml` (dev stack) drops the PostgreSQL service and keeps Redis.
+
+**Why:** the documentation still told readers to run and configure PostgreSQL.
+
+**Impact:** docs and the local dev fixture. No code behavior change.
+
+**Follow-ups:** none.
+
 ## [2026-10-03] - Relay: add a concurrent multi-device SQLite stress test
 
 **What changed:**

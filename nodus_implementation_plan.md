@@ -1,5 +1,13 @@
 # Nodus — Hybrid Offline-First P2P Storage System — Implementation Plan
 
+> **Implementation note (Relay storage):** the Relay's control-plane store has
+> moved from PostgreSQL to a single embedded SQLite database. The design text
+> below still describes the original PostgreSQL-era architecture in places;
+> where it does, treat the shipped implementation as authoritative. The
+> migration removed the database service, Redis remains, and the Relay is
+> single-instance (the database file is process-locked). See the CHANGELOG for
+> the cutover and `services/relay/internal/db/sqlite_migrations/` for the schema.
+
 ## 0. Foundational Design Decisions (Resolve Before Step 1)
 
 Five decisions currently listed as "remaining design decisions" in §29 are load-bearing —

@@ -36,7 +36,7 @@ Four components, one protocol:
 | **Web client** | `apps/web` | Next.js + `packages/ui` (Tailwind v4) | UI ported; session auth wired; live sync TBD |
 | **Mobile client** | `apps/mobile` | React Native / Expo | Phase 15–17 complete — native build, session auth, pairing, mDNS, A→B→C→D transfers, upload/download, folders, devices/nodes, recovery, background drain |
 | **Storage Node** | `services/storage-node` | Rust, SQLite | Sync + object store implemented |
-| **Relay** | `services/relay` | Go, PostgreSQL, Redis | Control plane + buffer implemented |
+| **Relay** | `services/relay` | Go, SQLite, Redis | Control plane + buffer implemented |
 
 ```text
                          INTERNET
@@ -44,7 +44,7 @@ Four components, one protocol:
                             v
                  +----------------------+
                  |    Go Relay / API    |
-                 | PostgreSQL · Redis   |
+                 | SQLite · Redis       |
                  | Temporary Buffer     |
                  +----------+-----------+
                             |
@@ -188,7 +188,7 @@ Relay corrupted:        Storage Node -> Snapshot/Rebuild -> New Relay DB
 | Node.js + pnpm | Node ≥ 20, pnpm 11 | Web client, TypeScript packages |
 | Rust | stable toolchain + `cargo` | Storage Node |
 | Go | ≥ 1.22 | Relay |
-| Docker | Compose v2 | Postgres + Redis for the Relay |
+| Docker | Compose v2 | Redis for the Relay |
 
 ### 1. Install dependencies & hooks
 
@@ -214,7 +214,7 @@ app at it via `RELAY_URL` (defaults to `http://localhost:8080`).
 
 ```bash
 cd services/relay
-docker compose up -d    # Postgres 17 + Redis 7 (health-checked)
+docker compose up -d    # Redis 7 (health-checked); the database is a local SQLite file
 go run .
 ```
 
@@ -223,7 +223,7 @@ The relay listens on `:8080` by default. Configuration via env vars:
 | Env | Default |
 |---|---|
 | `PORT` | `8080` |
-| `DATABASE_URL` | `postgres://nodus:nodus_password@localhost:5432/nodus_relay?sslmode=disable` |
+| `DB_PATH` | `${TMPDIR}/nodus-relay/relay.db` |
 | `REDIS_URL` | `redis://localhost:6379/0` |
 
 Migrations run automatically on startup.
@@ -250,7 +250,7 @@ first run prompts for the data directory and defaults to `~/NodusBackup`.
 
 ### 5. Deploy the server unit (single origin)
 
-The self-hosted unit packages the Next.js web app, the Go Relay, PostgreSQL,
+The self-hosted unit packages the Next.js web app, the Go Relay, SQLite,
 Redis, and Caddy (TLS + routing) behind one public origin:
 
 ```bash
@@ -287,19 +287,19 @@ go run . --factory-reset            # prompts: type "purge everything"
 echo 'purge everything' | go run . --factory-reset
 ```
 
-This drops and recreates the database schema (rebuilt from migrations on the
-next start), flushes the Relay's Redis database, and clears the shard buffer.
-Every account, device, and Storage Node must register and pair again.
+This deletes the SQLite database file and its `-wal`/`-shm` sidecars (rebuilt
+from the baseline migration on the next start), flushes the Relay's Redis
+database, and clears the shard buffer. Every account, device, and Storage Node
+must register and pair again.
 
-The prompt prints the exact targets it is about to destroy — Postgres host and
-database, Redis host and index, and the buffer path — with credentials removed,
-so a `DATABASE_URL` or `REDIS_URL` pointed at the wrong place is visible before
-anything is deleted. Two guards also apply:
+The prompt prints the exact targets it is about to destroy — the database file,
+Redis host and index, and the buffer path — so a `DB_PATH` or `REDIS_URL`
+pointed at the wrong place is visible before anything is deleted. Two guards
+also apply:
 
-- The reset refuses to run while another client is still connected to the
-  database, because dropping the schema under a live server leaves it erroring
-  against missing tables. If the only remaining connection is yours (a `psql`
-  session, say), pass `--factory-reset-force`.
+- The reset refuses to run while the Relay is still running, because it holds an
+  exclusive lock on the database file. Stop it first, or pass
+  `--factory-reset-force`.
 - `BUFFER_DIR` is validated before anything is deleted. A relative path, the
   filesystem root, a system directory (`/etc`, `/usr`, `/tmp`, …), your home
   directory, the working directory, or a path that resolves through a symlink
@@ -313,16 +313,14 @@ anything is deleted. Two guards also apply:
 pnpm test                                # all JS/TS, Relay (Go), and Storage Node (Rust) tests
 ```
 
-This requires Node/pnpm, Go, and Cargo. Relay tests that require external
-services are skipped by default. To include them, start the Relay Compose
-dependencies and provide `TEST_DATABASE_URL` (and `TEST_REDIS_URL` where
-needed):
+This requires Node/pnpm, Go, and Cargo. Relay tests that need Redis are skipped
+by default. To include them, start the Redis dependency and provide
+`TEST_REDIS_URL`. The Relay's database is a per-test SQLite file, so no database
+service is needed:
 
 ```bash
 docker compose -f services/relay/docker-compose.yml up -d
-TEST_DATABASE_URL='postgres://nodus:nodus_password@localhost:5432/nodus_relay?sslmode=disable' \
-  TEST_REDIS_URL='redis://localhost:6379/0' \
-  pnpm test
+TEST_REDIS_URL='redis://localhost:6379/0' pnpm test
 ```
 
 ## License
