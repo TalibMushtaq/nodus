@@ -6,8 +6,8 @@ import { NodeId } from "../types.js";
 /**
  * Relay → Node request to initiate a full snapshot / rebuild (§20).
  *
- * Sent when the Relay needs to reconstruct its account state (e.g. PostgreSQL
- * restored from backup, schema mismatch, or a manual admin trigger). The Relay
+ * Sent when the Relay needs to reconstruct its account state (e.g. the Relay
+ * database restored from backup, schema mismatch, or a manual admin trigger). The Relay
  * routes this to the account's designated primary Storage Node only; a
  * non-primary node's snapshot is never used to rebuild the Relay.
  *

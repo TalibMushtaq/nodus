@@ -96,11 +96,9 @@ func main() {
 		return
 	}
 
-	// 2. PostgreSQL initialization & migrations. A fresh deploy can race
-	// PostgreSQL's entrypoint: during initdb it briefly serves a temporary,
-	// socket-only server before the real one listens, so a one-shot connect can
-	// fail and leave the Relay degraded (auth/pairing routes unregistered).
-	// Retry within a bounded window before falling back to the optional-DB mode.
+	// 2. SQLite initialization & migrations. The database is a local file, so
+	// there is no server startup race to retry; a failure (for example another
+	// relay holding the file lock) falls back to the optional-DB mode.
 	var pool *db.Pool
 	if p := openDatabase(ctx, cfg); p != nil {
 		pool = p
@@ -169,9 +167,9 @@ func main() {
 	// Auth Endpoints (Phase 7a: opaque server-side sessions — no JWT/refresh;
 	// §2 completes the surface with device auto-registration and session body)
 	var sessionStore auth.SessionStore
-	// nodeStore is the same PostgreSQL-backed store viewed through the
-	// node-auth lookup interface; kept as a separate variable so the session
-	// interface does not have to absorb NodeIdentity.
+	// nodeStore is the same database-backed store viewed through the node-auth
+	// lookup interface; kept as a separate variable so the session interface
+	// does not have to absorb NodeIdentity.
 	var nodeStore auth.NodeStore
 	if pool != nil {
 		pgStore := auth.NewPGSessionStore(pool, cfg)

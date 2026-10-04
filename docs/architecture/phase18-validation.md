@@ -1,7 +1,8 @@
 # Phase 18 — Failure / Recovery / Stress Validation
 
 Maps each Phase 18 scenario to the test or harness that exercises it. The Go
-integration tests skip unless `TEST_DATABASE_URL` is set; the Rust and
+integration tests use a per-test SQLite database and run in the normal suite;
+the Redis-dependent ones skip unless `TEST_REDIS_URL` is set. The Rust and
 TypeScript tests run in the normal suites.
 
 | Scenario | Where it is exercised |
@@ -18,6 +19,6 @@ TypeScript tests run in the normal suites.
 
 - The load test is a correctness smoke test; a companion
   `BenchmarkBufferUpload` (same file) produces per-upload numbers when run with
-  `-bench` against `TEST_DATABASE_URL`.
+  `-bench` against a per-test SQLite database.
 - The "Internet unavailable" coverage is at the transport level; a full
   client-app-with-Router-down rehearsal (web/mobile UI) is not automated.

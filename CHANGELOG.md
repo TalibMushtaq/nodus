@@ -1,5 +1,19 @@
 # Changelog
 
+## [2026-10-03] - Docs: drop remaining PostgreSQL references
+
+**What changed:**
+
+- `packages/protocol/src/messages/rebuild.ts` (and its build output): the rebuild-trigger doc comment no longer says "PostgreSQL restored from backup".
+- `docs/architecture/phase18-validation.md` and `docs/push-notifications.md`: the test instructions describe per-test SQLite databases and `TEST_REDIS_URL` instead of `TEST_DATABASE_URL`.
+- `services/relay/main.go`: the startup and store comments no longer describe a PostgreSQL connection race.
+
+**Why:** the Relay store is SQLite; the docs and comments were the last stale references.
+
+**Impact:** documentation and comments only. `go build`/`go vet` pass and the protocol package rebuilds.
+
+**Follow-ups:** none.
+
 ## [2026-10-03] - E2E: point the deploy-compose harness at the SQLite relay
 
 **What changed:**

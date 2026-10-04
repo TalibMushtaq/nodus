@@ -140,7 +140,8 @@ Unset secrets stay empty and simply disable that channel.
 ## Verifying
 
 - Relay: `go test ./internal/push/ ./internal/hub/` and the integration tests in
-  `internal/handler` (`TEST_DATABASE_URL` required).
+  `internal/handler` (a per-test SQLite database; `TEST_REDIS_URL` for the
+  Redis-dependent ones).
 - Without credentials you can still confirm registration end-to-end: the token /
   subscription rows appear in `push_tokens` / `web_push_subscriptions`, and the
   relay logs a send attempt.
