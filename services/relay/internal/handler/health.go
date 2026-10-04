@@ -15,7 +15,7 @@ type HealthResponse struct {
 	Services  map[string]string `json:"services"`
 }
 
-// Health checks the connectivity of PostgreSQL and Redis.
+// Health checks the connectivity of SQLite and Redis.
 func Health(pool *db.Pool, redisClient *rdb.Client) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)

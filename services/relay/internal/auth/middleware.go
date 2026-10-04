@@ -49,7 +49,7 @@ const (
 )
 
 // RequireAuth guards routes with the session cookie (nodus_session by default):
-// it hashes the raw cookie value, looks the session up in PostgreSQL, and on
+// it hashes the raw cookie value, looks the session up in the database, and on
 // success populates the request context with AccountID, DeviceID and the
 // resolved Session. Any missing/expired/revoked/bad session yields 401.
 func RequireAuth(store SessionStore, cfg *config.Config) func(http.Handler) http.Handler {

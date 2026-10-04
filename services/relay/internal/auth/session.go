@@ -23,7 +23,7 @@ var ErrSessionInvalid = errors.New("invalid or expired session")
 
 // Session is the server-side representation of an active login. The raw token
 // is never part of this struct; session_hash is derived from it and kept in
-// PostgreSQL only.
+// the database only.
 type Session struct {
 	AccountID  string
 	DeviceID   string
@@ -33,7 +33,7 @@ type Session struct {
 
 // SessionStore is the persistence boundary for account sessions. Middleware and
 // handlers depend on this interface so cookie/auth logic is unit-testable with
-// a fake instead of a live PostgreSQL.
+// a fake instead of a live database.
 type SessionStore interface {
 	CreateSession(ctx context.Context, accountID, deviceID string) (rawID string, err error)
 	LookupSession(ctx context.Context, rawID string) (*Session, error)
@@ -44,7 +44,7 @@ type SessionStore interface {
 	RotateSession(ctx context.Context, oldRawID, accountID, deviceID string) (newRawID string, err error)
 }
 
-// PGSessionStore persists sessions in PostgreSQL. Only SHA-256 hashes of raw
+// PGSessionStore persists sessions in the SQLite database. Only SHA-256 hashes of raw
 // session tokens are stored (phase 7a migration 006 drops refresh_tokens).
 type PGSessionStore struct {
 	pool *db.Pool

@@ -9,7 +9,7 @@ import (
 
 // Session ID and digest helpers. Raw session tokens are opaque, randomly
 // generated values handed to the client exactly once (as a cookie) and are
-// never stored server-side — PostgreSQL only ever sees their SHA-256 hash
+// never stored server-side — the database only ever sees their SHA-256 hash
 // (Todo.md Phase 7a §1, plan §13/§29). 256 bits of entropy defeats forgery
 // and the hash keeps a DB leak from exposing usable credentials.
 

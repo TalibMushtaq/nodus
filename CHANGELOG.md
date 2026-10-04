@@ -1,5 +1,17 @@
 # Changelog
 
+## [2026-10-03] - Relay: finish removing PostgreSQL from comments
+
+**What changed:**
+
+- Remaining comments in `auth/token.go`, `auth/middleware.go`, `auth/session.go`, `handler/health.go`, and `handler/sync.go` no longer name PostgreSQL as the Relay store.
+
+**Why:** follow-up to the comment cleanup; the store is SQLite.
+
+**Impact:** comments only. `go build` and `go vet` pass.
+
+**Follow-ups:** none.
+
 ## [2026-10-03] - Relay: correct stale PostgreSQL references in comments
 
 **What changed:**

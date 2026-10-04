@@ -309,7 +309,7 @@ func HandleNodeAuthResponse(
 		return
 	}
 
-	// 2. Fetch node public key from PostgreSQL
+	// 2. Fetch node public key from the database
 	if pool == nil {
 		_ = sendEnvelope(c, "node_auth_result", NodeAuthResultPayload{
 			Status:  "fail",

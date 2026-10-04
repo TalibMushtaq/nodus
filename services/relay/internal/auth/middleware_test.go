@@ -13,7 +13,7 @@ import (
 )
 
 // fakeStore is a scriptable SessionStore used to unit-test RequireAuth without
-// a live PostgreSQL.
+// a live database.
 type fakeStore struct {
 	sess        *auth.Session
 	err         error
