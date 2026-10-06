@@ -11,7 +11,7 @@
 // react-native-webrtc factory and SQLite. Shared here so the fallback semantics
 // (and their tests) exist once.
 
-import { NODUS_LOCAL_PORT } from "@repo/relay-client";
+import { nodusBaseUrl } from "@repo/relay-client";
 import { createLocalSignalingChannel } from "@repo/webrtc-transport";
 import type { PeerConnectionConfig, SignalingChannel } from "@repo/webrtc-transport";
 import type {
@@ -70,6 +70,13 @@ export interface AttemptPathDeps {
   sessionCache?: WebRtcSessionCache;
   /** LAN host for a trusted node id, or null when this device has not paired. */
   resolveLocalHost: (targetNode: string) => Promise<string | null>;
+  /**
+   * Freshly discover the node's LAN host (e.g. mDNS) before falling back to the
+   * cached host. DHCP-leased IPs change, so a cached host alone breaks Path A
+   * until the user re-scans. Optional: platforms without discovery (browsers)
+   * omit it and rely on `resolveLocalHost`.
+   */
+  rediscoverLocalHost?: (targetNode: string) => Promise<string | null>;
   /** Platform capability predicate for Path A (browser blocks https→http LAN). */
   canAttemptLocalPath: () => boolean;
   /** Platform capability predicate for Path B (needs a peer connection). */
@@ -111,14 +118,26 @@ async function resolveLocalChannel(
   request: ShardTransferRequest,
   deps: AttemptPathDeps,
 ): Promise<SignalingChannel> {
-  const host = await deps.resolveLocalHost(String(request.targetNode));
+  const targetNode = String(request.targetNode);
+  // Prefer a fresh discovery result (DHCP-leased hosts change), then fall back
+  // to the cached trusted-node host. Absence of both means this device has not
+  // paired with the node.
+  let host = deps.rediscoverLocalHost
+    ? await deps.rediscoverLocalHost(targetNode)
+    : null;
+  if (!host) host = await deps.resolveLocalHost(targetNode);
   if (!host) {
     throw new Error(`no trusted local host for node ${request.targetNode}`);
   }
   return createLocalSignalingChannel({
-    baseUrl: `http://${host}:${NODUS_LOCAL_PORT}`,
+    // Normalize through nodusBaseUrl (strips a scheme/path/userinfo and pins the
+    // protocol port) instead of string-concatenating the raw cached host.
+    baseUrl: nodusBaseUrl(host),
     deviceId: deps.deviceId,
     sign: deps.signLocal,
+    // A node id *is* the hex of its Ed25519 public key, so it doubles as the
+    // pinned key the signed SDP answer must verify against.
+    expectedNodePublicKey: targetNode,
   });
 }
 

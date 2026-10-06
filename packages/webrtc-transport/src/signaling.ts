@@ -7,7 +7,7 @@ import {
 } from "@repo/protocol";
 import { blake3 } from "@noble/hashes/blake3";
 import { bytesToHex } from "@noble/hashes/utils";
-import type { RelayWsClient } from "@repo/relay-client";
+import { verifyWebRtcAnswer, type RelayWsClient } from "@repo/relay-client";
 import type { SignalingChannel } from "./types.js";
 
 /**
@@ -36,6 +36,13 @@ export interface LocalSignalingOptions {
    * receive-only and uses the payload-free `"{device}:{session}:{timestamp}"`.)
    */
   sign?: (message: string) => string | Promise<string>;
+  /**
+   * The target node's public key (hex), normally its `node_id` since a node id
+   * *is* the hex of its Ed25519 key. When set, the node's signed SDP answer is
+   * verified before it is accepted, so a rogue host cannot impersonate the node
+   * on the direct path.
+   */
+  expectedNodePublicKey?: string | null;
 }
 
 /** Build the signed `X-Nodus-*` header triplet for one message. */
@@ -133,10 +140,33 @@ export function createLocalSignalingChannel(opts: LocalSignalingOptions): Signal
         throw new Error(`Local signaling offer failed: HTTP ${res.status} ${await res.text()}`);
       }
 
-      const body = (await res.json()) as { sdp?: string; answer?: string };
+      const body = (await res.json()) as {
+        sdp?: string;
+        answer?: string;
+        node_id?: string;
+        node_signature?: string;
+      };
       const answerSdp = body.sdp ?? body.answer;
-      if (answerSdp && onAnswerCb) {
-        onAnswerCb(answerSdp);
+      if (answerSdp) {
+        // Authenticate the node before the answer reaches the peer connection;
+        // a failure here surfaces as a signaling error so the fallback chain
+        // advances instead of trusting a rogue responder.
+        if (opts.expectedNodePublicKey !== undefined && opts.expectedNodePublicKey !== null) {
+          verifyWebRtcAnswer(
+            { sdp: answerSdp, node_id: body.node_id, node_signature: body.node_signature },
+            sessionId,
+            opts.expectedNodePublicKey,
+          );
+        } else if (body.node_signature) {
+          // No pinned key supplied: still verify self-consistency against the
+          // node id the answer names (a node id is the hex of its public key).
+          verifyWebRtcAnswer(
+            { sdp: answerSdp, node_id: body.node_id, node_signature: body.node_signature },
+            sessionId,
+            body.node_id,
+          );
+        }
+        onAnswerCb?.(answerSdp);
       }
     },
 
