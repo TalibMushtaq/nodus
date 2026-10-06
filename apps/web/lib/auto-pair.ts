@@ -3,6 +3,7 @@ import {
   fetchAdvertisement,
   identityPublicKey,
   nodusBaseUrl,
+  verifyPairConfirm,
 } from "@repo/relay-client";
 
 import type { DevicePublicIdentity, DeviceSigner } from "@repo/sdk";
@@ -56,7 +57,13 @@ async function nodeRecognizesDevice(
     const base = nodusBaseUrl(host);
     const adv = await fetchAdvertisement(base, 2_000);
     if (!advertisementBindsNode(adv, nodeId)) return false;
-    await new NodeClient(base).authenticate(device.device_id, (message) => signer.sign(message));
+    // The node must prove possession of the key it advertises before we accept
+    // its device challenge; `adv.public_key` is bound to nodeId above.
+    await new NodeClient(base).authenticate(
+      device.device_id,
+      (message) => signer.sign(message),
+      adv.public_key,
+    );
     return true;
   } catch {
     return false;
@@ -109,6 +116,17 @@ export async function ensureNodeTrusted(nodeId: string): Promise<EnsureNodeTrust
         device.device_id,
         identityPublicKey(device),
         5_000,
+      );
+      // The node must prove it owns the key bound to nodeId; a rogue LAN host
+      // can redeem the token but cannot sign the confirm.
+      verifyPairConfirm(
+        confirm as {
+          node_id?: string;
+          device_id?: string;
+          device_public_key?: string;
+          node_signature?: string;
+        },
+        adv.public_key,
       );
       // The node must confirm the identity we asked to pair with; recording a
       // different node_id would poison the trusted-node cache.

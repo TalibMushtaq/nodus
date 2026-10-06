@@ -62,21 +62,7 @@ export function normalizeLanHost(raw: string): string | null {
 /**
  * Whether a discovery advertisement genuinely belongs to `expectedNodeId`.
  *
- * A Storage Node's `node_id` *is* the hex of its Ed25519 public key (see the
- * Rust `identity::load_or_generate`), so a well-formed advertisement must have
- * `public_key === node_id`. Checking that invariant plus the expected id means a
- * host cannot advertise a `node_id` unrelated to the key it presents. It is not
- * a full authentication — the public key is public and a real signature would
- * be needed to defeat an active MITM — but it rejects malformed/naive spoofs
- * and keeps the client from trusting an advertisement that contradicts itself.
+ * Re-exported from `@repo/relay-client` so web and mobile enforce the same
+ * `public_key === node_id` binding before any key material is exchanged.
  */
-export function advertisementBindsNode(
-  adv: { node_id: string; public_key: string },
-  expectedNodeId?: string | null,
-): boolean {
-  const publicKey = adv.public_key.toLowerCase();
-  const nodeId = adv.node_id.toLowerCase();
-  if (nodeId !== publicKey) return false;
-  if (expectedNodeId && nodeId !== expectedNodeId.toLowerCase()) return false;
-  return true;
-}
+export { advertisementBindsNode } from "@repo/relay-client";

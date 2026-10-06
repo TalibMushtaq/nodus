@@ -23,6 +23,7 @@ import {
   NodeClientError,
   fetchAdvertisement,
   nodusBaseUrl,
+  verifyPairConfirm,
 } from "@repo/relay-client/local-discovery";
 import { identityPublicKey } from "@repo/relay-client/device-identity";
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -160,6 +161,18 @@ export default function PairPage() {
         device.device_id,
         identityPublicKey(device),
       );
+      // The token is redeemable by any host that speaks the protocol; the
+      // signed confirm is what proves this host holds the node's private key.
+      // `pending.node_id` is the expected key (a node id is the hex pubkey).
+      verifyPairConfirm(
+        confirm as {
+          node_id?: string;
+          device_id?: string;
+          device_public_key?: string;
+          node_signature?: string;
+        },
+        pending.node_id,
+      );
       await addTrustedNode({
         node_id: (confirm.node_id as string) ?? pending.node_id,
         host: probe.host,
@@ -180,14 +193,20 @@ export default function PairPage() {
     setLanResult(null);
     try {
       const client = new NodeClient(nodusBaseUrl(probe.host));
-      await client.authenticate(device.device_id, (message) => signer.sign(message));
+      // Verify the node's signed challenge against the node id the token was
+      // issued for before revealing this device's signature.
+      await client.authenticate(
+        device.device_id,
+        (message) => signer.sign(message),
+        pending?.node_id ?? null,
+      );
       setLanResult("authenticated — the node accepted this device's signature");
     } catch (err) {
       setLanResult(
         err instanceof NodeClientError ? `auth failed: ${err.message}` : String(err),
       );
     }
-  }, [device, signer, probe]);
+  }, [device, signer, probe, pending]);
 
   const inputCls =
     "flex-1 min-w-[180px] px-3 py-2 text-sm bg-secondary border border-border rounded-xl text-foreground placeholder-muted-foreground outline-none transition-colors focus:border-accent focus:ring-2 focus:ring-accent/20";

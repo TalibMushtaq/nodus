@@ -14,7 +14,7 @@ import { WebRtcSessionCache } from "../lib/transfer/webrtc-session";
 import { IndexedDBLocalQueue } from "../lib/transfer/local-queue";
 import { IndexedDBPathCache } from "../lib/transfer/path-cache";
 import { createLocalSignalingChannel } from "@repo/webrtc-transport";
-import { NODUS_LOCAL_PORT } from "@repo/relay-client";
+import { nodusBaseUrl } from "@repo/relay-client";
 import { getTrustedNodes } from "../lib/trusted-nodes";
 import {
   canAttemptLocalPath,
@@ -211,9 +211,13 @@ export function TransferProvider({ children }: { children: ReactNode }) {
         createChannel: () => {
           if (useLocal && host) {
             return createLocalSignalingChannel({
-              baseUrl: `http://${host}:${NODUS_LOCAL_PORT}`,
+              // Normalize the cached host and pin the node key: a node id is the
+              // hex of its Ed25519 public key, so the signed SDP answer must
+              // verify against the node we intend to talk to.
+              baseUrl: nodusBaseUrl(host),
               deviceId: device.device_id,
               sign: (message) => signer.sign(message),
+              expectedNodePublicKey: args.nodeId,
             });
           }
           const channel = createBrowserRelayChannel({

@@ -1,10 +1,16 @@
 import "fake-indexeddb/auto";
+import { ed25519 } from "@noble/curves/ed25519.js";
+import { localNodeAuthMessage, localPairConfirmMessage } from "@repo/protocol";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { autoPairCandidateHosts } from "../auto-pair";
 import { DownloadCancelledError, fetchShardViaRelay } from "../download";
 
 const ORIGINAL_FETCH = globalThis.fetch;
+
+function hex(bytes: Uint8Array): string {
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+}
 
 beforeEach(() => {
   vi.resetModules();
@@ -76,15 +82,64 @@ describe("ensureNodeTrusted", () => {
     public_key: "ab",
   };
   // A real node_id is the hex of the node's Ed25519 public key, so the
-  // advertisement must present a matching public_key for the binding check.
-  const NODE_A = "aa".repeat(32);
-  const NODE_B = "bb".repeat(32);
+  // advertisement must present a matching public_key and sign its challenges.
+  const nodeAKey = ed25519.utils.randomPrivateKey();
+  const nodeBKey = ed25519.utils.randomPrivateKey();
+  const NODE_A = hex(ed25519.getPublicKey(nodeAKey));
+  const NODE_B = hex(ed25519.getPublicKey(nodeBKey));
   const discovery = {
     node_id: NODE_A,
     account_id: "acct-1",
     public_key: NODE_A,
     schema_version: "1.8",
   };
+
+  /** A node-signed challenge body, mirroring the Rust `/nodus/challenge`. */
+  function signedChallengeResponse(
+    nonce: string,
+    key: Uint8Array,
+    nodeId: string,
+  ): Response {
+    const signature = hex(
+      ed25519.sign(new TextEncoder().encode(localNodeAuthMessage(nonce)), key),
+    );
+    return new Response(
+      JSON.stringify({
+        nonce,
+        ttl_seconds: 60,
+        node_id: nodeId,
+        public_key: nodeId,
+        node_signature: signature,
+      }),
+      { status: 200 },
+    );
+  }
+
+  /** A node-signed pairing confirm, mirroring the Rust `/nodus/pair`. */
+  function signedPairConfirm(
+    key: Uint8Array,
+    nodeId: string,
+    devicePubkeyHex: string,
+  ): Response {
+    const signature = hex(
+      ed25519.sign(
+        new TextEncoder().encode(
+          localPairConfirmMessage(nodeId, "device-1", devicePubkeyHex),
+        ),
+        key,
+      ),
+    );
+    return new Response(
+      JSON.stringify({
+        node_id: nodeId,
+        account_id: "acct-1",
+        device_id: "device-1",
+        device_public_key: devicePubkeyHex,
+        node_signature: signature,
+      }),
+      { status: 200 },
+    );
+  }
 
   /** Route node HTTP calls by path so multi-step flows read clearly. */
   function routeFetch(
@@ -114,7 +169,7 @@ describe("ensureNodeTrusted", () => {
     }));
     globalThis.fetch = routeFetch({
       discovery: () => new Response(JSON.stringify(discovery), { status: 200 }),
-      challenge: () => new Response(JSON.stringify({ nonce: "n-1", ttl_seconds: 60 }), { status: 200 }),
+      challenge: () => signedChallengeResponse("n-1", nodeAKey, NODE_A),
       auth: () => new Response(JSON.stringify({ status: "ok", node_id: NODE_A }), { status: 200 }),
     });
 
@@ -146,17 +201,14 @@ describe("ensureNodeTrusted", () => {
     let authCalls = 0;
     globalThis.fetch = routeFetch({
       discovery: () => new Response(JSON.stringify(discovery), { status: 200 }),
-      challenge: () => new Response(JSON.stringify({ nonce: "n-1", ttl_seconds: 60 }), { status: 200 }),
+      challenge: () => signedChallengeResponse("n-1", nodeAKey, NODE_A),
       auth: () => {
         authCalls += 1;
         return authCalls === 1
           ? new Response(JSON.stringify({ error: "unknown_device" }), { status: 401 })
           : new Response(JSON.stringify({ status: "ok", node_id: NODE_A }), { status: 200 });
       },
-      pair: () =>
-        new Response(JSON.stringify({ node_id: NODE_A, account_id: "acct-1" }), {
-          status: 200,
-        }),
+      pair: () => signedPairConfirm(nodeAKey, NODE_A, "ab".repeat(32)),
     });
 
     const { ensureNodeTrusted } = await import("../auto-pair");
@@ -211,7 +263,7 @@ describe("ensureNodeTrusted", () => {
     globalThis.fetch = vi
       .fn()
       .mockResolvedValueOnce(new Response(JSON.stringify(target), { status: 200 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ node_id: NODE_B, account_id: "acct-2" }), { status: 200 }));
+      .mockResolvedValueOnce(signedPairConfirm(nodeBKey, NODE_B, "cd".repeat(32)));
 
     const { ensureNodeTrusted } = await import("../auto-pair");
     const result = await ensureNodeTrusted(NODE_B);
