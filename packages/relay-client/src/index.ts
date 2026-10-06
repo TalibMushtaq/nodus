@@ -10,6 +10,11 @@ export {
   nodusBaseUrl,
   fetchAdvertisement,
   parsePairingUrl,
+  nodeIdMatchesPublicKey,
+  verifyNodeChallenge,
+  verifyPairConfirm,
+  verifyWebRtcAnswer,
+  advertisementBindsNode,
 } from "./local-discovery.js";
 export type { PairingUrlParts, DeviceMessageSigner } from "./local-discovery.js";
 

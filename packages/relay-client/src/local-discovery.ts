@@ -10,9 +10,13 @@ import {
   type ActivityRecord,
   ActivityListSchema,
   type LocalChallengePayload,
+  LocalChallengePayloadSchema,
   LocalChallengeResponsePayloadSchema,
-  type LocalDiscoveryAdvertisement,
+  localNodeAuthMessage,
   LocalDiscoveryAdvertisementSchema,
+  localPairConfirmMessage,
+  localWebRtcAnswerMessage,
+  type LocalDiscoveryAdvertisement,
   type LocalRecoveryChallenge,
   type LocalRecoveryEnvelopes,
   LocalRecoveryEnvelopesSchema,
@@ -132,6 +136,159 @@ export class NodeClientError extends Error {
 }
 
 /**
+ * The node's `node_id` is defined as the lowercase hex of its Ed25519 public
+ * key (Rust `identity::load_or_generate`). Checking that invariant is what
+ * binds an advertisement to the key it presents: an actively spoofing host
+ * cannot claim the real node's id without also presenting the real public key,
+ * which it cannot sign with.
+ */
+export function nodeIdMatchesPublicKey(nodeId: string, publicKey: string): boolean {
+  return nodeId.toLowerCase() === publicKey.toLowerCase();
+}
+
+/**
+ * Verify a `POST /nodus/challenge` response proves the responder holds the
+ * node's private key. Throws `NodeClientError` when the response is unsigned,
+ * self-inconsistent (`node_id !== public_key`), names a different key than
+ * `expectedNodePublicKey`, or carries an invalid signature.
+ *
+ * This is the missing half of the LAN trust model: `/nodus/auth` proves the
+ * *device* to the node, and this proves the *node* to the device, so a rogue
+ * host on the LAN cannot impersonate a real node.
+ */
+export function verifyNodeChallenge(
+  challenge: Pick<
+    LocalChallengePayload,
+    "nonce" | "node_id" | "public_key" | "node_signature"
+  >,
+  expectedNodePublicKey?: string | null,
+): void {
+  const { nonce, node_id, public_key, node_signature } = challenge;
+  if (!node_id || !public_key || !node_signature) {
+    throw new NodeClientError(
+      "node_unauthenticated",
+      "node did not prove its identity (unsigned challenge)",
+    );
+  }
+  if (!nodeIdMatchesPublicKey(node_id, public_key)) {
+    throw new NodeClientError(
+      "node_identity_mismatch",
+      "node challenge is self-inconsistent (node_id does not match its public key)",
+    );
+  }
+  if (expectedNodePublicKey && !nodeIdMatchesPublicKey(expectedNodePublicKey, public_key)) {
+    throw new NodeClientError(
+      "node_identity_mismatch",
+      "node presented a different public key than expected",
+    );
+  }
+  const message = new TextEncoder().encode(localNodeAuthMessage(nonce));
+  if (!verifyHexSignature(node_signature, message, public_key)) {
+    throw new NodeClientError("node_identity_mismatch", "node challenge signature is invalid");
+  }
+}
+
+/**
+ * Verify the node's signature over a `POST /nodus/pair` confirm. Like
+ * [`verifyNodeChallenge`], this makes the node prove key possession; a rogue
+ * host cannot sign the confirm even though it can redeem the Relay-issued,
+ * device-bound token.
+ */
+export function verifyPairConfirm(
+  confirm: {
+    node_id?: string;
+    device_id?: string;
+    device_public_key?: string;
+    node_signature?: string;
+  },
+  expectedNodePublicKey?: string | null,
+): void {
+  const { node_id, device_id, device_public_key, node_signature } = confirm;
+  if (!node_id || !device_id || !device_public_key || !node_signature) {
+    throw new NodeClientError(
+      "node_unauthenticated",
+      "node pairing confirm was not signed",
+    );
+  }
+  if (expectedNodePublicKey && !nodeIdMatchesPublicKey(node_id, expectedNodePublicKey)) {
+    throw new NodeClientError(
+      "node_identity_mismatch",
+      "node pairing confirm named a different node",
+    );
+  }
+  // The node_id *is* the hex public key, so the signature verifies against it
+  // when the caller has no independently pinned key.
+  const verifyKey = expectedNodePublicKey ?? node_id;
+  const message = new TextEncoder().encode(
+    localPairConfirmMessage(node_id, device_id, device_public_key),
+  );
+  if (!verifyHexSignature(node_signature, message, verifyKey)) {
+    throw new NodeClientError(
+      "node_identity_mismatch",
+      "node pairing confirm signature is invalid",
+    );
+  }
+}
+
+/**
+ * Verify the node's signature over a `POST /nodus/webrtc/offer` answer. The
+ * signed body binds `session_id` + SDP, so a rogue host answering the offer
+ * cannot impersonate the node on the direct path. The node's id is the hex of
+ * its public key, so `expectedNodePublicKey` may simply be the node id.
+ */
+export function verifyWebRtcAnswer(
+  answer: { sdp?: string; node_id?: string; node_signature?: string },
+  sessionId: string,
+  expectedNodePublicKey?: string | null,
+): void {
+  const { sdp, node_id, node_signature } = answer;
+  if (!sdp) {
+    throw new NodeClientError("node_unauthenticated", "WebRTC answer is missing its SDP");
+  }
+  if (!node_id || !node_signature) {
+    throw new NodeClientError(
+      "node_unauthenticated",
+      "WebRTC answer was not signed by the node",
+    );
+  }
+  if (expectedNodePublicKey && !nodeIdMatchesPublicKey(expectedNodePublicKey, node_id)) {
+    throw new NodeClientError(
+      "node_identity_mismatch",
+      "WebRTC answer named a different node than expected",
+    );
+  }
+  const verifyKey = expectedNodePublicKey ?? node_id;
+  const message = new TextEncoder().encode(localWebRtcAnswerMessage(sessionId, sdp));
+  if (!verifyHexSignature(node_signature, message, verifyKey)) {
+    throw new NodeClientError(
+      "node_identity_mismatch",
+      "WebRTC answer signature is invalid",
+    );
+  }
+}
+
+/**
+ * Whether a discovery advertisement genuinely belongs to `expectedNodeId`.
+ *
+ * A Storage Node's `node_id` *is* the hex of its Ed25519 public key, so a
+ * well-formed advertisement must have `public_key === node_id`. Checking that
+ * invariant (plus the expected id when known) rejects naive/self-contradictory
+ * spoofs. It is not sufficient alone — the caller still verifies a node
+ * signature with [`verifyNodeChallenge`]/[`verifyPairConfirm`] — but it is the
+ * cheap binding check before any key material is exchanged.
+ */
+export function advertisementBindsNode(
+  adv: { node_id: string; public_key: string },
+  expectedNodeId?: string | null,
+): boolean {
+  const publicKey = adv.public_key.toLowerCase();
+  const nodeId = adv.node_id.toLowerCase();
+  if (nodeId !== publicKey) return false;
+  if (expectedNodeId && nodeId !== expectedNodeId.toLowerCase()) return false;
+  return true;
+}
+
+/**
  * Thin typed client over the node's local HTTP API. One instance per node
  * base URL; constructed after discovery or manual entry.
  */
@@ -149,7 +306,10 @@ export class NodeClient {
 
   /** `POST /nodus/challenge` — obtain a fresh single-use nonce. */
   async challenge(timeoutMs: number = LOCAL_TIMEOUT_MS): Promise<LocalChallengePayload> {
-    return this.post<LocalChallengePayload>("/nodus/challenge", {}, timeoutMs);
+    const raw = await this.post<unknown>("/nodus/challenge", {}, timeoutMs);
+    // Parse (not cast) so the optional node-identity fields are validated and
+    // a malformed body is rejected before it reaches signature verification.
+    return LocalChallengePayloadSchema.parse(raw);
   }
 
   /**
@@ -157,18 +317,26 @@ export class NodeClient {
    * is signed by the injected signer (a non-extractable key handle on web,
    * ADR-0008); the node verifies against the public key recorded at pairing
    * time and consumes the nonce.
+   *
+   * Before signing, the node's own identity is verified from the challenge
+   * (see [`verifyNodeChallenge`]); pass `expectedNodePublicKey` (the pinned
+   * public key for this node) to reject a challenge from a different key.
    */
   async authenticate(
     deviceId: string,
     sign: DeviceMessageSigner,
+    expectedNodePublicKey?: string | null,
   ): Promise<{ ok: true } & Record<string, unknown>> {
-    const { nonce } = await this.challenge();
+    const challenge = await this.challenge();
+    // Authenticate the node *before* the device commits its signature, so a
+    // rogue responder never even receives a device proof.
+    verifyNodeChallenge(challenge, expectedNodePublicKey);
     // The signer signs the nonce's exact UTF-8 bytes.
-    const signature = await sign(nonce);
+    const signature = await sign(challenge.nonce);
     // Parsed (not type-cast) so the branded DeviceId is applied by DesignIdSchema.
     const body = LocalChallengeResponsePayloadSchema.parse({
       device_id: deviceId,
-      nonce,
+      nonce: challenge.nonce,
       signature,
     });
     return this.post("/nodus/auth", body);
@@ -467,6 +635,32 @@ export class NodeClient {
 
 function toHex(bytes: Uint8Array): string {
   return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+function hexToBytes(hex: string): Uint8Array {
+  const clean = hex.startsWith("0x") ? hex.slice(2) : hex;
+  const out = new Uint8Array(clean.length >> 1);
+  for (let i = 0; i < out.length; i += 1) {
+    out[i] = parseInt(clean.slice(i * 2, i * 2 + 2), 16);
+  }
+  return out;
+}
+
+/**
+ * Verify a hex-encoded Ed25519 signature over `message`. Returns false on any
+ * malformed input (bad hex, wrong length, invalid point) instead of throwing,
+ * so every node-auth verifier fails closed with the same error path.
+ */
+function verifyHexSignature(
+  signatureHex: string,
+  message: Uint8Array,
+  publicKeyHex: string,
+): boolean {
+  try {
+    return ed25519.verify(hexToBytes(signatureHex), message, hexToBytes(publicKeyHex));
+  } catch {
+    return false;
+  }
 }
 
 function base64Encode(bytes: Uint8Array): string {

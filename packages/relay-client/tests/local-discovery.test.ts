@@ -1,4 +1,5 @@
 import { ed25519 } from "@noble/curves/ed25519.js";
+import { localNodeAuthMessage } from "@repo/protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -6,6 +7,7 @@ import {
   NodeClientError,
   nodusBaseUrl,
   parsePairingUrl,
+  verifyNodeChallenge,
 } from "../src/index.js";
 
 import {
@@ -110,26 +112,44 @@ describe("NodeClient", () => {
     const privateKey = ed25519.utils.randomPrivateKey();
     const publicKey = ed25519.getPublicKey(privateKey);
     const nonce = "0123456789abcdef0123456789abcdef";
+    // Node identity the challenge is signed with (hex pubkey == node_id).
+    const nodeKey = ed25519.utils.randomPrivateKey();
+    const nodePub = hex(ed25519.getPublicKey(nodeKey));
 
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(
         new Response(
-          JSON.stringify({ nonce, ttl_seconds: 30 }),
+          JSON.stringify({
+            nonce,
+            ttl_seconds: 30,
+            node_id: nodePub,
+            public_key: nodePub,
+            node_signature: hex(
+              ed25519.sign(
+                new TextEncoder().encode(localNodeAuthMessage(nonce)),
+                nodeKey,
+              ),
+            ),
+          }),
           { status: 200 },
         ),
       )
       .mockResolvedValueOnce(
-        new Response(JSON.stringify({ status: "ok", node_id: "n1" }), {
+        new Response(JSON.stringify({ status: "ok", node_id: nodePub }), {
           status: 200,
         }),
       );
     globalThis.fetch = fetchMock;
 
     const client = new NodeClient("http://192.168.1.10:9378");
-    // ADR-0008: callers supply a signer, not a private key.
-    await client.authenticate("d1", (message) =>
-      hex(ed25519.sign(new TextEncoder().encode(message), privateKey)),
+    // ADR-0008: callers supply a signer, not a private key. The pinned node key
+    // is supplied so a response from a different key is rejected.
+    await client.authenticate(
+      "d1",
+      (message) =>
+        hex(ed25519.sign(new TextEncoder().encode(message), privateKey)),
+      nodePub,
     );
 
     // 1st call : challenge, 2nd: auth with a signature over the nonce bytes.
@@ -149,6 +169,42 @@ describe("NodeClient", () => {
     expect(ed25519.verify(sig, new TextEncoder().encode(nonce), publicKey)).toBe(
       true,
     );
+  });
+
+  it("rejects a challenge whose node signature does not verify", () => {
+    const nonce = "deadbeefdeadbeefdeadbeefdeadbeef";
+    const realNode = ed25519.utils.randomPrivateKey();
+    const attacker = ed25519.utils.randomPrivateKey();
+    const nodePub = hex(ed25519.getPublicKey(realNode));
+    expect(() =>
+      verifyNodeChallenge(
+        {
+          nonce,
+          node_id: nodePub,
+          public_key: nodePub,
+          node_signature: hex(
+            ed25519.sign(
+              new TextEncoder().encode(localNodeAuthMessage(nonce)),
+              attacker,
+            ),
+          ),
+        },
+        nodePub,
+      ),
+    ).toThrow(/invalid/);
+  });
+
+  it("rejects a challenge that is self-inconsistent or unsigned", () => {
+    const nonce = "deadbeefdeadbeefdeadbeefdeadbeef";
+    expect(() => verifyNodeChallenge({ nonce })).toThrow(/unsigned/);
+    expect(() =>
+      verifyNodeChallenge({
+        nonce,
+        node_id: "aa".repeat(32),
+        public_key: "bb".repeat(32),
+        node_signature: "00",
+      }),
+    ).toThrow(/self-inconsistent/);
   });
 
   it("maps node error bodies to NodeClientError with the error code", async () => {
