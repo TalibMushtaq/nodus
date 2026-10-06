@@ -29,6 +29,25 @@ export const PairingRequestPayloadSchema = z.object({
 export type PairingRequestPayload = z.infer<typeof PairingRequestPayloadSchema>;
 
 /**
+ * Domain-separation prefix for the node's signature over a pairing confirm.
+ * See [`localPairConfirmMessage`].
+ */
+export const LOCAL_PAIR_CONFIRM_PREFIX = "nodus-pair-confirm:";
+
+/**
+ * Exact UTF-8 message a node signs to prove the pairing confirm came from the
+ * real node. The three fields are the confirm body's identity values, so a
+ * signature cannot be replayed against a different device or node.
+ */
+export function localPairConfirmMessage(
+  nodeId: string,
+  deviceId: string,
+  devicePublicKey: string,
+): string {
+  return `${LOCAL_PAIR_CONFIRM_PREFIX}${nodeId}:${deviceId}:${devicePublicKey}`;
+}
+
+/**
  * Node → device: pairing succeeded. Carries the account binding so the client
  * can store which account/node combination it paired under.
  */
@@ -39,6 +58,13 @@ export const PairingConfirmPayloadSchema = z.object({
   device_id: DeviceId.optional(),
   /** The device key that was recorded as trusted */
   device_public_key: z.string().optional(),
+  /**
+   * Ed25519 signature by the node over
+   * [`localPairConfirmMessage`]`(node_id, device_id, device_public_key)`.
+   * Optional only for backward compatibility with older nodes; a client that
+   * requires node authentication must reject a confirm without it.
+   */
+  node_signature: z.string().optional(),
 });
 
 export type PairingConfirmPayload = z.infer<typeof PairingConfirmPayloadSchema>;

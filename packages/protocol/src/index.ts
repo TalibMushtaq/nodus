@@ -207,6 +207,8 @@ export {
   type PairingRejectPayload,
   PairingTokenPushPayloadSchema,
   type PairingTokenPushPayload,
+  LOCAL_PAIR_CONFIRM_PREFIX,
+  localPairConfirmMessage,
 } from "./messages/pairing.js";
 
 // ── Phase 11: Local discovery + auth (HTTP-only contracts) ──────────
@@ -227,6 +229,10 @@ export {
   type LocalChallengeResponsePayload,
   LocalAuthResultPayloadSchema,
   type LocalAuthResultPayload,
+  LOCAL_NODE_AUTH_PREFIX,
+  localNodeAuthMessage,
+  LOCAL_WEBRTC_ANSWER_PREFIX,
+  localWebRtcAnswerMessage,
 } from "./messages/local-auth.js";
 
 export {

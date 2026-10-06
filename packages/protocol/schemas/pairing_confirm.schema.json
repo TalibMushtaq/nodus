@@ -13,6 +13,9 @@
     },
     "device_public_key": {
       "type": "string"
+    },
+    "node_signature": {
+      "type": "string"
     }
   },
   "required": [
