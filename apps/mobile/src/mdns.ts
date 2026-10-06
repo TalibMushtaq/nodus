@@ -31,7 +31,15 @@ export interface MdnsDiscovery {
 function parseCandidate(address: string, txt: Record<string, string>): LanCandidate | null {
   const nodeId = txt.node_id ?? "";
   if (!nodeId) return null;
-  return { host: address, node_id: nodeId, schema_version: txt.v ?? "1" };
+  // mDNS TXT carries only the cheap `pk_fp` fingerprint, not the full public
+  // key; the caller confirms the binding against the HTTP advertisement (which
+  // has `public_key`) before trusting the node.
+  return {
+    host: address,
+    node_id: nodeId,
+    schema_version: txt.v ?? "1",
+    pk_fp: txt.pk_fp,
+  };
 }
 
 /** First IPv4 in the advert, else the first address of any family. */

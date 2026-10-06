@@ -18,6 +18,7 @@ import {
 import type { AttemptPathFn, LocalQueue } from "@repo/transfer-manager";
 
 import { getTrustedNodes } from "../store/trusted-nodes";
+import { rediscoverNodeHost } from "../discovery";
 import { postShard } from "./buffer";
 import { createNativePeerConnectionFactory } from "./webrtc";
 
@@ -72,6 +73,10 @@ export function createMobileAttemptPath(deps: MobileAttemptPathDeps): AttemptPat
     sessionCache: deps.sessionCache,
     resolveLocalHost: async (nodeId) =>
       (await getTrustedNodes()).find((n) => n.node_id === nodeId)?.host ?? null,
+    // A fresh mDNS lookup before the cached host, so a changed DHCP lease does
+    // not permanently break Path A. mDNS-only (bounded ~3s); the /24 sweep is
+    // reserved for the explicit discovery UI.
+    rediscoverLocalHost: (nodeId) => rediscoverNodeHost(nodeId),
     // Native has no mixed-content rule and always ships a peer connection, but
     // Path A is gated on the app being foregrounded (ADR-0004).
     canAttemptLocalPath: () => deps.canAttemptLocal?.() ?? true,

@@ -7,7 +7,12 @@
 
 import { createSignedRelayChannel, WebRtcSessionCache } from "@repo/sdk";
 import { TransferManager } from "@repo/transfer-manager";
-import { NODUS_LOCAL_PORT, identityPrivateKey, signDeviceMessage, type StoredDeviceIdentity } from "@repo/relay-client";
+import {
+  identityPrivateKey,
+  nodusBaseUrl,
+  signDeviceMessage,
+  type StoredDeviceIdentity,
+} from "@repo/relay-client";
 import { createLocalSignalingChannel } from "@repo/webrtc-transport";
 
 import { SqliteLocalQueue } from "../store/local-queue";
@@ -110,9 +115,12 @@ export async function createMobileTransferManager(
       createChannel: () => {
         if (useLocal && host) {
           return createLocalSignalingChannel({
-            baseUrl: `http://${host}:${NODUS_LOCAL_PORT}`,
+            // Normalize the cached host and pin the node key (its id is the hex
+            // public key) so the signed SDP answer must verify against the node.
+            baseUrl: nodusBaseUrl(host),
             deviceId: device.device_id,
             sign,
+            expectedNodePublicKey: args.nodeId,
           });
         }
         const channel = createSignedRelayChannel({

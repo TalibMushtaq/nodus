@@ -41,10 +41,12 @@ import {
 } from "@repo/sdk";
 import type { TransferPath } from "@repo/transfer-manager";
 import {
+  advertisementBindsNode,
   fetchAdvertisement,
   NodeClient,
   NodeClientError,
   nodusBaseUrl,
+  verifyPairConfirm,
 } from "@repo/relay-client/local-discovery";
 import {
   identityPrivateKey,
@@ -1957,17 +1959,39 @@ export function useNodusApp() {
 
   const pairOnDevice = React.useCallback(async () => {
     if (!device || !pending || !probe) return;
+    const expectedNodeId = pending.node_id ?? selectedNode ?? "";
+    if (!expectedNodeId) {
+      setError("No node selected for pairing. Pick or scan a node first.");
+      return;
+    }
     setBusy("pairing");
     setError(null);
     setNotice(null);
     try {
-      const client = new NodeClient(nodusBaseUrl(probe.host));
+      const base = nodusBaseUrl(probe.host);
+      // Confirm the host advertises the node the token was issued for and learn
+      // the public key the signed confirm must verify against.
+      const adv = await fetchAdvertisement(base, 2_000);
+      if (!advertisementBindsNode(adv, expectedNodeId)) {
+        setError("That host advertises a different node than the pairing token names.");
+        return;
+      }
+      const client = new NodeClient(base);
       const confirm = (await client.pair(
         pending.token,
-        pending.node_id ?? selectedNode ?? "",
+        expectedNodeId,
         device.device_id,
         identityPublicKey(device),
-      )) as { node_id?: string; account_id?: string };
+      )) as {
+        node_id?: string;
+        account_id?: string;
+        device_id?: string;
+        device_public_key?: string;
+        node_signature?: string;
+      };
+      // The token is redeemable by any host that speaks the protocol; the
+      // signed confirm is what proves this host holds the node's private key.
+      verifyPairConfirm(confirm, adv.public_key);
       await addTrustedNode({
         node_id: confirm.node_id ?? pending.node_id ?? "",
         host: probe.host,
@@ -1991,8 +2015,12 @@ export function useNodusApp() {
     setNotice(null);
     try {
       const client = new NodeClient(nodusBaseUrl(probe.host));
-      await client.authenticate(device.device_id, (message) =>
-        signDeviceMessage(identityPrivateKey(device), message),
+      // Pin the expected node key (its id is the hex public key). A rogue host
+      // cannot sign the challenge, so this rejects it before we sign anything.
+      await client.authenticate(
+        device.device_id,
+        (message) => signDeviceMessage(identityPrivateKey(device), message),
+        probe.public_key ?? probe.node_id,
       );
       setNotice("Authenticated — the node accepted this device's signature.");
     } catch (err) {
@@ -2034,7 +2062,15 @@ export function useNodusApp() {
           device.device_id,
           identityPublicKey(device),
           5_000,
-        )) as { node_id?: string; account_id?: string };
+        )) as {
+          node_id?: string;
+          account_id?: string;
+          device_id?: string;
+          device_public_key?: string;
+          node_signature?: string;
+        };
+        // Prove the re-pairing host still holds the node key before recording it.
+        verifyPairConfirm(confirm, adv.public_key);
         await addTrustedNode({
           node_id: confirm.node_id ?? nodeId,
           host: known.host,
