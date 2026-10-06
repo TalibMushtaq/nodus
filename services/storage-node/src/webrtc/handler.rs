@@ -22,7 +22,17 @@ pub struct OfferRequest {
 pub struct OfferResponse {
     pub session_id: String,
     pub sdp: String,
+    /// Node identity + signature over the answer SDP so the client can prove
+    /// the answer came from the real node (not a rogue LAN host) before it sets
+    /// its remote description. Matches `localWebRtcAnswerMessage` in the protocol.
+    pub node_id: String,
+    /// Ed25519 signature over `"nodus-webrtc-answer:{session_id}:{sdp}"`, hex.
+    pub node_signature: String,
 }
+
+/// Domain-separation prefix shared with the TypeScript client
+/// (`localWebRtcAnswerMessage` in packages/protocol).
+const LOCAL_WEBRTC_ANSWER_PREFIX: &str = "nodus-webrtc-answer:";
 
 #[derive(Deserialize)]
 pub struct IceCandidateRequest {
@@ -163,17 +173,48 @@ pub async fn handle_offer(
         )
     })?;
 
+    // Sign the answer so the client authenticates the node before using the
+    // direct path. The signed body binds the session id and the exact SDP
+    // (including the DTLS fingerprint), so a rogue host cannot substitute it.
+    let node_signature = hex::encode(
+        state
+            .identity
+            .sign(
+                format!(
+                    "{LOCAL_WEBRTC_ANSWER_PREFIX}{}:{answer_sdp}",
+                    body.session_id
+                )
+                .as_bytes(),
+            )
+            .to_bytes(),
+    );
+
     Ok(Json(OfferResponse {
         session_id: body.session_id,
         sdp: answer_sdp,
+        node_id: state.identity.node_id.clone(),
+        node_signature,
     }))
 }
 
 pub async fn handle_ice_candidate(
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     State(state): State<LocalState>,
     headers: HeaderMap,
     Json(body): Json<IceCandidateRequest>,
 ) -> Result<StatusCode, (StatusCode, Json<LocalError>)> {
+    // Trickle candidates are cheap but unbounded; cap them per source IP so an
+    // authenticated device cannot flood the node's session queues.
+    if !state.ice_limiter.check_and_record(addr.ip()).await {
+        return Err((
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(LocalError {
+                error: "rate_limited".into(),
+                message: "too many WebRTC ICE candidates; try again shortly".into(),
+            }),
+        ));
+    }
+
     // Bind the signature to the exact ICE candidate body.
     let payload_hash = blake3::hash(body.candidate.as_bytes()).to_hex().to_string();
     verify_webrtc_caller(

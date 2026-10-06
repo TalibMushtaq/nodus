@@ -28,6 +28,13 @@ pub const CHALLENGE_RATE_WINDOW: Duration = Duration::from_secs(10);
 pub const WEBRTC_OFFER_RATE_LIMIT: usize = 30;
 /// Sliding window for the WebRTC offer rate limiter.
 pub const WEBRTC_OFFER_RATE_WINDOW: Duration = Duration::from_secs(10);
+/// Max WebRTC ICE-candidate pushes allowed per IP within the window. ICE is a
+/// lighter operation than an offer (no session is created), but an authenticated
+/// device can otherwise flood trickle candidates at the node, so it is bounded
+/// with its own budget rather than left unlimited.
+pub const WEBRTC_ICE_RATE_LIMIT: usize = 120;
+/// Sliding window for the WebRTC ICE rate limiter.
+pub const WEBRTC_ICE_RATE_WINDOW: Duration = Duration::from_secs(10);
 /// Max offline-recovery challenge requests allowed per IP within the window.
 /// Recovery hands out key material to whoever holds the phrase, so it gets its
 /// own (tighter) budget rather than sharing the generic challenge limiter.

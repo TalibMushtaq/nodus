@@ -60,6 +60,9 @@ pub struct LocalState {
     /// Separate limiter for `/nodus/webrtc/offer`: each accepted offer creates
     /// a session, so it must not share the challenge budget.
     pub offer_limiter: Arc<RateLimiter>,
+    /// Per-IP limiter for `/nodus/webrtc/ice`, which streams trickle candidates
+    /// and would otherwise be an unbounded per-device write path.
+    pub ice_limiter: Arc<RateLimiter>,
     /// Dedicated nonce store for offline recovery (ADR-0002): recovery hands
     /// out key material, so it must not share the ordinary auth nonce budget
     /// (a consumed recovery nonce and a consumed auth nonce are different
@@ -95,7 +98,21 @@ struct DiscoveryAdvertisement {
 struct Challenge {
     nonce: String,
     ttl_seconds: u64,
+    /// Node identity + a signature over the nonce so the client can prove it is
+    /// talking to the real node, not just that the node accepts its device key.
+    /// Mirrors `localNodeAuthMessage` in packages/protocol.
+    node_id: String,
+    /// Ed25519 public key, hex-encoded (equals `node_id`).
+    public_key: String,
+    /// Ed25519 signature over `"nodus-local-auth:{nonce}"`, hex-encoded.
+    node_signature: String,
 }
+
+/// Domain-separation prefixes shared with the TypeScript client
+/// (`packages/protocol/src/messages/{local-auth,pairing}.ts`). The signed
+/// message is built from these exact strings on both sides.
+const LOCAL_NODE_AUTH_PREFIX: &str = "nodus-local-auth:";
+const LOCAL_PAIR_CONFIRM_PREFIX: &str = "nodus-pair-confirm:";
 
 #[derive(Deserialize)]
 struct AuthRequest {
@@ -128,6 +145,11 @@ struct PairConfirm {
     account_id: String,
     device_id: String,
     device_public_key: String,
+    /// Ed25519 signature by the node over
+    /// `"nodus-pair-confirm:{node_id}:{device_id}:{device_public_key}"` so the
+    /// client can prove the confirm came from the real node (the pairing token
+    /// alone is redeemble by any host that speaks the protocol).
+    node_signature: String,
 }
 
 // ── Offline recovery (ADR-0002) ──────────────────────────────────────────
@@ -294,6 +316,10 @@ pub async fn spawn(
             super::auth::WEBRTC_OFFER_RATE_WINDOW,
             super::auth::WEBRTC_OFFER_RATE_LIMIT,
         )),
+        ice_limiter: Arc::new(RateLimiter::new(
+            super::auth::WEBRTC_ICE_RATE_WINDOW,
+            super::auth::WEBRTC_ICE_RATE_LIMIT,
+        )),
         recovery_nonces: Arc::new(NonceStore::default()),
         recovery_limiter: Arc::new(RateLimiter::new(
             super::auth::RECOVERY_RATE_WINDOW,
@@ -368,9 +394,21 @@ async fn challenge(
         error: "overloaded".into(),
         message: "challenge store is at capacity; retry in 30s".into(),
     })?;
+    // Sign the nonce with the node key (domain-separated) so the client can
+    // authenticate the node before it reveals any device signature. This is
+    // the node half of the LAN handshake; `/nodus/auth` is the device half.
+    let node_signature = hex::encode(
+        state
+            .identity
+            .sign(format!("{LOCAL_NODE_AUTH_PREFIX}{nonce}").as_bytes())
+            .to_bytes(),
+    );
     Ok(Json(Challenge {
         nonce,
         ttl_seconds: super::auth::NONCE_TTL.as_secs(),
+        node_id: state.identity.node_id.clone(),
+        public_key: hex::encode(state.identity.public_key.as_bytes()),
+        node_signature,
     }))
 }
 
@@ -567,6 +605,17 @@ async fn recovery_auth(
             message: format!("recovery signature verification failed: {e}"),
         }
     })?;
+
+    // The recovered device id must derive from the key it presents, exactly as
+    // in the ordinary pair path, so recovery cannot overwrite another device's
+    // row via a colliding id. Checked before consuming the nonce so a bad id
+    // does not burn the phrase holder's one attempt.
+    if !device_id_matches_key(&req.device_id, &device_pubkey) {
+        return Err(LocalError {
+            error: "device_id_mismatch".into(),
+            message: "device_id must be the first 16 hex characters of device_public_key".into(),
+        });
+    }
 
     // Only now claim the nonce. A false here means a concurrent submission won
     // the race, so this (valid) attempt must not mint a second device session.
@@ -926,7 +975,18 @@ async fn pair(
             expires_at: &expires_at,
             account_id: &account_id,
         };
-        redeem_from_local(&state, &req, &pubkey_bytes, session).await
+        let result = redeem_from_local(&state, &req, &pubkey_bytes, session).await;
+        // The local fast path consumes only *this node's* pairing_sessions row.
+        // Tell the Relay best-effort so its row is single-use too (otherwise it
+        // stays redeemable through the verify fallback for the rest of its TTL).
+        if result.is_ok() {
+            let state = state.clone();
+            let token = req.token.clone();
+            tokio::spawn(async move {
+                consume_relay_pairing_token(&state, &token).await;
+            });
+        }
+        result
     } else {
         // Fallback: consult the Relay. Only possible while the node has Relay
         // connectivity — a fully offline node rejects pairing with a clear error.
@@ -1067,7 +1127,7 @@ async fn redeem_from_local(
 
     let confirm = store_device_conn(
         &mut tx,
-        &state.identity.node_id,
+        &state.identity,
         req,
         pubkey_bytes,
         session.account_id,
@@ -1087,14 +1147,7 @@ async fn store_device(
     account_id: &str,
 ) -> Result<Json<PairConfirm>, LocalError> {
     let mut conn = state.db.acquire().await.map_err(internal_err)?;
-    store_device_conn(
-        &mut conn,
-        &state.identity.node_id,
-        req,
-        pubkey_bytes,
-        account_id,
-    )
-    .await
+    store_device_conn(&mut conn, &state.identity, req, pubkey_bytes, account_id).await
 }
 
 /// Connection variant of [`store_device`]: runs on the caller's transaction so
@@ -1102,13 +1155,40 @@ async fn store_device(
 /// mid-pair must leave the token reusable rather than half-paired.
 async fn store_device_conn(
     conn: &mut SqliteConnection,
-    node_id: &str,
+    identity: &NodeIdentity,
     req: &PairRequest,
     pubkey_bytes: &[u8],
     account_id: &str,
 ) -> Result<Json<PairConfirm>, LocalError> {
+    let node_id = identity.node_id.as_str();
     let device_pubkey_hex = hex::encode(pubkey_bytes);
     let now = now_iso();
+
+    // Bind the device id to the key. The client derives `device_id` as the
+    // first 16 hex chars of its public key (`deriveDeviceId`), so accepting an
+    // arbitrary id would let a paired attacker choose one that collides with
+    // another device and overwrite its stored key via the upsert below.
+    if !device_id_matches_key(&req.device_id, pubkey_bytes) {
+        return Err(LocalError {
+            error: "device_id_mismatch".into(),
+            message: "device_id must be the first 16 hex characters of device_public_key".into(),
+        });
+    }
+
+    // Prove node identity in the confirm. A rogue host that redeemed the
+    // device-bound token still cannot produce this signature, so the client
+    // rejects it and never records the rogue as a trusted node.
+    let node_signature = hex::encode(
+        identity
+            .sign(
+                format!(
+                    "{LOCAL_PAIR_CONFIRM_PREFIX}{node_id}:{}:{device_pubkey_hex}",
+                    req.device_id
+                )
+                .as_bytes(),
+            )
+            .to_bytes(),
+    );
 
     sqlx::query(
         "INSERT INTO devices (device_id, public_key_bytes, status, created_at, paired_at)
@@ -1144,10 +1224,42 @@ async fn store_device_conn(
         account_id: account_id.to_string(),
         device_id: req.device_id.clone(),
         device_public_key: device_pubkey_hex,
+        node_signature,
     }))
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────
+
+/// Best-effort: mark the Relay's pairing-session row consumed after this node
+/// redeemed the token through its local fast path. The Relay verify endpoint
+/// performs the atomic consume; its response body is irrelevant here. If the
+/// Relay is unreachable the token is still single-use on this node.
+async fn consume_relay_pairing_token(state: &LocalState, token: &str) {
+    let Some(base) = state.relay_http_base.as_deref() else {
+        return;
+    };
+    let url = format!("{base}/pairing/sessions/verify");
+    if let Err(e) = state
+        .http
+        .post(&url)
+        .json(&serde_json::json!({ "token": token }))
+        .send()
+        .await
+    {
+        eprintln!("[pair] relay pairing-token consume failed (local row already consumed): {e}");
+    }
+}
+
+/// True when `device_id` is the documented derivation of `public_key`: its
+/// first 16 hex characters, case-insensitive (`deriveDeviceId` in
+/// packages/relay-client). See `store_device_conn` for why this is enforced.
+fn device_id_matches_key(device_id: &str, public_key: &[u8]) -> bool {
+    if device_id.len() != 16 {
+        return false;
+    }
+    let hex = hex::encode(public_key);
+    device_id.eq_ignore_ascii_case(&hex[..16])
+}
 
 /// The `device_public_key` field on the wire is base64 (mirrors the Relay's
 /// own payload encoding). Decode and validate length.
@@ -1202,7 +1314,7 @@ mod tests {
     use super::*;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
-    use ed25519_dalek::{Signer, SigningKey};
+    use ed25519_dalek::{Signature, Signer, SigningKey, Verifier};
     use http_body_util::BodyExt;
     use std::time::Duration;
     use tempfile::tempdir;
@@ -1241,6 +1353,10 @@ mod tests {
             offer_limiter: Arc::new(RateLimiter::new(
                 Duration::from_secs(10),
                 super::super::auth::WEBRTC_OFFER_RATE_LIMIT,
+            )),
+            ice_limiter: Arc::new(RateLimiter::new(
+                Duration::from_secs(10),
+                super::super::auth::WEBRTC_ICE_RATE_LIMIT,
             )),
             recovery_nonces: Arc::new(NonceStore::default()),
             recovery_limiter: Arc::new(RateLimiter::new(
@@ -1285,6 +1401,12 @@ mod tests {
         base64::engine::general_purpose::STANDARD.encode(bytes)
     }
 
+    /// The device id a conforming client derives: first 16 hex chars of the
+    /// Ed25519 public key (mirrors `deriveDeviceId` in packages/relay-client).
+    fn device_id_for(key: &SigningKey) -> String {
+        hex::encode(key.verifying_key().to_bytes())[..16].to_string()
+    }
+
     #[tokio::test]
     async fn test_offline_recovery_round_trip() {
         let (app, db, _id, _dir) = setup_test_server().await;
@@ -1311,11 +1433,12 @@ mod tests {
 
         // 2. Recover: sign the nonce with the recovery key.
         let device = SigningKey::from_bytes(&[4u8; 32]);
+        let recovered_id = device_id_for(&device);
         let signature = hex::encode(recovery.sign(nonce.as_bytes()).to_bytes());
         let body = serde_json::json!({
             "nonce": nonce,
             "signature": signature,
-            "device_id": "dev-recovered",
+            "device_id": recovered_id,
             "device_public_key": b64(&device.verifying_key().to_bytes()),
         });
         let mut req = Request::builder()
@@ -1329,21 +1452,21 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
 
         // The new device is registered and active on the node.
-        let status: String =
-            sqlx::query_scalar("SELECT status FROM devices WHERE device_id = 'dev-recovered'")
-                .fetch_one(&db)
-                .await
-                .unwrap();
+        let status: String = sqlx::query_scalar("SELECT status FROM devices WHERE device_id = ?")
+            .bind(&recovered_id)
+            .fetch_one(&db)
+            .await
+            .unwrap();
         assert_eq!(status, "ACTIVE");
 
         // 3. Fetch recovery envelopes with a signed device request.
         let ts = chrono::Utc::now().timestamp_millis();
-        let message = format!("dev-recovered:recovery-envelopes:{ts}");
+        let message = format!("{recovered_id}:recovery-envelopes:{ts}");
         let sig = hex::encode(device.sign(message.as_bytes()).to_bytes());
         let mut req = Request::builder()
             .uri("/nodus/recovery/envelopes")
             .method("GET")
-            .header("x-nodus-device-id", "dev-recovered")
+            .header("x-nodus-device-id", &recovered_id)
             .header("x-nodus-timestamp", ts.to_string())
             .header("x-nodus-signature", sig)
             .body(Body::empty())
@@ -1445,7 +1568,7 @@ mod tests {
         let good = serde_json::json!({
             "nonce": nonce,
             "signature": hex::encode(recovery.sign(nonce.as_bytes()).to_bytes()),
-            "device_id": "dev-recovered",
+            "device_id": device_id_for(&device),
             "device_public_key": b64(&device.verifying_key().to_bytes()),
         });
         let mut req = Request::builder()
@@ -1547,11 +1670,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_challenge_endpoint_and_rate_limiting() {
-        let (app, _db, _id, _dir) = setup_test_server().await;
+        let (app, _db, identity, _dir) = setup_test_server().await;
         let client_addr: SocketAddr = "192.168.1.50:54321".parse().unwrap();
 
         // 10 successful requests allowed
-        for _ in 0..10 {
+        for i in 0..10 {
             let mut req = Request::builder()
                 .uri("/nodus/challenge")
                 .method("POST")
@@ -1563,8 +1686,27 @@ mod tests {
             assert_eq!(resp.status(), StatusCode::OK);
             let bytes = resp.into_body().collect().await.unwrap().to_bytes();
             let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-            assert!(!json["nonce"].as_str().unwrap().is_empty());
+            let nonce = json["nonce"].as_str().unwrap();
+            assert!(!nonce.is_empty());
             assert_eq!(json["ttl_seconds"], 30);
+            // The challenge proves node identity: the signature over the
+            // domain-separated nonce must verify against the node's key.
+            assert_eq!(json["node_id"], identity.node_id);
+            assert_eq!(
+                json["public_key"],
+                hex::encode(identity.public_key.as_bytes())
+            );
+            if i == 0 {
+                let sig = hex::decode(json["node_signature"].as_str().unwrap()).unwrap();
+                let msg = format!("{LOCAL_NODE_AUTH_PREFIX}{nonce}");
+                assert!(
+                    identity
+                        .public_key
+                        .verify(msg.as_bytes(), &Signature::from_slice(&sig).unwrap())
+                        .is_ok(),
+                    "challenge must carry a valid node signature"
+                );
+            }
         }
 
         // 11th request from the same IP must be rate limited (429)
@@ -1804,7 +1946,7 @@ mod tests {
         let device_pubkey_b64 = base64::engine::general_purpose::STANDARD.encode(device_pubkey);
         let token = "test-pairing-token-uuid-1234";
         let account_id = "acct-test-pairing-user";
-        let device_id = "device-to-pair-1";
+        let device_id = device_id_for(&device_key);
         let expires_at = (chrono::Utc::now() + chrono::Duration::minutes(15)).to_rfc3339();
 
         // Seed pairing_sessions row as pushed from Relay
@@ -1842,6 +1984,25 @@ mod tests {
         assert_eq!(json["account_id"], account_id);
         assert_eq!(json["device_id"], device_id);
         assert_eq!(json["device_public_key"], hex::encode(device_pubkey));
+
+        // The confirm proves node identity: verify the signature over the
+        // domain-separated message against the node's public key.
+        let confirm_sig = hex::decode(json["node_signature"].as_str().unwrap()).unwrap();
+        let confirm_msg = format!(
+            "{LOCAL_PAIR_CONFIRM_PREFIX}{}:{device_id}:{}",
+            identity.node_id,
+            hex::encode(device_pubkey)
+        );
+        assert!(
+            identity
+                .public_key
+                .verify(
+                    confirm_msg.as_bytes(),
+                    &Signature::from_slice(&confirm_sig).unwrap()
+                )
+                .is_ok(),
+            "pair confirm must carry a valid node signature"
+        );
 
         // Verify DB row is updated in devices table
         let row: (Vec<u8>, String) =
@@ -2337,7 +2498,7 @@ mod tests {
         let device_pubkey = device_key.verifying_key().to_bytes();
         let device_pubkey_b64 = base64::engine::general_purpose::STANDARD.encode(device_pubkey);
         let token = "test-race-token-1";
-        let device_id = "device-race-1";
+        let device_id = device_id_for(&device_key);
         let expires_at = (chrono::Utc::now() + chrono::Duration::minutes(15)).to_rfc3339();
 
         sqlx::query(

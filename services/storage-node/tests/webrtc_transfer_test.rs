@@ -76,6 +76,7 @@ async fn test_webrtc_offer_and_ice_endpoint_roundtrip() {
     let nonces = Arc::new(NonceStore::default());
     let challenge_limiter = Arc::new(RateLimiter::new(Duration::from_secs(10), 100));
     let offer_limiter = Arc::new(RateLimiter::new(Duration::from_secs(10), 100));
+    let ice_limiter = Arc::new(RateLimiter::new(Duration::from_secs(10), 100));
 
     // Register a trusted device with the key the requests below sign with.
     let device_key = SigningKey::from_bytes(&[42u8; 32]);
@@ -97,6 +98,7 @@ async fn test_webrtc_offer_and_ice_endpoint_roundtrip() {
         nonces,
         challenge_limiter,
         offer_limiter,
+        ice_limiter,
         // Recovery endpoints are not exercised here, but LocalState requires them.
         recovery_nonces: Arc::new(NonceStore::default()),
         recovery_limiter: Arc::new(RateLimiter::new(Duration::from_secs(10), 100)),
