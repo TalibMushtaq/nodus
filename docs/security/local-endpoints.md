@@ -19,6 +19,18 @@ boundary for *identity* and *pairing* on the LAN.
   side effects.
 - Stored in node memory (not disk), keyed by hex nonce.
 
+### Node authentication (node → device, local)
+
+Every `/nodus/challenge` response carries the node's identity plus an Ed25519
+signature over `nodus-local-auth:{nonce}` (`localNodeAuthMessage`). `/nodus/pair`
+confirms are signed over `nodus-pair-confirm:{node_id}:{device_id}:{device_public_key}`,
+and `/nodus/webrtc/offer` answers are signed over
+`nodus-webrtc-answer:{session_id}:{sdp}`. Because a node id *is* the hex of the
+node's Ed25519 public key, the client verifies each signature against the pinned
+node id before trusting the response. This is the other half of the handshake:
+`/nodus/auth` proves the *device* to the node, and these signatures prove the
+*node* to the device.
+
 ### Pairing tokens (Relay-issued)
 
 - Issued by `POST /pairing/sessions` (authenticated) on the Relay.
@@ -48,20 +60,20 @@ reasons, and threat model.
 
 | Threat | Mitigation |
 |---|---|
-| Rogue LAN device impersonates a node | Node proves identity via Ed25519 challenge-response; a rogue device cannot sign nonces with the node's private key |
-| Spoofed mDNS advertisement | Discovery is not authentication. Pairing binds to the account (Relay-issued token), not to whatever answers on the LAN. The client verifies the node's public key against the `node_id` in the pairing URL |
-| Replayed pairing token | Single-use token, redeemed atomically at the Relay; server-side `consumed_at` |
+| Rogue LAN device impersonates a node | The node signs its challenge, pairing confirm, and WebRTC answer with its Ed25519 key; the client verifies each against the pinned node id (a node id is the hex public key). A rogue device cannot sign without the node's private key |
+| Spoofed mDNS advertisement | Discovery is not authentication. Pairing binds to the account (Relay-issued token), not to whatever answers on the LAN. The client verifies the advertisement's `public_key` matches the expected `node_id`, then verifies the node's signed challenge/confirm |
+| Replayed pairing token | Single-use token, redeemed atomically at the Relay; server-side `consumed_at`. The node also tells the Relay to consume the row after its local fast-path redemption |
 | Sniffed token used by a different device | Token is bound to a device pubkey at issuance; redemption requires that same device identity |
 | Replayed challenge-response | Nonces are single-use and TTL-bounded |
-| On-path attacker swaps WebRTC SDP/ICE on the plaintext LAN listener | Each signaling request signs `"{device_id}:{session_id}:{timestamp_ms}:{blake3(payload)}"`, so a body swap invalidates the signature |
+| On-path attacker swaps WebRTC SDP/ICE on the plaintext LAN listener | Each signaling request signs `"{device_id}:{session_id}:{timestamp_ms}:{blake3(payload)}"`, and the node's SDP answer is signed over `"{session_id}:{sdp}"`, so a body swap invalidates a signature |
 | Browser origin probing the node | Permissive CORS on the LAN listener, accepted for the home-LAN v1 trust model |
 
 ## Known accepted risks (v1)
 
 - Plaintext HTTP on the local link: handshake bytes could be observed on the
-  LAN. Pairing-intent replay is blocked by single-use + device binding; node
-  impersonation is blocked by the signature protocol. Not transport-encrypted
-  for v1 — revisit TLS if untrusted-LAN scenarios become in-scope.
+  LAN. Node and device identities are both proven by signatures, so observation
+  does not enable impersonation; transport confidentiality is not provided for
+  v1 — revisit TLS if untrusted-LAN scenarios become in-scope.
 - A compromised device that was paired retains its local trust until revoked
   (same accepted tradeoff as ADR-0001).
 

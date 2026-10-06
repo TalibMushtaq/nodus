@@ -1,5 +1,21 @@
 # Changelog
 
+## [2026-10-06] - LAN audit fixes: node authentication, host correctness, mobile advert binding, token single-use
+
+**What changed:**
+
+- **Node authentication (node → device).** `POST /nodus/challenge` now returns `node_id`, `public_key`, and a `node_signature` over `nodus-local-auth:{nonce}`; `/nodus/pair` confirms carry a `node_signature` over `nodus-pair-confirm:{node_id}:{device_id}:{device_public_key}`; `/nodus/webrtc/offer` answers carry a `node_signature` over `nodus-webrtc-answer:{session_id}:{sdp}` (`services/storage-node/src/local/server.rs`, `src/webrtc/handler.rs`). New protocol helpers `localNodeAuthMessage`, `localPairConfirmMessage`, `localWebRtcAnswerMessage` (`packages/protocol/src/messages/{local-auth,pairing}.ts`). New client verifiers `verifyNodeChallenge`, `verifyPairConfirm`, `verifyWebRtcAnswer`, plus `advertisementBindsNode` (`packages/relay-client/src/local-discovery.ts`). Wired into `NodeClient.authenticate` (new optional `expectedNodePublicKey`), `createLocalSignalingChannel` (new `expectedNodePublicKey`), web `auto-pair`/`pair` page, and mobile `pairOnDevice`/`authenticateOnDevice`/`pairNode`. Because a node id is the hex of its Ed25519 public key, the pinned key is the node id itself.
+- **Path A host correctness.** The SDK no longer string-concatenates the raw cached host into `http://{host}:9378`; it normalizes via `nodusBaseUrl` and pins the node key (`packages/sdk/src/transfer/attempt-path.ts`). Added an optional `rediscoverLocalHost` so mobile does a bounded fresh mDNS lookup before falling back to the cached host (`apps/mobile/src/discovery.ts` `rediscoverNodeHost`, `src/transfer/attempt-path.ts`). The web download provider (`apps/web/providers/transfer-provider.tsx`) and the mobile download manager (`apps/mobile/src/transfer/manager.ts`) likewise normalize and pin the key.
+- **Mobile advertisement binding.** `LanCandidate` now carries `public_key`/`pk_fp`; the sweep/probe capture them and mDNS captures `pk_fp` (`apps/mobile/src/{discovery,mdns}.ts`). `advertisementBindsNode` moved into `@repo/relay-client` and the web `lan-host.ts` now re-exports it.
+- **Pairing-token single-use across the fast path.** After a local redemption, the node best-effort calls the Relay verify endpoint to consume the Relay row too (`consume_relay_pairing_token`), so the token is not redeemable through the verify fallback for the rest of its TTL.
+- **Hardening.** The node binds `device_id` to the first 16 hex chars of the device public key on pair and recovery (`device_id_matches_key`), preventing a colliding id from overwriting another device's key via the upsert. Added a per-IP rate limiter for `/nodus/webrtc/ice` (`WEBRTC_ICE_RATE_LIMIT`, `LocalState.ice_limiter`).
+
+**Why:** an audit of the mobile↔node LAN login and local P2P transfer found that the client never authenticated the node (a rogue LAN host could be paired and could MITM Path A), that Path A used an unnormalized/stale cached host with no re-discovery, that mobile skipped the advertisement binding check web had, and that the local pairing fast path left the Relay row unconsumed.
+
+**Impact:** protocol additions are backward-compatible optional fields, but clients now require signed challenges (an older node without signatures is rejected). Touches `packages/protocol`, `packages/relay-client`, `packages/webrtc-transport`, `packages/sdk`, `apps/web`, `apps/mobile`, and the Rust storage node. Rust lib + `webrtc_transfer_test` pass; TS protocol/relay-client/webrtc-transport/sdk/transfer-manager/web/mobile tests pass; web and mobile type-check.
+
+**Follow-ups:** offline recovery (`/nodus/recovery/challenge`) is still unsigned by the node — a rogue host could serve a bogus recovery challenge, though it cannot forge sealed envelopes. Consider signing the recovery challenge in a follow-up. e2e harnesses should be re-run on a runner.
+
 ## [2026-10-03] - Docs: drop remaining PostgreSQL references
 
 **What changed:**
@@ -197,6 +213,19 @@
 **Why:** the relay's storage layer is being migrated from PostgreSQL to SQLite, where the `FOR UPDATE` cursor lock is replaced by an immediate write transaction. These tests pin the concurrency and duplicate-suppression behavior against the current PostgreSQL implementation first, so the migration cannot silently weaken it.
 
 **Impact:** test-only, `services/relay/internal/handler`. The tests self-skip unless `TEST_DATABASE_URL` is set; run via `services/relay/scripts/test-integration.sh`.
+
+**Follow-ups:** none.
+
+## [2026-10-03] - Web: show available storage on the dashboard
+
+**What changed:**
+
+- `apps/web/lib/overview.ts`: `StorageUsage` gains `availableBytes` (`totalBytes - usedBytes`, floored at 0), computed by `storageUsage`.
+- `apps/web/app/(dashboard)/overview/overview-client.tsx`: the first stat card now reads "Storage available" and shows `availableBytes`, falling back to "—" when no node has reported capacity.
+
+**Why:** the dashboard reported capacity consumed; operators want to know free space to anticipate filling a node.
+
+**Impact:** web overview only. `pnpm --filter web test`, lint, and type check pass.
 
 **Follow-ups:** none.
 

@@ -54,9 +54,10 @@ in-scope.
 | Endpoint | Method | Auth | Behavior |
 |---|---|---|---|
 | `/nodus/discovery` | GET | none | Returns `{ node_id, public_key, schema_version }` — read-only identity advertisement |
-| `/nodus/challenge` | POST | none | Returns `{ nonce }`, 32 random bytes, 30s TTL, single-use |
+| `/nodus/challenge` | POST | none | Returns `{ nonce }` (32 random bytes, 30s TTL, single-use) plus the node's `node_id`, `public_key`, and an Ed25519 `node_signature` over `nodus-local-auth:{nonce}` so the client can authenticate the node |
 | `/nodus/auth` | POST | — | Accepts `{ device_id, nonce, signature }`; verifies the signature over the issued nonce against the known device pubkey |
-| `/nodus/pair` | POST | pairing token | Accepts Relay-issued token + device pubkey; validates single-use server-side; on success inserts into `devices` |
+| `/nodus/pair` | POST | pairing token | Accepts Relay-issued token + device pubkey; validates single-use server-side; on success inserts into `devices` and returns a `node_signature` over `nodus-pair-confirm:{node_id}:{device_id}:{device_public_key}` |
+| `/nodus/webrtc/offer` | POST | signed device headers | Returns a signed SDP answer (`node_signature` over `nodus-webrtc-answer:{session_id}:{sdp}`) so the client does not trust a rogue host on the direct path |
 
 CORS on the node listener is permissive so the browser web client can probe
 `/nodus/discovery` from any origin (home-LAN trust model).
