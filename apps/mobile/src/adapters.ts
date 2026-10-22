@@ -10,44 +10,7 @@
 import * as SecureStore from "expo-secure-store";
 import type { RelayHttp, RelayRequestInit, RelayResponse, SecureStore as SecureStoreAdapter } from "@repo/sdk";
 
-/**
- * Operator-configured Relay origin; no default so first-run never guesses
- * localhost. The session is a bearer credential, so a non-loopback origin must
- * use TLS: the validation below rejects cleartext http(s) for anything that is
- * not a local dev host, which would otherwise expose the token to any on-path
- * observer. (LAN node traffic is separate — it never carries the bearer token.)
- */
-const RAW_RELAY_URL = (process.env.EXPO_PUBLIC_RELAY_URL ?? "").replace(/\/+$/, "");
-
-/** Hosts where cleartext is allowed: loopback plus the Android emulator alias. */
-function isLocalHost(host: string): boolean {
-  return (
-    host === "localhost" ||
-    host === "127.0.0.1" ||
-    host === "::1" ||
-    host === "10.0.2.2"
-  );
-}
-
-function validateRelayUrl(url: string): string {
-  if (!url) return "";
-  if (url.startsWith("https://") || url.startsWith("wss://")) return url;
-  if (url.startsWith("http://") || url.startsWith("ws://")) {
-    // Allow cleartext only for a local development origin; a remote origin must
-    // be upgraded to TLS rather than silently sending the bearer token in clear.
-    try {
-      if (isLocalHost(new URL(url).hostname)) return url;
-    } catch {
-      // Fall through to the throw below: an unparseable URL is not usable.
-    }
-    throw new Error(
-      "EXPO_PUBLIC_RELAY_URL must use https:// (or wss://) for a non-local Relay; refusing to send the session in cleartext",
-    );
-  }
-  throw new Error("EXPO_PUBLIC_RELAY_URL must be an http(s)/ws(s) URL");
-}
-
-export const RELAY_BASE = validateRelayUrl(RAW_RELAY_URL);
+import { getRelayBase } from "./relay-config";
 
 /** Keychain entry holding the opaque session ID (never a JWT). */
 export const SESSION_KEY = "nodus.relay.session";
@@ -110,10 +73,13 @@ interface AuthTokenBody {
 export function createNativeRelayHttp(): RelayHttp {
   return {
     async request<T = unknown>(path: string, init?: RelayRequestInit): Promise<RelayResponse<T>> {
-      if (!RELAY_BASE) {
-        // Fail loudly rather than silently targeting localhost: the operator
-        // must set EXPO_PUBLIC_RELAY_URL (plan §3b).
-        throw new Error("EXPO_PUBLIC_RELAY_URL is not configured");
+      // Read the base per request, not at module load: the user can change the
+      // server at runtime and every existing client must follow it.
+      const base = getRelayBase();
+      if (!base) {
+        // The UI gates every Relay-backed screen behind the first-run URL
+        // prompt, so this only fires on a programming error or a stale caller.
+        throw new Error("No Relay server is configured");
       }
 
       const headers: Record<string, string> = { ...(init?.headers ?? {}) };
@@ -131,7 +97,7 @@ export function createNativeRelayHttp(): RelayHttp {
         headers["content-type"] ??= "application/json";
       }
 
-      const res = await fetch(`${RELAY_BASE}${path}`, {
+      const res = await fetch(`${base}${path}`, {
         method: init?.method ?? "GET",
         headers,
         body,
@@ -174,6 +140,6 @@ export function createNativeRelayHttp(): RelayHttp {
 
       return { status: res.status, ok: res.ok, json, error };
     },
-    publicRelayUrl: () => RELAY_BASE || null,
+    publicRelayUrl: () => getRelayBase() || null,
   };
 }

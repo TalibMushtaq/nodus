@@ -116,6 +116,9 @@ import { loadImagePreview } from "../files/preview";
 import { activityLoggedEvent } from "../activity/events";
 import { loadNodeActivities } from "../activity/remote";
 import { loadOrCreateDevice, loadOrCreateEncryptionIdentity } from "../storage";
+import { loadRelayBase, probeRelay, saveRelayBase } from "../relay-config";
+import { normalizeRelayUrl } from "../relay-url";
+import { SqliteLocalQueue } from "../store/local-queue";
 import {
   configureNotificationHandler,
   syncPushRegistration,
@@ -211,6 +214,11 @@ export function useNodusApp() {
   const [encryption, setEncryption] = React.useState<StoredEncryptionIdentity | null>(null);
 
   // ── relay auth + catalog ──────────────────────────────────────────────────
+  // Runtime server selection: `configReady` gates the first frame until the
+  // keychain has been read, and a null `relayUrl` routes the app to the
+  // first-run server prompt instead of the sign-in screen.
+  const [configReady, setConfigReady] = React.useState(false);
+  const [relayUrl, setRelayUrl] = React.useState<string | null>(null);
   const [email, setEmail] = React.useState("");
   const [password, setPassword] = React.useState("");
   const [session, setSession] = React.useState<SessionInfo | null>(null);
@@ -407,6 +415,20 @@ export function useNodusApp() {
         // Foreground notification presentation must be configured before any
         // notification can arrive, so set it as early as possible.
         configureNotificationHandler();
+        // Load the runtime server URL before any Relay call. A missing value
+        // routes the app to the first-run prompt; clear any leftover session so
+        // it can never be replayed against a server the user did not choose.
+        let storedRelayUrl: string | null = null;
+        try {
+          storedRelayUrl = await loadRelayBase();
+        } catch (err) {
+          setError(err instanceof Error ? err.message : String(err));
+        }
+        setRelayUrl(storedRelayUrl);
+        setConfigReady(true);
+        if (!storedRelayUrl) {
+          await clearPersistedSession().catch(() => undefined);
+        }
         setDevice(await loadOrCreateDevice());
         setEncryption(await loadOrCreateEncryptionIdentity());
         setTrusted(await getTrustedNodes());
@@ -434,7 +456,7 @@ export function useNodusApp() {
         // A stored session token restores the signed-in state across launches.
         // A rejected restore (revoked/offline-refused session) must not leave the
         // app half-initialized: surface it and clear the dead token.
-        if (await getSessionToken()) {
+        if (storedRelayUrl && (await getSessionToken())) {
           try {
             const restored = await relaySession();
             setSession(restored);
@@ -683,6 +705,69 @@ export function useNodusApp() {
       setBusy(null);
     }
   }, [resetSensitiveState]);
+
+  /**
+   * Save a new Relay server and reset everything scoped to the old one.
+   *
+   * The server is persisted only after the reachability probe (unless the user
+   * explicitly skipped it). When switching, the old session is revoked on the
+   * old server before the base changes, then the local token and queued shards
+   * are discarded: a bearer token or ciphertext minted for one server must not
+   * be replayed to another.
+   */
+  const connectServer = React.useCallback(
+    async (
+      input: string,
+      options?: { skipProbe?: boolean },
+    ): Promise<boolean> => {
+      setBusy("connecting-server");
+      setError(null);
+      setNotice(null);
+
+      let next: string;
+      try {
+        next = normalizeRelayUrl(input);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+        setBusy(null);
+        return false;
+      }
+
+      if (next === relayUrl) {
+        setBusy(null);
+        return true;
+      }
+
+      try {
+        if (!options?.skipProbe) await probeRelay(next);
+
+        // Revoke on the old server first: once saveRelayBase runs, requests
+        // address the new origin and the old session could no longer be revoked.
+        if (session) {
+          await unregisterPush().catch(() => undefined);
+          await relayLogout().catch(() => undefined);
+        }
+        await clearPersistedSession().catch(() => undefined);
+
+        await saveRelayBase(next);
+        setRelayUrl(next);
+        // Drops the previous account's catalogue, keys, phrase and status state.
+        resetSensitiveState();
+        // The Path D queue is not account-tagged; clear it so shards meant for
+        // the old Relay are never delivered to the new one.
+        await new SqliteLocalQueue().clear().catch(() => undefined);
+
+        setNotice(`Connected to ${next}.`);
+        return true;
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+        return false;
+      } finally {
+        setBusy(null);
+      }
+    },
+    [relayUrl, session, resetSensitiveState],
+  );
 
   const chooseShardSize = React.useCallback((bytes: number) => {
     setShardSizeBytes(bytes);
@@ -2118,6 +2203,9 @@ export function useNodusApp() {
     // identity + auth
     device,
     encryption,
+    configReady,
+    relayUrl,
+    connectServer,
     email,
     setEmail,
     password,

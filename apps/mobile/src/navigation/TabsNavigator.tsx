@@ -23,6 +23,7 @@ import { NodeDetailScreen } from "../screens/NodeDetailScreen";
 import { PairingScreen } from "../screens/PairingScreen";
 import { SecurityScreen } from "../screens/SecurityScreen";
 import { SettingsScreen } from "../screens/SettingsScreen";
+import { SettingsServerScreen } from "../screens/ServerScreen";
 import { TrashScreen } from "../screens/TrashScreen";
 import { useApp } from "../runtime/context";
 import type { TabsParamList } from "./types";
@@ -108,6 +109,7 @@ function SettingsStack() {
   return (
     <Stack.Navigator screenOptions={{ headerShown: false }}>
       <Stack.Screen name="Settings" component={SettingsScreen} />
+      <Stack.Screen name="Server" component={SettingsServerScreen} options={{ ...chrome, headerShown: true, title: "Server" }} />
       <Stack.Screen name="Security" component={SecurityScreen} options={{ ...chrome, headerShown: true, title: "Security" }} />
       <Stack.Screen name="Trash" component={TrashScreen} options={{ ...chrome, headerShown: true, title: "Deleted files" }} />
     </Stack.Navigator>

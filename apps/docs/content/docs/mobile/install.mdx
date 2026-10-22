@@ -14,15 +14,16 @@ load the native modules for mDNS (`react-native-zeroconf`) and WebRTC
 
 ## Environment
 
-Create `apps/mobile/.env` from `.env.example`:
+The Relay URL is not a build-time setting. The app asks for it on first launch,
+stores it securely on the device, and exposes it under **Settings → Server**.
+Remote URLs must use `https://`; cleartext is allowed only for `localhost`,
+`127.0.0.1`, `::1`, and the Android emulator alias `10.0.2.2`.
+
+The only optional environment variable is `EXPO_PUBLIC_EAS_PROJECT_ID`:
 
 ```bash
-EXPO_PUBLIC_RELAY_URL=https://your-relay.example
 EXPO_PUBLIC_EAS_PROJECT_ID=your-eas-project-id
 ```
-
-Non-local Relay URLs must be `https://` or `wss://`. Cleartext is allowed only
-for `localhost`, `127.0.0.1`, `::1`, and the Android emulator alias `10.0.2.2`.
 
 ## Run locally
 

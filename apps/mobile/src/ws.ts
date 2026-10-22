@@ -12,7 +12,8 @@
 import { RelayWsClient, relayWsEndpoint, type ConnectionState } from "@repo/relay-client";
 import { MessageTypes, type BatchAckPayload, type EventPayload } from "@repo/protocol";
 
-import { currentSessionToken, RELAY_BASE } from "./adapters";
+import { getRelayBase } from "./relay-config";
+import { currentSessionToken } from "./adapters";
 
 type MessageHandler = (payload: unknown) => void;
 
@@ -49,14 +50,16 @@ export class MobileWs {
   /** Start (or restart) the socket for `deviceId`. Safe to call when already started. */
   start(deviceId: string, callbacks: MobileWsCallbacks = {}): void {
     this.stop();
-    if (!RELAY_BASE) {
-      // No relay configured: nothing to connect to (operator must set the URL).
+    // Read at start time so changing the server rebuilds the socket endpoint.
+    const base = getRelayBase();
+    if (!base) {
+      // No Relay configured: nothing to connect to (the first-run screen asks).
       return;
     }
 
     const RNWebSocket = WebSocket as unknown as RNWebSocketCtor;
     this.client = new RelayWsClient({
-      endpoint: relayWsEndpoint(RELAY_BASE),
+      endpoint: relayWsEndpoint(base),
       peerId: deviceId,
       handlers: {
         onStateChange: callbacks.onStateChange,

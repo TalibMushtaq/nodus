@@ -10,11 +10,18 @@ run in the managed Go client.
 
 ## Configure it
 
-Create `apps/mobile/.env` from `.env.example`:
+The Relay URL is entered on first launch and stored in the OS keychain, so one
+build can connect to any server. You can change it later under **Settings →
+Server**; changing it signs you out of the previous server.
+
+Remote servers must use `https://`. Plain `http://` is allowed only for
+`localhost` and the Android emulator alias `10.0.2.2`.
+
+The only optional environment variable is `EXPO_PUBLIC_EAS_PROJECT_ID`, used to
+mint Expo push tokens. Unset disables push registration.
 
 | Variable | Purpose |
 | --- | --- |
-| `EXPO_PUBLIC_RELAY_URL` | Relay origin. Non-local values must be `https://`/`wss://`; cleartext is allowed only for loopback and the Android emulator alias `10.0.2.2`. |
 | `EXPO_PUBLIC_EAS_PROJECT_ID` | EAS project id used to mint Expo push tokens. Unset disables push registration. |
 
 ## Build and run

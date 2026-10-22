@@ -11,10 +11,12 @@ import { createAuthClient, type RecipientKind, type SessionInfo } from "@repo/sd
 import { ActivityListSchema, type ActivityRecord } from "@repo/protocol";
 import type { StoredDeviceIdentity } from "@repo/relay-client";
 
-import { RELAY_BASE, createNativeRelayHttp, getSessionToken } from "./adapters";
+import { getRelayBase } from "./relay-config";
+import { createNativeRelayHttp, getSessionToken } from "./adapters";
 import { detectDeviceInfo } from "./device-info";
 
-export { RELAY_BASE, clearPersistedSession, getSessionToken } from "./adapters";
+export { clearPersistedSession, getSessionToken } from "./adapters";
+export { getRelayBase } from "./relay-config";
 
 const http = createNativeRelayHttp();
 const auth = createAuthClient(http);
@@ -433,7 +435,9 @@ export async function fetchRelayShard(
   signal?: AbortSignal,
 ): Promise<Uint8Array> {
   const token = await getSessionToken();
-  const res = await fetch(`${RELAY_BASE}/shards/${encodeURIComponent(hash)}`, {
+  const base = getRelayBase();
+  if (!base) throw new Error("No Relay server is configured");
+  const res = await fetch(`${base}/shards/${encodeURIComponent(hash)}`, {
     headers: token ? { authorization: `Bearer ${token}` } : undefined,
     signal,
   });

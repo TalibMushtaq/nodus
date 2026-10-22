@@ -26,11 +26,11 @@ description: Every permission the mobile app requests, and why.
 
 ## Cleartext policy
 
-Remote hosts require TLS. Cleartext HTTP is allowed only for loopback and
-RFC1918 private ranges, enforced twice:
-
-- in the app (`src/adapters.ts` validates `EXPO_PUBLIC_RELAY_URL`), and
-- at the OS layer via a generated `network_security_config.xml`.
+Remote hosts require TLS. Cleartext HTTP for the **Relay** is allowed only for
+loopback and the Android emulator alias `10.0.2.2`, enforced in the app
+(`src/relay-url.ts` validates the URL entered on the server screen). Separately,
+the OS layer allows cleartext to RFC1918 LAN hosts for Storage Node traffic via
+a generated `network_security_config.xml`.
 
 Debug builds temporarily allow all cleartext.
 

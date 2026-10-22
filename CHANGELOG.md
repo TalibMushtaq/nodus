@@ -1,5 +1,22 @@
 # Changelog
 
+## [2026-10-22] - Mobile: runtime Relay server selection replaces `.env`
+
+**What changed:**
+
+- Added `apps/mobile/src/relay-url.ts` (URL normalization/validation) and `apps/mobile/src/relay-config.ts` (SecureStore-backed runtime base plus `/health` reachability probe). Remote origins still require TLS; cleartext remains limited to loopback and `10.0.2.2`.
+- `apps/mobile/src/adapters.ts`, `src/ws.ts`, `src/relay.ts`, and `src/background/sync.ts` now read the Relay base at call time through `getRelayBase()` instead of importing a build-time `RELAY_BASE`; the headless queue-drain task hydrates the saved URL before posting.
+- `apps/mobile/src/runtime/useNodusApp.ts` loads the URL before restoring a session, exposes `configReady`/`relayUrl`/`connectServer`, and on server change revokes the old session, clears the local token and Path D queue, and resets account-scoped state.
+- New `apps/mobile/src/screens/ServerScreen.tsx`: first-run prompt plus a Settings → Server screen; `App.tsx` gates the navigator on a saved URL, and `SettingsScreen`/navigation types register the new route.
+- Removed `apps/mobile/.env`, removed `EXPO_PUBLIC_RELAY_URL` from `.env.example`, and updated mobile docs (`getting-started/mobile-app`, `mobile/install`, `mobile/permissions`, `reference/configuration`, `guides/settings`).
+- Added `apps/mobile/src/relay-url.test.ts` covering scheme inference, WebSocket mapping, trailing slashes, IPv6 loopback, and cleartext rejection.
+
+**Why:** the Relay origin was fixed at build time, so a single mobile build could not point at a different self-hosted server without rebuilding with a different `.env`. Runtime selection also prevents replaying a session token to a newly entered server.
+
+**Impact:** mobile only. Existing installs without a stored URL are asked once after upgrading and their old bearer token is discarded. Web behavior, Relay APIs, and the storage-node protocol are unchanged. Mobile tests, type-check, and lint pass.
+
+**Follow-ups:** plain-HTTP Relay URLs on RFC1918 LAN hosts are still rejected by the app (the OS cleartext config allows them only for Storage Node traffic); widen deliberately if LAN HTTP Relays become a requirement.
+
 ## [2026-10-06] - LAN audit fixes: node authentication, host correctness, mobile advert binding, token single-use
 
 **What changed:**

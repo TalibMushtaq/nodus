@@ -54,6 +54,17 @@ export function SettingsScreen() {
           </Card>
         </Section>
 
+        <Section title="Server">
+          <Card>
+            <SettingRow
+              label="Relay server"
+              detail={app.relayUrl ?? "not configured"}
+              right={<ThemedText variant="caption" tone="muted">›</ThemedText>}
+              onPress={() => navigation.navigate("Server")}
+            />
+          </Card>
+        </Section>
+
         <Section title="Appearance">
           <Card>
             <View

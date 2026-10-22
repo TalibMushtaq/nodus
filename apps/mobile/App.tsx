@@ -21,6 +21,7 @@ import { addNotificationTapListener } from "./src/notifications";
 import { AppContext } from "./src/runtime/context";
 import { useNodusApp } from "./src/runtime/useNodusApp";
 import { AuthScreen } from "./src/screens/AuthScreen";
+import { ServerScreen } from "./src/screens/ServerScreen";
 
 const RootStack = createNativeStackNavigator();
 
@@ -70,15 +71,21 @@ function RootNavigator() {
 
   return (
     <AppContext.Provider value={app}>
-      <NavigationContainer ref={navigationRef} theme={navigationTheme}>
-        <RootStack.Navigator screenOptions={{ headerShown: false }}>
-          {app.authed ? (
-            <RootStack.Screen name="Tabs" component={TabsNavigator} />
-          ) : (
-            <RootStack.Screen name="SignIn" component={AuthScreen} />
-          )}
-        </RootStack.Navigator>
-      </NavigationContainer>
+      {!app.configReady ? null : app.relayUrl ? (
+        <NavigationContainer ref={navigationRef} theme={navigationTheme}>
+          <RootStack.Navigator screenOptions={{ headerShown: false }}>
+            {app.authed ? (
+              <RootStack.Screen name="Tabs" component={TabsNavigator} />
+            ) : (
+              <RootStack.Screen name="SignIn" component={AuthScreen} />
+            )}
+          </RootStack.Navigator>
+        </NavigationContainer>
+      ) : (
+        // No server saved yet: onboarding replaces the whole navigator so the
+        // user cannot reach a Relay-backed screen before choosing one.
+        <ServerScreen onboarding />
+      )}
     </AppContext.Provider>
   );
 }

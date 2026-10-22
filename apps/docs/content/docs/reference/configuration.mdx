@@ -16,11 +16,18 @@ For the Relay and deployment unit, see
 | `NEXT_PUBLIC_VAPID_PUBLIC_KEY` | browser | VAPID public key for browser push; must match the Relay |
 | `NEXT_PUBLIC_SHARD_SIZE_BYTES` | browser (build) | Build-time default shard size (clamped) |
 
-## Mobile client (`apps/mobile/.env`)
+## Mobile client
+
+The Relay URL is entered at runtime on first launch and stored in the device
+keychain, so it is not an environment variable. It can be changed under
+**Settings → Server**; changing it signs the device out. Remote URLs must use
+`https://`; cleartext is allowed only for loopback and the Android emulator
+alias `10.0.2.2`.
+
+The mobile `.env` only carries optional build-time values:
 
 | Variable | Purpose |
 | --- | --- |
-| `EXPO_PUBLIC_RELAY_URL` | Relay origin; non-local must be `https://`/`wss://` |
 | `EXPO_PUBLIC_EAS_PROJECT_ID` | EAS project id for Expo push tokens; unset disables push |
 
 ## Storage Node

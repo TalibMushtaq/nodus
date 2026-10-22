@@ -28,6 +28,7 @@ export type ActivityStackParamList = {
 
 export type SettingsStackParamList = {
   Settings: undefined;
+  Server: undefined;
   Security: undefined;
   Trash: undefined;
 };

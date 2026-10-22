@@ -12,6 +12,7 @@ import * as BackgroundTask from "expo-background-task";
 import * as TaskManager from "expo-task-manager";
 
 import { getSessionToken } from "../adapters";
+import { loadRelayBase } from "../relay-config";
 import { SqliteLocalQueue } from "../store/local-queue";
 import { postShard } from "../transfer/buffer";
 
@@ -19,8 +20,12 @@ export const QUEUE_DRAIN_TASK = "nodus-queue-drain";
 
 TaskManager.defineTask(QUEUE_DRAIN_TASK, async () => {
   try {
-    // No session: nothing to deliver with; succeed so the OS does not back off.
-    if (!(await getSessionToken())) return BackgroundTask.BackgroundTaskResult.Success;
+    // The headless entry point does not run the app's mount effect, so hydrate
+    // the runtime server URL before any request can use it.
+    const base = await loadRelayBase();
+    // No configured server or no session: nothing to deliver with; succeed so
+    // the OS does not back off.
+    if (!base || !(await getSessionToken())) return BackgroundTask.BackgroundTaskResult.Success;
 
     const queue = new SqliteLocalQueue();
     await queue.hydrate();
