@@ -2,6 +2,17 @@
 name = "storage-node"
 version = "0.1.0"
 edition = "2024"
+description = "Nodus Storage Node — local durable storage for the Nodus sync system"
+repository = "https://github.com/TalibMushtaq/nodus"
+license = "MIT"
+
+# The crate stays named `storage-node`, but the user-facing command is `nodus`
+# everywhere in the docs, pairing UI, and systemd units. Naming the binary here
+# keeps that contract without renaming the package (which would invalidate
+# existing paths and scripts).
+[[bin]]
+name = "nodus"
+path = "src/main.rs"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }

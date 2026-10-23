@@ -230,11 +230,24 @@ Migrations run automatically on startup.
 
 ### 4. Run the Storage Node (Rust)
 
+Install the latest prebuilt binary (Linux x86_64):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/TalibMushtaq/nodus/main/scripts/install-node.sh | sh
+# installs nodus to ~/.local/bin; pin a version with `sh -s -- --version 0.1.0`
+```
+
+Then run `nodus` (interactive) or `nodus node start` (service). To build from
+source instead:
+
 ```bash
 cd services/storage-node
-cargo run                                   # interactive CLI
-cargo run -- --data-dir ~/NodusBackup       # or export NODUS_DATA_DIR=~/NodusBackup
+cargo build --release
+./target/release/nodus                      # interactive CLI
+./target/release/nodus --data-dir ~/NodusBackup
 ```
+
+`cargo run` works too for local development.
 
 On a terminal, a bare `nodus` opens the interactive CLI: on first run it asks
 for the **Relay URL** and **pairing code** (mint one in the web app under

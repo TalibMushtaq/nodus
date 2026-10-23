@@ -6,13 +6,41 @@ description: First-run setup, the interactive CLI, and non-interactive pairing.
 The Storage Node is the Rust daemon that holds your files. It stores an SQLite
 catalogue, a content-addressed object store, and its cryptographic identity.
 
+## Install
+
+Prebuilt binaries are published on
+[GitHub Releases](https://github.com/TalibMushtaq/nodus/releases) for Linux
+x86_64:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/TalibMushtaq/nodus/main/scripts/install-node.sh | sh
+```
+
+The installer verifies the release checksum and installs `nodus` to
+`~/.local/bin` by default. Pin a version with
+`sh -s -- --version 0.1.0`, or choose a directory with `--dir /usr/local/bin`.
+
+To install from source (any platform with Rust):
+
+```bash
+cargo install --git https://github.com/TalibMushtaq/nodus storage-node
+```
+
+Then check the installed version:
+
+```bash
+nodus --version
+```
+
 ## First run
 
 ```bash
-cd services/storage-node
-cargo run                                   # interactive CLI
-cargo run -- --data-dir ~/NodusBackup       # or export NODUS_DATA_DIR=~/NodusBackup
+nodus                                       # interactive CLI
+nodus --data-dir ~/NodusBackup              # or export NODUS_DATA_DIR=~/NodusBackup
 ```
+
+From a source checkout, `cargo run` and `cargo run -- --data-dir ~/NodusBackup`
+behave the same way.
 
 On a terminal with no existing config, a bare `nodus`:
 

@@ -26,7 +26,7 @@ if [ ! -f packages/relay-client/dist/index.js ] || [ ! -f packages/protocol/dist
   pnpm exec turbo build --filter=@repo/relay-client... --filter=@repo/sdk... >/dev/null
 fi
 BASE=${BASE:-http://localhost}
-BIN=${BIN:-./services/storage-node/target/debug/storage-node}
+BIN=${BIN:-./services/storage-node/target/debug/nodus}
 COMPOSE=${COMPOSE:-"docker compose -f deploy/docker-compose.yml --env-file deploy/.env"}
 NODE_LOCAL=${NODE_LOCAL:-http://127.0.0.1:9378}
 PASS=0; FAIL=0

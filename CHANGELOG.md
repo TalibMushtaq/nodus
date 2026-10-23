@@ -1,5 +1,26 @@
 # Changelog
 
+## [2026-10-23] - Storage Node release pipeline and `nodus` binary
+
+**What changed:** Added `.github/workflows/release-node.yml`, which runs the Rust fmt/clippy/test gates on `node-v*` tags, validates the tag against `services/storage-node/Cargo.toml`, builds a static `x86_64-unknown-linux-musl` binary, packages `nodus-node-vX.Y.Z-x86_64-unknown-linux-musl.tar.gz` with a SHA-256 file, and opens a draft GitHub Release. Added `scripts/install-node.sh` (checksum-verified installer with `--version`/`--dir`, latest-release resolution filtered to `node-v*`, and a clear source-install fallback on unsupported platforms) and `scripts/release-node.sh` (version bump, local checks, commit, annotated tag, push). `services/storage-node/Cargo.toml` now declares `[[bin]] name = "nodus"` plus `description`/`repository`/`license`, so the package still builds as `storage-node` but emits the user-facing `nodus` command; `src/main.rs` overrides clap's command name so `nodus --version` prints `nodus 0.1.0`, not the crate name. Updated `README.md`, the Storage Node getting-started/CLI/upgrade docs, and the `BIN` defaults in `scripts/e2e-bootstrap-pairing.sh` and `scripts/e2e-path-c.sh`.
+**Why:** The Rust node could only be run from a source checkout (`cargo run`), which is unsuitable for operators installing it on a storage machine. A tag-driven release gives reproducible, checksum-verified Linux binaries and matches the existing `nodus` command used throughout the docs and pairing UI.
+**Impact:** New release automation and install path. Build output is now `target/{debug,release}/nodus` instead of `.../storage-node`; the e2e scripts were updated, but any external script referencing the old binary path must change. macOS/Windows/aarch64 and crates.io/npm distribution remain out of scope. The release workflow publishes drafts only; a maintainer must review and publish them.
+**Follow-ups:** Extend the target matrix (macOS signing/notarization, Linux aarch64, Windows) and consider a stable `nodus-node-latest` alias or Homebrew tap once demand exists. Re-run the e2e workflow after the first real tag to confirm the renamed binary path.
+
+## [2026-10-22] - Performance: benchmark harness and measured results
+
+**What changed:** Added `scripts/perf/crypto-bench.mjs` (reproducible client sharding/AES-GCM/BLAKE3/envelope/name benchmark), `BenchmarkBufferUploadLargeShard` in `services/relay/internal/handler/buffer_load_integration_test.go` (8 MiB Path C handler throughput with `b.SetBytes`), `PERFORMANCE_REPORT.md` (methodology, results, bottleneck analysis, and prioritized recommendations), and a performance summary in `PROJECT_REPORT.md` §14.4.
+**Why:** The project had a timing-contract benchmark and test coverage but no measured throughput or footprint numbers, so performance claims could not be verified or compared over time.
+**Impact:** Benchmark/test/documentation only. Production code, schema, protocol, and runtime behavior are unchanged. The new Go benchmark writes 8 MiB bodies to `t.TempDir()` and should be run with a modest `-benchtime` (e.g. `20x`).
+**Follow-ups:** Run the live browser WebRTC matrix and a concurrent Path C load test; re-measure after WebCrypto/WASM crypto integration.
+
+## [2026-10-22] - Docs: comprehensive project report
+
+**What changed:** Added `PROJECT_REPORT.md`, a self-contained ~15,000-word technical report covering the project overview, architecture, component deep dives, Relay and Storage Node SQLite schemas, Redis/object-store layout, cryptography and threat model, wire protocol and event catalog, end-to-end flows with Mermaid diagrams, state machines, deployment, testing, limitations, API/configuration appendices, and presentation notes. The report reflects the shipped SQLite Relay rather than the legacy PostgreSQL design.
+**Why:** The repository had authoritative but scattered documentation (README, implementation plan, ADRs, protocol/security docs, migrations); a single detailed document was needed for a written report and presentation.
+**Impact:** Documentation only. No source, schema, protocol, or runtime behavior changed.
+**Follow-ups:** Keep the report in sync when the protocol version, Relay schema, or transfer-path behavior changes.
+
 ## [2026-10-22] - Mobile: runtime Relay server selection replaces `.env`
 
 **What changed:**

@@ -22,7 +22,14 @@ roll-forward deploy is safe and repeatable.
 
 ## Storage Node
 
-Rebuild and restart:
+Install the new release and restart the service:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/TalibMushtaq/nodus/main/scripts/install-node.sh | sh -s -- --version 0.2.0
+sudo systemctl restart nodus
+```
+
+Building from source still works for development checkouts:
 
 ```bash
 cd services/storage-node

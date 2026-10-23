@@ -19,7 +19,7 @@
 # polling) is covered by the web unit tests.
 set -u
 BASE=${BASE:-http://localhost}
-BIN=${BIN:-./services/storage-node/target/debug/storage-node}
+BIN=${BIN:-./services/storage-node/target/debug/nodus}
 COMPOSE=${COMPOSE:-"docker compose -f deploy/docker-compose.yml --env-file deploy/.env"}
 PASS=0; FAIL=0
 ok()   { echo "PASS: $1"; PASS=$((PASS+1)); }

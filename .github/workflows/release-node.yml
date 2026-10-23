@@ -1,0 +1,106 @@
+name: release-node
+
+# Node releases are versioned independently of the web/relay components in this
+# monorepo, so only `node-v*` tags trigger a binary release. A tag push is the
+# single source of truth: the workflow refuses to publish if the tag and
+# Cargo.toml disagree.
+on:
+  push:
+    tags:
+      - "node-v*"
+
+concurrency:
+  group: release-node-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  # Re-run the same gates as ci-rust before attaching a binary to a release.
+  # A tag can be created from a commit whose PR checks were skipped or stale.
+  verify:
+    name: release-node / verify
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.96.1"
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: services/storage-node
+
+      - run: cargo fmt --check
+        working-directory: services/storage-node
+
+      - run: cargo clippy --locked -- -D warnings
+        working-directory: services/storage-node
+
+      - run: cargo test --locked
+        working-directory: services/storage-node
+
+  build:
+    name: release-node / build-linux-x86_64
+    needs: verify
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.96.1"
+          targets: x86_64-unknown-linux-musl
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: services/storage-node
+
+      # Static musl instead of the runner's glibc: a binary built on 22.04 will
+      # otherwise refuse to start on older enterprise distros.
+      - name: Install musl toolchain
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Validate tag matches crate version
+        run: |
+          VERSION="$(sed -n 's/^version = "\([^"]*\)"/\1/p' services/storage-node/Cargo.toml | head -n1)"
+          EXPECTED="node-v${VERSION}"
+          if [ "$EXPECTED" != "${GITHUB_REF_NAME}" ]; then
+            echo "tag ${GITHUB_REF_NAME} does not match Cargo.toml ${EXPECTED}" >&2
+            exit 1
+          fi
+          echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
+
+      - name: Build release binary
+        run: cargo build --release --locked --target x86_64-unknown-linux-musl
+        working-directory: services/storage-node
+
+      - name: Package release assets
+        run: |
+          STAGE="nodus-node-v${VERSION}-x86_64-unknown-linux-musl"
+          mkdir -p "dist/${STAGE}"
+          cp "services/storage-node/target/x86_64-unknown-linux-musl/release/nodus" "dist/${STAGE}/"
+          cp README.md LICENSE "dist/${STAGE}/"
+          tar -C dist -czf "dist/${STAGE}.tar.gz" "${STAGE}"
+          # Keep the standard `hash  filename` form so the installer can verify
+          # with `sha256sum -c` from the same directory.
+          (cd dist && sha256sum "${STAGE}.tar.gz" > "${STAGE}.tar.gz.sha256")
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "Nodus Storage Node v${{ env.VERSION }}"
+          # Draft by default so release notes from a monorepo tag can be curated
+          # before users see them. Publishing is a deliberate manual step.
+          draft: true
+          # A `-rc`/`-beta` tag is a prerelease, matching semver expectations.
+          # Match the suffix, not just any hyphen: every tag starts `node-v`.
+          prerelease: ${{ contains(github.ref_name, '-rc') || contains(github.ref_name, '-beta') || contains(github.ref_name, '-alpha') }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            dist/nodus-node-v${{ env.VERSION }}-x86_64-unknown-linux-musl.tar.gz
+            dist/nodus-node-v${{ env.VERSION }}-x86_64-unknown-linux-musl.tar.gz.sha256

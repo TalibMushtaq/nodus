@@ -30,6 +30,14 @@ Triggers on `services/storage-node/**`.
 - `lint-build-test` — `cargo fmt --check`, clippy `-D warnings`, build, test.
 - `audit` — rustsec `audit-check` with a pinned ignore list.
 
+## `release-node.yml`
+
+Triggers on `node-v*` tags. Re-runs the Rust fmt/clippy/test gates, checks the
+tag against `services/storage-node/Cargo.toml`, builds a static Linux x86_64
+binary, and opens a **draft** GitHub Release with the tarball and its SHA-256.
+Cut a release with `bash scripts/release-node.sh <version>` and publish the
+draft after reviewing its notes.
+
 ## `e2e.yml`
 
 Not a required PR check. Runs on `workflow_dispatch`, a nightly schedule, and on

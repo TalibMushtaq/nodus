@@ -24,7 +24,9 @@ use url::Url;
 
 /// Nodus Storage Node — local durable storage for the Nodus sync system.
 #[derive(Parser)]
-#[command(version, about)]
+// The installed binary is `nodus`, so `--version` and help must not print the
+// internal crate name (`storage-node`); clap otherwise derives it from Cargo.
+#[command(name = "nodus", version, about)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
