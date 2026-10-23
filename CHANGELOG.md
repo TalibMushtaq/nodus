@@ -2,8 +2,8 @@
 
 ## [2026-10-23] - CI: Go 1.27.2 for standard-library security fixes
 
-**What changed:** Pinned `.github/workflows/ci-go.yml` to Go `1.27.2` in all three jobs and the Relay build image to `golang:1.27.2-alpine`. Added `workflow_dispatch` and the workflow file itself to the push/PR path filters so CI/toolchain changes can be verified directly.
-**Why:** The `go / vuln-scan` job failed on the deployment commit because Go 1.27.0 has ten reachable standard-library advisories (net/http, net/textproto, crypto/tls, HTTP/2) that are fixed in 1.27.2.
+**What changed:** Pinned `.github/workflows/ci-go.yml` to Go `1.27.3` in all three jobs and the Relay build image to `golang:1.27.3-alpine`. Added `workflow_dispatch` and the workflow file itself to the push/PR path filters so CI/toolchain changes can be verified directly.
+**Why:** The `go / vuln-scan` job failed on the deployment commit because Go 1.27.0 has reachable standard-library advisories in net/http, net/textproto, crypto/tls, and crypto/x509; 1.27.3 is the first patch that clears the scanner.
 **Impact:** CI and the Relay image builder only; `services/relay/go.mod` still declares the 1.27 language baseline and no application code changed.
 **Follow-ups:** Keep the CI toolchain and build image on the latest 1.27 patch; revisit when the module's Go directive moves.
 
