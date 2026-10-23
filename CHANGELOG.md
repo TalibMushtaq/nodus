@@ -1,5 +1,12 @@
 # Changelog
 
+## [2026-10-23] - Mobile Android APK release pipeline
+
+**What changed:** Added `.github/workflows/release-mobile.yml`, triggered by `mobile-v*` tags. It validates the tag against `apps/mobile/app.json`, installs the Android SDK/NDK versions Expo requests, builds workspace packages, writes `google-services.json` from the new `GOOGLE_SERVICES_JSON` repository secret, regenerates the gitignored `android/` project with `expo prebuild`, builds `assembleRelease`, and opens a draft GitHub Release containing `nodus-mobile-vX.Y.Z.apk` plus its SHA-256. Updated `apps/docs/content/docs/mobile/install.mdx` with release-install steps and corrected the note that `android/` is checked in, and documented the workflow in `apps/docs/content/docs/developers/ci.mdx`. Stored the existing local Firebase config as the `GOOGLE_SERVICES_JSON` secret rather than committing it.
+**Why:** The mobile app could only be built locally or through EAS; there was no downloadable APK. A tag-driven build makes Android installs reproducible without an Expo account and keeps the uncommitted Firebase key out of the repository.
+**Impact:** New release automation and docs. The APK is a universal build signed with the generated debug keystore, so it is sideload-only and not Play Store ready. `apps/mobile/android/` remains untracked. Release assets are drafted and must be published manually.
+**Follow-ups:** Configure a real release/upload keystore (via secrets) before store distribution, and consider per-ABI APKs if the universal download size is a problem.
+
 ## [2026-10-23] - Storage Node TLS dependency security update
 
 **What changed:** Ran `cargo update` in `services/storage-node` to pull patched TLS/QUIC transitive dependencies recorded in `Cargo.lock`: `quinn-proto` 0.11.17 → 0.11.19, `rustls` 0.23.45 → 0.23.46, and `rustls-webpki` 0.103.15 → 0.103.16. No manifests or source changed.

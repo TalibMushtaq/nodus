@@ -38,6 +38,15 @@ binary, and opens a **draft** GitHub Release with the tarball and its SHA-256.
 Cut a release with `bash scripts/release-node.sh <version>` and publish the
 draft after reviewing its notes.
 
+## `release-mobile.yml`
+
+Triggers on `mobile-v*` tags. Checks the tag against
+`apps/mobile/app.json`, builds the workspace packages, regenerates the native
+Android project with Expo prebuild, and assembles a universal release APK. It
+opens a **draft** GitHub Release with the APK and its SHA-256. The build needs
+the `GOOGLE_SERVICES_JSON` repository secret (the Firebase config is not
+committed). APKs are debug-signed until a release keystore is configured.
+
 ## `e2e.yml`
 
 Not a required PR check. Runs on `workflow_dispatch`, a nightly schedule, and on
