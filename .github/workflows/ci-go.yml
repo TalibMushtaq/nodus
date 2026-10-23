@@ -1,13 +1,17 @@
 name: ci-go
 
 on:
+  # Allow verifying a CI/toolchain change without touching the service.
+  workflow_dispatch:
   pull_request:
     paths:
+      - ".github/workflows/ci-go.yml"
       - "services/relay/**"
       - "services/api/**"
   push:
     branches: [main]
     paths:
+      - ".github/workflows/ci-go.yml"
       - "services/relay/**"
       - "services/api/**"
 
