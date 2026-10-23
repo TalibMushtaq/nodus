@@ -1,5 +1,12 @@
 # Changelog
 
+## [2026-10-23] - CI: Go 1.27.2 for standard-library security fixes
+
+**What changed:** Pinned `.github/workflows/ci-go.yml` to Go `1.27.2` in all three jobs and the Relay build image to `golang:1.27.2-alpine`.
+**Why:** The `go / vuln-scan` job failed on the deployment commit because Go 1.27.0 has ten reachable standard-library advisories (net/http, net/textproto, crypto/tls, HTTP/2) that are fixed in 1.27.2.
+**Impact:** CI and the Relay image builder only; `services/relay/go.mod` still declares the 1.27 language baseline and no application code changed.
+**Follow-ups:** Keep the CI toolchain and build image on the latest 1.27 patch; revisit when the module's Go directive moves.
+
 ## [2026-10-23] - Split-origin deployment: web, relay, and docs subdomains
 
 **What changed:** Added `deploy/Dockerfile.docs` and a `docs` Compose service; `apps/docs/next.config.mjs` now emits `standalone` output traced from the repo root. Rewrote `deploy/Caddyfile` into three production host blocks (`WEB_HOST`, `RELAY_HOST`, `DOCS_HOST`) plus the existing localhost single-origin block for local/e2e runs. Added the `SESSION_COOKIE_DOMAIN` Relay setting (set/clear cookie `Domain`) so the browser session is valid on the Relay subdomain. Added `NEXT_PUBLIC_RELAY_URL` as a web build arg and passed `NEXT_PUBLIC_RELAY_URL`, `PUBLIC_RELAY_URL`, and `SESSION_COOKIE_DOMAIN` through Compose. Updated `.env.example`, `deploy/README.md`, the self-hosting docs (production, configuration, overview, quickstart, backup, monitoring, upgrades), `docs/install.md`, and README-facing deployment guidance.

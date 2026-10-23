@@ -24,7 +24,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.27.0"
+          go-version: "1.27.2"
 
       - run: go vet ./...
         working-directory: services/relay
@@ -53,7 +53,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.27.0"
+          go-version: "1.27.2"
 
       # Pins the scanner itself so a new govulncheck release cannot turn CI
       # red on its own, separate from a dependency change under review.
@@ -76,7 +76,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.27.0"
+          go-version: "1.27.2"
 
       # The database is a per-test SQLite file, but the Redis-dependent tests
       # self-skip without TEST_REDIS_URL, so a plain `go test` in
