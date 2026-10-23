@@ -36,15 +36,17 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - uses: android-actions/setup-android@v3
-
-      # Match the SDK/NDK versions the generated Expo project requests. Without
-      # this the runner may have an older platform and Gradle fails at
-      # configuration time instead of installing what it needs.
+      # Match the SDK/NDK versions the generated Expo project requests. The
+      # GitHub runner ships the SDK; use its sdkmanager directly instead of
+      # android-actions/setup-android, which currently tries to install a
+      # `tools` package that no longer exists in Google's repository.
       - name: Install Android SDK packages
         run: |
-          yes | sdkmanager --licenses >/dev/null || true
-          sdkmanager "platforms;android-36" "build-tools;36.0.0" "ndk;27.1.12297006" "cmake;3.22.1"
+          SDKMANAGER="${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKMANAGER" ]; then
+            SDKMANAGER="$(find "${ANDROID_HOME}/cmdline-tools" -maxdepth 2 -name sdkmanager | head -n1)"
+          fi
+          "$SDKMANAGER" "platforms;android-36" "build-tools;36.0.0" "ndk;27.1.12297006" "cmake;3.22.1"
 
       - run: pnpm install --frozen-lockfile
 
