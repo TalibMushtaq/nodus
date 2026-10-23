@@ -1,5 +1,12 @@
 # Changelog
 
+## [2026-10-23] - Storage Node TLS dependency security update
+
+**What changed:** Ran `cargo update` in `services/storage-node` to pull patched TLS/QUIC transitive dependencies recorded in `Cargo.lock`: `quinn-proto` 0.11.17 → 0.11.19, `rustls` 0.23.45 → 0.23.46, and `rustls-webpki` 0.103.15 → 0.103.16. No manifests or source changed.
+**Why:** The `rust / cargo-audit` job on the release commit picked up eight new RustSec advisories (RUSTSEC-2026-0338, -0340, -0343, -0346, -0347, -0348, -0349, -0382) covering QUIC datagram panics, rustls ECH data handling, session-secret `Debug` output, and distrusted intermediate acceptance. Each is fixed in the versions above.
+**Impact:** Lockfile-only change to the Storage Node; the HTTP/WebSocket/WebRTC crates receive the patched TLS stack. `cargo fmt`, clippy, the full Rust test suite, and `cargo audit` (with the existing ignore list) pass.
+**Follow-ups:** Rebuild the `node-v0.1.0` release from the updated commit so the published binary does not embed the vulnerable versions.
+
 ## [2026-10-23] - Storage Node release pipeline and `nodus` binary
 
 **What changed:** Added `.github/workflows/release-node.yml`, which runs the Rust fmt/clippy/test gates on `node-v*` tags, validates the tag against `services/storage-node/Cargo.toml`, builds a static `x86_64-unknown-linux-musl` binary, packages `nodus-node-vX.Y.Z-x86_64-unknown-linux-musl.tar.gz` with a SHA-256 file, and opens a draft GitHub Release. Added `scripts/install-node.sh` (checksum-verified installer with `--version`/`--dir`, latest-release resolution filtered to `node-v*`, and a clear source-install fallback on unsupported platforms) and `scripts/release-node.sh` (version bump, local checks, commit, annotated tag, push). `services/storage-node/Cargo.toml` now declares `[[bin]] name = "nodus"` plus `description`/`repository`/`license`, so the package still builds as `storage-node` but emits the user-facing `nodus` command; `src/main.rs` overrides clap's command name so `nodus --version` prints `nodus 0.1.0`, not the crate name. Updated `README.md`, the Storage Node getting-started/CLI/upgrade docs, and the `BIN` defaults in `scripts/e2e-bootstrap-pairing.sh` and `scripts/e2e-path-c.sh`.
