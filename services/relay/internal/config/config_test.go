@@ -29,6 +29,9 @@ func TestConfigDefaults(t *testing.T) {
 	if !cfg.SessionCookieSecure {
 		t.Fatalf("expected SessionCookieSecure to default to true")
 	}
+	if cfg.SessionCookieDomain != "" {
+		t.Fatalf("expected host-only session cookie by default, got domain %q", cfg.SessionCookieDomain)
+	}
 	if cfg.BufferTTL != 72*time.Hour {
 		t.Fatalf("expected default BufferTTL 72h, got %v", cfg.BufferTTL)
 	}
@@ -43,6 +46,7 @@ func TestConfigEnvOverrides(t *testing.T) {
 	os.Setenv("SESSION_MAX_AGE_DAYS", "7")
 	os.Setenv("SESSION_TOUCH_INTERVAL_MINUTES", "10")
 	os.Setenv("SESSION_COOKIE_SECURE", "false")
+	os.Setenv("SESSION_COOKIE_DOMAIN", ".nodus.example.com")
 	os.Setenv("BUFFER_TTL_HOURS", "48")
 	os.Setenv("MAX_SHARD_BYTES_MB", "32")
 	defer func() {
@@ -51,6 +55,7 @@ func TestConfigEnvOverrides(t *testing.T) {
 		os.Unsetenv("SESSION_MAX_AGE_DAYS")
 		os.Unsetenv("SESSION_TOUCH_INTERVAL_MINUTES")
 		os.Unsetenv("SESSION_COOKIE_SECURE")
+		os.Unsetenv("SESSION_COOKIE_DOMAIN")
 		os.Unsetenv("BUFFER_TTL_HOURS")
 		os.Unsetenv("MAX_SHARD_BYTES_MB")
 	}()
@@ -74,6 +79,9 @@ func TestConfigEnvOverrides(t *testing.T) {
 	}
 	if cfg.SessionCookieSecure {
 		t.Fatalf("expected SessionCookieSecure false, got true")
+	}
+	if cfg.SessionCookieDomain != ".nodus.example.com" {
+		t.Fatalf("expected SessionCookieDomain .nodus.example.com, got %q", cfg.SessionCookieDomain)
 	}
 	if cfg.BufferTTL != 48*time.Hour {
 		t.Fatalf("expected BufferTTL 48h, got %v", cfg.BufferTTL)

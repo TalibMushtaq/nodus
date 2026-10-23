@@ -59,8 +59,8 @@ jobs:
       # apps/web/lib/{uploader,download}, which import it from dist.
       - run: pnpm exec turbo build --filter=@repo/relay-client... --filter=@repo/sdk...
 
-      # Local HTTP unit: SITE_ADDRESS=:80 and the insecure-cookie default are
-      # already what deploy/.env.example sets.
+      # Local HTTP unit: the Caddyfile's localhost block and the insecure-cookie
+      # defaults are already what deploy/.env.example sets.
       - run: cp deploy/.env.example deploy/.env
 
       # Inject optional push credentials from repository secrets. Nothing here

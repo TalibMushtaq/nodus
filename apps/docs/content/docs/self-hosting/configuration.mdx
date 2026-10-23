@@ -11,12 +11,13 @@ file. In the Compose unit these are supplied from `deploy/.env`.
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `PORT` | `8080` | HTTP listen port |
-| `DATABASE_URL` | `postgres://nodus:nodus_password@localhost:5432/nodus_relay?sslmode=disable` | PostgreSQL connection |
+| `DB_PATH` | `<temp>/nodus-relay/relay.db` | SQLite database file |
 | `REDIS_URL` | `redis://localhost:6379/0` | Redis connection |
 | `SESSION_COOKIE_NAME` | `nodus_session` | Session cookie name |
 | `SESSION_MAX_AGE_DAYS` | `30` | Session lifetime |
 | `SESSION_TOUCH_INTERVAL_MINUTES` | `30` | How often session expiry is extended |
 | `SESSION_COOKIE_SECURE` | `true` | Set `false` only for plain-HTTP dev |
+| `SESSION_COOKIE_DOMAIN` | *(empty)* | Parent domain for split-origin cookies (e.g. `.nodus.example.com`) |
 | `ALLOWED_ORIGINS` | `http://localhost:3000,http://127.0.0.1:3000` | Origins allowed to open the Relay WebSocket |
 | `BUFFER_DIR` | `<temp>/nodus-relay/buffer` | Transient encrypted shard buffer |
 | `BUFFER_TTL_HOURS` | `72` | How long buffered shards live |
@@ -31,11 +32,14 @@ file. In the Compose unit these are supplied from `deploy/.env`.
 
 | Variable | Purpose |
 | --- | --- |
-| `SITE_ADDRESS` | Public origin. `:80` for HTTP, a domain for automatic HTTPS |
-| `PUBLIC_RELAY_URL` | Origin shown to users/nodes for pairing |
+| `WEB_HOST` | Web app hostname; Caddy gets TLS automatically |
+| `RELAY_HOST` | Relay hostname used by the browser WebSocket, mobile, and Storage Nodes |
+| `DOCS_HOST` | Documentation hostname |
+| `PUBLIC_RELAY_URL` | Relay origin shown to users/nodes for pairing |
+| `NEXT_PUBLIC_RELAY_URL` | Browser WebSocket target; inlined into the web bundle at build time |
 | `ALLOWED_ORIGINS` | Must exactly match the browser origin |
 | `SESSION_COOKIE_SECURE` | `true` for HTTPS, `false` for local HTTP |
-| `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | Database credentials (password required, URL-safe) |
+| `SESSION_COOKIE_DOMAIN` | Parent domain shared by the web and Relay hosts, e.g. `.nodus.example.com` |
 | `REDIS_PASSWORD` | Redis password (required, URL-safe) |
 | `BUFFER_TTL_HOURS` | Passed to the Relay |
 | `MAX_SHARD_BYTES_MB` | Passed to the Relay (must cover client shard size) |

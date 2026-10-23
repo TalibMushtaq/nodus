@@ -28,13 +28,15 @@ Environment variables are read from `apps/web/.env.local` (see
 | Variable | Scope | Purpose |
 | --- | --- | --- |
 | `RELAY_URL` | server-only | Internal Relay base URL used by route handlers. Default `http://localhost:8080`. |
-| `PUBLIC_RELAY_URL` | server-only | Public origin shown to users in the Storage Node pairing command (e.g. `https://nodus.example.com`). Required for the “+ Add Storage Node” dialog. |
-| `NEXT_PUBLIC_RELAY_URL` | browser | WebSocket origin for the Relay. Leave unset in a single-origin deployment; set it only for split dev (`:3000` + `:8080`). |
+| `PUBLIC_RELAY_URL` | server-only | Public Relay origin shown to users in the Storage Node pairing command (e.g. `https://relay.nodus.example.com`). Required for the “+ Add Storage Node” dialog. |
+| `NEXT_PUBLIC_RELAY_URL` | browser (build) | WebSocket origin for the Relay. Set it to the Relay subdomain in the split deployment; leave unset (or `http://localhost`) for the local single-origin flow. |
 | `NEXT_PUBLIC_VAPID_PUBLIC_KEY` | browser | VAPID public key for browser push. Must match the Relay; unset disables the opt-in. |
 
-<Callout type="warn">
-  Do not set `NEXT_PUBLIC_RELAY_URL` in production single-origin deployments.
-  The browser should connect to this origin's `/ws`.
+<Callout type="info">
+  `NEXT_PUBLIC_RELAY_URL` is inlined into the browser bundle at build time, so
+  changing it requires rebuilding the web image. In production the browser
+  connects to `wss://relay.<domain>/ws`; the session cookie is shared through
+  `SESSION_COOKIE_DOMAIN`.
 </Callout>
 
 ## Routes overview

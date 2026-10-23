@@ -24,6 +24,7 @@ coverage
 .env
 **/.env
 .env.local
+**/.env.local
 **/.env.*.local
 
 # Design assets / editors

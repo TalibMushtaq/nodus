@@ -26,6 +26,10 @@ type Config struct {
 	// SessionCookieSecure hardcodes the Secure flag; local dev over plain HTTP
 	// must set SESSION_COOKIE_SECURE=false or browsers will drop the cookie.
 	SessionCookieSecure bool
+	// SessionCookieDomain scopes the cookie to a parent domain for split-origin
+	// deployments (web on one subdomain, Relay WebSocket on another). Empty
+	// keeps the default host-only cookie used by local/single-origin deploys.
+	SessionCookieDomain string
 	AllowedOrigins      []string
 
 	// TrustProxy marks the immediate peer as the operator's TLS reverse proxy
@@ -89,6 +93,9 @@ func Load() (*Config, error) {
 	if v := getEnv("SESSION_COOKIE_SECURE", "true"); strings.EqualFold(v, "false") || v == "0" {
 		sessionCookieSecure = false
 	}
+	// Empty keeps a host-only cookie (single-origin/local). Split deployments
+	// set the parent domain so the same cookie reaches the Relay subdomain.
+	sessionCookieDomain := getEnv("SESSION_COOKIE_DOMAIN", "")
 	origins := strings.FieldsFunc(getEnv("ALLOWED_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000"), func(r rune) bool { return r == ',' || r == ' ' })
 
 	defaultBufferDir := filepath.Join(os.TempDir(), "nodus-relay", "buffer")
@@ -124,6 +131,7 @@ func Load() (*Config, error) {
 		SessionMaxAge:        time.Duration(sessionMaxAgeDays) * 24 * time.Hour,
 		SessionTouchInterval: time.Duration(sessionTouchIntervalMins) * time.Minute,
 		SessionCookieSecure:  sessionCookieSecure,
+		SessionCookieDomain:  sessionCookieDomain,
 		AllowedOrigins:       origins,
 		TrustProxy:           trustProxy,
 		BufferDir:            bufferDir,

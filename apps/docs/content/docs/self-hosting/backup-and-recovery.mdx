@@ -7,18 +7,18 @@ description: What to back up, and how to rebuild a lost Relay.
 
 | Data | Where | Back up? |
 | --- | --- | --- |
-| Accounts, devices, nodes, envelopes, events | Relay PostgreSQL (`postgres_data` volume) | Yes |
-| Relay buffer, sessions, nonces | Relay Redis / `buffer_data` | No — transient |
+| Accounts, devices, nodes, envelopes, events | Relay SQLite (`relay_data` volume) | Yes |
+| Relay buffer, sessions, nonces | Redis / Relay buffer directory | No — transient |
 | Files, catalogue, node identity | Storage Node data dir + `~/.nodus` | Yes (this is the source of truth) |
 | TLS certs | Caddy volumes | Optional (reissued automatically) |
 
-The Relay's PostgreSQL volume holds all durable server metadata. The Relay
+The Relay's `relay_data` volume holds all durable server metadata. The Relay
 buffer and Redis are transient by design.
 
 ## Backing up
 
-- **PostgreSQL:** snapshot the `postgres_data` volume, or `pg_dump` the
-  `nodus_relay` database.
+- **Relay SQLite:** use `VACUUM INTO` inside the relay container (or stop the
+  Relay first and copy `relay.db` with its `-wal`/`-shm` sidecars).
 - **Storage Node:** back up the whole data directory **and** `~/.nodus/`
   (identity + config). Losing the identity means the node must re-pair with a
   new `node_id`.

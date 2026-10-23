@@ -22,6 +22,12 @@ describe("hardenSessionCookie", () => {
     );
   });
 
+  it("preserves the Relay's cross-subdomain Domain", () => {
+    expect(hardenSessionCookie("nodus_session=abc; Path=/; Domain=.nodus.talibdar.tech")).toBe(
+      "nodus_session=abc; Path=/; Domain=.nodus.talibdar.tech; HttpOnly; SameSite=Lax",
+    );
+  });
+
   it("overwrites SameSite=None and defaults a missing Path", () => {
     expect(hardenSessionCookie("nodus_session=abc; SameSite=None")).toBe(
       "nodus_session=abc; SameSite=Lax; HttpOnly; Path=/",

@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 
-# Go Relay image for the single-origin deployment unit. The binary is static
+# Go Relay image for the deployment unit. The binary is static
 # (CGO off) and self-contained: SQL migrations are embedded via `go:embed`, so
 # no source or migrations directory is needed at runtime.
 

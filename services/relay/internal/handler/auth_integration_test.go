@@ -306,8 +306,33 @@ func TestAuthSessionCookieFlags(t *testing.T) {
 	require.True(t, sessionCookie.HttpOnly, "cookie must be HttpOnly")
 	require.Equal(t, "/", sessionCookie.Path, "cookie must have Path=/")
 	require.Equal(t, http.SameSiteLaxMode, sessionCookie.SameSite, "cookie must be SameSite=Lax")
+	require.NotContains(t, resp.Header.Get("Set-Cookie"), "Domain=", "default cookie must stay host-only")
 	// Secure=false in test (plain HTTP); production default is true.
 	require.False(t, sessionCookie.Secure, "Secure should be false in test (plain HTTP)")
+}
+
+// TestSessionCookieDomain verifies split-origin deployments scope the session
+// cookie to the parent domain, and that logout clears the same domain. Without
+// this, the browser would not send the cookie to the Relay WebSocket host.
+func TestSessionCookieDomain(t *testing.T) {
+	cfg := &config.Config{
+		SessionCookieName:   "nodus_session",
+		SessionMaxAge:       30 * 24 * time.Hour,
+		SessionCookieSecure: true,
+		SessionCookieDomain: ".nodus.example.com",
+	}
+
+	setRec := httptest.NewRecorder()
+	setSessionCookie(setRec, cfg, "token", time.Now().Add(time.Hour))
+	setCookie := setRec.Header().Get("Set-Cookie")
+	// Go normalizes the leading dot in Set-Cookie; browsers treat both forms the
+	// same for parent-domain scoping.
+	require.Contains(t, setCookie, "Domain=nodus.example.com", "session cookie must be scoped to the parent domain")
+
+	clearRec := httptest.NewRecorder()
+	clearSessionCookie(clearRec, cfg)
+	clearCookie := clearRec.Header().Get("Set-Cookie")
+	require.Contains(t, clearCookie, "Domain=nodus.example.com", "logout must clear the scoped cookie")
 }
 
 // TestAuthSessionCookieSecureFlag verifies the Secure flag is set when

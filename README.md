@@ -130,6 +130,8 @@ Content is authored as MDX under `apps/docs/content/docs/`. The engineering
 docs in `docs/` (ADRs, protocol, architecture) remain canonical and are mirrored
 into the site's Reference and ADR sections.
 
+For end-user install steps — Android APK, Storage Node binary, and the
+self-hosted server — see [`docs/install.md`](./docs/install.md).
 
 ## Current status
 
@@ -263,8 +265,8 @@ first run prompts for the data directory and defaults to `~/NodusBackup`.
 
 ### 5. Deploy the server unit (single origin)
 
-The self-hosted unit packages the Next.js web app, the Go Relay, SQLite,
-Redis, and Caddy (TLS + routing) behind one public origin:
+The self-hosted unit packages the Next.js web app, the Go Relay, the docs site,
+SQLite, Redis, and Caddy behind three public origins (web, relay, docs):
 
 ```bash
 cp deploy/.env.example deploy/.env
@@ -272,9 +274,9 @@ docker compose -f deploy/docker-compose.yml --env-file deploy/.env up --build -d
 curl -fsS http://localhost/health
 ```
 
-Set `SITE_ADDRESS`/`PUBLIC_RELAY_URL`/`ALLOWED_ORIGINS` to the real origin for
-production. See [`deploy/README.md`](./deploy/README.md) for routing, TLS, and
-operations details.
+Set `WEB_HOST`/`RELAY_HOST`/`DOCS_HOST`, `PUBLIC_RELAY_URL`,
+`NEXT_PUBLIC_RELAY_URL`, and `ALLOWED_ORIGINS` for production. See
+[`deploy/README.md`](./deploy/README.md) for routing, TLS, and operations details.
 
 ### Factory reset
 

@@ -1,0 +1,35 @@
+# syntax=docker/dockerfile:1
+
+# Next.js documentation image for the split-origin deployment unit. Mirrors the
+# web image: build the monorepo from the repo root, then ship only Next's
+# standalone output and the static assets it expects.
+
+FROM node:24-bookworm-slim AS build
+ENV PNPM_HOME=/pnpm \
+    PATH=/pnpm:$PATH \
+    NEXT_TELEMETRY_DISABLED=1 \
+    TURBO_TELEMETRY_DISABLED=1
+RUN corepack enable && corepack prepare pnpm@11.23.0 --activate
+WORKDIR /repo
+# `.dockerignore` keeps node_modules/.next/target out, so this copies the whole
+# workspace (all manifests are needed for a frozen-lockfile install).
+COPY . .
+RUN pnpm install --frozen-lockfile
+# `docs` depends on workspace packages through turbo's `^build`.
+RUN pnpm exec turbo run build --filter=docs
+
+FROM node:24-bookworm-slim AS runner
+ENV NODE_ENV=production \
+    NEXT_TELEMETRY_DISABLED=1 \
+    PORT=3001 \
+    HOSTNAME=0.0.0.0
+RUN groupadd -g 10001 nodus && useradd -u 10001 -g nodus -m nodus
+WORKDIR /app
+# outputFileTracingRoot is the repo root, so the standalone bundle mirrors the
+# workspace layout and the server lives at apps/docs/server.js.
+COPY --from=build --chown=nodus:nodus /repo/apps/docs/.next/standalone ./
+COPY --from=build --chown=nodus:nodus /repo/apps/docs/.next/static ./apps/docs/.next/static
+COPY --from=build --chown=nodus:nodus /repo/apps/docs/public ./apps/docs/public
+USER nodus
+EXPOSE 3001
+CMD ["node", "apps/docs/server.js"]

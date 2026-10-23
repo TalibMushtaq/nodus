@@ -5,10 +5,15 @@ description: Common issues with routing, WebSockets, LAN discovery, and TLS.
 
 ## The browser cannot connect to the Relay (`/ws` rejected)
 
-`ALLOWED_ORIGINS` must exactly match the browser origin (scheme + host + port).
+`ALLOWED_ORIGINS` must exactly match the browser origin (scheme + host + port),
+e.g. `https://nodus.example.com`. The browser opens
+`NEXT_PUBLIC_RELAY_URL` (`wss://relay.example.com/ws`), so also confirm
+`SESSION_COOKIE_DOMAIN` is the shared parent domain (`.example.com`); otherwise
+the Relay receives no session cookie and closes with `4001`.
+
 In local HTTP runs the defaults allow both `http://localhost` and
-`http://127.0.0.1`, but always open the site at the same host you put in
-`PUBLIC_RELAY_URL` / `ALLOWED_ORIGINS`.
+`http://127.0.0.1` and leave `NEXT_PUBLIC_RELAY_URL` pointing at the same
+origin.
 
 ## Auth cookies not sticking locally
 
@@ -18,9 +23,9 @@ Relay. The web client only marks cookies `Secure` in production.
 ## Mobile or CLI cannot reach the Relay
 
 Non-browser clients call the Relay origin directly. Ensure `PUBLIC_RELAY_URL`
-points at the same origin you exposed, and that the Relay route matchers in the
-Caddyfile apply (they cover `/auth/*`, `/devices/*`, `/nodes*`, `/pairing/*`,
-`/buffer/*`, `/ws`, `/health`, `/rebuild`, and more).
+and the device's configured server URL are both `https://relay.example.com`
+(the Relay subdomain, not the web host), and that `RELAY_HOST` resolves to the
+VM with a valid certificate.
 
 ## "Local transfer unavailable" on mobile
 

@@ -7,7 +7,7 @@ The Relay registers routes on Go's `net/http` `ServeMux` (method + pattern
 routing). Routes marked **session** require an authenticated session cookie or
 bearer token; **node** routes require a stateless Ed25519 request signature
 (`X-Nodus-*`, valid for a 5-minute window). All routes except `/health` and
-`/ws` are only registered when PostgreSQL is available.
+`/ws` are only registered when SQLite is available.
 
 ## Health
 

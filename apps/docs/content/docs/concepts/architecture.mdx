@@ -19,7 +19,7 @@ that communicate through one explicit protocol contract.
                   |                             |
                   v                             |
              Relay (Go) <-----------------------+
-         PostgreSQL · Redis
+         SQLite · Redis
 ```
 
 ## Components
@@ -46,7 +46,7 @@ and can provide a full snapshot to rebuild a lost Relay database.
 
 ### Relay — `services/relay`
 
-A Go service backed by PostgreSQL (durable metadata) and Redis (sessions,
+A Go service backed by SQLite (durable metadata) and Redis (sessions,
 nonces, transient tokens). It owns authentication, presence, WebSocket
 signaling, cross-network sync, and a temporary encrypted shard buffer. It never
 holds plaintext file contents or keys.

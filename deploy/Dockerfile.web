@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 
-# Next.js web image for the single-origin deployment unit. Builds the monorepo
+# Next.js web image for the deployment unit. Builds the monorepo
 # from the repo root and ships only Next's `standalone` output plus the static
 # assets it expects, so the runtime layer has no package manager or sources.
 
@@ -11,8 +11,11 @@ ENV PNPM_HOME=/pnpm \
     TURBO_TELEMETRY_DISABLED=1
 RUN corepack enable && corepack prepare pnpm@11.23.0 --activate
 WORKDIR /repo
-# Browser push needs the public VAPID key at build time: Next inlines
-# NEXT_PUBLIC_* into the client bundle. Empty leaves browser push disabled.
+# Next inlines NEXT_PUBLIC_* into the client bundle, so both are build-time
+# values. An empty Relay URL keeps the same-origin single-origin behavior; an
+# empty VAPID key leaves browser push disabled.
+ARG NEXT_PUBLIC_RELAY_URL
+ENV NEXT_PUBLIC_RELAY_URL=$NEXT_PUBLIC_RELAY_URL
 ARG NEXT_PUBLIC_VAPID_PUBLIC_KEY
 ENV NEXT_PUBLIC_VAPID_PUBLIC_KEY=$NEXT_PUBLIC_VAPID_PUBLIC_KEY
 # `.dockerignore` keeps node_modules/.next/target out, so this copies the whole

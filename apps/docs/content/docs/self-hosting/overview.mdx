@@ -1,40 +1,43 @@
 ---
 title: Self-hosting overview
-description: The single-origin server unit, and where Storage Nodes fit.
+description: The split-origin server unit, and where Storage Nodes fit.
 ---
 
-A self-hosted Nodus deployment is one public origin that serves the web app and
-the Relay, backed by PostgreSQL and Redis, fronted by Caddy for TLS and routing.
+A self-hosted Nodus deployment runs Caddy in front of the web app, the Relay,
+the documentation site, and Redis on one VM. The Relay uses SQLite for durable
+state and Redis for ephemeral coordination.
+
+Production uses three hostnames:
 
 ```text
 Caddy (:80/:443)
-  ├─ /ws, /health, /rebuild                              -> relay:8080
-  ├─ /auth/*, /devices/*, /nodes*, /pairing/*, /buffer/* -> relay:8080
-  └─ everything else (pages, /api/*, …)                  -> web:3000
+  ├─ nodus.example.com        -> web:3000    (UI + same-origin /api BFF)
+  ├─ relay.nodus.example.com  -> relay:8080  (WS, auth, pairing, buffer)
+  └─ doc.nodus.example.com    -> docs:3001   (documentation)
 ```
 
-The Relay owns every path a non-browser client calls directly, so the Storage
-Node CLI and the mobile app work through the single origin. Two paths are served
-by Next.js because they are pages: bare `/devices` and bare `/auth`.
+The browser loads the web app, calls its BFF under `/api/*`, and opens the Relay
+WebSocket at `NEXT_PUBLIC_RELAY_URL`. The BFF reaches the Relay internally at
+`RELAY_URL=http://relay:8080`, so that address never reaches a client bundle.
+Storage Node CLI and mobile clients connect to the Relay origin directly.
 
-Next.js route handlers reach the Relay internally at `RELAY_URL=http://relay:8080`,
-so the browser only ever talks to one origin — which also means WebSocket
-authentication has a predictable `Origin`.
+The original single-origin layout is still available at `http://localhost` for
+local development and the e2e harness.
 
 ## What runs where
 
 | Service | Image / build | State |
 | --- | --- | --- |
-| `caddy` | `caddy:2-alpine` | TLS certs, config volumes |
+| `caddy` | `caddy:2-alpine` | TLS certs and config volumes |
 | `web` | `deploy/Dockerfile.web` | stateless |
-| `relay` | `deploy/Dockerfile.relay` | buffer volume |
-| `postgres` | `postgres:17-alpine` | `postgres_data` volume |
+| `docs` | `deploy/Dockerfile.docs` | stateless |
+| `relay` | `deploy/Dockerfile.relay` | SQLite database + shard buffer volume |
 | `redis` | `redis:7-alpine` | `redis_data` volume |
 
 ## Storage Nodes
 
-Storage Nodes are **separate machines** that connect to this origin — never an
-internal address. Deploy and operate them per
+Storage Nodes are **separate machines** that connect to the Relay origin — never
+an internal address. Deploy and operate them per
 [Storage Node operations](/docs/self-hosting/storage-node-operations).
 
 ## Next steps

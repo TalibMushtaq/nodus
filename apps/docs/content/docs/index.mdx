@@ -15,7 +15,7 @@ Nodus is a single monorepo containing four deployable components:
 | **Web client** | `apps/web` | Next.js + `packages/ui` (Tailwind v4) | Browser UI, session auth, uploads/downloads |
 | **Mobile client** | `apps/mobile` | React Native / Expo | Native app, LAN discovery, background sync |
 | **Storage Node** | `services/storage-node` | Rust, SQLite | Durable local storage + object store |
-| **Relay** | `services/relay` | Go, PostgreSQL, Redis | Auth, signaling, sync, temporary buffer |
+| **Relay** | `services/relay` | Go, SQLite, Redis | Auth, signaling, sync, temporary buffer |
 
 ## Why Nodus
 
@@ -40,7 +40,7 @@ of truth. Nodus flips that:
                             v
                  +----------------------+
                  |    Go Relay / API    |
-                 | PostgreSQL · Redis   |
+                 | SQLite · Redis       |
                  | Temporary Buffer     |
                  +----------+-----------+
                             |

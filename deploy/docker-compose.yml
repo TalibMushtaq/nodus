@@ -54,6 +54,10 @@ services:
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost,http://127.0.0.1}
       # false only when the public origin is plain HTTP (local). true in prod.
       SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-false}
+      # Split-origin deployments set this to the parent domain
+      # (e.g. ".nodus.talibdar.tech") so the session cookie is also sent to the
+      # Relay WebSocket on its own subdomain. Empty keeps a host-only cookie.
+      SESSION_COOKIE_DOMAIN: ${SESSION_COOKIE_DOMAIN:-}
       # Caddy is the immediate peer, so the rate limiter may trust X-Forwarded-For.
       TRUST_PROXY: "true"
       BUFFER_DIR: /var/lib/nodus/buffer
@@ -89,8 +93,10 @@ services:
     build:
       context: ..
       dockerfile: deploy/Dockerfile.web
-      # Inlined into the client bundle at build time (browser push opt-in).
+      # Inlined into the client bundle at build time: the browser WebSocket
+      # target (split origins) and the browser-push opt-in key.
       args:
+        NEXT_PUBLIC_RELAY_URL: ${NEXT_PUBLIC_RELAY_URL:-}
         NEXT_PUBLIC_VAPID_PUBLIC_KEY: ${NEXT_PUBLIC_VAPID_PUBLIC_KEY:-}
     restart: unless-stopped
     depends_on:
@@ -101,8 +107,9 @@ services:
       RELAY_URL: http://relay:8080
       # User-facing origin shown in the "+ Add Storage Node" dialog.
       PUBLIC_RELAY_URL: ${PUBLIC_RELAY_URL:-http://localhost}
-      # NEXT_PUBLIC_RELAY_URL is intentionally unset: the browser talks to this
-      # origin's /ws (single-origin deploy).
+      # NEXT_PUBLIC_RELAY_URL is a build arg (above): the browser's WebSocket
+      # target is inlined at build time. Set it to the Relay subdomain for the
+      # split deployment, or leave it empty for the localhost single origin.
     healthcheck:
       test:
         [
@@ -110,6 +117,28 @@ services:
           "node",
           "-e",
           "fetch('http://localhost:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  docs:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.docs
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: "3001"
+      HOSTNAME: 0.0.0.0
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://localhost:3001/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
         ]
       interval: 10s
       timeout: 5s
@@ -124,11 +153,18 @@ services:
         condition: service_healthy
       relay:
         condition: service_healthy
+      docs:
+        condition: service_healthy
     ports:
       - "80:80"
       - "443:443"
     environment:
-      SITE_ADDRESS: ${SITE_ADDRESS:-:80}
+      # Production subdomains. The Caddyfile also keeps a localhost
+      # single-origin block so `docker compose up` and the e2e harness work
+      # without DNS or certificates.
+      WEB_HOST: ${WEB_HOST:-nodus.localhost}
+      RELAY_HOST: ${RELAY_HOST:-relay.nodus.localhost}
+      DOCS_HOST: ${DOCS_HOST:-doc.nodus.localhost}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data

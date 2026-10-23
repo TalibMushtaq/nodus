@@ -1,42 +1,50 @@
-# Single-origin reverse proxy for the combined Nodus server unit.
+# Reverse proxy for the Nodus server unit.
 #
-# SITE_ADDRESS is the one public origin. A bare ":80" serves plain HTTP (local
-# runs or an upstream TLS terminator); a domain such as "nodus.example.com"
-# makes Caddy provision and renew HTTPS automatically.
+# Production uses three separate origins:
+#   WEB_HOST   -> the Next.js app and its same-origin BFF (/api/*)
+#   RELAY_HOST -> the Go Relay (WebSocket, auth, pairing, shard buffer)
+#   DOCS_HOST  -> the Fumadocs site
 #
-# Routing: the Relay owns every path a non-browser client answers directly —
-# the WebSocket gateway, the shard buffer, auth, devices, nodes, the bootstrap
-# pairing endpoints, rebuild, and health. This keeps mobile/CLI clients working
-# against the single origin, not just the browser and the Storage Node.
+# The browser talks to RELAY_HOST for /ws (NEXT_PUBLIC_RELAY_URL); mobile and
+# Storage Nodes use RELAY_HOST for everything. The web BFF still reaches the
+# Relay internally over http://relay:8080.
 #
-# Three Relay paths also exist as Next.js pages: `/devices`, `/files` and
-# `/tombstones`. They are disambiguated by content negotiation rather than by
-# dropping one client: a browser navigation sends `Accept: text/html` and stays
-# with Next, while an API client (mobile, CLI, Storage Node) sends JSON or
-# `*/*` and reaches the Relay. Without this, an enumerated list has to pick a
-# winner, and whichever it picks the other client breaks — which is how the
-# Relay's `/devices` and `/tombstones` came to be unreachable through the proxy.
-#
-# Everything not matched below (all pages, `/api/*`, static assets) is served
-# by Next.js.
+# A localhost single-origin block is kept for `docker compose up` and the e2e
+# harness: those flows have no DNS/TLS and expect /health, /api/*, and /ws on
+# the same origin.
 
-{$SITE_ADDRESS} {
+{$WEB_HOST} {
+	encode gzip
+	reverse_proxy web:3000
+}
+
+{$RELAY_HOST} {
+	encode gzip
+	reverse_proxy relay:8080
+}
+
+{$DOCS_HOST} {
+	encode gzip
+	reverse_proxy docs:3001
+}
+
+http://localhost, http://127.0.0.1 {
 	encode gzip
 
 	@relay {
 		path /ws /health /rebuild /activities /folder-envelopes \
-		 /shards/* \
-		 /files /files/* /folders \
-		 /tombstones /tombstones/* \
-		 /envelopes /envelopes/* \
-		 /account/* \
-		 /auth/register /auth/login /auth/session /auth/logout \
-		 /auth/password /auth/logout-all /auth/recovery /auth/recovery/* \
-		 /devices /devices/* \
-		 /nodes /nodes/* /node/shards/* \
-		 /pairing/sessions /pairing/sessions/* \
-		 /pairing/codes /pairing/codes/* \
-		 /buffer/upload /buffer/fetch
+ /shards/* \
+ /files /files/* /folders \
+ /tombstones /tombstones/* \
+ /envelopes /envelopes/* \
+ /account/* \
+ /auth/register /auth/login /auth/session /auth/logout \
+ /auth/password /auth/logout-all /auth/recovery /auth/recovery/* \
+ /devices /devices/* \
+ /nodes /nodes/* /node/shards/* \
+ /pairing/sessions /pairing/sessions/* \
+ /pairing/codes /pairing/codes/* \
+ /buffer/upload /buffer/fetch
 		# A browser asking for a page keeps the Next.js page of the same name.
 		not header Accept *text/html*
 	}

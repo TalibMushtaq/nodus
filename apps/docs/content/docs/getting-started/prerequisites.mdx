@@ -13,7 +13,7 @@ toolchains for the parts you intend to run.
 | Node.js + pnpm | Node ≥ 20, pnpm 11 | Web client, TypeScript packages, docs |
 | Rust | stable toolchain + `cargo` | Storage Node |
 | Go | ≥ 1.22 | Relay |
-| Docker | Compose v2 | PostgreSQL + Redis for the Relay |
+| Docker | Compose v2 | Redis (and the deploy unit) for the Relay |
 
 <Callout type="info">
   The repository pins exact toolchains where it matters: `package.json` sets
@@ -42,7 +42,7 @@ pnpm test        # TypeScript, Go, and Rust test suites
 
 `pnpm test` requires Node/pnpm, Go, and Cargo all on your `PATH`. Relay tests
 that need external services are skipped unless you provide
-`TEST_DATABASE_URL` / `TEST_REDIS_URL` (see [Testing](/docs/developers/testing)).
+`TEST_REDIS_URL` (see [Testing](/docs/developers/testing)).
 
 ## Next step
 

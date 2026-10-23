@@ -8,11 +8,11 @@ For production self-hosting see [Self-hosting](/docs/self-hosting/overview).
 
 ## 1. Start the Relay and its dependencies
 
-The Relay needs PostgreSQL and Redis, which are provided by Docker Compose:
+The Relay needs Redis, which Docker Compose provides. Its durable state is a local SQLite file:
 
 ```bash
 cd services/relay
-docker compose up -d    # Postgres 17 + Redis 7 (health-checked)
+docker compose up -d    # Redis 7 (health-checked); SQLite is created locally
 go run .
 ```
 
@@ -60,7 +60,7 @@ indicator means.
 
 | Component | State |
 | --- | --- |
-| Relay | PostgreSQL + Redis + a transient shard buffer (`BUFFER_DIR`) |
+| Relay | SQLite + Redis + a transient shard buffer (`BUFFER_DIR`) |
 | Storage Node | `nodus.db` (SQLite), `objects/` (encrypted shards), `~/.nodus/identity/` |
 
 ## Next steps

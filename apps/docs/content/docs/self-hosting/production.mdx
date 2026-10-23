@@ -1,48 +1,73 @@
 ---
 title: Production
-description: Deploy behind a real domain with automatic TLS.
+description: Deploy behind real domains with automatic TLS.
 ---
+
+The production layout uses three hostnames on one VM:
+
+```text
+nodus.talibdar.tech        -> web:3000
+relay.nodus.talibdar.tech  -> relay:8080
+doc.nodus.talibdar.tech    -> docs:3001
+```
+
+Storage Nodes and the mobile app connect to the **Relay** origin. The browser
+loads the web app from the **web** origin, calls its `/api/*` BFF there, and
+opens the Relay WebSocket at `NEXT_PUBLIC_RELAY_URL`.
 
 ## 1. Point DNS at the host
 
-Add an A/AAAA record for your domain.
+Add A/AAAA records for all three hostnames. Keep them DNS-only (no proxy) so
+Caddy can complete Let's Encrypt HTTP-01 challenges.
 
 ## 2. Configure `deploy/.env`
 
-```bash
-SITE_ADDRESS=nodus.example.com
-PUBLIC_RELAY_URL=https://nodus.example.com
+```dotenv
+WEB_HOST=nodus.example.com
+RELAY_HOST=relay.nodus.example.com
+DOCS_HOST=doc.nodus.example.com
+
+PUBLIC_RELAY_URL=https://relay.nodus.example.com
+NEXT_PUBLIC_RELAY_URL=https://relay.nodus.example.com
 ALLOWED_ORIGINS=https://nodus.example.com
 SESSION_COOKIE_SECURE=true
-POSTGRES_PASSWORD=<strong-secret>
+SESSION_COOKIE_DOMAIN=.nodus.example.com
 REDIS_PASSWORD=<strong-secret>
 ```
 
 <Callout type="warn">
-  `POSTGRES_PASSWORD` and `REDIS_PASSWORD` are required — Compose refuses to
-  start without them rather than falling back to a default. They must be
-  URL-safe (no `@`, `:`, `/`, `#`, or whitespace) because Compose interpolates
-  them into `DATABASE_URL` and `REDIS_URL` without encoding.
+  `REDIS_PASSWORD` is required — Compose refuses to start without it rather than
+  falling back to a default. It must be URL-safe (no `@`, `:`, `/`, `#`, or
+  whitespace) because Compose interpolates it into `REDIS_URL` without encoding.
 </Callout>
+
+`NEXT_PUBLIC_RELAY_URL` is inlined into the browser bundle at build time. If it
+changes, rebuild the web image:
+
+```bash
+docker compose -f deploy/docker-compose.yml --env-file deploy/.env build web
+```
 
 ## 3. Bring it up
 
 ```bash
-docker compose -f deploy/docker-compose.yml --env-file deploy/.env up --build -d
+docker compose -f deploy/docker-compose.yml --env-file deploy/.env up -d --build
 ```
 
-Caddy obtains and renews the certificate automatically.
+Caddy obtains and renews one certificate per hostname automatically.
 
-## Origin matching
+## Origin and cookie matching
 
-`ALLOWED_ORIGINS` must **exactly** match the browser origin (scheme + host +
-port), or WebSocket authentication is rejected. Always open the site at the same
-host you set in `PUBLIC_RELAY_URL` / `ALLOWED_ORIGINS`.
+- `ALLOWED_ORIGINS` must exactly match the browser origin
+  (`https://nodus.example.com`), or the Relay rejects the WebSocket.
+- `SESSION_COOKIE_DOMAIN` must be the parent domain (`.nodus.example.com`) so
+  the session cookie is also sent to `relay.nodus.example.com`.
+- `SESSION_COOKIE_SECURE` must be `true` over HTTPS.
 
 <Callout type="info">
-  `NEXT_PUBLIC_RELAY_URL` is intentionally left unset. The browser uses this
-  origin's `/ws`. Set it only for split deployments where the web app and Relay
-  run on different origins.
+  The browser's WebSocket target comes from `NEXT_PUBLIC_RELAY_URL`. Leaving it
+  empty keeps the original single-origin behavior (`/ws` on the web host), which
+  is what the localhost quickstart uses.
 </Callout>
 
 ## Reverse-proxy trust

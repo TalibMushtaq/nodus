@@ -420,12 +420,14 @@ func lookupRecoveryKey(pool *db.Pool, r *http.Request, accountID string) *string
 
 // setSessionCookie writes the session token as an HttpOnly; Secure; SameSite=Lax
 // cookie. The Secure flag opts out only when SESSION_COOKIE_SECURE=false (local
-// dev over plain HTTP).
+// dev over plain HTTP). Domain is set only for split-origin deployments so the
+// same cookie reaches the Relay WebSocket subdomain.
 func setSessionCookie(w http.ResponseWriter, cfg *config.Config, rawID string, expiresAt time.Time) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     cfg.SessionCookieName,
 		Value:    rawID,
 		Path:     "/",
+		Domain:   cfg.SessionCookieDomain,
 		Expires:  expiresAt,
 		MaxAge:   int(cfg.SessionMaxAge.Seconds()),
 		HttpOnly: true,
@@ -440,6 +442,7 @@ func clearSessionCookie(w http.ResponseWriter, cfg *config.Config) {
 		Name:     cfg.SessionCookieName,
 		Value:    "",
 		Path:     "/",
+		Domain:   cfg.SessionCookieDomain,
 		Expires:  time.Unix(0, 0),
 		MaxAge:   -1,
 		HttpOnly: true,

@@ -30,14 +30,14 @@ nodus node pair --relay http://localhost --code NODUS-XXXX-XXXX
 
 ## What comes up
 
-The Compose file starts Caddy, the web app, the Relay, PostgreSQL, and Redis.
+The Compose file starts Caddy, the web app, the Relay, the documentation site, and Redis. The Relay stores durable state in SQLite; Redis is ephemeral.
 All services have health checks; migrations run automatically when the Relay
 starts.
 
 ## Logs and teardown
 
 ```bash
-docker compose -f deploy/docker-compose.yml logs -f relay web caddy
+docker compose -f deploy/docker-compose.yml logs -f relay web docs caddy
 docker compose -f deploy/docker-compose.yml down          # stop
 docker compose -f deploy/docker-compose.yml down -v       # wipe volumes (destructive)
 ```

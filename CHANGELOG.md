@@ -1,5 +1,19 @@
 # Changelog
 
+## [2026-10-23] - Split-origin deployment: web, relay, and docs subdomains
+
+**What changed:** Added `deploy/Dockerfile.docs` and a `docs` Compose service; `apps/docs/next.config.mjs` now emits `standalone` output traced from the repo root. Rewrote `deploy/Caddyfile` into three production host blocks (`WEB_HOST`, `RELAY_HOST`, `DOCS_HOST`) plus the existing localhost single-origin block for local/e2e runs. Added the `SESSION_COOKIE_DOMAIN` Relay setting (set/clear cookie `Domain`) so the browser session is valid on the Relay subdomain. Added `NEXT_PUBLIC_RELAY_URL` as a web build arg and passed `NEXT_PUBLIC_RELAY_URL`, `PUBLIC_RELAY_URL`, and `SESSION_COOKIE_DOMAIN` through Compose. Updated `.env.example`, `deploy/README.md`, the self-hosting docs (production, configuration, overview, quickstart, backup, monitoring, upgrades), `docs/install.md`, and README-facing deployment guidance.
+**Why:** The server unit could only serve one origin. Deploying the web app, Relay, and documentation on `nodus.talibdar.tech`, `relay.nodus.talibdar.tech`, and `doc.nodus.talibdar.tech` requires independent containers, host-aware routing, a cross-subdomain session cookie, and a build-time WebSocket origin.
+**Impact:** Production deployment topology changed. Mobile and Storage Nodes now use the Relay origin, while the browser uses the web origin plus the Relay WebSocket. Local `http://localhost` and the e2e harness keep their existing single-origin behavior. No protocol changes. Verified: docs standalone build, web session-cookie tests, Relay config/handler tests, Compose config, and Caddy config validation.
+**Follow-ups:** Deploy to the VM, set production DNS and `deploy/.env`, confirm the cookie `Domain` and `wss://` connection in a browser, and set up Relay SQLite backups.
+
+## [2026-10-23] - End-user installation guide
+
+**What changed:** Added `docs/install.md` covering the Android APK (requirements, release download and SHA-256 verification, sideloading, first-launch server/sign-in/node-pairing flow, updates, and troubleshooting), the `nodus` Storage Node binary (installer, manual install, pairing, systemd unit, upgrades), and the self-hosted Docker server (local quickstart, production env, HTTPS requirement for mobile, upgrades). Linked it from the README's Documentation section.
+**Why:** The installable releases existed but the instructions were split across the README, `deploy/README.md`, and the docs site; there was no single end-user guide in the canonical `docs/` tree.
+**Impact:** Documentation only. No runtime, release, or configuration behavior changed.
+**Follow-ups:** Keep the APK versioned asset names in `docs/install.md` in sync when cutting future `mobile-v*` releases.
+
 ## [2026-10-23] - Mobile Android APK release pipeline
 
 **What changed:** Added `.github/workflows/release-mobile.yml`, triggered by `mobile-v*` tags. It validates the tag against `apps/mobile/app.json`, installs the Android SDK/NDK versions Expo requests, builds workspace packages, writes `google-services.json` from the new `GOOGLE_SERVICES_JSON` repository secret, regenerates the gitignored `android/` project with `expo prebuild`, builds `assembleRelease`, and opens a draft GitHub Release containing `nodus-mobile-vX.Y.Z.apk` plus its SHA-256. Updated `apps/docs/content/docs/mobile/install.mdx` with release-install steps and corrected the note that `android/` is checked in, and documented the workflow in `apps/docs/content/docs/developers/ci.mdx`. Stored the existing local Firebase config as the `GOOGLE_SERVICES_JSON` secret rather than committing it.
