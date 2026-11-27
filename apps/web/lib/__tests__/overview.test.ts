@@ -90,7 +90,12 @@ describe("storageUsage", () => {
       node({ used_bytes: 100, total_bytes: 1000 }),
       node({ node_id: "n2", used_bytes: 50, total_bytes: 500 }),
     ]);
-    expect(usage).toEqual({ usedBytes: 150, totalBytes: 1500, capacityKnown: true });
+    expect(usage).toEqual({
+      usedBytes: 150,
+      totalBytes: 1500,
+      availableBytes: 1350,
+      capacityKnown: true,
+    });
   });
 
   it("excludes nodes that have not reported capacity from the denominator", () => {
@@ -101,7 +106,17 @@ describe("storageUsage", () => {
 
   it("reports unknown capacity when no node has reported a total", () => {
     const usage = storageUsage([node({ total_bytes: 0 }), node({ node_id: "n2", total_bytes: 0 })]);
-    expect(usage).toEqual({ usedBytes: 200, totalBytes: 0, capacityKnown: false });
+    expect(usage).toEqual({
+      usedBytes: 200,
+      totalBytes: 0,
+      availableBytes: 0,
+      capacityKnown: false,
+    });
+  });
+
+  it("floors available space at zero when used exceeds the reported total", () => {
+    const usage = storageUsage([node({ used_bytes: 1200, total_bytes: 1000 })]);
+    expect(usage.availableBytes).toBe(0);
   });
 });
 

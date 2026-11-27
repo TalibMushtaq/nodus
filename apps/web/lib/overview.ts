@@ -30,6 +30,8 @@ export function isDeviceOnline(device: RelayDevice, now: number = Date.now()): b
 export interface StorageUsage {
   usedBytes: number;
   totalBytes: number;
+  /** `totalBytes - usedBytes`, floored at 0. Only meaningful when capacityKnown. */
+  availableBytes: number;
   /** False when no node has reported capacity yet (pre-heartbeat / older node). */
   capacityKnown: boolean;
 }
@@ -51,7 +53,10 @@ export function storageUsage(nodes: RelayNode[]): StorageUsage {
       capacityKnown = true;
     }
   }
-  return { usedBytes, totalBytes, capacityKnown };
+  // Free space is derived, never reported, and cannot go negative: a node whose
+  // used figure briefly exceeds its advertised total must not render as -X.
+  const availableBytes = capacityKnown ? Math.max(0, totalBytes - usedBytes) : 0;
+  return { usedBytes, totalBytes, availableBytes, capacityKnown };
 }
 
 export interface OnlineCounts {

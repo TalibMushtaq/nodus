@@ -308,8 +308,8 @@ export function OverviewClient({ publicRelayUrl }: OverviewClientProps) {
       {/* Stat cards */}
       <section className="stagger grid grid-cols-2 lg:grid-cols-4 gap-3">
         <StatCard
-          label="Storage used"
-          value={loading ? "…" : formatBytes(usage.usedBytes)}
+          label="Storage available"
+          value={loading ? "…" : usage.capacityKnown ? formatBytes(usage.availableBytes) : "—"}
           sub={
             usage.capacityKnown
               ? `of ${formatBytes(usage.totalBytes)}`
