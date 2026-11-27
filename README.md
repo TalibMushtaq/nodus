@@ -11,6 +11,24 @@ never a hard dependency.
 
 ---
 
+## Screenshots
+
+Captured from the live deployment at `nodus.dartalib.tech` on 2026-11-27.
+The web client is shown with a fresh demo account, so file lists and activity
+are empty by design.
+
+| Sign in | Dashboard overview |
+|---|---|
+| ![Sign-in screen with the node-topology brand panel](docs/screenshots/auth.png) | ![Overview dashboard showing relay connection, storage, and recent activity](docs/screenshots/overview.png) |
+
+| Devices and storage nodes | Settings |
+|---|---|
+| ![Devices screen listing client devices and storage nodes](docs/screenshots/devices.png) | ![Settings screen with appearance, notifications, and sync preferences](docs/screenshots/settings.png) |
+
+![Nodus documentation site](docs/screenshots/docs.png)
+
+---
+
 ## Why Nodus
 
 Most cloud storage treats the Internet — and a central server — as the
@@ -131,7 +149,8 @@ docs in `docs/` (ADRs, protocol, architecture) remain canonical and are mirrored
 into the site's Reference and ADR sections.
 
 For end-user install steps — Android APK, Storage Node binary, and the
-self-hosted server — see [`docs/install.md`](./docs/install.md).
+self-hosted server — see [`docs/install.md`](./docs/install.md). To deploy the
+server on a VM, see [`docs/deploy.md`](./docs/deploy.md).
 
 ## Current status
 

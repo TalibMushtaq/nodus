@@ -14,9 +14,9 @@ import {
   saveRecoveryPhrase,
 } from "../../lib/recovery";
 
-// Auth wizard. Two credential paths:
-//  - password: email → password (register inserts a recovery-phrase step so the
-//    ADR-0002 phrase is shown once and its public key enrolled), or
+// Auth wizard. Credential paths:
+//  - password: email + password on one form (register inserts a recovery-phrase
+//    step so the ADR-0002 phrase is shown once and its public key enrolled), or
 //  - recovery: email → phrase, which signs a Relay nonce and starts a session
 //    on this fresh device without a password.
 // On submit the device identity (id + Ed25519 public key) rides along; the route
@@ -27,7 +27,7 @@ import {
 // right. The panel is decorative, so it is hidden below `lg` and marked
 // aria-hidden. All field logic below is unchanged from the original wizard.
 
-type AuthStep = "email" | "password" | "recovery" | "phrase";
+type AuthStep = "email" | "recovery" | "phrase";
 type AuthMode = "signin" | "register" | "recover";
 
 const inputCls =
@@ -293,8 +293,30 @@ export default function AuthPage() {
         setError("Enter a valid email");
         return;
       }
-      setStep(mode === "recover" ? "phrase" : "password");
-      return;
+      if (mode === "recover") {
+        setStep("phrase");
+        return;
+      }
+      // Sign-in and registration submit both credentials from this one form.
+      // Only registration imposes the 8-character policy; sign-in must accept
+      // a pre-existing password of any length or legacy accounts cannot log in.
+      if (mode === "register" && password.length < 8) {
+        setError("Password must be at least 8 characters");
+        return;
+      }
+      if (password.length === 0) {
+        setError("Enter your password");
+        return;
+      }
+      // Register: mint the recovery phrase and show it before creating
+      // anything, so the user records it while the account is being enrolled.
+      if (mode === "register") {
+        setRecoveryPhrase(createRecoveryPhrase());
+        setRecoverySaved(false);
+        setStep("recovery");
+        return;
+      }
+      // Sign-in falls through to the shared submit below.
     }
 
     if (step === "phrase") {
@@ -338,26 +360,6 @@ export default function AuthPage() {
       return;
     }
 
-    // Only registration imposes the 8-character policy; sign-in must accept a
-    // pre-existing password of any length or legacy accounts cannot log in.
-    if (mode === "register" && password.length < 8) {
-      setError("Password must be at least 8 characters");
-      return;
-    }
-    if (password.length === 0) {
-      setError("Enter your password");
-      return;
-    }
-
-    // Register: mint the recovery phrase and show it before creating anything,
-    // so the user records it while the account is being enrolled.
-    if (mode === "register" && step === "password") {
-      setRecoveryPhrase(createRecoveryPhrase());
-      setRecoverySaved(false);
-      setStep("recovery");
-      return;
-    }
-
     if (step === "recovery" && !recoverySaved) {
       setError("Confirm you have saved your recovery phrase");
       return;
@@ -397,16 +399,12 @@ export default function AuthPage() {
     mode === "register" && step === "recovery"
       ? "Save your recovery phrase"
       : mode === "register"
-        ? step === "password"
-          ? "Choose a password"
-          : "Create your account"
+        ? "Create your account"
         : mode === "recover"
           ? step === "phrase"
             ? "Enter your recovery phrase"
             : "Recover your account"
-          : step === "password"
-            ? "Enter your password"
-            : "Welcome back";
+          : "Welcome back";
 
   const subtitle =
     step === "email"
@@ -446,7 +444,6 @@ export default function AuthPage() {
           {/* Header */}
           <div className="mb-6">
             {/* Back navigation mirrors the wizard's previous inline links. */}
-            {step === "password" && <BackButton label="Use a different email" onClick={() => { setStep("email"); setPassword(""); setError(null); }} />}
             {step === "phrase" && <BackButton label="Use a different email" onClick={() => { setStep("email"); setRecoveryInput(""); setError(null); }} />}
             {step === "email" && mode === "recover" && <BackButton label="Back to sign in" onClick={() => switchMode("signin")} />}
             <h1 className="font-display text-xl font-semibold tracking-[-0.01em] text-foreground">{title}</h1>
@@ -467,6 +464,25 @@ export default function AuthPage() {
                   autoFocus
                   onKeyDown={(e) => e.key === "Enter" && handleContinue()}
                 />
+                {/* Email and password are submitted together; only recovery
+                    splits into a second step, where the phrase replaces the
+                    password. */}
+                {mode !== "recover" && (
+                  <AuthField
+                    label="Password"
+                    type="password"
+                    placeholder="Your password"
+                    aria-label="Password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    hint={
+                      mode === "register"
+                        ? "8 characters minimum. Used to encrypt your device credentials."
+                        : undefined
+                    }
+                    onKeyDown={(e) => e.key === "Enter" && handleContinue()}
+                  />
+                )}
                 {/* Recover mode's back link lives in the header; the two mode
                     toggles only make sense for password auth. */}
                 {mode !== "recover" && (
@@ -488,20 +504,6 @@ export default function AuthPage() {
                   </div>
                 )}
               </>
-            )}
-
-            {step === "password" && (
-              <AuthField
-                label="Password"
-                type="password"
-                placeholder="Your password"
-                aria-label="Password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                autoFocus
-                hint={mode === "register" ? "8 characters minimum. Used to encrypt your device credentials." : undefined}
-                onKeyDown={(e) => e.key === "Enter" && handleContinue()}
-              />
             )}
 
             {step === "phrase" && (
@@ -563,7 +565,9 @@ export default function AuthPage() {
               {loading
                 ? "Please wait..."
                 : step === "email"
-                  ? "Continue"
+                  ? mode === "signin"
+                    ? "Sign in"
+                    : "Continue"
                   : step === "phrase"
                     ? "Recover account"
                     : mode === "register"

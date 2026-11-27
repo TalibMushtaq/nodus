@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <!-- Node-topology brand mark: three peers joined by a triangle. The dark
+       rounded plate keeps the amber nodes legible on light browser chrome. -->
+  <rect width="64" height="64" rx="14" fill="#0b0b0b" />
+  <g stroke="#7a4a22" stroke-width="3.5" stroke-linecap="round">
+    <path d="M32 17 L16 47 M32 17 L48 47 M16 47 L48 47" />
+  </g>
+  <g fill="#e0894a">
+    <circle cx="32" cy="17" r="6.5" />
+    <circle cx="16" cy="47" r="6.5" />
+    <circle cx="48" cy="47" r="6.5" />
+  </g>
+</svg>

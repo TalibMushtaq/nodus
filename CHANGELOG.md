@@ -1,5 +1,40 @@
 # Changelog
 
+## [2026-11-27] - Screenshots page on the documentation site
+
+**What changed:** Added `apps/docs/content/docs/screenshots.mdx` with the same five captures used in the README, copied them to `apps/docs/public/screenshots/`, and added `screenshots` to `apps/docs/content/docs/meta.json` directly after the introduction.
+**Why:** Readers browsing the documentation should get the same visual overview as README visitors without leaving the docs site.
+**Impact:** Documentation content only; no web client or Relay behavior changed. The docs image gains a `/docs/screenshots` route and `/screenshots/*.png` assets.
+**Follow-ups:** Refresh these images together with the README copies whenever the UI changes.
+
+## [2026-11-27] - README screenshot gallery
+
+**What changed:** Added `docs/screenshots/auth.png`, `overview.png`, `devices.png`, `settings.png`, and `docs.png`, plus a "Screenshots" section at the top of `README.md` linking them. Images were captured from the live deployment with a demo account.
+**Why:** Readers and reviewers should be able to see what the product looks like without running the stack or visiting the live host, which may not always be available.
+**Impact:** Documentation only. No application, deployment, or API behavior changed.
+**Follow-ups:** Refresh the screenshots when the dashboard layout or branding changes, and keep using an empty demo account so no personal file data is published.
+
+## [2026-11-27] - Single-step email/password auth form on web
+
+**What changed:** `apps/web/app/auth/page.tsx` now renders the email and password fields together on the initial step for both sign-in and registration, removes the intermediate `password` step from `AuthStep`, and folds password validation plus recovery-phrase generation into the combined submit path. The primary button reads "Sign in" for sign-in and "Continue" for registration. Recovery keeps its email → phrase layout because the phrase replaces the password. The mobile `AuthScreen` already collected both fields at once and is unchanged.
+**Why:** Users had to submit an email, wait for a second screen, then enter the password; a single form removes a step and matches the mobile client.
+**Impact:** Web auth UI only. Registration still inserts the mandatory recovery-phrase step after credentials, and sign-in still accepts legacy passwords of any length.
+**Follow-ups:** Keep the web and mobile credential forms aligned if validation rules or field hints change.
+
+## [2026-11-27] - Amber node-topology favicon and app icon
+
+**What changed:** Added `apps/web/public/favicon.svg` with the three-node amber mark, regenerated `favicon.png`, `favicon.webp`, `favicon.ico`, and `apple-touch-icon.png` from it, and listed the SVG first in the `metadata.icons` array in `apps/web/app/layout.tsx` while keeping PNG/WebP as fallbacks. Moved the ICO from `app/` to `public/` so Next does not inject the ICO link ahead of the SVG.
+**Why:** The shipped favicon artwork did not match the node-topology brand mark used in the UI, and SVG scales cleanly across browser tabs, bookmarks, and high-DPI displays.
+**Impact:** Web client branding only; no routing, API, or Relay behavior changed. The docs site keeps its existing icon.
+**Follow-ups:** Regenerate all four raster sizes from `favicon.svg` whenever the mark or amber palette changes.
+
+## [2026-10-23] - One-VM deployment runbook
+
+**What changed:** Added `docs/deploy.md`, a step-by-step runbook for deploying the split-origin stack on Ubuntu 24.04: DNS records, VM preparation (swap, Docker, firewall), repository checkout, production `deploy/.env`, `docker compose up`, post-deploy verification, logs, updates, SQLite backups, troubleshooting, and a security checklist. Linked it from `README.md` and `docs/install.md`.
+**Why:** The deployment pieces were documented across `deploy/README.md` and the docs site, but there was no single operator runbook that starts with a blank VM and ends with working web, Relay, and docs origins.
+**Impact:** Documentation only. No runtime or configuration behavior changed.
+**Follow-ups:** Keep the domain names and Go/image versions in the runbook in sync with `deploy/.env.example` and CI.
+
 ## [2026-10-23] - CI: Go 1.27.2 for standard-library security fixes
 
 **What changed:** Pinned `.github/workflows/ci-go.yml` to Go `1.27.3` in all three jobs and the Relay build image to `golang:1.27.3-alpine`. Added `workflow_dispatch` and the workflow file itself to the push/PR path filters so CI/toolchain changes can be verified directly.
