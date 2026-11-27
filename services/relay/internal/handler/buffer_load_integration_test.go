@@ -92,3 +92,46 @@ func BenchmarkBufferUpload(b *testing.B) {
 		}
 	}
 }
+
+// BenchmarkBufferUploadLargeShard measures one full-size (8 MiB) Path C shard
+// upload. Unlike BenchmarkBufferUpload (a ~20-byte metadata exercise), this
+// includes the BLAKE3 hash and the buffer file write, so b.SetBytes makes the
+// reported MB/s meaningful.
+//
+// The harness writes to t.TempDir(), which is often tmpfs on Linux; treat the
+// result as an upper bound on handler throughput, not a disk benchmark.
+//
+//	go test ./internal/handler -run '^$' -bench BenchmarkBufferUploadLargeShard -benchmem
+func BenchmarkBufferUploadLargeShard(b *testing.B) {
+	h := setupBufferHarness(b)
+
+	const version = 4
+	// The handler validates the shard index against the version row, so the
+	// seeded shard_count must cover the benchmark's iteration count.
+	_, err := h.pool.Exec(h.ctx,
+		`INSERT INTO file_versions (file_id, version_number, conflict_status, version_hash, shard_count, created_at)
+		 VALUES ($1, $2, 'none', 'vhash-bench-large', $3, NOW()) ON CONFLICT DO NOTHING`,
+		h.fileID, version, b.N)
+	require.NoError(b, err)
+
+	body := make([]byte, 8*1024*1024)
+	for i := range body {
+		body[i] = byte(i)
+	}
+	b.SetBytes(int64(len(body)))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		md := uploadMetadata{
+			FileID:        h.fileID,
+			VersionNumber: version,
+			ShardIndex:    i,
+			Size:          int64(len(body)),
+			TransferID:    fmt.Sprintf("bench-large-%d", i),
+			TargetNode:    h.nodeID,
+			SourceDevice:  "bench",
+		}
+		if rr := h.uploadShard(b, md, body, ""); rr.Code != 201 {
+			b.Fatalf("shard %d: HTTP %d: %s", i, rr.Code, rr.Body.String())
+		}
+	}
+}
