@@ -1,5 +1,12 @@
 # Changelog
 
+## [2026-11-27] - Go 1.27.4 and patched gorilla/websocket
+
+**What changed:** Bumped the Go toolchain in `.github/workflows/ci-go.yml` and the Relay builder in `deploy/Dockerfile.relay` from 1.27.3 to 1.27.4, and upgraded `github.com/gorilla/websocket` from v1.5.3 to the patched pseudo-version `v1.5.4-0.20240701034025-d67f41855da4` (with `golang.org/x/net v0.29.0` as its indirect dependency).
+**Why:** `go / vuln-scan` failed on the latest main commit for two reachable advisories: GO-2026-6859 (net/http MaxBytesReader race, fixed in Go 1.27.4) and GO-2026-6278 (weak WebSocket mask-key PRNG in gorilla/websocket).
+**Impact:** Relay build image and module graph only; no API, protocol, or schema behavior changed. `go build ./...` and `go test ./...` pass locally.
+**Follow-ups:** Replace the gorilla pseudo-version with a tagged v1.5.4 release once upstream publishes one.
+
 ## [2026-11-27] - Mobile v1.0.1: new icon, in-app updates, stable signing
 
 **What changed:** Replaced `apps/mobile/assets/icon.png`, `android-icon-foreground.png`, `android-icon-monochrome.png`, and `favicon.png` with the amber node-topology mark; bumped `app.json` to `1.0.1` (`android.versionCode` 2, iOS `buildNumber` 2) and `apps/mobile/package.json` to `1.0.1`. Added `src/update-check.ts` and `src/runtime/useAppUpdateCheck.ts`, called from `App.tsx`, which queries the newest published `mobile-v*` GitHub release on launch and offers the APK download in an alert. Added `scripts/apply-android-release-signing.mjs` and updated `release-mobile.yml` to sign with a persistent upload keystore from repository secrets, decode it in CI, and verify the APK signature after the build. Added author metadata to both `package.json` files, `app.json` (`extra.author`), `LICENSE`, and the README.
