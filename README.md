@@ -357,6 +357,11 @@ docker compose -f services/relay/docker-compose.yml up -d
 TEST_REDIS_URL='redis://localhost:6379/0' pnpm test
 ```
 
+## Author
+
+Built by **Talib Mushtaq** — [@TalibMushtaq](https://github.com/TalibMushtaq) ·
+[taalib.mushtaq@gmail.com](mailto:taalib.mushtaq@gmail.com)
+
 ## License
 
 MIT

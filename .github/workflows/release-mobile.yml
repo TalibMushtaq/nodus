@@ -23,6 +23,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The upload key must stay stable across releases: Android refuses to
+      # install an APK whose signing certificate differs from the installed
+      # app. It lives only in repository secrets; the release build never uses
+      # the SDK's shared public debug key.
+      - name: Write Android release keystore
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          if [ -z "$ANDROID_KEYSTORE_BASE64" ]; then
+            echo "ANDROID_KEYSTORE_BASE64 secret is not set" >&2
+            exit 1
+          fi
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.keystore"
+          test -s "$RUNNER_TEMP/release.keystore"
+
       - uses: actions/setup-node@v4
         with:
           node-version: "24.20.0"
@@ -80,9 +95,32 @@ jobs:
       - name: Generate native Android project
         run: pnpm --filter mobile exec expo prebuild --platform android --clean --no-install
 
+      # CNG always points release builds at the debug key; rewrite it after the
+      # native project exists and before Gradle configures the build.
+      - name: Configure release signing
+        env:
+          ANDROID_KEYSTORE_PATH: ${{ runner.temp }}/release.keystore
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: node scripts/apply-android-release-signing.mjs
+
       - name: Build release APK
+        env:
+          ANDROID_KEYSTORE_PATH: ${{ runner.temp }}/release.keystore
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: ./gradlew assembleRelease --no-daemon
         working-directory: apps/mobile/android
+
+      # Guard against silently falling back to the debug key if the patch or a
+      # secret regresses; a mismatched key breaks every future in-place update.
+      - name: Verify APK signature
+        run: |
+          BT="$(ls -d "${ANDROID_HOME}"/build-tools/* | sort -V | tail -n1)"
+          "$BT/apksigner" verify --print-certs \
+            apps/mobile/android/app/build/outputs/apk/release/app-release.apk
 
       - name: Package release assets
         run: |
@@ -105,7 +143,18 @@ jobs:
 
             - Package: `com.talibmushtaq.nodus`
             - Minimum Android: 7.0 (API 24)
-            - Signed with the development keystore — sideload only, not Play Store ready.
+            - Signed with the persistent Nodus release key — sideload only, not Play Store ready.
+            - Built by [Talib Mushtaq](https://github.com/TalibMushtaq).
+
+            > **Updating from v1.0.0:** that build used Android's shared public
+            > debug key, so this release has a different signature. Uninstall the
+            > old app once, then install this APK. Future versions install over
+            > the top, and the app now shows an update prompt on launch.
+            > Uninstalling clears local keys — sign in again and recover with your
+            > recovery phrase if needed.
+
+            This release updates the app icon to the amber node-topology mark and
+            adds the in-app update check.
 
             Download the APK, enable "Install unknown apps" for your browser or
             file manager, then open it to install. Verify the SHA-256 checksum

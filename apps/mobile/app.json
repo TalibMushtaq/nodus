@@ -2,7 +2,7 @@
   "expo": {
     "name": "Nodus",
     "slug": "nodus",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
@@ -10,6 +10,7 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.talibmushtaq.nodus",
+      "buildNumber": "2",
       "infoPlist": {
         "NSLocalNetworkUsageDescription": "Nodus discovers and pairs with storage nodes on your local network.",
         "NSBonjourServices": [
@@ -22,6 +23,7 @@
     },
     "android": {
       "allowBackup": false,
+      "versionCode": 2,
       "googleServicesFile": "./google-services.json",
       "permissions": [
         "android.permission.ACCESS_NETWORK_STATE",
@@ -58,6 +60,10 @@
       "expo-notifications"
     ],
     "extra": {
+      "author": {
+        "name": "Talib Mushtaq",
+        "email": "taalib.mushtaq@gmail.com"
+      },
       "eas": {
         "projectId": "e2e3757d-4efd-4ee0-94c4-ebf0d62bfb53"
       }

@@ -19,6 +19,7 @@ import { navigateToActivity, navigationRef } from "./src/navigation/root";
 import { TabsNavigator } from "./src/navigation/TabsNavigator";
 import { addNotificationTapListener } from "./src/notifications";
 import { AppContext } from "./src/runtime/context";
+import { useAppUpdateCheck } from "./src/runtime/useAppUpdateCheck";
 import { useNodusApp } from "./src/runtime/useNodusApp";
 import { AuthScreen } from "./src/screens/AuthScreen";
 import { ServerScreen } from "./src/screens/ServerScreen";
@@ -38,6 +39,10 @@ function ThemedStatusBar() {
 function RootNavigator() {
   const app = useNodusApp();
   const theme = useTheme();
+
+  // Sideloaded builds have no store update channel; prompt on launch when a
+  // newer `mobile-v*` release exists.
+  useAppUpdateCheck();
 
   // A tapped push opens the Activity tab. Subscribed here (not in a screen) so
   // it survives whichever tab is mounted.
