@@ -366,6 +366,7 @@ full native/EAS guide.
 
 ## Related documentation
 
+- [Deploy the server on a VM](./deploy.md)
 - [Storage Node CLI reference](../apps/docs/content/docs/reference/cli.mdx)
 - [Storage Node operations](../apps/docs/content/docs/self-hosting/storage-node-operations.mdx)
 - [Mobile install and build](../apps/docs/content/docs/mobile/install.mdx)
