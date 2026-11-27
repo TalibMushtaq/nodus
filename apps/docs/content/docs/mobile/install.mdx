@@ -60,10 +60,15 @@ open the APK.
 The tag must match `version` in `apps/mobile/app.json`; the workflow rejects a
 mismatch instead of producing an APK with the wrong version.
 
+Nodus checks for a newer `mobile-v*` release when it launches and offers to
+download the APK. Installing over the existing app preserves data, provided the
+signing key is the same. v1.0.0 was signed with Android's shared debug key, so
+moving from v1.0.0 to v1.0.1 requires one uninstall/reinstall; releases from
+v1.0.1 onward use the persistent release key and install in place.
+
 <Callout type="warn">
-  Release APKs are signed with the development keystore and are intended for
-  sideloading. Store distribution needs a dedicated upload key and Play Console
-  setup.
+  Release APKs are signed with the persistent Nodus upload key and are intended
+  for sideloading. Store distribution needs Play Console setup.
 </Callout>
 
 ## Native configuration

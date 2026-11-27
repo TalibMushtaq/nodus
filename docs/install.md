@@ -26,18 +26,18 @@ Every release asset ships with a SHA-256 file. Verify it before installing anyth
 
 Open the [releases page](https://github.com/TalibMushtaq/nodus/releases) and
 choose the newest `mobile-v*` release. The current release is
-[`mobile-v1.0.0`](https://github.com/TalibMushtaq/nodus/releases/tag/mobile-v1.0.0).
+[`mobile-v1.0.1`](https://github.com/TalibMushtaq/nodus/releases/tag/mobile-v1.0.1).
 
 Download both files:
 
-- `nodus-mobile-v1.0.0.apk`
-- `nodus-mobile-v1.0.0.apk.sha256`
+- `nodus-mobile-v1.0.1.apk`
+- `nodus-mobile-v1.0.1.apk.sha256`
 
 Direct links:
 
 ```text
-https://github.com/TalibMushtaq/nodus/releases/download/mobile-v1.0.0/nodus-mobile-v1.0.0.apk
-https://github.com/TalibMushtaq/nodus/releases/download/mobile-v1.0.0/nodus-mobile-v1.0.0.apk.sha256
+https://github.com/TalibMushtaq/nodus/releases/download/mobile-v1.0.1/nodus-mobile-v1.0.1.apk
+https://github.com/TalibMushtaq/nodus/releases/download/mobile-v1.0.1/nodus-mobile-v1.0.1.apk.sha256
 ```
 
 ### Verify the checksum (recommended)
@@ -45,13 +45,13 @@ https://github.com/TalibMushtaq/nodus/releases/download/mobile-v1.0.0/nodus-mobi
 On Linux:
 
 ```bash
-sha256sum -c nodus-mobile-v1.0.0.apk.sha256
+sha256sum -c nodus-mobile-v1.0.1.apk.sha256
 ```
 
 On macOS:
 
 ```bash
-shasum -a 256 -c nodus-mobile-v1.0.0.apk.sha256
+shasum -a 256 -c nodus-mobile-v1.0.1.apk.sha256
 ```
 
 The output must end in `OK`. Do not install the APK if it reports `FAILED`.
@@ -72,9 +72,8 @@ different signing key is probably still installed. Uninstall the old app first.
 That removes local sessions and preferences; your server-side data is not
 affected, but you will sign in and pair again.
 
-> **Note:** Release APKs are currently signed with the Android development
-> keystore. They are intended for sideloading and testing, not Play Store
-> distribution.
+> **Note:** Release APKs are signed with the persistent Nodus release key. They
+> are intended for sideloading, not Play Store distribution.
 
 ### First launch
 
@@ -95,9 +94,14 @@ you out of the previous server.
 
 ### Updating
 
-Install the newer APK over the existing app; app data is normally preserved.
-If Android reports a signature mismatch, uninstall the old build first and sign
-in again. There is no in-app updater.
+Nodus checks GitHub for a newer `mobile-v*` release when it opens and offers a
+**Download** button if one exists. Install the newer APK over the existing app;
+app data is normally preserved.
+
+The one exception is **v1.0.0 → v1.0.1**: v1.0.0 was signed with Android's
+shared debug key, so v1.0.1 has a different signature. Uninstall v1.0.0 once,
+install v1.0.1, then sign in again (use your recovery phrase if needed). Every
+release after v1.0.1 installs over the top.
 
 ### Troubleshooting
 
