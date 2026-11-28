@@ -26,18 +26,18 @@ Every release asset ships with a SHA-256 file. Verify it before installing anyth
 
 Open the [releases page](https://github.com/TalibMushtaq/nodus/releases) and
 choose the newest `mobile-v*` release. The current release is
-[`mobile-v1.0.1`](https://github.com/TalibMushtaq/nodus/releases/tag/mobile-v1.0.1).
+[`mobile-v1.1.0`](https://github.com/TalibMushtaq/nodus/releases/tag/mobile-v1.1.0).
 
 Download both files:
 
-- `nodus-mobile-v1.0.1.apk`
-- `nodus-mobile-v1.0.1.apk.sha256`
+- `nodus-mobile-v1.1.0.apk`
+- `nodus-mobile-v1.1.0.apk.sha256`
 
 Direct links:
 
 ```text
-https://github.com/TalibMushtaq/nodus/releases/download/mobile-v1.0.1/nodus-mobile-v1.0.1.apk
-https://github.com/TalibMushtaq/nodus/releases/download/mobile-v1.0.1/nodus-mobile-v1.0.1.apk.sha256
+https://github.com/TalibMushtaq/nodus/releases/download/mobile-v1.1.0/nodus-mobile-v1.1.0.apk
+https://github.com/TalibMushtaq/nodus/releases/download/mobile-v1.1.0/nodus-mobile-v1.1.0.apk.sha256
 ```
 
 ### Verify the checksum (recommended)
@@ -45,13 +45,13 @@ https://github.com/TalibMushtaq/nodus/releases/download/mobile-v1.0.1/nodus-mobi
 On Linux:
 
 ```bash
-sha256sum -c nodus-mobile-v1.0.1.apk.sha256
+sha256sum -c nodus-mobile-v1.1.0.apk.sha256
 ```
 
 On macOS:
 
 ```bash
-shasum -a 256 -c nodus-mobile-v1.0.1.apk.sha256
+shasum -a 256 -c nodus-mobile-v1.1.0.apk.sha256
 ```
 
 The output must end in `OK`. Do not install the APK if it reports `FAILED`.
@@ -85,6 +85,10 @@ affected, but you will sign in and pair again.
      `nodus node pair ...` command on the node machine.
    - To connect to an existing node, tap **Load my nodes** and select it, then
      finish the local pairing prompt.
+   - To check that direct Wi-Fi transfer will work, tap
+     **Search and connect to nearby nodes** under **Test the LAN connection**.
+     It lists every node it finds and shows whether the advertisement probe and
+     the local challenge-response succeeded.
 4. Allow the permission prompts Nodus asks for:
    - **Notifications** (optional, for transfer and conflict alerts).
    - **Nearby Wi-Fi devices** (Android 13+) so mDNS can find the node on the LAN.
@@ -101,7 +105,7 @@ app data is normally preserved.
 The one exception is **v1.0.0 → v1.0.1**: v1.0.0 was signed with Android's
 shared debug key, so v1.0.1 has a different signature. Uninstall v1.0.0 once,
 install v1.0.1, then sign in again (use your recovery phrase if needed). Every
-release after v1.0.1 installs over the top.
+release from v1.0.1 onward, including v1.1.0, installs over the top.
 
 ### Troubleshooting
 

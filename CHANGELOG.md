@@ -1,5 +1,19 @@
 # Changelog
 
+## [2026-11-28] - Release Mobile v1.1.0
+
+**What changed:** Bumped `apps/mobile/app.json` to `1.1.0` (`android.versionCode` 3, iOS `buildNumber` `"3"`) and `apps/mobile/package.json` to `1.1.0`. Rewrote the release notes body in `.github/workflows/release-mobile.yml` for 1.1.0, updated `docs/install.md` (current release, download/checksum commands, first-launch LAN self-test step, upgrade path) and `apps/docs/content/docs/mobile/install.mdx` (cleartext plugin description and upgrade path).
+**Why:** Ship the same-Wi-Fi transfer fix and the on-device LAN self-test as a tagged release. The workflow validates that the `mobile-v*` tag equals `app.json` `version`, so the bump and the tag must land together.
+**Impact:** Mobile only. Tag `mobile-v1.1.0` produces a draft GitHub release with `nodus-mobile-v1.1.0.apk` and its `.sha256`. v1.0.1 installs upgrade in place; no protocol, Relay, node, or web changes.
+**Follow-ups:** Publish the draft after installing the APK on a real phone and running the LAN self-test; confirm the cleartext fix resolves the `CLEARTEXT communication ... not permitted` failure before making the release public.
+
+## [2026-11-28] - Mobile: LAN cleartext fix and on-device LAN self-test
+
+**What changed:** Replaced the CIDR-based `network_security_config.xml` produced by `apps/mobile/plugins/with-lan-cleartext.js` (and the checked-in generated copy) with a `base-config cleartextTrafficPermitted="true"`, because Android `domain-config` entries match hostnames only and the previous `192.168.0.0`/`10.0.0.0` entries never matched a real LAN address. Added `apps/mobile/src/lan-self-test.ts` (`runLanSelfTest`) plus `apps/mobile/src/lan-self-test.test.ts`, wired `runLanTest`/`lanTest` into `apps/mobile/src/runtime/useNodusApp.ts`, and added a "Test the LAN connection" block to `apps/mobile/src/screens/PairingScreen.tsx` that discovers nodes, probes each advertisement, and runs the challenge-response for paired nodes.
+**Why:** On a physical phone, Path A signaling, `NodeClient.fetchShard`, and LAN pairing were blocked with `CLEARTEXT communication ... not permitted` (the emulator passed only because `10.0.2.2` is an exact entry), so same-Wi-Fi transfer could never be exercised. The self-test makes that failure visible on device instead of surfacing later as a silent relay fallback.
+**Impact:** Mobile only. Cleartext is now permitted app-wide; the remote-origin TLS rule still lives in `src/relay-url.ts`, so the bearer session cannot travel over plain HTTP. New runtime API surface: `app.lanTest`, `app.runLanTest()`. Seven new unit tests; no protocol or node changes.
+**Follow-ups:** Verify on a real handset with the node on the same Wi-Fi; if cleartext must be narrowed later, Android has no CIDR matching, so it would need per-node hostnames or a self-signed local CA.
+
 ## [2026-11-27] - Go 1.27.4 and patched gorilla/websocket
 
 **What changed:** Bumped the Go toolchain in `.github/workflows/ci-go.yml` and the Relay builder in `deploy/Dockerfile.relay` from 1.27.3 to 1.27.4, and upgraded `github.com/gorilla/websocket` from v1.5.3 to the patched pseudo-version `v1.5.4-0.20240701034025-d67f41855da4` (with `golang.org/x/net v0.29.0` as its indirect dependency).

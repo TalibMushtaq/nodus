@@ -177,6 +177,50 @@ export function PairingScreen() {
         ) : null}
       </Block>
 
+      <Block title="Test the LAN connection">
+        <ThemedText variant="caption" tone="muted">
+          Searches your Wi-Fi for storage nodes, probes the advertisement each node serves, and — for
+          nodes this device has paired with — completes the local challenge-response. Run this
+          before an upload to confirm direct transfer will work.
+        </ThemedText>
+        <Button
+          title={app.busy === "lan-test" ? "Testing…" : "Search and connect to nearby nodes"}
+          variant="secondary"
+          onPress={() => void app.runLanTest()}
+          disabled={!app.device || app.busy !== null}
+        />
+        {app.lanTest ? (
+          <>
+            <ThemedText variant="caption" tone="muted">
+              {`method: ${app.lanTest.method} · local access ${
+                app.lanTest.permitted ? "allowed" : "denied"
+              }`}
+            </ThemedText>
+            {app.lanTest.nodes.length === 0 ? (
+              <ThemedText variant="caption" tone="destructive">
+                No node answered.
+              </ThemedText>
+            ) : null}
+            {app.lanTest.nodes.map((node) => (
+              <Card key={node.host} style={{ padding: theme.spacing.md, gap: theme.spacing.xs }}>
+                <ThemedText variant="monoSmall">
+                  {node.host} · {node.nodeId.slice(0, 12)}… {node.paired ? "· paired" : "· unpaired"}
+                </ThemedText>
+                {node.steps.map((step) => (
+                  <ThemedText
+                    key={step.name}
+                    variant="caption"
+                    tone={step.skipped ? "muted" : step.ok ? "accent" : "destructive"}
+                  >
+                    {`${step.ok || step.skipped ? "✓" : "✗"} ${step.name}: ${step.detail}`}
+                  </ThemedText>
+                ))}
+              </Card>
+            ))}
+          </>
+        ) : null}
+      </Block>
+
       <Block title="Finish locally">
         <Button
           title="Pair this device"

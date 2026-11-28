@@ -64,7 +64,8 @@ Nodus checks for a newer `mobile-v*` release when it launches and offers to
 download the APK. Installing over the existing app preserves data, provided the
 signing key is the same. v1.0.0 was signed with Android's shared debug key, so
 moving from v1.0.0 to v1.0.1 requires one uninstall/reinstall; releases from
-v1.0.1 onward use the persistent release key and install in place.
+v1.0.1 onward (including v1.1.0) use the persistent release key and install in
+place.
 
 <Callout type="warn">
   Release APKs are signed with the persistent Nodus upload key and are intended
@@ -79,9 +80,11 @@ v1.0.1 onward use the persistent release key and install in place.
 - `google-services.json` is required for Firebase push and is injected from
   `GOOGLE_SERVICES_JSON_FILE` via `app.config.js` on EAS. The release workflow
   writes it from the `GOOGLE_SERVICES_JSON` repository secret.
-- Two config plugins matter: `with-lan-cleartext` (writes a
-  network-security-config that permits cleartext only on loopback/private
-  ranges) and `with-rnscreens-fragment-factory` (required by React Navigation).
+- Two config plugins matter: `with-lan-cleartext` (writes the
+  network-security-config; cleartext is allowed app-wide because Android
+  `domain-config` cannot express CIDR ranges — remote origins are kept on TLS by
+  the relay URL validator) and `with-rnscreens-fragment-factory` (required by
+  React Navigation).
 
 ## Related
 

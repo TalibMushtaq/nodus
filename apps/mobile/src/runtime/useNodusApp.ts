@@ -56,6 +56,7 @@ import {
 } from "@repo/relay-client/device-identity";
 
 import { discoverNodes, probeHost, type LanCandidate } from "../discovery";
+import { runLanSelfTest, type LanSelfTestReport } from "../lan-self-test";
 import {
   clearPersistedSession,
   getSessionToken,
@@ -250,6 +251,8 @@ export function useNodusApp() {
   const [host, setHost] = React.useState("");
   const [probe, setProbe] = React.useState<LanCandidate | null>(null);
   const [trusted, setTrusted] = React.useState<TrustedNode[]>([]);
+  /** Result of the on-device LAN reachability self-test (Pairing screen). */
+  const [lanTest, setLanTest] = React.useState<LanSelfTestReport | null>(null);
 
   // ── Conflict inbox (ADR-0003) ─────────────────────────────────────────────
   const [conflicts, setConflicts] = React.useState<ConflictEntry[]>([]);
@@ -2042,6 +2045,47 @@ export function useNodusApp() {
     setError(null);
   }, []);
 
+  // End-to-end LAN reachability check for the Pairing screen: discover nodes,
+  // probe each advertisement (which is what actually proves cleartext HTTP to
+  // the LAN is permitted), then for nodes this device already trusts complete
+  // the same Ed25519 challenge-response Path A uses. Reporting per-step failures
+  // here avoids debugging a later "upload went to the Relay buffer" symptom.
+  const runLanTest = React.useCallback(async () => {
+    setBusy("lan-test");
+    setError(null);
+    setNotice(null);
+    setLanTest(null);
+    try {
+      const report = await runLanSelfTest({
+        discover: discoverNodes,
+        advertise: (host) => fetchAdvertisement(nodusBaseUrl(host), 2_000),
+        pairedNodeIds: async () => (await getTrustedNodes()).map((node) => node.node_id),
+        authenticate: async (host, nodeId) => {
+          if (!device) throw new Error("no device identity — sign in first");
+          await new NodeClient(nodusBaseUrl(host)).authenticate(
+            device.device_id,
+            (message) => signDeviceMessage(identityPrivateKey(device), message),
+            // Pinning the advertised id doubles as the node public key check.
+            nodeId,
+          );
+        },
+      });
+      setLanTest(report);
+      if (!report.permitted) {
+        setNotice("Local network access is off — enable Nearby devices, then rerun the LAN test.");
+      } else if (report.nodes.length === 0) {
+        setNotice("No Nodus node answered on this Wi-Fi — check both devices share the network.");
+      } else {
+        const passed = report.nodes.filter((node) => node.ok).length;
+        setNotice(`LAN test: ${passed}/${report.nodes.length} node(s) passed.`);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(null);
+    }
+  }, [device]);
+
   const pairOnDevice = React.useCallback(async () => {
     if (!device || !pending || !probe) return;
     const expectedNodeId = pending.node_id ?? selectedNode ?? "";
@@ -2252,6 +2296,8 @@ export function useNodusApp() {
     selectCandidate,
     pairOnDevice,
     authenticateOnDevice,
+    lanTest,
+    runLanTest,
     pairNode,
     trusted,
     unpairTrustedNode,

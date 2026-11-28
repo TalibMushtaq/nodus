@@ -146,15 +146,21 @@ jobs:
             - Signed with the persistent Nodus release key — sideload only, not Play Store ready.
             - Built by [Talib Mushtaq](https://github.com/TalibMushtaq).
 
-            > **Updating from v1.0.0:** that build used Android's shared public
-            > debug key, so this release has a different signature. Uninstall the
-            > old app once, then install this APK. Future versions install over
-            > the top, and the app now shows an update prompt on launch.
-            > Uninstalling clears local keys — sign in again and recover with your
-            > recovery phrase if needed.
+            **What's new in v1.1.0 — same-Wi-Fi transfers actually work**
 
-            This release updates the app icon to the amber node-topology mark and
-            adds the in-app update check.
+            - Fixed the Android cleartext policy. The network security config used
+              CIDR ranges, which Android never matches, so direct LAN traffic to a
+              node (pairing, WebRTC signaling, shard download) was blocked with
+              `CLEARTEXT communication ... not permitted` on real phones.
+            - Added **Devices → Pair a device → Test the LAN connection**: searches
+              Wi-Fi for storage nodes, probes each advertisement, and completes the
+              local challenge-response for paired nodes, so you can see exactly
+              which step fails.
+            - Uploads and downloads now report `Local P2P` when the bytes went
+              directly to your node instead of through the Relay buffer.
+
+            Installs over v1.0.1 in place. Only the v1.0.0 → v1.0.1 upgrade
+            needed an uninstall, because v1.0.0 used Android's shared debug key.
 
             Download the APK, enable "Install unknown apps" for your browser or
             file manager, then open it to install. Verify the SHA-256 checksum
